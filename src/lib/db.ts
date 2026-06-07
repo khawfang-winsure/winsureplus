@@ -2,7 +2,15 @@
 // หน้าเว็บเรียกฟังก์ชันในไฟล์นี้เสมอ — ภายในจะเลือกเองว่าจะดึงจาก Supabase จริง
 // หรือใช้ข้อมูลตัวอย่าง (mock) ตามว่าใส่กุญแจใน .env แล้วหรือยัง
 import { supabase } from './supabase'
-import type { Contract, Option, Shop } from './types'
+import type {
+  Contract,
+  ContractStatusRow,
+  DeviceReturnRow,
+  Installment,
+  Option,
+  OverdueBucket,
+  Shop,
+} from './types'
 import * as mock from './mockData'
 
 export type OptionKind =
@@ -238,6 +246,176 @@ export async function updateContract(id: string, c: Omit<Contract, 'id'>): Promi
   if (!supabase) return
   const { error } = await supabase.from('contracts').update(toInsert(c)).eq('id', id)
   if (error) throw error
+}
+
+// ---------- งวดผ่อน + สถานะล่าช้า (Phase 3/4) ----------
+interface InstallmentRow {
+  id: string
+  installment_no: number
+  due_date: string
+  amount: number
+  paid_at: string | null
+  penalty_days: number
+  penalty_amount: number
+  status: 'pending' | 'paid' | 'late'
+}
+
+function mapInstallment(r: InstallmentRow): Installment {
+  return {
+    id: r.id,
+    installmentNo: r.installment_no,
+    dueDate: r.due_date,
+    amount: Number(r.amount),
+    paidAt: r.paid_at,
+    penaltyDays: r.penalty_days,
+    penaltyAmount: Number(r.penalty_amount),
+    status: r.status,
+  }
+}
+
+export async function getInstallments(contractId: string): Promise<Installment[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('installments')
+    .select('*')
+    .eq('contract_id', contractId)
+    .order('installment_no')
+  if (error) throw error
+  return ((data ?? []) as InstallmentRow[]).map(mapInstallment)
+}
+
+export async function markInstallmentPaid(installmentId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('mark_installment_paid', { p_installment_id: installmentId })
+  if (error) throw error
+}
+
+interface StatusRow {
+  contract_id: string
+  contract_no: string
+  customer_name: string
+  shop_id: string
+  shop_name: string | null
+  status: Contract['status']
+  next_due: string | null
+  remaining_installments: number
+  penalty_due: number
+  days_late: number
+  bucket: OverdueBucket
+}
+
+function mapStatus(r: StatusRow): ContractStatusRow {
+  return {
+    contractId: r.contract_id,
+    contractNo: r.contract_no,
+    customerName: r.customer_name,
+    shopId: r.shop_id,
+    shopName: r.shop_name ?? '-',
+    status: r.status,
+    nextDue: r.next_due,
+    remainingInstallments: r.remaining_installments,
+    penaltyDue: Number(r.penalty_due),
+    daysLate: r.days_late,
+    bucket: r.bucket,
+  }
+}
+
+/** ลูกค้าตามกลุ่มความล่าช้า (สำหรับเมนูลูกค้าล่าช้า-หนี้เสีย) */
+export async function getOverdueByBucket(bucket: OverdueBucket): Promise<ContractStatusRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_contract_status')
+    .select('*')
+    .eq('bucket', bucket)
+    .order('days_late', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as StatusRow[]).map(mapStatus)
+}
+
+/** ลูกค้าที่ใกล้/ถึงวันครบกำหนด (next_due ตั้งแต่วันนี้ถึง +7 วัน) */
+export async function getDueSoon(): Promise<ContractStatusRow[]> {
+  if (!supabase) return []
+  const today = new Date()
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  const in7 = new Date(today)
+  in7.setDate(in7.getDate() + 7)
+  const { data, error } = await supabase
+    .from('v_contract_status')
+    .select('*')
+    .eq('status', 'active')
+    .gte('next_due', iso(today))
+    .lte('next_due', iso(in7))
+    .order('next_due')
+  if (error) throw error
+  return ((data ?? []) as StatusRow[]).map(mapStatus)
+}
+
+// ---------- คืนเครื่อง (Phase 5) ----------
+export interface ReturnInput {
+  caseNo: 1 | 2 | 3
+  lastInstallmentPaid: boolean
+  penaltyPaid: boolean
+  repairFee: number
+}
+
+export async function submitReturn(contractId: string, input: ReturnInput): Promise<void> {
+  if (!supabase) return
+  // กรณี 3 = ชำระครบ+ค่าซ่อมแล้ว -> ปิดสัญญาสมบูรณ์, อื่นๆ = คืนเครื่อง (รอ)
+  const newStatus = input.caseNo === 3 ? 'returned_closed' : 'returned'
+  const { error: e1 } = await supabase.from('device_returns').insert({
+    contract_id: contractId,
+    case_no: input.caseNo,
+    last_installment_paid: input.lastInstallmentPaid,
+    penalty_paid: input.penaltyPaid,
+    repair_fee: input.repairFee || 0,
+    checked_at: input.caseNo === 3 ? new Date().toISOString() : null,
+  })
+  if (e1) throw e1
+  const { error: e2 } = await supabase.from('contracts').update({ status: newStatus }).eq('id', contractId)
+  if (e2) throw e2
+}
+
+/** ใส่/แก้ค่าซ่อมของรายการคืนเครื่องภายหลัง (หลังเช็คเครื่อง) */
+export async function updateReturnRepairFee(returnId: string, repairFee: number): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('device_returns')
+    .update({ repair_fee: repairFee, checked_at: new Date().toISOString() })
+    .eq('id', returnId)
+  if (error) throw error
+}
+
+interface ReturnRow {
+  id: string
+  contract_id: string
+  case_no: 1 | 2 | 3
+  last_installment_paid: boolean
+  penalty_paid: boolean
+  repair_fee: number
+  checked_at: string | null
+  created_at: string
+  contracts: { contract_no: string; customer_name: string } | null
+}
+
+export async function getReturns(): Promise<DeviceReturnRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('device_returns')
+    .select('*, contracts(contract_no, customer_name)')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as ReturnRow[]).map((r) => ({
+    id: r.id,
+    contractId: r.contract_id,
+    contractNo: r.contracts?.contract_no ?? '-',
+    customerName: r.contracts?.customer_name ?? '-',
+    caseNo: r.case_no,
+    lastInstallmentPaid: r.last_installment_paid,
+    penaltyPaid: r.penalty_paid,
+    repairFee: Number(r.repair_fee),
+    checkedAt: r.checked_at,
+    createdAt: r.created_at,
+  }))
 }
 
 // ---------- สิทธิ์ผู้ใช้ ----------

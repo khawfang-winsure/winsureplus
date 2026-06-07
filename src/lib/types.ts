@@ -41,6 +41,45 @@ export interface Option {
   active: boolean
 }
 
+export interface Installment {
+  id: string
+  installmentNo: number
+  dueDate: string
+  amount: number
+  paidAt: string | null
+  penaltyDays: number
+  penaltyAmount: number
+  status: 'pending' | 'paid' | 'late'
+}
+
+/** แถวจาก view v_contract_status (สถานะ+ความล่าช้าที่คำนวณแล้ว) */
+export interface ContractStatusRow {
+  contractId: string
+  contractNo: string
+  customerName: string
+  shopId: string
+  shopName: string
+  status: ContractStatus
+  nextDue: string | null
+  remainingInstallments: number
+  penaltyDue: number
+  daysLate: number
+  bucket: OverdueBucket
+}
+
+export interface DeviceReturnRow {
+  id: string
+  contractId: string
+  contractNo: string
+  customerName: string
+  caseNo: 1 | 2 | 3
+  lastInstallmentPaid: boolean
+  penaltyPaid: boolean
+  repairFee: number
+  checkedAt: string | null
+  createdAt: string
+}
+
 export interface Contract {
   id: string
   // --- เลขอ้างอิง ---

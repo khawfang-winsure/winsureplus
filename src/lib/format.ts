@@ -36,6 +36,13 @@ const STATUS_LABEL: Record<string, string> = {
   online: 'ออนไลน์',
 }
 
+const INSTALLMENT_LABEL: Record<string, string> = {
+  pending: 'รอชำระ',
+  paid: 'ชำระแล้ว',
+  late: 'ล่าช้า',
+}
+
 export const conditionLabel = (c: string) => CONDITION_LABEL[c] ?? c
 export const originLabel = (o: string) => ORIGIN_LABEL[o] ?? o
 export const statusLabel = (s: string) => STATUS_LABEL[s] ?? s
+export const installmentLabel = (s: string) => INSTALLMENT_LABEL[s] ?? s

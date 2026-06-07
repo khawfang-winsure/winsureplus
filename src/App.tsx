@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import { AuthProvider, useAuth } from './lib/auth'
 import AddContract from './pages/AddContract'
 import AllCustomers from './pages/AllCustomers'
+import ContractDetail from './pages/ContractDetail'
 import DueToday from './pages/DueToday'
 import Overdue from './pages/Overdue'
 import Returns from './pages/Returns'
@@ -43,6 +44,7 @@ function Gate() {
         <Route path="/waiting-email" element={<WaitingEmail />} />
         <Route path="/waiting-summary" element={<WaitingSummary />} />
         <Route path="/customers" element={<AllCustomers />} />
+        <Route path="/contract/:id" element={<ContractDetail />} />
         <Route path="/due" element={<DueToday />} />
         <Route path="/overdue/:bucket" element={<Overdue />} />
         <Route path="/letters" element={<Letters />} />

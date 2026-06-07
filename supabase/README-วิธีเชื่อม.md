@@ -17,11 +17,15 @@
 
 1. ในเมนูซ้าย กดไอคอน **SQL Editor** (รูป `</>`)
 2. กด **+ New query**
-3. เปิดไฟล์ [`migrations/0001_init.sql`](migrations/0001_init.sql) → ก๊อปทั้งหมด → วางในช่อง
-4. กดปุ่ม **Run** (หรือ Ctrl+Enter) → ควรขึ้น **Success** สีเขียว
-5. (ไม่บังคับ) ทำซ้ำกับไฟล์ [`seed.sql`](seed.sql) เพื่อใส่ร้านค้า/ตัวเลือกตัวอย่าง
+3. รันไฟล์ migration **ทีละไฟล์ ตามลำดับเลข** (ก๊อปทั้งไฟล์ → วาง → กด **Run** → ควรขึ้น **Success** สีเขียว):
+   - [`migrations/0001_init.sql`](migrations/0001_init.sql) — ตารางหลัก + สิทธิ์
+   - [`migrations/0002_installments.sql`](migrations/0002_installments.sql) — สร้างงวดผ่อนอัตโนมัติ
+   - [`migrations/0003_daily_automation.sql`](migrations/0003_daily_automation.sql) — งานรายวัน (ค่าปรับ/แจ้งเตือน)
+   - [`migrations/0004_status_view.sql`](migrations/0004_status_view.sql) — view สถานะล่าช้า
+4. (ไม่บังคับ) รัน [`seed.sql`](seed.sql) เพื่อใส่ร้านค้า/ตัวเลือกตัวอย่าง
 
-> ✅ SQL ชุดนี้ทดสอบแล้วว่ารันผ่าน — ถ้าขึ้น error สีแดง ส่งข้อความ error มาให้ดูได้เลย
+> ✅ SQL ทุกไฟล์ทดสอบกับ Postgres จริงแล้วว่ารันผ่าน — ถ้าขึ้น error สีแดง ส่งข้อความ error มาให้ดูได้เลย
+> 💡 ไฟล์ 0003 มี pg_cron (งานอัตโนมัติรายวัน) — ถ้า Supabase แจ้งว่าต้องเปิด extension ให้ไปที่ Database → Extensions → เปิด `pg_cron` ก่อน แล้วรันใหม่
 
 ---
 

@@ -39,7 +39,14 @@ export default function AllCustomers() {
                   <td className="whitespace-nowrap px-3 py-2.5">{thaiDate(c.transactionDate)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 font-medium">{c.contractNo}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-ink-soft">{c.invNo}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5">{c.customerName}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5">
+                    <button
+                      onClick={() => navigate(`/contract/${c.id}`)}
+                      className="font-medium text-salmon-deep hover:underline"
+                    >
+                      {c.customerName}
+                    </button>
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2.5">{shopName(c.shopId)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5">
                     <Badge tone={c.status === 'active' ? 'green' : 'neutral'}>{statusLabel(c.status)}</Badge>
