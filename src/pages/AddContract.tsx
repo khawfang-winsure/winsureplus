@@ -1,19 +1,14 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Save } from 'lucide-react'
-import { Button, Card, Field, Input, PageTitle, Select } from '../components/ui'
+import { Button, Card, Field, Input, Loading, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { ageRange, baht } from '../lib/format'
 import { buildEmailText, buildSingleSummary } from '../lib/messages'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
-import {
-  occupationProofs,
-  occupations,
-  phoneModels,
-  promotions,
-  shops,
-  storageOptions,
-} from '../lib/mockData'
+import { getOptions, getShops, insertContract } from '../lib/db'
+import { useAsync } from '../lib/useAsync'
+import { isSupabaseConfigured } from '../lib/supabase'
 
 interface FormState {
   transactionDate: string
@@ -52,7 +47,7 @@ const today = new Date().toISOString().slice(0, 10)
 
 const initial: FormState = {
   transactionDate: today,
-  shopId: shops[0]?.id ?? '',
+  shopId: '',
   contractNo: '',
   invNo: '',
   customerName: '',
@@ -61,10 +56,10 @@ const initial: FormState = {
   phoneAlt2: '',
   facebookLink: '',
   birthYear: '',
-  occupation: occupations[0]?.label ?? '',
-  occupationProof: occupationProofs[0]?.label ?? '',
-  model: phoneModels[0]?.label ?? '',
-  storage: storageOptions[0]?.label ?? '',
+  occupation: '',
+  occupationProof: '',
+  model: '',
+  storage: '',
   sn: '',
   condition: 'new',
   origin: 'th',
@@ -86,11 +81,40 @@ const initial: FormState = {
 const num = (s: string) => Number(s) || 0
 
 export default function AddContract() {
+  // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
+  const { data: opts, loading } = useAsync(
+    async () => {
+      const [shops, models, storages, occupations, proofs, promotions] = await Promise.all([
+        getShops(),
+        getOptions('phone_model'),
+        getOptions('storage'),
+        getOptions('occupation'),
+        getOptions('occupation_proof'),
+        getOptions('promotion'),
+      ])
+      return { shops, models, storages, occupations, proofs, promotions }
+    },
+    { shops: [], models: [], storages: [], occupations: [], proofs: [], promotions: [] },
+  )
+
   const [f, setF] = useState<FormState>(initial)
+  const [saving, setSaving] = useState(false)
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setF((prev) => ({ ...prev, [key]: value }))
 
-  const shop = shops.find((s) => s.id === f.shopId)
+  // ตั้งค่าดีฟอลต์ของ dropdown เมื่อข้อมูลโหลดเสร็จ (เฉพาะช่องที่ยังว่าง)
+  useEffect(() => {
+    setF((prev) => ({
+      ...prev,
+      shopId: prev.shopId || opts.shops[0]?.id || '',
+      model: prev.model || opts.models[0]?.label || '',
+      storage: prev.storage || opts.storages[0]?.label || '',
+      occupation: prev.occupation || opts.occupations[0]?.label || '',
+      occupationProof: prev.occupationProof || opts.proofs[0]?.label || '',
+    }))
+  }, [opts])
+
+  const shop = opts.shops.find((s) => s.id === f.shopId)
   const currentYear = new Date().getFullYear()
 
   const summary = useMemo(
@@ -98,7 +122,7 @@ export default function AddContract() {
     [f.devicePrice, f.downPercent, f.commissionPercent, f.docFee],
   )
 
-  // สร้าง object สัญญาจากฟอร์ม เพื่อป้อนตัวสร้างข้อความ
+  // สร้าง object สัญญาจากฟอร์ม เพื่อป้อนตัวสร้างข้อความ + บันทึก
   const preview: Contract = {
     id: 'preview',
     contractNo: f.contractNo || '—',
@@ -137,9 +161,34 @@ export default function AddContract() {
   const summaryText = shop ? buildSingleSummary(preview, shop, f.transactionDate) : ''
   const emailText = shop ? buildEmailText(preview, shop) : ''
 
-  function handleSave() {
-    // เฟสนี้ยังเป็น mock — ภายหลังจะบันทึกลง Supabase
-    alert('บันทึกสำเร็จ (ตัวอย่าง)\n\nเฟสถัดไปจะบันทึกข้อมูลจริงลง Supabase ค่ะ')
+  async function handleSave() {
+    if (!f.contractNo || !f.customerName || !shop) {
+      alert('กรุณากรอก เลขที่สัญญา / ชื่อลูกค้า / ร้านค้า ก่อนนะคะ')
+      return
+    }
+    setSaving(true)
+    try {
+      await insertContract(preview) // ฟังก์ชันละ id ออกให้เอง
+      alert(
+        isSupabaseConfigured
+          ? 'บันทึกสัญญาสำเร็จ ✅'
+          : 'ตรวจสอบข้อมูลเรียบร้อย (โหมดตัวอย่าง — ยังไม่บันทึกจริงจนกว่าจะเชื่อม Supabase)',
+      )
+      if (isSupabaseConfigured) setF(initial)
+    } catch (e) {
+      alert('บันทึกไม่สำเร็จ: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div>
+        <PageTitle>เพิ่มข้อมูลสัญญา</PageTitle>
+        <Loading />
+      </div>
+    )
   }
 
   return (
@@ -163,7 +212,7 @@ export default function AddContract() {
               </Field>
               <Field label="ชื่อร้านค้า" required>
                 <Select value={f.shopId} onChange={(e) => set('shopId', e.target.value)}>
-                  {shops.map((s) => (
+                  {opts.shops.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.code} {s.name}
                     </option>
@@ -207,14 +256,14 @@ export default function AddContract() {
               </Field>
               <Field label="อาชีพ">
                 <Select value={f.occupation} onChange={(e) => set('occupation', e.target.value)}>
-                  {occupations.filter((o) => o.active).map((o) => (
+                  {opts.occupations.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
               </Field>
               <Field label="หลักฐานอาชีพ">
                 <Select value={f.occupationProof} onChange={(e) => set('occupationProof', e.target.value)}>
-                  {occupationProofs.filter((o) => o.active).map((o) => (
+                  {opts.proofs.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
@@ -227,14 +276,14 @@ export default function AddContract() {
             <div className="grid grid-cols-2 gap-3">
               <Field label="รุ่น">
                 <Select value={f.model} onChange={(e) => set('model', e.target.value)}>
-                  {phoneModels.filter((o) => o.active).map((o) => (
+                  {opts.models.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
               </Field>
               <Field label="ความจำ">
                 <Select value={f.storage} onChange={(e) => set('storage', e.target.value)}>
-                  {storageOptions.filter((o) => o.active).map((o) => (
+                  {opts.storages.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
@@ -325,13 +374,13 @@ export default function AddContract() {
                   <Select
                     value={f.promotion}
                     onChange={(e) => {
-                      const p = promotions.find((x) => x.label === e.target.value)
+                      const p = opts.promotions.find((x) => x.label === e.target.value)
                       set('promotion', e.target.value)
                       set('promotionDetail', p?.detail ?? '')
                     }}
                   >
                     <option value="">— เลือกโปร —</option>
-                    {promotions.filter((o) => o.active).map((o) => (
+                    {opts.promotions.map((o) => (
                       <option key={o.id} value={o.label}>{o.label}</option>
                     ))}
                   </Select>
@@ -346,8 +395,8 @@ export default function AddContract() {
             </div>
           </Card>
 
-          <Button onClick={handleSave} className="self-start">
-            <Save size={16} /> บันทึกสัญญา
+          <Button onClick={handleSave} disabled={saving} className="self-start">
+            <Save size={16} /> {saving ? 'กำลังบันทึก...' : 'บันทึกสัญญา'}
           </Button>
         </div>
 

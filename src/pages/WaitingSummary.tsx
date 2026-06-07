@@ -1,26 +1,34 @@
 import { useMemo, useState } from 'react'
 import { Receipt } from 'lucide-react'
-import { Badge, Button, EmptyState, Input, PageTitle } from '../components/ui'
+import { Badge, Button, EmptyState, Input, Loading, PageTitle } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
 import { buildBulkSummary } from '../lib/messages'
-import { contracts as allContracts, shops } from '../lib/mockData'
+import { getContracts, getShops } from '../lib/db'
+import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
 
-const shopOf = (id: string) => shops.find((s) => s.id === id)
 const today = new Date().toISOString().slice(0, 10)
+const netOf = (c: Contract) =>
+  calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
 
 export default function WaitingSummary() {
-  // ใช้ state ติดตามว่าเคสไหน "ส่งแล้ว" (mock — เฟสถัดไปจะบันทึกลง Supabase)
-  const [sentIds, setSentIds] = useState<Set<string>>(
-    () => new Set(allContracts.filter((c) => c.summarySentAt).map((c) => c.id)),
+  const { data, loading } = useAsync(
+    async () => {
+      const [contracts, shops] = await Promise.all([getContracts(), getShops()])
+      return { contracts, shops }
+    },
+    { contracts: [] as Contract[], shops: [] as Shop[] },
   )
+
+  const [locallySent, setLocallySent] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [date, setDate] = useState(today)
   const [output, setOutput] = useState('')
 
-  const pending = allContracts.filter((c) => !sentIds.has(c.id))
+  const shopOf = (id: string) => data.shops.find((s) => s.id === id)
+  const pending = data.contracts.filter((c) => !c.summarySentAt && !locallySent.has(c.id))
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -49,6 +57,7 @@ export default function WaitingSummary() {
         map.get(shop.id)!.items.push(c)
       })
     return [...map.values()]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, selected])
 
   function generate() {
@@ -57,14 +66,21 @@ export default function WaitingSummary() {
   }
 
   function markSent() {
-    setSentIds((prev) => new Set([...prev, ...selected]))
+    setLocallySent((prev) => new Set([...prev, ...selected]))
     setSelected(new Set())
     setOutput('')
   }
 
-  const selectedNet = groups
-    .flatMap((g) => g.items)
-    .reduce((sum, c) => sum + calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net, 0)
+  const selectedNet = groups.flatMap((g) => g.items).reduce((sum, c) => sum + netOf(c), 0)
+
+  if (loading) {
+    return (
+      <div>
+        <PageTitle>รอสรุปยอด</PageTitle>
+        <Loading />
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -91,7 +107,6 @@ export default function WaitingSummary() {
 
             <ul className="flex flex-col gap-2">
               {pending.map((c) => {
-                const net = calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
                 const checked = selected.has(c.id)
                 return (
                   <li
@@ -108,7 +123,7 @@ export default function WaitingSummary() {
                         {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
                       </p>
                     </div>
-                    <span className="font-semibold text-salmon-deep">{baht(net)} ฿</span>
+                    <span className="font-semibold text-salmon-deep">{baht(netOf(c))} ฿</span>
                   </li>
                 )
               })}

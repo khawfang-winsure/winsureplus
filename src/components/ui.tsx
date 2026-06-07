@@ -92,6 +92,15 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
   )
 }
 
+export function Loading({ label = 'กำลังโหลด...' }: { label?: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 py-12 text-ink-soft">
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-peach border-t-salmon-deep" />
+      {label}
+    </div>
+  )
+}
+
 export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="rounded-2xl border-2 border-dashed border-peach bg-peach-light/30 p-10 text-center">
