@@ -7,6 +7,7 @@ import type {
   ContractStatusRow,
   DeviceReturnRow,
   Installment,
+  NotificationItem,
   Option,
   OverdueBucket,
   Shop,
@@ -235,6 +236,26 @@ export async function insertContract(c: Omit<Contract, 'id'>): Promise<void> {
   if (error) throw error
 }
 
+/** ทำเครื่องหมายว่าสรุปยอดแล้ว (กันส่งซ้ำ) — บันทึกลง DB จริง */
+export async function markSummarySent(ids: string[]): Promise<void> {
+  if (!supabase || ids.length === 0) return
+  const { error } = await supabase
+    .from('contracts')
+    .update({ summary_sent_at: new Date().toISOString() })
+    .in('id', ids)
+  if (error) throw error
+}
+
+/** ทำเครื่องหมายว่าส่งอีเมลแล้ว (กันส่งซ้ำ) */
+export async function markEmailSent(id: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('contracts')
+    .update({ email_sent_at: new Date().toISOString() })
+    .eq('id', id)
+  if (error) throw error
+}
+
 export async function getContract(id: string): Promise<Contract | null> {
   if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
   const { data, error } = await supabase.from('contracts').select('*').eq('id', id).maybeSingle()
@@ -416,6 +437,45 @@ export async function getReturns(): Promise<DeviceReturnRow[]> {
     checkedAt: r.checked_at,
     createdAt: r.created_at,
   }))
+}
+
+// ---------- แจ้งเตือน ----------
+interface NotifRow {
+  id: string
+  contract_id: string | null
+  type: 'due_today' | 'newly_late'
+  message: string | null
+  created_at: string
+  contracts: { contract_no: string; customer_name: string } | null
+}
+
+export async function getNotifications(): Promise<NotificationItem[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*, contracts(contract_no, customer_name)')
+    .is('read_at', null)
+    .order('created_at', { ascending: false })
+    .limit(50)
+  if (error) throw error
+  return ((data ?? []) as NotifRow[]).map((n) => ({
+    id: n.id,
+    contractId: n.contract_id,
+    contractNo: n.contracts?.contract_no ?? '-',
+    customerName: n.contracts?.customer_name ?? '-',
+    type: n.type,
+    message: n.message ?? '',
+    createdAt: n.created_at,
+  }))
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('id', id)
+  if (error) throw error
 }
 
 // ---------- สิทธิ์ผู้ใช้ ----------

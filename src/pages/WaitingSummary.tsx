@@ -5,7 +5,7 @@ import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
 import { buildBulkSummary } from '../lib/messages'
-import { getContracts, getShops } from '../lib/db'
+import { getContracts, getShops, markSummarySent } from '../lib/db'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
 
@@ -65,8 +65,10 @@ export default function WaitingSummary() {
     setOutput(buildBulkSummary(groups, date))
   }
 
-  function markSent() {
-    setLocallySent((prev) => new Set([...prev, ...selected]))
+  async function markSent() {
+    const ids = [...selected]
+    await markSummarySent(ids) // บันทึกลง DB จริง (กันส่งซ้ำ)
+    setLocallySent((prev) => new Set([...prev, ...ids]))
     setSelected(new Set())
     setOutput('')
   }

@@ -80,6 +80,16 @@ export interface DeviceReturnRow {
   createdAt: string
 }
 
+export interface NotificationItem {
+  id: string
+  contractId: string | null
+  contractNo: string
+  customerName: string
+  type: 'due_today' | 'newly_late'
+  message: string
+  createdAt: string
+}
+
 export interface Contract {
   id: string
   // --- เลขอ้างอิง ---

@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
 import Logo from './Logo'
 import Sidebar from './Sidebar'
+import NotificationBell from './NotificationBell'
 import { Badge } from './ui'
 import { useAuth } from '../lib/auth'
 
@@ -19,6 +20,7 @@ export default function Layout() {
 
           {email && (
             <div className="ml-auto flex items-center gap-3">
+              <NotificationBell />
               <div className="text-right">
                 <p className="text-sm font-medium text-ink">{email}</p>
                 {role && (

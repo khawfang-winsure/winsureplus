@@ -22,6 +22,7 @@
    - [`migrations/0002_installments.sql`](migrations/0002_installments.sql) — สร้างงวดผ่อนอัตโนมัติ
    - [`migrations/0003_daily_automation.sql`](migrations/0003_daily_automation.sql) — งานรายวัน (ค่าปรับ/แจ้งเตือน)
    - [`migrations/0004_status_view.sql`](migrations/0004_status_view.sql) — view สถานะล่าช้า
+   - [`migrations/0005_grants.sql`](migrations/0005_grants.sql) — **สำคัญ!** ให้สิทธิ์เข้าตาราง (ถ้าข้ามจะเจอ 403 เข้าข้อมูลไม่ได้)
 4. (ไม่บังคับ) รัน [`seed.sql`](seed.sql) เพื่อใส่ร้านค้า/ตัวเลือกตัวอย่าง
 
 > ✅ SQL ทุกไฟล์ทดสอบกับ Postgres จริงแล้วว่ารันผ่าน — ถ้าขึ้น error สีแดง ส่งข้อความ error มาให้ดูได้เลย
