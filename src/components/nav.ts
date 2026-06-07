@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CalendarClock,
   FilePlus2,
+  LayoutDashboard,
   Mail,
   PackageOpen,
   Receipt,
@@ -25,6 +26,7 @@ export interface NavItem {
 }
 
 export const NAV: NavItem[] = [
+  { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import Layout from './components/Layout'
 import { AuthProvider, useAuth } from './lib/auth'
+import Dashboard from './pages/Dashboard'
 import AddContract from './pages/AddContract'
 import AllCustomers from './pages/AllCustomers'
 import ContractDetail from './pages/ContractDetail'
@@ -38,7 +39,7 @@ function Gate() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<Navigate to="/add" replace />} />
+        <Route index element={<Dashboard />} />
         <Route path="/add" element={<AddContract />} />
         <Route path="/edit/:id" element={<AddContract />} />
         <Route path="/waiting-email" element={<WaitingEmail />} />

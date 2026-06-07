@@ -353,6 +353,14 @@ export async function getOverdueByBucket(bucket: OverdueBucket): Promise<Contrac
   return ((data ?? []) as StatusRow[]).map(mapStatus)
 }
 
+/** สถานะของทุกสัญญา (สำหรับหน้าภาพรวม) */
+export async function getAllStatuses(): Promise<ContractStatusRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('v_contract_status').select('*')
+  if (error) throw error
+  return ((data ?? []) as StatusRow[]).map(mapStatus)
+}
+
 /** ลูกค้าที่ใกล้/ถึงวันครบกำหนด (next_due ตั้งแต่วันนี้ถึง +7 วัน) */
 export async function getDueSoon(): Promise<ContractStatusRow[]> {
   if (!supabase) return []
