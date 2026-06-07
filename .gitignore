@@ -1,0 +1,32 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+
+# Environment / secrets (กุญแจ Supabase ห้ามขึ้น git)
+.env
+.env.local
+.env.*.local
+
+# ไฟล์ทดสอบ/ภาพหน้าจอจาก Playwright (ไม่ต้องขึ้น git)
+.playwright-mcp/
+/add-contract.jpeg
+/calc-check.jpeg
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

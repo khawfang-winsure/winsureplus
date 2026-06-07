@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+/* ===== ธีมแบรนด์ WIN SURE PLUS (โทนสีครีม-พีช ตามภาพตัวอย่าง) ===== */
+@theme {
+  --color-cream: #fcf6e8;
+  --color-cream-deep: #f9eed5;
+  --color-peach: #f5c6a5;
+  --color-peach-light: #fbe0cc;
+  --color-peach-soft: #fad9c0;
+  --color-salmon: #efaf8e;
+  --color-salmon-deep: #e89a73;
+  --color-ink: #3b3b6d;
+  --color-ink-soft: #5a5a86;
+
+  --font-sans: 'Noto Sans Thai', ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-cream);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ซ่อน scrollbar ให้ดูสะอาดในแถบเมนู แต่ยัง scroll ได้ */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 9999px;
+}
