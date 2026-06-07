@@ -1,3 +1,5 @@
+import { useNavigate } from 'react-router-dom'
+import { Pencil } from 'lucide-react'
 import { Badge, Loading, PageTitle } from '../components/ui'
 import { baht, conditionLabel, statusLabel, thaiDate } from '../lib/format'
 import { getContracts, getShops } from '../lib/db'
@@ -12,6 +14,7 @@ export default function AllCustomers() {
     { contracts: [], shops: [] },
   )
 
+  const navigate = useNavigate()
   const shopName = (id: string) => data.shops.find((s) => s.id === id)?.name ?? '-'
 
   return (
@@ -25,8 +28,8 @@ export default function AllCustomers() {
           <table className="w-full min-w-[1100px] border-collapse text-sm">
             <thead>
               <tr className="bg-peach-light text-left text-ink">
-                {['วันที่', 'เลขที่สัญญา', 'INV', 'ชื่อลูกค้า', 'ร้านค้า', 'สถานะ', 'รุ่น', 'ความจำ', 'ราคาเครื่อง', 'ชำระ/เดือน', 'เดือน', 'สินค้า'].map((h) => (
-                  <th key={h} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
+                {['วันที่', 'เลขที่สัญญา', 'INV', 'ชื่อลูกค้า', 'ร้านค้า', 'สถานะ', 'รุ่น', 'ความจำ', 'ราคาเครื่อง', 'ชำระ/เดือน', 'เดือน', 'สินค้า', ''].map((h, i) => (
+                  <th key={h || i} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -47,6 +50,14 @@ export default function AllCustomers() {
                   <td className="whitespace-nowrap px-3 py-2.5 text-right">{baht(c.monthlyPayment)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-center">{c.termMonths}</td>
                   <td className="whitespace-nowrap px-3 py-2.5">{conditionLabel(c.condition)}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5">
+                    <button
+                      onClick={() => navigate(`/edit/${c.id}`)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-peach px-2.5 py-1 text-xs text-ink-soft hover:bg-peach-light"
+                    >
+                      <Pencil size={13} /> แก้ไข
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

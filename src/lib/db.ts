@@ -163,6 +163,22 @@ export async function getShops(): Promise<Shop[]> {
   }))
 }
 
+/** ร้านค้าทุกสถานะ (รวมที่ปิดแล้ว) — สำหรับหน้าตั้งค่า */
+export async function getAllShops(): Promise<Shop[]> {
+  if (!supabase) return mock.shops
+  const { data, error } = await supabase.from('shops').select('*').order('code')
+  if (error) throw error
+  return (data ?? []).map((s) => ({
+    id: s.id,
+    code: s.code,
+    name: s.name,
+    bank: s.bank ?? '',
+    accountNo: s.account_no ?? '',
+    accountName: s.account_name ?? '',
+    active: s.active,
+  }))
+}
+
 export async function getOptions(kind: OptionKind): Promise<Option[]> {
   if (!supabase) return MOCK_OPTIONS[kind]
   const { data, error } = await supabase
@@ -209,4 +225,104 @@ export async function insertContract(c: Omit<Contract, 'id'>): Promise<void> {
   }
   const { error } = await supabase.from('contracts').insert(toInsert(c))
   if (error) throw error
+}
+
+export async function getContract(id: string): Promise<Contract | null> {
+  if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
+  const { data, error } = await supabase.from('contracts').select('*').eq('id', id).maybeSingle()
+  if (error) throw error
+  return data ? mapContract(data as ContractRow) : null
+}
+
+export async function updateContract(id: string, c: Omit<Contract, 'id'>): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('contracts').update(toInsert(c)).eq('id', id)
+  if (error) throw error
+}
+
+// ---------- สิทธิ์ผู้ใช้ ----------
+export type Role = 'admin' | 'staff'
+
+export async function getMyProfile(): Promise<{ role: Role } | null> {
+  if (!supabase) return { role: 'admin' } // โหมด mock เปิดสิทธิ์เต็มเพื่อทดลอง UI
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
+  return { role: (data?.role as Role) ?? 'staff' }
+}
+
+// ---------- จัดการร้านค้า (เฉพาะแอดมิน ตาม RLS) ----------
+export interface ShopInput {
+  id?: string
+  code: string
+  name: string
+  bank: string
+  accountNo: string
+  accountName: string
+  active: boolean
+}
+
+export async function saveShop(s: ShopInput): Promise<void> {
+  if (!supabase) return
+  const row = {
+    code: s.code,
+    name: s.name,
+    bank: s.bank || null,
+    account_no: s.accountNo || null,
+    account_name: s.accountName || null,
+    active: s.active,
+  }
+  const { error } = s.id
+    ? await supabase.from('shops').update(row).eq('id', s.id)
+    : await supabase.from('shops').insert(row)
+  if (error) throw error
+}
+
+export async function setShopActive(id: string, active: boolean): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('shops').update({ active }).eq('id', id)
+  if (error) throw error
+}
+
+// ---------- จัดการตัวเลือก (รุ่น/อาชีพ/โปร ฯลฯ) ----------
+export interface OptionInput {
+  id?: string
+  kind: OptionKind
+  label: string
+  detail?: string
+  active: boolean
+}
+
+export async function saveOption(o: OptionInput): Promise<void> {
+  if (!supabase) return
+  const row = { kind: o.kind, label: o.label, detail: o.detail || null, active: o.active }
+  const { error } = o.id
+    ? await supabase.from('options').update(row).eq('id', o.id)
+    : await supabase.from('options').insert(row)
+  if (error) throw error
+}
+
+export async function setOptionActive(id: string, active: boolean): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('options').update({ active }).eq('id', id)
+  if (error) throw error
+}
+
+/** ดึงตัวเลือกทุกสถานะ (รวมที่ปิดแล้ว) สำหรับหน้าตั้งค่า */
+export async function getAllOptions(kind: OptionKind): Promise<Option[]> {
+  if (!supabase) return MOCK_OPTIONS[kind]
+  const { data, error } = await supabase
+    .from('options')
+    .select('*')
+    .eq('kind', kind)
+    .order('sort_order')
+  if (error) throw error
+  return (data ?? []).map((o) => ({
+    id: o.id,
+    label: o.label,
+    detail: o.detail ?? undefined,
+    active: o.active,
+  }))
 }

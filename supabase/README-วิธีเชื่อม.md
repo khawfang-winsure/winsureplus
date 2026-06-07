@@ -45,9 +45,11 @@
 1. เมนูซ้าย → **Authentication** → **Users** → **Add user** → ใส่อีเมล/รหัสผ่านของเตย
 2. กลับไป **SQL Editor** รันคำสั่งนี้ (เปลี่ยนอีเมลเป็นของเตย) เพื่อตั้งเป็นแอดมิน:
    ```sql
-   update profiles set role = 'admin'
-   where id = (select id from auth.users where email = 'อีเมลของเตย');
+   insert into profiles (id, role, full_name)
+   select id, 'admin', email from auth.users where email = 'อีเมลของเตย'
+   on conflict (id) do update set role = 'admin';
    ```
+   > คำสั่งนี้ใช้ได้ทั้งกรณีมี profile อยู่แล้วและยังไม่มี (เช่น สร้าง user ก่อนรัน SQL)
 
 เสร็จแล้ว! เว็บจะเชื่อมกับฐานข้อมูลจริง บันทึก/ดึงข้อมูลได้ครบ 🎉
 

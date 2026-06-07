@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
 import { Button, Card, Field, Input, Loading, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
@@ -6,7 +7,7 @@ import { calcSummary } from '../lib/calc'
 import { ageRange, baht } from '../lib/format'
 import { buildEmailText, buildSingleSummary } from '../lib/messages'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
-import { getOptions, getShops, insertContract } from '../lib/db'
+import { getContract, getOptions, getShops, insertContract, updateContract } from '../lib/db'
 import { useAsync } from '../lib/useAsync'
 import { isSupabaseConfigured } from '../lib/supabase'
 
@@ -79,8 +80,49 @@ const initial: FormState = {
 }
 
 const num = (s: string) => Number(s) || 0
+const str = (n: number | undefined) => (n === undefined || n === 0 ? '' : String(n))
+
+/** แปลงสัญญาที่โหลดมา -> ค่าในฟอร์ม (สำหรับโหมดแก้ไข) */
+function fromContract(c: Contract): FormState {
+  return {
+    transactionDate: c.transactionDate,
+    shopId: c.shopId,
+    contractNo: c.contractNo,
+    invNo: c.invNo,
+    customerName: c.customerName,
+    phone: c.phone,
+    phoneAlt1: c.phoneAlt1 ?? '',
+    phoneAlt2: c.phoneAlt2 ?? '',
+    facebookLink: c.facebookLink ?? '',
+    birthYear: str(c.birthYear),
+    occupation: c.occupation ?? '',
+    occupationProof: c.occupationProof ?? '',
+    model: c.model,
+    storage: c.storage,
+    sn: c.sn,
+    condition: c.condition,
+    origin: c.origin,
+    devicePrice: str(c.devicePrice),
+    downPercent: String(c.downPercent),
+    commissionPercent: String(c.commissionPercent),
+    docFee: String(c.docFee),
+    financeAmount: str(c.financeAmount),
+    monthlyPayment: str(c.monthlyPayment),
+    termMonths: String(c.termMonths),
+    dueDay: String(c.dueDay),
+    hasPromotion: c.hasPromotion,
+    promotion: c.promotion ?? '',
+    promotionDetail: c.promotionDetail ?? '',
+    operator: c.operator,
+    notes: c.notes ?? '',
+  }
+}
 
 export default function AddContract() {
+  const { id } = useParams()
+  const isEdit = Boolean(id)
+  const navigate = useNavigate()
+
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
     async () => {
@@ -99,10 +141,22 @@ export default function AddContract() {
 
   const [f, setF] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
+  const [loadingContract, setLoadingContract] = useState(isEdit)
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setF((prev) => ({ ...prev, [key]: value }))
 
-  // ตั้งค่าดีฟอลต์ของ dropdown เมื่อข้อมูลโหลดเสร็จ (เฉพาะช่องที่ยังว่าง)
+  // โหมดแก้ไข: โหลดสัญญาเดิมมาใส่ฟอร์ม
+  useEffect(() => {
+    if (!id) return
+    setLoadingContract(true)
+    getContract(id)
+      .then((c) => {
+        if (c) setF(fromContract(c))
+      })
+      .finally(() => setLoadingContract(false))
+  }, [id])
+
+  // ตั้งค่าดีฟอลต์ของ dropdown เมื่อข้อมูลโหลดเสร็จ (เฉพาะช่องที่ยังว่าง — ไม่ทับค่าตอนแก้ไข)
   useEffect(() => {
     setF((prev) => ({
       ...prev,
@@ -168,13 +222,19 @@ export default function AddContract() {
     }
     setSaving(true)
     try {
-      await insertContract(preview) // ฟังก์ชันละ id ออกให้เอง
-      alert(
-        isSupabaseConfigured
-          ? 'บันทึกสัญญาสำเร็จ ✅'
-          : 'ตรวจสอบข้อมูลเรียบร้อย (โหมดตัวอย่าง — ยังไม่บันทึกจริงจนกว่าจะเชื่อม Supabase)',
-      )
-      if (isSupabaseConfigured) setF(initial)
+      if (isEdit && id) {
+        await updateContract(id, preview)
+        alert('แก้ไขสัญญาสำเร็จ ✅')
+        if (isSupabaseConfigured) navigate('/customers')
+      } else {
+        await insertContract(preview) // ฟังก์ชันละ id ออกให้เอง
+        alert(
+          isSupabaseConfigured
+            ? 'บันทึกสัญญาสำเร็จ ✅'
+            : 'ตรวจสอบข้อมูลเรียบร้อย (โหมดตัวอย่าง — ยังไม่บันทึกจริงจนกว่าจะเชื่อม Supabase)',
+        )
+        if (isSupabaseConfigured) setF(initial)
+      }
     } catch (e) {
       alert('บันทึกไม่สำเร็จ: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
@@ -182,10 +242,10 @@ export default function AddContract() {
     }
   }
 
-  if (loading) {
+  if (loading || loadingContract) {
     return (
       <div>
-        <PageTitle>เพิ่มข้อมูลสัญญา</PageTitle>
+        <PageTitle>{isEdit ? 'แก้ไขสัญญา' : 'เพิ่มข้อมูลสัญญา'}</PageTitle>
         <Loading />
       </div>
     )
@@ -194,7 +254,7 @@ export default function AddContract() {
   return (
     <div>
       <PageTitle sub="กรอกครั้งเดียว ได้ครบ — ระบบคำนวณยอดและสร้างข้อความสรุปยอด/อีเมลให้อัตโนมัติ">
-        เพิ่มข้อมูลสัญญา
+        {isEdit ? 'แก้ไขสัญญา' : 'เพิ่มข้อมูลสัญญา'}
       </PageTitle>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -396,7 +456,7 @@ export default function AddContract() {
           </Card>
 
           <Button onClick={handleSave} disabled={saving} className="self-start">
-            <Save size={16} /> {saving ? 'กำลังบันทึก...' : 'บันทึกสัญญา'}
+            <Save size={16} /> {saving ? 'กำลังบันทึก...' : isEdit ? 'บันทึกการแก้ไข' : 'บันทึกสัญญา'}
           </Button>
         </div>
 

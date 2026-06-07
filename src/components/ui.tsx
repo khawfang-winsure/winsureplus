@@ -92,6 +92,31 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
   )
 }
 
+export function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="mb-4 text-lg font-bold text-ink">{title}</h3>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export function Loading({ label = 'กำลังโหลด...' }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-2 py-12 text-ink-soft">
