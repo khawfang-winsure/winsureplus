@@ -18,6 +18,7 @@ dist-ssr
 # ไฟล์ทดสอบ/ภาพหน้าจอจาก Playwright (ไม่ต้องขึ้น git)
 .playwright-mcp/
 /*.jpeg
+/form-snap.md
 
 # Editor / OS
 .vscode/*
