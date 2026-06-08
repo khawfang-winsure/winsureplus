@@ -42,7 +42,7 @@ export default function Layout() {
 
         <div className="flex flex-col gap-5 md:flex-row">
           <Sidebar />
-          <main className="min-h-[70vh] flex-1 rounded-3xl bg-white p-6 shadow-sm">
+          <main className="min-h-[70vh] min-w-0 flex-1 rounded-3xl bg-white p-6 shadow-sm">
             <Outlet />
           </main>
         </div>

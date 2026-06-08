@@ -10,7 +10,7 @@ export default function Sidebar() {
   const { pathname } = useLocation()
 
   return (
-    <aside className="flex w-72 flex-col gap-2 rounded-3xl bg-salmon/70 p-4 shadow-sm">
+    <aside className="flex w-full shrink-0 flex-col gap-2 rounded-3xl bg-salmon/70 p-4 shadow-sm md:w-72">
       {NAV.map((item) => {
         if (item.children) {
           const groupActive = item.children.some((c) => pathname === c.to)
