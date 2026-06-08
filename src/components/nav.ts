@@ -1,6 +1,7 @@
 // โครงเมนูด้านซ้าย — แก้ที่เดียว มีผลทั้งเว็บ
 import {
   AlertTriangle,
+  BarChart3,
   CalendarClock,
   FilePlus2,
   LayoutDashboard,
@@ -46,5 +47,6 @@ export const NAV: NavItem[] = [
   },
   { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
   { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
+  { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
   { to: '/settings', label: 'ตั้งค่า', icon: Settings },
 ]

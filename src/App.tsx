@@ -8,6 +8,7 @@ import ContractDetail from './pages/ContractDetail'
 import DueToday from './pages/DueToday'
 import Overdue from './pages/Overdue'
 import Returns from './pages/Returns'
+import ShopReport from './pages/ShopReport'
 import Letters from './pages/Letters'
 import Settings from './pages/Settings'
 import WaitingEmail from './pages/WaitingEmail'
@@ -50,6 +51,7 @@ function Gate() {
         <Route path="/overdue/:bucket" element={<Overdue />} />
         <Route path="/letters" element={<Letters />} />
         <Route path="/returns" element={<Returns />} />
+        <Route path="/shop-report" element={<ShopReport />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/add" replace />} />
       </Route>

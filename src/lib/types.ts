@@ -80,6 +80,20 @@ export interface DeviceReturnRow {
   createdAt: string
 }
 
+export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'
+
+export interface ShopReportRow {
+  shopId: string
+  code: string
+  name: string
+  contracts: number // จำนวนสัญญา
+  totalSales: number // ยอดขายรวม (ราคาเครื่องรวม)
+  good: number // ลูกค้าดี
+  risky: number // ลูกค้าเสี่ยง (ล่าช้า 31 วัน+)
+  riskyRate: number // % เสี่ยง (0-100)
+  grade: ShopGrade
+}
+
 export interface NotificationItem {
   id: string
   contractId: string | null
