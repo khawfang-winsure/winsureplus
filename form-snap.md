@@ -1,0 +1,249 @@
+- generic [ref=e6]:
+  - banner [ref=e7]:
+    - generic [ref=e9]:
+      - text: W
+      - generic [ref=e10]: +
+    - heading "WIN SURE PLUS" [level=1] [ref=e11]
+    - generic [ref=e12]:
+      - button "แจ้งเตือน" [ref=e14]:
+        - img [ref=e15]
+      - generic [ref=e18]:
+        - paragraph [ref=e19]: khawf9007@gmail.com
+        - generic [ref=e20]: แอดมิน
+      - button "ออก" [ref=e21]:
+        - img [ref=e22]
+        - text: ออก
+  - generic [ref=e25]:
+    - complementary [ref=e26]:
+      - link "ภาพรวม" [ref=e27] [cursor=pointer]:
+        - /url: /
+        - img [ref=e28]
+        - generic [ref=e33]: ภาพรวม
+      - link "เพิ่มข้อมูลสัญญา" [ref=e34] [cursor=pointer]:
+        - /url: /add
+        - img [ref=e35]
+        - generic [ref=e38]: เพิ่มข้อมูลสัญญา
+      - link "รอส่งอีเมล" [ref=e39] [cursor=pointer]:
+        - /url: /waiting-email
+        - img [ref=e40]
+        - generic [ref=e43]: รอส่งอีเมล
+      - link "รอสรุปยอด" [ref=e44] [cursor=pointer]:
+        - /url: /waiting-summary
+        - img [ref=e45]
+        - generic [ref=e48]: รอสรุปยอด
+      - link "ลูกค้าทั้งหมด" [ref=e49] [cursor=pointer]:
+        - /url: /customers
+        - img [ref=e50]
+        - generic [ref=e55]: ลูกค้าทั้งหมด
+      - link "ลูกค้าถึงวันครบกำหนด" [ref=e56] [cursor=pointer]:
+        - /url: /due
+        - img [ref=e57]
+        - generic [ref=e61]: ลูกค้าถึงวันครบกำหนด
+      - generic [ref=e62]:
+        - generic [ref=e63]:
+          - img [ref=e64]
+          - generic [ref=e66]: ลูกค้าล่าช้า-หนี้เสีย
+        - generic [ref=e67]:
+          - link "ล่าช้า 1-10 วัน" [ref=e68] [cursor=pointer]:
+            - /url: /overdue/1-10
+            - img [ref=e69]
+            - text: ล่าช้า 1-10 วัน
+          - link "ล่าช้า 11-30 วัน" [ref=e71] [cursor=pointer]:
+            - /url: /overdue/11-30
+            - img [ref=e72]
+            - text: ล่าช้า 11-30 วัน
+          - link "ล่าช้า 31-60 วัน" [ref=e74] [cursor=pointer]:
+            - /url: /overdue/31-60
+            - img [ref=e75]
+            - text: ล่าช้า 31-60 วัน
+          - link "ล่าช้า 61-90 วัน" [ref=e77] [cursor=pointer]:
+            - /url: /overdue/61-90
+            - img [ref=e78]
+            - text: ล่าช้า 61-90 วัน
+          - link "ล่าช้า 91-120 วัน" [ref=e80] [cursor=pointer]:
+            - /url: /overdue/91-120
+            - img [ref=e81]
+            - text: ล่าช้า 91-120 วัน
+          - link "ล่าช้า 120 วันขึ้นไป" [ref=e83] [cursor=pointer]:
+            - /url: /overdue/120+
+            - img [ref=e84]
+            - text: ล่าช้า 120 วันขึ้นไป
+      - link "ส่งจดหมาย" [ref=e86] [cursor=pointer]:
+        - /url: /letters
+        - img [ref=e87]
+        - generic [ref=e90]: ส่งจดหมาย
+      - link "ลูกค้าคืนเครื่อง" [ref=e91] [cursor=pointer]:
+        - /url: /returns
+        - img [ref=e92]
+        - generic [ref=e96]: ลูกค้าคืนเครื่อง
+      - link "ตั้งค่า" [ref=e97] [cursor=pointer]:
+        - /url: /settings
+        - img [ref=e98]
+        - generic [ref=e101]: ตั้งค่า
+    - main [ref=e102]:
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - heading "เพิ่มข้อมูลสัญญา" [level=2] [ref=e105]
+          - paragraph [ref=e106]: กรอกครั้งเดียว ได้ครบ — ระบบคำนวณยอดและสร้างข้อความสรุปยอด/อีเมลให้อัตโนมัติ
+        - generic [ref=e107]:
+          - generic [ref=e108]:
+            - generic [ref=e109]:
+              - heading "ข้อมูลรายการ" [level=3] [ref=e110]
+              - generic [ref=e111]:
+                - generic [ref=e112]:
+                  - generic [ref=e113]: วันที่ทำรายการ *
+                  - textbox "วันที่ทำรายการ *" [ref=e114]: 2026-06-08
+                - generic [ref=e115]:
+                  - generic [ref=e116]: ชื่อร้านค้า *
+                  - combobox "ชื่อร้านค้า *" [ref=e117]:
+                    - option "AQ S00016 ร้านมาดามศิโมบาย" [selected]
+                    - option "AQ S00017 ร้านซีเดย์โฟน"
+                - generic [ref=e118]:
+                  - generic [ref=e119]: เลขที่สัญญา *
+                  - textbox "เลขที่สัญญา *" [ref=e120]:
+                    - /placeholder: S00016PNQ280
+                    - text: TEST-0001
+                - generic [ref=e121]:
+                  - generic [ref=e122]: เลข INV *
+                  - textbox "เลข INV *" [ref=e123]:
+                    - /placeholder: INV-...
+                    - text: INV-TEST-0001
+            - generic [ref=e124]:
+              - heading "ข้อมูลลูกค้า" [level=3] [ref=e125]
+              - generic [ref=e126]:
+                - generic [ref=e127]:
+                  - generic [ref=e128]: ชื่อลูกค้า *
+                  - textbox "ชื่อลูกค้า *" [ref=e129]
+                - generic [ref=e130]:
+                  - generic [ref=e131]: เบอร์โทรลูกค้า
+                  - textbox "เบอร์โทรลูกค้า" [ref=e132]
+                - generic [ref=e133]:
+                  - generic [ref=e134]: โทรศัพท์สำรอง 1
+                  - textbox "โทรศัพท์สำรอง 1" [ref=e135]
+                - generic [ref=e136]:
+                  - generic [ref=e137]: โทรศัพท์สำรอง 2
+                  - textbox "โทรศัพท์สำรอง 2" [ref=e138]
+                - generic [ref=e139]:
+                  - generic [ref=e140]: ลิงค์เฟสลูกค้า
+                  - textbox "ลิงค์เฟสลูกค้า" [ref=e141]
+                - generic [ref=e142]:
+                  - generic [ref=e143]: ปีเกิด (ค.ศ.) › อายุ -
+                  - spinbutton "ปีเกิด (ค.ศ.) › อายุ -" [ref=e144]
+                - generic [ref=e145]:
+                  - generic [ref=e146]: อาชีพ
+                  - combobox "อาชีพ" [ref=e147]:
+                    - option "พนักงานประจำ" [selected]
+                    - option "ค้าขาย"
+                    - option "รับจ้าง"
+                    - option "เกษตรกร"
+                - generic [ref=e148]:
+                  - generic [ref=e149]: หลักฐานอาชีพ
+                  - combobox "หลักฐานอาชีพ" [ref=e150]:
+                    - option "สลิปเงินเดือน" [selected]
+                    - option "บัตรประชาชน"
+                    - option "รูปถ่ายกิจการ"
+            - generic [ref=e151]:
+              - heading "ข้อมูลเครื่อง" [level=3] [ref=e152]
+              - generic [ref=e153]:
+                - generic [ref=e154]:
+                  - generic [ref=e155]: รุ่น
+                  - combobox "รุ่น" [ref=e156]:
+                    - option "iPhone 13" [selected]
+                    - option "iPhone 13 Pro Max"
+                    - option "iPhone 14"
+                    - option "iPhone 14 Pro"
+                    - option "iPhone 14 Pro Max"
+                    - option "iPhone 15 Plus"
+                    - option "iPhone 16 Pro"
+                - generic [ref=e157]:
+                  - generic [ref=e158]: ความจำ
+                  - combobox "ความจำ" [ref=e159]:
+                    - option "128 GB" [selected]
+                    - option "256 GB"
+                    - option "512 GB"
+                - generic [ref=e160]:
+                  - generic [ref=e161]: หมายเลข SN
+                  - textbox "หมายเลข SN" [ref=e162]
+                - generic [ref=e163]:
+                  - generic [ref=e164]: ราคาตัวเครื่อง (บาท) *
+                  - spinbutton "ราคาตัวเครื่อง (บาท) *" [active] [ref=e165]: "19900"
+                - generic [ref=e166]:
+                  - generic [ref=e167]: สภาพสินค้า
+                  - combobox "สภาพสินค้า" [ref=e168]:
+                    - option "มือ 1" [selected]
+                    - option "มือ 2"
+                - generic [ref=e169]:
+                  - generic [ref=e170]: แหล่งเครื่อง
+                  - combobox "แหล่งเครื่อง" [ref=e171]:
+                    - option "เครื่องไทย" [selected]
+                    - option "เครื่องนอก"
+            - generic [ref=e172]:
+              - heading "การเงิน — ซื้อเครื่อง (สำหรับสรุปยอดโอน)" [level=3] [ref=e173]
+              - generic [ref=e174]:
+                - generic [ref=e175]:
+                  - generic [ref=e176]: "% ดาวน์"
+                  - spinbutton "% ดาวน์" [ref=e177]: "30"
+                - generic [ref=e178]:
+                  - generic [ref=e179]: "% คอมมิชชั่น"
+                  - spinbutton "% คอมมิชชั่น" [ref=e180]: "12"
+                - generic [ref=e181]:
+                  - generic [ref=e182]: ค่าเอกสาร (หักออก)
+                  - spinbutton "ค่าเอกสาร (หักออก)" [ref=e183]: "100"
+              - generic [ref=e184]:
+                - generic [ref=e185]:
+                  - paragraph [ref=e186]: หลังหักดาวน์
+                  - paragraph [ref=e187]: 13,930 ฿
+                - generic [ref=e188]:
+                  - paragraph [ref=e189]: ค่าคอมมิชชั่น
+                  - paragraph [ref=e190]: 1,672 ฿
+                - generic [ref=e191]:
+                  - paragraph [ref=e192]: สุทธิ (โอนให้ร้าน)
+                  - paragraph [ref=e193]: 15,502 ฿
+            - generic [ref=e194]:
+              - heading "การเงิน — ผ่อน" [level=3] [ref=e195]
+              - generic [ref=e196]:
+                - generic [ref=e197]:
+                  - generic [ref=e198]: ยอดจัดไฟแนนซ์
+                  - spinbutton "ยอดจัดไฟแนนซ์" [ref=e199]
+                - generic [ref=e200]:
+                  - generic [ref=e201]: ค่าเช่าต่อเดือน
+                  - spinbutton "ค่าเช่าต่อเดือน" [ref=e202]
+                - generic [ref=e203]:
+                  - generic [ref=e204]: จำนวนเดือน
+                  - spinbutton "จำนวนเดือน" [ref=e205]: "12"
+                - generic [ref=e206]:
+                  - generic [ref=e207]: ชำระทุกวันที่ (1-31)
+                  - spinbutton "ชำระทุกวันที่ (1-31)" [ref=e208]: "1"
+            - generic [ref=e209]:
+              - heading "โปรโมชั่น & ผู้ดำเนินการ" [level=3] [ref=e210]
+              - generic [ref=e211]:
+                - generic [ref=e212]:
+                  - generic [ref=e213]: มีโปรโมชั่นไหม
+                  - combobox "มีโปรโมชั่นไหม" [ref=e214]:
+                    - option "ไม่มีโปร" [selected]
+                    - option "มีโปร"
+                - generic [ref=e215]:
+                  - generic [ref=e216]: ผู้ดำเนินการ *
+                  - textbox "ผู้ดำเนินการ *" [ref=e217]
+                - generic [ref=e218]:
+                  - generic [ref=e219]: หมายเหตุ
+                  - textbox "หมายเหตุ" [ref=e220]
+            - button "บันทึกสัญญา" [ref=e221]:
+              - img [ref=e222]
+              - text: บันทึกสัญญา
+          - generic [ref=e226]:
+            - paragraph [ref=e227]: ข้อความด้านล่างสร้างจากข้อมูลที่กรอกแบบเรียลไทม์ — กรอกครบแล้วกด "คัดลอก" ไปวางส่งได้เลย
+            - generic [ref=e228]:
+              - generic [ref=e229]:
+                - generic [ref=e230]: ข้อความสรุปยอดโอน
+                - button "คัดลอก" [ref=e231]:
+                  - img [ref=e232]
+                  - text: คัดลอก
+              - generic [ref=e235]: "วันที่: 08/06/2026 รหัสร้านค้า: AQ S00016 ร้านมาดามศิโมบาย ธนาคาร : ธนาคารกสิกร เลขบัญชี : 2302882749 ชื่อบัญชี : บจก มาดามศิ อินเตอร์กรุ๊ป รายละเอียดรายการโอนค่าซื้อเครื่อง iPhone 1 รายการ ⸻ ▶️ รายการที่ 1 หมายเลขสัญญา: TEST-0001 หมายเลขใบแจ้งหนี้(INV) : INV-TEST-0001 ชื่อลูกค้า : — สินทรัพย์รุ่น : iPhone 13 128 GB หมายเลขSN: — ราคาตัวเครื่อง: 19,900 ยอดตัวเครื่องจริงหลังหักดาวน์ 13,930 บาท ค่าคอมมิชชั่น 1,672 บาท ค่าเอกสาร 100 บาท สุทธิ 15,502 บาท ⸻ ยอดโอนสุทธิรวมทั้งสิ้น: 15,502 บาท"
+            - generic [ref=e236]:
+              - generic [ref=e237]:
+                - generic [ref=e238]: ข้อความอีเมล (ส่งพาร์ทเนอร์)
+                - button "คัดลอก" [ref=e239]:
+                  - img [ref=e240]
+                  - text: คัดลอก
+              - generic [ref=e243]: "Partners รหัสร้าน AQ S00016 ผ่อนบริษัท ล็อก MDM หมายเลขสัญญา : TEST-0001 หมายเลขใบแจ้งหนี้(INV) INV-TEST-0001 ชื่อลูกค้า : — สินทรัพย์รุ่น iPhone 13 128 GB หมายเลขSN : — ยอดจัดไฟแนนซ์ : 0 บาท ราคาเช่าซื้อ (ราคาผ่อน*เดือน) : 0 บาท ค่าเช่าต่อเดือน : 0 บาท ระยะเวลาเช่าซื้อ : 12 เดือน ยอดเงินดาวน์ : 5,970 บาท เรทดาวน์ : 30 % ชำระทุกวันที่ : 1 เบอร์โทรลูกค้า : โทรศัพท์สำรอง1 โทรศัพท์สำรอง2 ลิงค์เฟสลูกค้า : เว็บไซต์นี้ : https://nebula.spaceoneinovative.com/login"
