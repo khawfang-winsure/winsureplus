@@ -163,7 +163,9 @@ export interface Contract {
   // --- lifecycle ---
   status: ContractStatus
   transactionDate: string // วันที่ทำรายการ (รองรับย้อนหลัง) — ISO yyyy-mm-dd
-  operator: string // ผู้ดำเนินการ
+  operator: string // ผู้ดำเนินการ (พิมพ์เอง)
+  recordedBy?: string // ผู้บันทึก — ชื่อ ณ ตอนบันทึก (DB ประทับตราอัตโนมัติ, ใช้คิดค่าคอม)
+  recordedById?: string | null // user id ของผู้บันทึก (ไว้จัดกลุ่มคิดค่าคอม)
   notes?: string
   // --- flag กันส่งซ้ำ ---
   summarySentAt?: string | null

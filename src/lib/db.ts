@@ -62,6 +62,8 @@ interface ContractRow {
   status: Contract['status']
   transaction_date: string
   operator: string | null
+  recorded_by: string | null
+  recorded_by_name: string | null
   notes: string | null
   summary_sent_at: string | null
   email_sent_at: string | null
@@ -100,6 +102,8 @@ function mapContract(r: ContractRow): Contract {
     status: r.status,
     transactionDate: r.transaction_date,
     operator: r.operator ?? '',
+    recordedBy: r.recorded_by_name ?? '',
+    recordedById: r.recorded_by ?? null,
     notes: r.notes ?? undefined,
     summarySentAt: r.summary_sent_at,
     emailSentAt: r.email_sent_at,
@@ -501,14 +505,21 @@ export async function markNotificationRead(id: string): Promise<void> {
 // ---------- สิทธิ์ผู้ใช้ ----------
 export type Role = 'admin' | 'staff'
 
-export async function getMyProfile(): Promise<{ role: Role } | null> {
-  if (!supabase) return { role: 'admin' } // โหมด mock เปิดสิทธิ์เต็มเพื่อทดลอง UI
+export async function getMyProfile(): Promise<{ role: Role; fullName: string } | null> {
+  if (!supabase) return { role: 'admin', fullName: 'ผู้ดูแลระบบ (ทดลอง)' } // โหมด mock เปิดสิทธิ์เต็มเพื่อทดลอง UI
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) return null
-  const { data } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
-  return { role: (data?.role as Role) ?? 'staff' }
+  const { data } = await supabase
+    .from('profiles')
+    .select('role, full_name')
+    .eq('id', user.id)
+    .maybeSingle()
+  return {
+    role: (data?.role as Role) ?? 'staff',
+    fullName: (data?.full_name as string) || user.email || '',
+  }
 }
 
 // ---------- จัดการร้านค้า (เฉพาะแอดมิน ตาม RLS) ----------

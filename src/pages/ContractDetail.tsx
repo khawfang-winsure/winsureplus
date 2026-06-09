@@ -96,6 +96,24 @@ export default function ContractDetail() {
         ))}
       </div>
 
+      {/* ข้อมูลการบันทึก */}
+      <Card className="mb-4 py-3">
+        <div className="grid gap-3 text-sm sm:grid-cols-3">
+          <div>
+            <p className="text-xs text-ink-soft">ผู้ดำเนินการ</p>
+            <p className="font-semibold text-ink">{contract.operator || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">ผู้บันทึก (อัตโนมัติ)</p>
+            <p className="font-semibold text-ink">{contract.recordedBy || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">วันที่ทำรายการ</p>
+            <p className="font-semibold text-ink">{thaiDate(contract.transactionDate)}</p>
+          </div>
+        </div>
+      </Card>
+
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>
       {installments.length === 0 ? (

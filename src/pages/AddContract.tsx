@@ -10,6 +10,7 @@ import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
 import { getContract, getOptions, getShops, insertContract, updateContract } from '../lib/db'
 import { useAsync } from '../lib/useAsync'
 import { isSupabaseConfigured } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 
 interface FormState {
   transactionDate: string
@@ -122,6 +123,7 @@ export default function AddContract() {
   const { id } = useParams()
   const isEdit = Boolean(id)
   const navigate = useNavigate()
+  const { name: myName } = useAuth()
 
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
@@ -448,6 +450,11 @@ export default function AddContract() {
               )}
               <Field label="ผู้ดำเนินการ" required>
                 <Input value={f.operator} onChange={(e) => set('operator', e.target.value)} />
+                {!isEdit && myName && (
+                  <p className="mt-1 text-xs text-ink-soft">
+                    📝 ระบบจะบันทึกผู้บันทึกเป็น <span className="font-semibold text-ink">{myName}</span> โดยอัตโนมัติ (ใช้คิดค่าคอม)
+                  </p>
+                )}
               </Field>
               <Field label="หมายเหตุ">
                 <Input value={f.notes} onChange={(e) => set('notes', e.target.value)} />
