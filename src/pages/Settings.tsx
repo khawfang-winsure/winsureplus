@@ -6,10 +6,12 @@ import { useAuth } from '../lib/auth'
 import {
   getAllOptions,
   getAllShops,
+  getEmployees,
   saveOption,
   saveShop,
   setOptionActive,
   setShopActive,
+  type Employee,
   type OptionInput,
   type OptionKind,
   type ShopInput,
@@ -337,11 +339,28 @@ function ShopModalForm({
   const [f, setF] = useState<ShopInput>(value)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [employees, setEmployees] = useState<Employee[]>([])
   const set = (k: keyof ShopInput, v: string) => setF((p) => ({ ...p, [k]: v }))
+
+  useEffect(() => {
+    getEmployees().then(setEmployees).catch(() => setEmployees([]))
+  }, [])
+
+  // เลือกผู้หาร้าน — ถ้าเลือกคนแล้วยังไม่มีวันที่ ให้เติมวันนี้อัตโนมัติ (วันหาร้านบังคับมี)
+  const setRecruiter = (id: string) =>
+    setF((p) => ({
+      ...p,
+      recruitedBy: id || null,
+      recruitedAt: id ? p.recruitedAt || new Date().toISOString().slice(0, 10) : null,
+    }))
 
   async function save() {
     if (!f.code || !f.name) {
       setErr('กรุณากรอก รหัสร้าน และ ชื่อร้าน')
+      return
+    }
+    if (f.recruitedBy && !f.recruitedAt) {
+      setErr('เลือกผู้หาร้านแล้ว กรุณาระบุวันที่หาร้านด้วย')
       return
     }
     setBusy(true)
@@ -397,6 +416,32 @@ function ShopModalForm({
           <Field label="ที่อยู่">
             <Input value={f.address ?? ''} onChange={(e) => set('address', e.target.value)} />
           </Field>
+
+          <p className="mt-1 border-t border-peach pt-3 text-sm font-semibold text-ink">ค่าคอมหาร้าน</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="พนักงานที่หาร้านนี้">
+              <select
+                value={f.recruitedBy ?? ''}
+                onChange={(e) => setRecruiter(e.target.value)}
+                className="w-full rounded-xl border border-peach bg-white px-3 py-2 text-sm text-ink"
+              >
+                <option value="">— ไม่ระบุ —</option>
+                {employees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.fullName}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="วันที่หาร้าน">
+              <Input
+                type="date"
+                value={f.recruitedAt ?? ''}
+                disabled={!f.recruitedBy}
+                onChange={(e) => set('recruitedAt', e.target.value)}
+              />
+            </Field>
+          </div>
         </div>
 
         {err && <p className="text-sm text-red-600">{err}</p>}

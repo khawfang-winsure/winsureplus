@@ -13,7 +13,14 @@ import type {
   Shop,
 } from './types'
 import * as mock from './mockData'
-import { DEFAULT_TIERS, type CommissionTier } from './commission'
+import {
+  DEFAULT_TIERS,
+  DEFAULT_RECRUIT_BONUS,
+  DEFAULT_RECRUIT_TIERS,
+  type CommissionTier,
+  type RecruitBonusRule,
+  type RecruitTier,
+} from './commission'
 
 export type OptionKind =
   | 'phone_model'
@@ -184,6 +191,8 @@ export async function getShops(): Promise<Shop[]> {
     contactChannel: s.contact_channel ?? '',
     address: s.address ?? '',
     province: s.province ?? '',
+    recruitedBy: s.recruited_by ?? null,
+    recruitedAt: s.recruited_at ?? null,
   }))
 }
 
@@ -206,6 +215,8 @@ export async function getAllShops(): Promise<Shop[]> {
     contactChannel: s.contact_channel ?? '',
     address: s.address ?? '',
     province: s.province ?? '',
+    recruitedBy: s.recruited_by ?? null,
+    recruitedAt: s.recruited_at ?? null,
   }))
 }
 
@@ -306,6 +317,62 @@ export async function unlockCommissionMonth(month: string): Promise<void> {
     .from('contracts')
     .update({ commission_rate_locked: null, commission_locked_month: null })
     .eq('commission_locked_month', month)
+  if (error) throw error
+}
+
+// ---------- ค่าคอมหาร้าน (เก็บใน app_settings เป็น JSON) ----------
+const RECRUIT_TIERS_KEY = 'recruit_shop_tiers'
+const RECRUIT_BONUS_KEY = 'recruit_bonus'
+
+export async function getRecruitTiers(): Promise<RecruitTier[]> {
+  if (!supabase) return DEFAULT_RECRUIT_TIERS
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', RECRUIT_TIERS_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return DEFAULT_RECRUIT_TIERS
+  try {
+    const t = JSON.parse(data.value as string)
+    return Array.isArray(t) && t.length ? (t as RecruitTier[]) : DEFAULT_RECRUIT_TIERS
+  } catch {
+    return DEFAULT_RECRUIT_TIERS
+  }
+}
+
+export async function saveRecruitTiers(tiers: RecruitTier[]): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('app_settings').upsert(
+    { key: RECRUIT_TIERS_KEY, value: JSON.stringify(tiers), description: 'ขั้นบันไดค่าคอมหาร้าน (บาท/ร้าน)' },
+    { onConflict: 'key' },
+  )
+  if (error) throw error
+}
+
+export async function getRecruitBonuses(): Promise<RecruitBonusRule[]> {
+  if (!supabase) return DEFAULT_RECRUIT_BONUS
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', RECRUIT_BONUS_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return DEFAULT_RECRUIT_BONUS
+  try {
+    const t = JSON.parse(data.value as string)
+    return Array.isArray(t) && t.length ? (t as RecruitBonusRule[]) : DEFAULT_RECRUIT_BONUS
+  } catch {
+    return DEFAULT_RECRUIT_BONUS
+  }
+}
+
+export async function saveRecruitBonuses(rules: RecruitBonusRule[]): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('app_settings').upsert(
+    { key: RECRUIT_BONUS_KEY, value: JSON.stringify(rules), description: 'โบนัสร้านส่งเคสครบเป้าในกรอบเวลา' },
+    { onConflict: 'key' },
+  )
   if (error) throw error
 }
 
@@ -629,6 +696,22 @@ export async function getMyProfile(): Promise<{ role: Role; fullName: string } |
   }
 }
 
+export interface Employee {
+  id: string
+  fullName: string
+}
+
+/** รายชื่อพนักงานทั้งหมด (แอดมินอ่านได้ตาม RLS) — ใช้เมนูเลือกผู้หาร้าน + แสดงชื่อในรายงาน */
+export async function getEmployees(): Promise<Employee[]> {
+  if (!supabase) return [{ id: 'mock-admin', fullName: 'ผู้ดูแลระบบ (ทดลอง)' }]
+  const { data, error } = await supabase.from('profiles').select('id, full_name').order('full_name')
+  if (error) throw error
+  return (data ?? []).map((p) => ({
+    id: p.id as string,
+    fullName: (p.full_name as string) || '(ไม่มีชื่อ)',
+  }))
+}
+
 // ---------- จัดการร้านค้า (เฉพาะแอดมิน ตาม RLS) ----------
 export interface ShopInput {
   id?: string
@@ -644,6 +727,8 @@ export interface ShopInput {
   contactChannel?: string
   address?: string
   province?: string
+  recruitedBy?: string | null
+  recruitedAt?: string | null
 }
 
 export async function saveShop(s: ShopInput): Promise<void> {
@@ -661,6 +746,8 @@ export async function saveShop(s: ShopInput): Promise<void> {
     contact_channel: s.contactChannel || null,
     address: s.address || null,
     province: s.province || null,
+    recruited_by: s.recruitedBy || null,
+    recruited_at: s.recruitedAt || null,
   }
   const { error } = s.id
     ? await supabase.from('shops').update(row).eq('id', s.id)

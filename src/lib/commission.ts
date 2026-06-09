@@ -2,7 +2,7 @@
 // หน่วย = บาท/เคส · คิดตอนบันทึกสัญญา · เก็บใน app_settings key='commission_tiers' (JSON)
 // ส่วนล่างของไฟล์ = ตัวสร้างรายงานค่าคอมต่อพนักงานต่อเดือน (gross − clawback = net)
 
-import type { Contract, DeviceReturnRow } from './types'
+import type { Contract, DeviceReturnRow, Shop } from './types'
 
 export interface CommissionTier {
   minCases: number // ตั้งแต่กี่เคส
@@ -33,6 +33,43 @@ export function rateForCaseCount(caseCount: number, tiers: CommissionTier[]): nu
 /** ค่าคอมรวมแบบ flat: เรตของขั้นที่ยอดรวมตกอยู่ × จำนวนเคสทั้งหมด */
 export function commissionFlat(caseCount: number, tiers: CommissionTier[]): number {
   return caseCount * rateForCaseCount(caseCount, tiers)
+}
+
+// ===== ค่าคอมหาร้าน =====
+// ก้อน 1: ตามจำนวนร้านที่หาได้ (ขั้นบันได flat บาท/ร้าน · นับต่อเดือน)
+// ก้อน 2: โบนัสเมื่อร้านที่หามาส่งเคสครบเป้าภายในกรอบเวลา (นับจากวันหาร้าน)
+
+/** ขั้นบันไดค่าคอมหาร้าน (บาท/ร้าน) — โครงเดียวกับค่าคอมเคสแต่นับ "ร้าน" */
+export interface RecruitTier {
+  minShops: number
+  maxShops: number | null
+  bahtPerShop: number
+}
+
+export const DEFAULT_RECRUIT_TIERS: RecruitTier[] = [
+  { minShops: 1, maxShops: 4, bahtPerShop: 0 },
+  { minShops: 5, maxShops: null, bahtPerShop: 0 },
+]
+
+/** เงื่อนไขโบนัสร้าน: ส่งเคสครบ cases เคส ภายใน months เดือน → ได้ bonus บาท (ต่อร้าน ครั้งเดียว) */
+export interface RecruitBonusRule {
+  cases: number // จำนวนเคสเป้า
+  months: number // กรอบเวลา (เดือน นับจากวันหาร้าน)
+  bonus: number // โบนัส (บาท)
+}
+
+export const DEFAULT_RECRUIT_BONUS: RecruitBonusRule[] = [{ cases: 0, months: 3, bonus: 0 }]
+
+export function recruitTierLabel(t: RecruitTier): string {
+  return t.maxShops == null ? `${t.minShops} ร้านขึ้นไป` : `${t.minShops}–${t.maxShops} ร้าน`
+}
+
+/** หาเรต (บาท/ร้าน) ของขั้นที่จำนวนร้านตกอยู่ — flat (ยกขั้นทั้งก้อน) */
+export function rateForShopCount(shopCount: number, tiers: RecruitTier[]): number {
+  const t = tiers.find(
+    (t) => shopCount >= t.minShops && (t.maxShops == null || shopCount <= t.maxShops),
+  )
+  return t ? t.bahtPerShop : 0
 }
 
 // ============================================================================
@@ -66,17 +103,35 @@ export interface ClawbackCase {
   bookingMonth: string // เดือนที่บันทึกเคส (yyyy-mm)
 }
 
+/** โบนัสร้าน 1 รายการที่ได้ในเดือน (ก้อน 2) */
+export interface RecruitBonusEarned {
+  shopId: string
+  shopName: string
+  cases: number // จำนวนเคสเป้าที่ทำได้
+  withinMonths: number // กรอบเวลา
+  bonus: number // โบนัส (บาท)
+}
+
 export interface EmployeeCommission {
   employeeId: string
   employeeName: string
+  // --- ค่าคอมเคส (ล็อกได้ด้วยปุ่มปิดยอด) ---
   grossCount: number // จำนวนเคสที่บันทึกในเดือนนี้
   grossRate: number // เรต flat (บาท/เคส) ของเดือนนี้
   grossAmount: number // grossCount × grossRate
   grossCases: GrossCase[]
   clawbackAmount: number // รวมยอดหักคืน
   clawbacks: ClawbackCase[]
-  net: number // grossAmount − clawbackAmount
+  net: number // ค่าคอมเคสสุทธิ = grossAmount − clawbackAmount
   locked: boolean // เดือนนี้ของคนนี้ปิดยอด (ล็อกเรต) แล้วหรือยัง
+  // --- ค่าคอมหาร้าน (คิดสดเสมอ ล็อกไม่ได้ใน v1) ---
+  recruitShopCount: number // ก้อน 1: ร้านที่หาในเดือนนี้
+  recruitShopRate: number // เรต flat (บาท/ร้าน)
+  recruitShopAmount: number // = count × rate
+  recruitBonusAmount: number // ก้อน 2: รวมโบนัสร้าน
+  recruitBonuses: RecruitBonusEarned[]
+  recruitTotal: number // ก้อน 1 + ก้อน 2
+  grandTotal: number // ค่าคอมเคสสุทธิ + ค่าคอมหาร้าน
 }
 
 /** งวดผ่อนแบบย่อที่รายงานต้องใช้ (โครงสร้างตรงกับ db.InstallmentLite) */
@@ -105,6 +160,16 @@ function addDays(isoDate: string, days: number): string {
   const dt = new Date(Date.UTC(y, m - 1, d))
   dt.setUTCDate(dt.getUTCDate() + days)
   return dt.toISOString().slice(0, 10)
+}
+
+/** วันที่ (yyyy-mm-dd) ของ (วันที่ + จำนวนเดือน) — clamp สิ้นเดือน (31 ม.ค. +1 เดือน → 28/29 ก.พ.) */
+function addMonths(isoDate: string, months: number): string {
+  const [y, m, d] = isoDate.slice(0, 10).split('-').map(Number)
+  const target = new Date(Date.UTC(y, m - 1 + months, 1))
+  const ty = target.getUTCFullYear()
+  const tm = target.getUTCMonth()
+  const lastDay = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate() // วันสุดท้ายของเดือนเป้าหมาย
+  return new Date(Date.UTC(ty, tm, Math.min(d, lastDay))).toISOString().slice(0, 10)
 }
 
 interface ClawbackEvent {
@@ -150,15 +215,25 @@ function detectClawback(
   return { reason, month: ym(addDays(earliest.due, LATE_DAYS)) }
 }
 
-/** สร้างรายงานค่าคอมของทุกพนักงาน สำหรับเดือนหนึ่ง (yyyy-mm) */
-export function buildCommissionReport(
-  month: string,
-  contracts: Contract[],
-  installments: ReportInstallment[],
-  returns: DeviceReturnRow[],
-  tiers: CommissionTier[],
-  asOf: string,
-): EmployeeCommission[] {
+/** ข้อมูลที่รายงานค่าคอมต้องใช้ */
+export interface CommissionReportInput {
+  month: string // yyyy-mm
+  contracts: Contract[]
+  installments: ReportInstallment[]
+  returns: DeviceReturnRow[]
+  shops: Shop[]
+  employeeNames: Record<string, string> // user id -> ชื่อ (จากตาราง profiles)
+  tiers: CommissionTier[]
+  recruitTiers: RecruitTier[]
+  recruitBonuses: RecruitBonusRule[]
+  asOf: string // วันนี้ yyyy-mm-dd
+}
+
+/** สร้างรายงานค่าคอมของทุกพนักงาน สำหรับเดือนหนึ่ง (ค่าคอมเคส + ค่าคอมหาร้าน) */
+export function buildCommissionReport(input: CommissionReportInput): EmployeeCommission[] {
+  const { month, contracts, installments, returns, shops, tiers, recruitTiers, recruitBonuses, asOf } =
+    input
+
   // จัดงวดผ่อนเข้ากลุ่มตามสัญญา
   const instByContract = new Map<string, ReportInstallment[]>()
   for (const i of installments) {
@@ -172,9 +247,24 @@ export function buildCommissionReport(
     const prev = retById.get(r.contractId)
     if (!prev || r.createdAt > prev.createdAt) retById.set(r.contractId, r)
   }
+  // วันที่ทำรายการของทุกเคส ต่อร้าน (เรียงเก่า→ใหม่) — ใช้คิดโบนัสร้าน (ก้อน 2 นับตาม "ร้าน" ทุกคน)
+  const caseDatesByShop = new Map<string, string[]>()
+  for (const c of contracts) {
+    const arr = caseDatesByShop.get(c.shopId)
+    if (arr) arr.push(dateOnly(c.transactionDate))
+    else caseDatesByShop.set(c.shopId, [dateOnly(c.transactionDate)])
+  }
+  for (const arr of caseDatesByShop.values()) arr.sort()
 
   const empKey = (c: Contract) => c.recordedById ?? 'unknown'
-  const empName = (c: Contract) => c.recordedBy || '(ไม่ระบุผู้บันทึก)'
+
+  // ชื่อพนักงาน: เริ่มจาก profiles แล้วเติมจากชื่อ ณ ตอนบันทึกเคส (เผื่อ id ที่ไม่อยู่ใน profiles)
+  const names: Record<string, string> = { ...input.employeeNames }
+  for (const c of contracts) {
+    const id = empKey(c)
+    if (!names[id]) names[id] = c.recordedBy || '(ไม่ระบุผู้บันทึก)'
+  }
+  const nameOf = (id: string) => names[id] || '(ไม่ระบุ)'
 
   // นับเคสที่บันทึก ต่อ (พนักงาน|เดือนบันทึก) — ใช้หาเรต flat ของเดือนนั้น
   const countByEmpMonth = new Map<string, number>()
@@ -190,13 +280,12 @@ export function buildCommissionReport(
       : rateForCaseCount(countOf(empKey(c), ym(c.transactionDate)), tiers)
 
   const emps = new Map<string, EmployeeCommission>()
-  const ensure = (c: Contract): EmployeeCommission => {
-    const id = empKey(c)
+  const ensureEmp = (id: string): EmployeeCommission => {
     let e = emps.get(id)
     if (!e) {
       e = {
         employeeId: id,
-        employeeName: empName(c),
+        employeeName: nameOf(id),
         grossCount: 0,
         grossRate: 0,
         grossAmount: 0,
@@ -205,23 +294,31 @@ export function buildCommissionReport(
         clawbacks: [],
         net: 0,
         locked: false,
+        recruitShopCount: 0,
+        recruitShopRate: 0,
+        recruitShopAmount: 0,
+        recruitBonusAmount: 0,
+        recruitBonuses: [],
+        recruitTotal: 0,
+        grandTotal: 0,
       }
       emps.set(id, e)
     }
     return e
   }
 
+  // ===== ค่าคอมเคส =====
   for (const c of contracts) {
     // (ก) ได้ค่าคอม — เคสที่บันทึกในเดือนรายงาน
     if (ym(c.transactionDate) === month) {
-      const e = ensure(c)
+      const e = ensureEmp(empKey(c))
       e.grossCases.push({ contractId: c.id, contractNo: c.contractNo, customerName: c.customerName })
       if (c.commissionLockedMonth === month) e.locked = true
     }
     // (ข) หักคืน — เคสที่ "เสีย" ในเดือนรายงาน (ไม่ว่าบันทึกเดือนไหน)
     const cb = detectClawback(c, instByContract.get(c.id) ?? [], retById.get(c.id), asOf)
     if (cb && cb.month === month) {
-      const e = ensure(c)
+      const e = ensureEmp(empKey(c))
       const rate = originalRate(c)
       e.clawbacks.push({
         contractId: c.id,
@@ -235,6 +332,45 @@ export function buildCommissionReport(
     }
   }
 
+  // ===== ค่าคอมหาร้าน — ก้อน 1: ร้านที่หาในเดือนรายงาน (flat ยกขั้น นับต่อเดือน) =====
+  const shopsRecruitedThisMonth = new Map<string, number>() // empId -> จำนวนร้าน
+  for (const s of shops) {
+    if (s.recruitedBy && s.recruitedAt && ym(s.recruitedAt) === month) {
+      shopsRecruitedThisMonth.set(s.recruitedBy, (shopsRecruitedThisMonth.get(s.recruitedBy) ?? 0) + 1)
+    }
+  }
+  for (const [empId, count] of shopsRecruitedThisMonth) {
+    const e = ensureEmp(empId)
+    e.recruitShopCount = count
+    e.recruitShopRate = rateForShopCount(count, recruitTiers)
+    e.recruitShopAmount = count * e.recruitShopRate
+  }
+
+  // ===== ค่าคอมหาร้าน — ก้อน 2: โบนัสร้านที่ส่งเคสครบเป้าภายในกรอบเวลา (นับจากวันหาร้าน) =====
+  for (const s of shops) {
+    if (!s.recruitedBy || !s.recruitedAt) continue
+    const start = dateOnly(s.recruitedAt)
+    const dates = caseDatesByShop.get(s.id) ?? []
+    for (const rule of recruitBonuses) {
+      if (rule.cases <= 0 || rule.bonus <= 0) continue
+      const windowEnd = addMonths(start, rule.months)
+      const inWindow = dates.filter((d) => d >= start && d <= windowEnd) // เรียงเก่า→ใหม่อยู่แล้ว
+      if (inWindow.length < rule.cases) continue
+      const hitMonth = ym(inWindow[rule.cases - 1]) // เดือนที่เคสที่ N ส่งถึง = เดือนได้โบนัส
+      if (hitMonth !== month) continue
+      const e = ensureEmp(s.recruitedBy)
+      e.recruitBonuses.push({
+        shopId: s.id,
+        shopName: s.name,
+        cases: rule.cases,
+        withinMonths: rule.months,
+        bonus: rule.bonus,
+      })
+      e.recruitBonusAmount += rule.bonus
+    }
+  }
+
+  // ===== สรุปยอดต่อพนักงาน =====
   for (const e of emps.values()) {
     e.grossCount = e.grossCases.length
     // ล็อกแล้วใช้เรตที่ล็อก (อ่านจากเคสที่ล็อกตัวใดก็ได้); ไม่งั้นคิดสด
@@ -252,9 +388,11 @@ export function buildCommissionReport(
         : rateForCaseCount(e.grossCount, tiers)
     e.grossAmount = e.grossCount * e.grossRate
     e.net = e.grossAmount - e.clawbackAmount
+    e.recruitTotal = e.recruitShopAmount + e.recruitBonusAmount
+    e.grandTotal = e.net + e.recruitTotal
   }
 
-  return [...emps.values()].sort((a, b) => b.net - a.net)
+  return [...emps.values()].sort((a, b) => b.grandTotal - a.grandTotal)
 }
 
 /** แปลงรายงาน (คิดสด) -> รายการอัปเดตสำหรับปิดยอด: ทุกเคส gross ล็อกที่เรตของเจ้าของเคสเดือนนั้น */

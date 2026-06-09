@@ -38,6 +38,9 @@ export interface Shop {
   contactChannel?: string // ช่องทางติดต่ออื่นๆ (LINE ฯลฯ)
   address?: string // ที่อยู่
   province?: string // จังหวัด
+  // --- ค่าคอมหาร้าน ---
+  recruitedBy?: string | null // user id ของพนักงานที่หาร้านนี้
+  recruitedAt?: string | null // วันที่หาร้าน (ISO yyyy-mm-dd)
 }
 
 /** ตัวเลือกที่ตั้งค่าได้ (รุ่น/ความจำ/อาชีพ/หลักฐาน/โปรโมชั่น) — ลบแล้วใช้ active=false ข้อมูลเก่าไม่หาย */
