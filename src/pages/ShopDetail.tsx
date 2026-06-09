@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { Badge, Loading, PageTitle } from '../components/ui'
 import { ListPager, ListToolbar } from '../components/ManagedList'
+import { CaseFrequencyChart } from '../components/CaseFrequencyChart'
 import { baht, conditionLabel, statusLabel, thaiDate } from '../lib/format'
 import { getAllStatuses, getContracts, getShops } from '../lib/db'
 import { buildShopReport } from '../lib/report'
@@ -49,8 +50,14 @@ export default function ShopDetail() {
     { row: null as ShopReportRow | null, shop: null as Awaited<ReturnType<typeof getShops>>[number] | null, customers: [] as Contract[] },
   )
 
-  const customers = useMemo(() => data.customers, [data.customers])
-  const c = useListControls(customers, (x) => `${x.customerName} ${x.contractNo}`)
+  const customers = data.customers
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const dateFiltered = useMemo(
+    () => customers.filter((x) => (!from || x.transactionDate >= from) && (!to || x.transactionDate <= to)),
+    [customers, from, to],
+  )
+  const c = useListControls(dateFiltered, (x) => `${x.customerName} ${x.contractNo}`)
 
   if (loading) {
     return (
@@ -106,11 +113,50 @@ export default function ShopDetail() {
         </div>
       )}
 
+      {/* กราฟความถี่การส่งเคสของร้านนี้ */}
+      <div className="mb-5">
+        <CaseFrequencyChart contracts={customers} />
+      </div>
+
       {/* รายชื่อลูกค้าของร้าน */}
       <h3 className="mb-3 font-semibold text-ink">รายชื่อลูกค้า ({customers.length})</h3>
+
+      {/* ตัวกรองช่วงวันที่ */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-ink-soft">ช่วงวันที่:</span>
+        <button
+          onClick={() => {
+            setFrom('')
+            setTo('')
+          }}
+          className={`rounded-lg border px-3 py-1.5 transition ${
+            !from && !to
+              ? 'border-salmon-deep bg-salmon-deep text-white'
+              : 'border-peach bg-cream-deep text-ink hover:bg-peach-light'
+          }`}
+        >
+          ทั้งหมด
+        </button>
+        <input
+          type="date"
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          className="rounded-lg border border-peach bg-cream-deep px-3 py-1.5 text-ink outline-none focus:border-salmon-deep"
+        />
+        <span className="text-ink-soft">ถึง</span>
+        <input
+          type="date"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          className="rounded-lg border border-peach bg-cream-deep px-3 py-1.5 text-ink outline-none focus:border-salmon-deep"
+        />
+      </div>
+
       <ListToolbar controls={c} searchPlaceholder="ค้นหาลูกค้า (ชื่อ / เลขที่สัญญา)..." />
       {c.total === 0 ? (
-        <p className="py-6 text-center text-sm text-ink-soft">{c.query ? 'ไม่พบลูกค้าที่ค้นหา' : 'ร้านนี้ยังไม่มีลูกค้า'}</p>
+        <p className="py-6 text-center text-sm text-ink-soft">
+          {c.query ? 'ไม่พบลูกค้าที่ค้นหา' : from || to ? 'ไม่มีลูกค้าในช่วงวันที่เลือก' : 'ร้านนี้ยังไม่มีลูกค้า'}
+        </p>
       ) : (
         <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
           <table className="w-full min-w-[760px] text-sm">

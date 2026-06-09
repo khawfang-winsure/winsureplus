@@ -51,8 +51,8 @@ export default function ShopReport() {
   )
 
   const summary = useMemo(() => shopReportSummary(data), [data])
-  const top5 = useMemo(() => topShopsByCases(data, 5), [data])
-  const maxCases = top5[0]?.contracts ?? 0
+  const topShops = useMemo(() => topShopsByCases(data, 10), [data])
+  const maxCases = topShops[0]?.contracts ?? 0
 
   const c = useListControls(data, (r) => `${r.name} ${r.code}`)
 
@@ -111,12 +111,12 @@ export default function ShopReport() {
             </Card>
           </div>
 
-          {/* ===== กราฟแท่ง Top 5 ส่งเคสเยอะสุด ===== */}
-          {top5.length > 0 && (
+          {/* ===== กราฟแท่ง Top 10 ส่งเคสเยอะสุด ===== */}
+          {topShops.length > 0 && (
             <Card className="mb-5">
-              <h3 className="mb-3 font-semibold text-ink">Top 5 ร้านส่งเคสเยอะสุด</h3>
+              <h3 className="mb-3 font-semibold text-ink">Top 10 ร้านส่งเคสเยอะสุด</h3>
               <div className="flex flex-col gap-2.5">
-                {top5.map((r) => (
+                {topShops.map((r) => (
                   <button
                     key={r.shopId}
                     onClick={() => navigate(`/shop/${r.shopId}`)}
