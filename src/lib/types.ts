@@ -92,6 +92,20 @@ export interface ShopReportRow {
   risky: number // ลูกค้าเสี่ยง (ล่าช้า 31 วัน+)
   riskyRate: number // % เสี่ยง (0-100)
   grade: ShopGrade
+  lastActivity: string | null // วันที่ส่งเคสล่าสุด (ISO) — null = ยังไม่เคยส่ง
+  daysSinceActivity: number | null // ผ่านมากี่วันจากเคสล่าสุด
+  active: boolean // ยังเคลื่อนไหว (ส่งเคสใหม่ภายใน 30 วัน)
+}
+
+/** สรุปภาพรวมรายงานร้านค้า (การ์ด dashboard) */
+export interface ShopReportSummary {
+  totalShops: number // ร้านทั้งหมด
+  topShop: ShopReportRow | null // ร้านส่งเคสเยอะสุด
+  activeShops: number // ร้านที่ยังเคลื่อนไหว
+  activePercent: number // % ร้านที่ยังเคลื่อนไหว (0-100)
+  inactiveShops: number // ร้านที่เคยส่งเคสแต่เงียบ >30 วัน
+  gradeA: number
+  gradeD: number
 }
 
 export interface NotificationItem {

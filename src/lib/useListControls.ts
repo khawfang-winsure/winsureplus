@@ -3,6 +3,20 @@ import { useMemo, useState } from 'react'
 // ตัวช่วยจัดการลิสต์: ค้นหา + เรียงตามชื่อ + แบ่งหน้า (ใช้ซ้ำได้ทุกหน้า)
 export type SortDir = 'asc' | 'desc'
 
+// ฟิลด์ที่ toolbar/pager ต้องใช้ (ไม่ผูกกับชนิดข้อมูล T) — ส่งเข้า ListToolbar/ListPager ได้
+export interface ListControls {
+  query: string
+  setQuery: (v: string) => void
+  sortDir: SortDir
+  setSortDir: (v: SortDir) => void
+  pageSize: number
+  setPageSize: (n: number) => void
+  page: number
+  setPage: (n: number) => void
+  total: number
+  pageCount: number
+}
+
 export function useListControls<T>(items: T[], getText: (t: T) => string) {
   const [query, setQuery] = useState('')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
