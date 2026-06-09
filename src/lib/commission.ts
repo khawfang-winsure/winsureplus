@@ -19,3 +19,16 @@ export const DEFAULT_TIERS: CommissionTier[] = [
 export function tierLabel(t: CommissionTier): string {
   return t.maxCases == null ? `${t.minCases} เคสขึ้นไป` : `${t.minCases}–${t.maxCases} เคส`
 }
+
+/** หาเรต (บาท/เคส) ของขั้นที่จำนวนเคสตกอยู่ — แบบ flat (ยกขั้นทั้งก้อน) */
+export function rateForCaseCount(caseCount: number, tiers: CommissionTier[]): number {
+  const t = tiers.find(
+    (t) => caseCount >= t.minCases && (t.maxCases == null || caseCount <= t.maxCases),
+  )
+  return t ? t.bahtPerCase : 0
+}
+
+/** ค่าคอมรวมแบบ flat: เรตของขั้นที่ยอดรวมตกอยู่ × จำนวนเคสทั้งหมด */
+export function commissionFlat(caseCount: number, tiers: CommissionTier[]): number {
+  return caseCount * rateForCaseCount(caseCount, tiers)
+}
