@@ -21,8 +21,12 @@ begin
     new.recorded_by := auth.uid();
   end if;
   if new.recorded_by_name is null then
+    -- ใช้ชื่อจริงก่อน ถ้าไม่มีค่อย fallback เป็นอีเมล (จะได้ไม่เป็นค่าว่าง)
     new.recorded_by_name := (
-      select coalesce(full_name, '') from public.profiles where id = new.recorded_by
+      select coalesce(nullif(p.full_name, ''), u.email, '')
+      from auth.users u
+      left join public.profiles p on p.id = u.id
+      where u.id = new.recorded_by
     );
   end if;
   return new;
