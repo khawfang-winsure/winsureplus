@@ -11,6 +11,7 @@ import Overdue from './pages/Overdue'
 import Returns from './pages/Returns'
 import ShopReport from './pages/ShopReport'
 import ShopDetail from './pages/ShopDetail'
+import Commission from './pages/Commission'
 import Letters from './pages/Letters'
 import Settings from './pages/Settings'
 import WaitingEmail from './pages/WaitingEmail'
@@ -26,7 +27,8 @@ export default function App() {
 }
 
 function Gate() {
-  const { ready, configured, session } = useAuth()
+  const { ready, configured, session, role } = useAuth()
+  const isAdmin = !configured || role === 'admin'
 
   if (!ready) {
     return (
@@ -56,6 +58,7 @@ function Gate() {
         <Route path="/returns" element={<Returns />} />
         <Route path="/shop-report" element={<ShopReport />} />
         <Route path="/shop/:id" element={<ShopDetail />} />
+        <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to="/" replace />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/add" replace />} />
       </Route>

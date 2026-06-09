@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { NAV } from './nav'
+import { useAuth } from '../lib/auth'
 
 // เมนูซ้าย: เดสก์ท็อปเป็นแถบไอคอนแคบ (w-16) เอาเมาส์ชี้แล้วกางเป็น w-72 (overlay ไม่ดันเนื้อหา)
 // มือถือ: กางเต็มความกว้างตามปกติ
@@ -13,6 +14,9 @@ const labelCls =
 
 export default function Sidebar() {
   const { pathname } = useLocation()
+  const { role, configured } = useAuth()
+  const isAdmin = !configured || role === 'admin' // โหมด mock เปิดเต็ม
+  const items = NAV.filter((item) => !item.adminOnly || isAdmin)
 
   return (
     // ตัวกันที่ (spacer): จองความกว้างแถบไอคอนบนเดสก์ท็อป เพื่อให้ aside ลอย overlay ได้
@@ -20,7 +24,7 @@ export default function Sidebar() {
       <aside
         className="group flex w-full flex-col gap-1 rounded-2xl border border-peach bg-cream-deep p-3 shadow-sm transition-[width] duration-200 ease-out md:absolute md:inset-y-0 md:left-0 md:z-30 md:w-16 md:overflow-x-hidden md:overflow-y-auto md:p-2.5 md:hover:w-72 md:hover:p-3 md:hover:shadow-xl"
       >
-        {NAV.map((item) => {
+        {items.map((item) => {
           if (item.children) {
             const groupActive = item.children.some((c) => pathname === c.to)
             return (

@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BarChart3,
   CalendarClock,
+  Coins,
   FilePlus2,
   LayoutDashboard,
   Mail,
@@ -25,6 +26,7 @@ export interface NavItem {
   label: string
   icon: LucideIcon
   children?: NavChild[]
+  adminOnly?: boolean // ซ่อนจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
 }
 
 export const NAV: NavItem[] = [
@@ -50,5 +52,6 @@ export const NAV: NavItem[] = [
   { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
   { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
   { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
+  { to: '/commission', label: 'ค่าคอมมิชชั่น', icon: Coins, adminOnly: true },
   { to: '/settings', label: 'ตั้งค่า', icon: Settings },
 ]
