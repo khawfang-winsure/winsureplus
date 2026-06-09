@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
 import { Button, Card, Field, Input, Loading, PageTitle, Select } from '../components/ui'
-import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { ageRange, baht } from '../lib/format'
-import { buildEmailText, buildSingleSummary } from '../lib/messages'
+import { nextContractNo } from '../lib/contractNo'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
-import { getContract, getOptions, getShops, insertContract, updateContract } from '../lib/db'
+import {
+  contractNoExists,
+  getContract,
+  getOptions,
+  getShopContractNos,
+  getShops,
+  insertContract,
+  updateContract,
+} from '../lib/db'
 import { useAsync } from '../lib/useAsync'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
@@ -144,6 +151,7 @@ export default function AddContract() {
   const [f, setF] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
   const [loadingContract, setLoadingContract] = useState(isEdit)
+  const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setF((prev) => ({ ...prev, [key]: value }))
 
@@ -169,6 +177,25 @@ export default function AddContract() {
       occupationProof: prev.occupationProof || opts.proofs[0]?.label || '',
     }))
   }, [opts])
+
+  // รันเลขที่สัญญาถัดไปอัตโนมัติเมื่อเลือกร้าน (แยกตามร้าน) — ไม่ทับถ้าพนักงานพิมพ์เอง / โหมดแก้ไข
+  useEffect(() => {
+    if (isEdit || !f.shopId) return
+    let cancelled = false
+    getShopContractNos(f.shopId)
+      .then((nos) => {
+        if (cancelled) return
+        const next = nextContractNo(nos)
+        setF((prev) => {
+          if (manualNoRef.current && prev.contractNo) return prev // พนักงานพิมพ์เองแล้ว
+          return { ...prev, contractNo: next ?? '' }
+        })
+      })
+      .catch(() => {}) // ดึงไม่ได้ก็ปล่อยให้พิมพ์เอง
+    return () => {
+      cancelled = true
+    }
+  }, [f.shopId, isEdit])
 
   const shop = opts.shops.find((s) => s.id === f.shopId)
   const currentYear = new Date().getFullYear()
@@ -214,9 +241,6 @@ export default function AddContract() {
     notes: f.notes,
   }
 
-  const summaryText = shop ? buildSingleSummary(preview, shop, f.transactionDate) : ''
-  const emailText = shop ? buildEmailText(preview, shop) : ''
-
   async function handleSave() {
     if (!f.contractNo || !f.customerName || !shop) {
       alert('กรุณากรอก เลขที่สัญญา / ชื่อลูกค้า / ร้านค้า ก่อนนะคะ')
@@ -224,18 +248,26 @@ export default function AddContract() {
     }
     setSaving(true)
     try {
+      // กันเลขสัญญาซ้ำ — เตือนก่อนบันทึก
+      const dup = await contractNoExists(f.contractNo, isEdit ? id : undefined)
+      if (dup && !window.confirm(`⚠️ เลขที่สัญญา "${f.contractNo}" นี้มีอยู่แล้วในระบบ\nต้องการบันทึกซ้ำหรือไม่?`)) {
+        setSaving(false)
+        return
+      }
+
       if (isEdit && id) {
         await updateContract(id, preview)
         alert('แก้ไขสัญญาสำเร็จ ✅')
         if (isSupabaseConfigured) navigate('/customers')
       } else {
         await insertContract(preview) // ฟังก์ชันละ id ออกให้เอง
-        alert(
-          isSupabaseConfigured
-            ? 'บันทึกสัญญาสำเร็จ ✅'
-            : 'ตรวจสอบข้อมูลเรียบร้อย (โหมดตัวอย่าง — ยังไม่บันทึกจริงจนกว่าจะเชื่อม Supabase)',
-        )
-        if (isSupabaseConfigured) setF(initial)
+        if (isSupabaseConfigured) {
+          alert('บันทึกสัญญาสำเร็จ ✅ ไปที่หน้ารอสรุปยอด/รอส่งอีเมลได้เลย')
+          navigate('/waiting-summary') // เด้งไปคิวรอสรุปยอด (เคสจะอยู่ในรอส่งอีเมลด้วย)
+        } else {
+          alert('ตรวจสอบข้อมูลเรียบร้อย (โหมดตัวอย่าง — ยังไม่บันทึกจริงจนกว่าจะเชื่อม Supabase)')
+          setF(initial)
+        }
       }
     } catch (e) {
       alert('บันทึกไม่สำเร็จ: ' + (e instanceof Error ? e.message : String(e)))
@@ -255,12 +287,12 @@ export default function AddContract() {
 
   return (
     <div>
-      <PageTitle sub="กรอกครั้งเดียว ได้ครบ — ระบบคำนวณยอดและสร้างข้อความสรุปยอด/อีเมลให้อัตโนมัติ">
+      <PageTitle sub="กรอกครั้งเดียว ได้ครบ — บันทึกแล้วไปสร้างข้อความสรุปยอด/อีเมลที่หน้าคิวได้เลย">
         {isEdit ? 'แก้ไขสัญญา' : 'เพิ่มข้อมูลสัญญา'}
       </PageTitle>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        {/* ===== ฝั่งซ้าย: ฟอร์ม ===== */}
+      <div className="mx-auto grid max-w-3xl gap-5">
+        {/* ===== ฟอร์มกรอกข้อมูลสัญญา ===== */}
         <div className="flex flex-col gap-5">
           <Card>
             <h3 className="mb-3 font-semibold text-ink">ข้อมูลรายการ</h3>
@@ -282,7 +314,19 @@ export default function AddContract() {
                 </Select>
               </Field>
               <Field label="เลขที่สัญญา" required>
-                <Input value={f.contractNo} onChange={(e) => set('contractNo', e.target.value)} placeholder="S00016PNQ280" />
+                <Input
+                  value={f.contractNo}
+                  onChange={(e) => {
+                    manualNoRef.current = true
+                    set('contractNo', e.target.value)
+                  }}
+                  placeholder="S00016PNQ280"
+                />
+                {!isEdit && (
+                  <p className="mt-1 text-xs text-ink-soft">
+                    เลือกร้านแล้วระบบจะรันเลขถัดไปให้ — แก้เองได้ (เคสแรกของร้านพิมพ์เอง)
+                  </p>
+                )}
               </Field>
               <Field label="เลข INV" required>
                 <Input value={f.invNo} onChange={(e) => set('invNo', e.target.value)} placeholder="INV-..." />
@@ -465,15 +509,6 @@ export default function AddContract() {
           <Button onClick={handleSave} disabled={saving} className="self-start">
             <Save size={16} /> {saving ? 'กำลังบันทึก...' : isEdit ? 'บันทึกการแก้ไข' : 'บันทึกสัญญา'}
           </Button>
-        </div>
-
-        {/* ===== ฝั่งขวา: ข้อความที่สร้างให้สดๆ ===== */}
-        <div className="flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start">
-          <p className="text-sm text-ink-soft">
-            ข้อความด้านล่างสร้างจากข้อมูลที่กรอกแบบเรียลไทม์ — กรอกครบแล้วกด "คัดลอก" ไปวางส่งได้เลย
-          </p>
-          <CopyBox title="ข้อความสรุปยอดโอน" text={summaryText} />
-          <CopyBox title="ข้อความอีเมล (ส่งพาร์ทเนอร์)" text={emailText} />
         </div>
       </div>
     </div>

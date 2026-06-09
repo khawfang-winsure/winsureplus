@@ -279,6 +279,24 @@ export async function getContract(id: string): Promise<Contract | null> {
   return data ? mapContract(data as ContractRow) : null
 }
 
+/** ดึงเลขที่สัญญาทั้งหมดของร้านหนึ่ง — ใช้รันเลขถัดไปอัตโนมัติ */
+export async function getShopContractNos(shopId: string): Promise<string[]> {
+  if (!supabase) return mock.contracts.filter((c) => c.shopId === shopId).map((c) => c.contractNo)
+  const { data, error } = await supabase.from('contracts').select('contract_no').eq('shop_id', shopId)
+  if (error) throw error
+  return (data ?? []).map((r) => r.contract_no as string)
+}
+
+/** เช็คว่าเลขที่สัญญานี้ถูกใช้ไปแล้วหรือยัง (กันเลขซ้ำ) — ข้าม id ตัวเองตอนแก้ไข */
+export async function contractNoExists(contractNo: string, exceptId?: string): Promise<boolean> {
+  if (!supabase) return mock.contracts.some((c) => c.contractNo === contractNo && c.id !== exceptId)
+  let q = supabase.from('contracts').select('id').eq('contract_no', contractNo)
+  if (exceptId) q = q.neq('id', exceptId)
+  const { data, error } = await q.limit(1)
+  if (error) throw error
+  return (data ?? []).length > 0
+}
+
 export async function updateContract(id: string, c: Omit<Contract, 'id'>): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('contracts').update(toInsert(c)).eq('id', id)
