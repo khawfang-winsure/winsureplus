@@ -1,14 +1,21 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Award, Activity, Moon, Store } from 'lucide-react'
 import { Card, Loading, PageTitle } from '../components/ui'
 import { ListPager, ListToolbar } from '../components/ManagedList'
+import { LineChart } from '../components/LineChart'
 import { baht } from '../lib/format'
 import { getAllStatuses, getContracts, getShops } from '../lib/db'
-import { buildShopReport, shopReportSummary, topShopsByCases } from '../lib/report'
+import {
+  buildShopReport,
+  monthlyShopActivity,
+  shopReportSummary,
+  topShopsByCases,
+  yearsFromContracts,
+} from '../lib/report'
 import { useAsync } from '../lib/useAsync'
 import { useListControls } from '../lib/useListControls'
-import type { ShopGrade, ShopReportRow } from '../lib/types'
+import type { Contract, ShopGrade, ShopReportRow } from '../lib/types'
 
 const todayISO = new Date().toISOString().slice(0, 10)
 
@@ -45,16 +52,23 @@ export default function ShopReport() {
         getContracts(),
         getAllStatuses(),
       ])
-      return buildShopReport(shops, contracts, statuses, todayISO)
+      return { rows: buildShopReport(shops, contracts, statuses, todayISO), contracts }
     },
-    [] as ShopReportRow[],
+    { rows: [] as ShopReportRow[], contracts: [] as Contract[] },
   )
 
-  const summary = useMemo(() => shopReportSummary(data), [data])
-  const topShops = useMemo(() => topShopsByCases(data, 10), [data])
+  const rows = data.rows
+  const summary = useMemo(() => shopReportSummary(rows), [rows])
+  const topShops = useMemo(() => topShopsByCases(rows, 10), [rows])
   const maxCases = topShops[0]?.contracts ?? 0
 
-  const c = useListControls(data, (r) => `${r.name} ${r.code}`)
+  // ภาพรวมรายเดือน: ร้านใหม่ / ร้านที่ส่งเคส
+  const years = useMemo(() => yearsFromContracts(data.contracts), [data.contracts])
+  const [yearSel, setYearSel] = useState<number | null>(null)
+  const year = yearSel ?? years[0] ?? new Date().getFullYear()
+  const monthly = useMemo(() => monthlyShopActivity(data.contracts, year), [data.contracts, year])
+
+  const c = useListControls(rows, (r) => `${r.name} ${r.code}`)
 
   return (
     <div>
@@ -136,6 +150,33 @@ export default function ShopReport() {
               </div>
             </Card>
           )}
+
+          {/* ===== ภาพรวมรายเดือน: ร้านใหม่ / ร้านที่ส่งเคส ===== */}
+          <Card className="mb-5">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold text-ink">ภาพรวมรายเดือน — ร้านใหม่ / ร้านที่ส่งเคส</h3>
+              <select
+                value={year}
+                onChange={(e) => setYearSel(Number(e.target.value))}
+                className="rounded-lg border border-peach bg-cream-deep px-2.5 py-1.5 text-sm text-ink outline-none focus:border-salmon-deep"
+              >
+                {(years.length ? years : [year]).map((y) => (
+                  <option key={y} value={y}>ปี {y + 543}</option>
+                ))}
+              </select>
+            </div>
+            <LineChart
+              labels={monthly.map((m) => m.label)}
+              series={[
+                { name: 'ร้านที่ส่งเคส', color: '#f97316', values: monthly.map((m) => m.activeShops), fill: true },
+                { name: 'ร้านใหม่', color: '#0d9488', values: monthly.map((m) => m.newShops) },
+              ]}
+              valueSuffix=" ร้าน"
+            />
+            <p className="mt-2 text-xs text-ink-soft">
+              "ร้านใหม่" = เดือนที่ร้านส่งเคสครั้งแรก · "ร้านที่ส่งเคส" = ร้านที่มีเคสในเดือนนั้น (นับไม่ซ้ำ)
+            </p>
+          </Card>
 
           {/* ===== ตารางร้านค้า (ค้นหา/เรียง/แบ่งหน้า + กดเข้าร้าน) ===== */}
           <ListToolbar controls={c} searchPlaceholder="ค้นหาร้านค้า (ชื่อ / รหัส)..." />

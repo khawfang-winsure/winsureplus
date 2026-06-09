@@ -110,3 +110,55 @@ export function topShopsByCases(rows: ShopReportRow[], n = 5): ShopReportRow[] {
     .sort((a, b) => b.contracts - a.contracts)
     .slice(0, n)
 }
+
+const MONTH_TH = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
+
+export interface MonthlyShopStat {
+  month: number // 1-12
+  label: string
+  newShops: number // ร้านที่ส่งเคส "ครั้งแรก" ในเดือนนี้ (ใช้แทนวันร้านเข้าใหม่)
+  activeShops: number // ร้านที่ส่งเคสในเดือนนี้ (นับแบบไม่ซ้ำ)
+}
+
+/** ปีที่มีข้อมูลเคส (ใหม่สุดก่อน) */
+export function yearsFromContracts(contracts: Contract[]): number[] {
+  const set = new Set<number>()
+  for (const c of contracts) {
+    const y = Number(c.transactionDate.slice(0, 4))
+    if (y) set.add(y)
+  }
+  return [...set].sort((a, b) => b - a)
+}
+
+/** ร้านใหม่ + ร้านที่ส่งเคสจริง รายเดือนของปีที่เลือก */
+export function monthlyShopActivity(contracts: Contract[], year: number): MonthlyShopStat[] {
+  // เคสแรกสุดของแต่ละร้าน → ใช้ดู "ร้านเข้าใหม่"
+  const firstByShop = new Map<string, string>()
+  for (const c of contracts) {
+    const cur = firstByShop.get(c.shopId)
+    if (!cur || c.transactionDate < cur) firstByShop.set(c.shopId, c.transactionDate)
+  }
+
+  const newCounts = Array<number>(12).fill(0)
+  for (const date of firstByShop.values()) {
+    if (Number(date.slice(0, 4)) === year) {
+      const m = Number(date.slice(5, 7))
+      if (m >= 1 && m <= 12) newCounts[m - 1]++
+    }
+  }
+
+  const activeSets = Array.from({ length: 12 }, () => new Set<string>())
+  for (const c of contracts) {
+    if (Number(c.transactionDate.slice(0, 4)) === year) {
+      const m = Number(c.transactionDate.slice(5, 7))
+      if (m >= 1 && m <= 12) activeSets[m - 1].add(c.shopId)
+    }
+  }
+
+  return MONTH_TH.map((label, i) => ({
+    month: i + 1,
+    label,
+    newShops: newCounts[i],
+    activeShops: activeSets[i].size,
+  }))
+}

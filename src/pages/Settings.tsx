@@ -357,21 +357,48 @@ function ShopModalForm({
   return (
     <Modal title={value.id ? 'แก้ไขร้านค้า' : 'เพิ่มร้านค้า'} onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <Field label="รหัสร้าน" required>
-          <Input value={f.code} onChange={(e) => set('code', e.target.value)} placeholder="AQ S00016" />
-        </Field>
-        <Field label="ชื่อร้าน" required>
-          <Input value={f.name} onChange={(e) => set('name', e.target.value)} />
-        </Field>
-        <Field label="ธนาคาร">
-          <Input value={f.bank} onChange={(e) => set('bank', e.target.value)} />
-        </Field>
-        <Field label="เลขบัญชี">
-          <Input value={f.accountNo} onChange={(e) => set('accountNo', e.target.value)} />
-        </Field>
-        <Field label="ชื่อบัญชี">
-          <Input value={f.accountName} onChange={(e) => set('accountName', e.target.value)} />
-        </Field>
+        <div className="flex max-h-[65vh] flex-col gap-3 overflow-y-auto pr-1">
+          <Field label="รหัสร้าน" required>
+            <Input value={f.code} onChange={(e) => set('code', e.target.value)} placeholder="AQ S00016" />
+          </Field>
+          <Field label="ชื่อร้าน" required>
+            <Input value={f.name} onChange={(e) => set('name', e.target.value)} />
+          </Field>
+          <Field label="ธนาคาร">
+            <Input value={f.bank} onChange={(e) => set('bank', e.target.value)} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="เลขบัญชี">
+              <Input value={f.accountNo} onChange={(e) => set('accountNo', e.target.value)} />
+            </Field>
+            <Field label="ชื่อบัญชี">
+              <Input value={f.accountName} onChange={(e) => set('accountName', e.target.value)} />
+            </Field>
+          </div>
+
+          <p className="mt-1 border-t border-peach pt-3 text-sm font-semibold text-ink">ข้อมูลติดต่อ (เผื่อต่อยอด)</p>
+          <Field label="ชื่อเจ้าของร้าน">
+            <Input value={f.ownerName ?? ''} onChange={(e) => set('ownerName', e.target.value)} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="เบอร์โทร">
+              <Input value={f.phone ?? ''} onChange={(e) => set('phone', e.target.value)} />
+            </Field>
+            <Field label="จังหวัด">
+              <Input value={f.province ?? ''} onChange={(e) => set('province', e.target.value)} />
+            </Field>
+          </div>
+          <Field label="ลิงก์เฟซบุ๊ก">
+            <Input value={f.facebookLink ?? ''} onChange={(e) => set('facebookLink', e.target.value)} placeholder="https://facebook.com/..." />
+          </Field>
+          <Field label="ช่องทางติดต่ออื่นๆ (LINE ฯลฯ)">
+            <Input value={f.contactChannel ?? ''} onChange={(e) => set('contactChannel', e.target.value)} />
+          </Field>
+          <Field label="ที่อยู่">
+            <Input value={f.address ?? ''} onChange={(e) => set('address', e.target.value)} />
+          </Field>
+        </div>
+
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>

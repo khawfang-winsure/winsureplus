@@ -31,6 +31,13 @@ export interface Shop {
   accountNo: string
   accountName: string
   active: boolean
+  // --- ข้อมูลติดต่อ (เผื่อต่อยอดอนาคต) ---
+  ownerName?: string // ชื่อเจ้าของร้าน
+  phone?: string // เบอร์โทร
+  facebookLink?: string // ลิงก์เฟซบุ๊ก
+  contactChannel?: string // ช่องทางติดต่ออื่นๆ (LINE ฯลฯ)
+  address?: string // ที่อยู่
+  province?: string // จังหวัด
 }
 
 /** ตัวเลือกที่ตั้งค่าได้ (รุ่น/ความจำ/อาชีพ/หลักฐาน/โปรโมชั่น) — ลบแล้วใช้ active=false ข้อมูลเก่าไม่หาย */

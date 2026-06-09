@@ -169,6 +169,12 @@ export async function getShops(): Promise<Shop[]> {
     accountNo: s.account_no ?? '',
     accountName: s.account_name ?? '',
     active: s.active,
+    ownerName: s.owner_name ?? '',
+    phone: s.phone ?? '',
+    facebookLink: s.facebook_link ?? '',
+    contactChannel: s.contact_channel ?? '',
+    address: s.address ?? '',
+    province: s.province ?? '',
   }))
 }
 
@@ -185,6 +191,12 @@ export async function getAllShops(): Promise<Shop[]> {
     accountNo: s.account_no ?? '',
     accountName: s.account_name ?? '',
     active: s.active,
+    ownerName: s.owner_name ?? '',
+    phone: s.phone ?? '',
+    facebookLink: s.facebook_link ?? '',
+    contactChannel: s.contact_channel ?? '',
+    address: s.address ?? '',
+    province: s.province ?? '',
   }))
 }
 
@@ -508,6 +520,12 @@ export interface ShopInput {
   accountNo: string
   accountName: string
   active: boolean
+  ownerName?: string
+  phone?: string
+  facebookLink?: string
+  contactChannel?: string
+  address?: string
+  province?: string
 }
 
 export async function saveShop(s: ShopInput): Promise<void> {
@@ -519,6 +537,12 @@ export async function saveShop(s: ShopInput): Promise<void> {
     account_no: s.accountNo || null,
     account_name: s.accountName || null,
     active: s.active,
+    owner_name: s.ownerName || null,
+    phone: s.phone || null,
+    facebook_link: s.facebookLink || null,
+    contact_channel: s.contactChannel || null,
+    address: s.address || null,
+    province: s.province || null,
   }
   const { error } = s.id
     ? await supabase.from('shops').update(row).eq('id', s.id)

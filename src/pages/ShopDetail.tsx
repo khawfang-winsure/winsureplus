@@ -99,6 +99,23 @@ export default function ShopDetail() {
         )}
       </div>
 
+      {/* ข้อมูลติดต่อ (ถ้ามี) */}
+      {(shop.ownerName || shop.phone || shop.province || shop.address || shop.contactChannel || shop.facebookLink) && (
+        <div className="mb-5 grid gap-x-6 gap-y-1.5 rounded-2xl border border-peach bg-cream-deep p-4 text-sm sm:grid-cols-2">
+          {shop.ownerName && <p><span className="text-ink-soft">เจ้าของร้าน:</span> <span className="text-ink">{shop.ownerName}</span></p>}
+          {shop.phone && <p><span className="text-ink-soft">เบอร์โทร:</span> <span className="text-ink">{shop.phone}</span></p>}
+          {shop.province && <p><span className="text-ink-soft">จังหวัด:</span> <span className="text-ink">{shop.province}</span></p>}
+          {shop.contactChannel && <p><span className="text-ink-soft">ช่องทางติดต่อ:</span> <span className="text-ink">{shop.contactChannel}</span></p>}
+          {shop.address && <p className="sm:col-span-2"><span className="text-ink-soft">ที่อยู่:</span> <span className="text-ink">{shop.address}</span></p>}
+          {shop.facebookLink && (
+            <p className="truncate sm:col-span-2">
+              <span className="text-ink-soft">เฟซบุ๊ก:</span>{' '}
+              <a href={shop.facebookLink} target="_blank" rel="noreferrer" className="text-salmon-deep hover:underline">{shop.facebookLink}</a>
+            </p>
+          )}
+        </div>
+      )}
+
       {/* สถิติย่อ */}
       {row && (
         <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

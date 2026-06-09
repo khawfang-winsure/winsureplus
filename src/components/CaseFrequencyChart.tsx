@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Contract } from '../lib/types'
+import { LineChart } from './LineChart'
 
 // กราฟความถี่การส่งเคสตามเวลา — สลับมุมมอง รายปี (รายเดือน) / รายเดือน (รายวัน)
 const MONTH_TH = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
@@ -43,9 +44,7 @@ export function CaseFrequencyChart({ contracts }: { contracts: Contract[] }) {
     return counts.map((value, i) => ({ key: i, label: `${i + 1}`, value }))
   }, [contracts, mode, year, month])
 
-  const max = Math.max(1, ...bars.map((b) => b.value))
   const totalInView = bars.reduce((s, b) => s + b.value, 0)
-  const showEveryLabel = bars.length <= 14 // รายวันจะเยอะ → โชว์ label เป็นช่วง
 
   const selectCls =
     'rounded-lg border border-peach bg-cream-deep px-2.5 py-1.5 text-sm text-ink outline-none focus:border-salmon-deep'
@@ -96,29 +95,11 @@ export function CaseFrequencyChart({ contracts }: { contracts: Contract[] }) {
         </p>
       ) : (
         <>
-          {/* แท่งกราฟ (แนวตั้ง) */}
-          <div className="flex h-44 items-end gap-1">
-            {bars.map((b) => (
-              <div
-                key={b.key}
-                title={`${b.label}: ${b.value} เคส`}
-                className="flex flex-1 items-end justify-center rounded-t bg-salmon-deep transition hover:bg-salmon"
-                style={{ height: `${b.value === 0 ? 0 : Math.max((b.value / max) * 100, 6)}%` }}
-              >
-                {bars.length <= 12 && b.value > 0 && (
-                  <span className="pb-0.5 text-[10px] font-semibold text-white">{b.value}</span>
-                )}
-              </div>
-            ))}
-          </div>
-          {/* ป้ายแกนล่าง */}
-          <div className="mt-1 flex gap-1">
-            {bars.map((b, i) => (
-              <span key={b.key} className="flex-1 overflow-hidden text-center text-[10px] text-ink-soft">
-                {showEveryLabel || i % 5 === 0 ? b.label : ''}
-              </span>
-            ))}
-          </div>
+          <LineChart
+            labels={bars.map((b) => b.label)}
+            series={[{ name: 'เคส', color: '#f97316', values: bars.map((b) => b.value), fill: true }]}
+            valueSuffix=" เคส"
+          />
           <p className="mt-3 text-sm text-ink-soft">
             รวม <b className="text-ink">{totalInView}</b> เคส ใน
             {mode === 'year' ? `ปี ${year + 543}` : `เดือน${MONTH_TH[month - 1]} ${year + 543}`}
