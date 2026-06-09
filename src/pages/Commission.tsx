@@ -22,6 +22,7 @@ import {
   buildCommissionReport,
   CLAWBACK_LABEL,
   lockUpdatesFor,
+  periodKeyOf,
   recruitTierLabel,
   tierLabel,
   type CommissionTier,
@@ -52,18 +53,28 @@ export default function Commission() {
 }
 
 const baht = (n: number) => n.toLocaleString('th-TH')
-function thisMonth(): string {
-  return new Date().toISOString().slice(0, 7)
+const TH_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
 }
+function firstOfThisMonth(): string {
+  return today().slice(0, 7) + '-01'
+}
+// ป้ายเดือนจาก yyyy-mm (ใช้ในรายละเอียดเคส)
 function monthLabel(ym: string): string {
   const [y, m] = ym.split('-').map(Number)
-  const names = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
-  return `${names[(m || 1) - 1]} ${y + 543}`
+  return `${TH_MONTHS[(m || 1) - 1]} ${y + 543}`
+}
+// ป้ายวันจาก yyyy-mm-dd
+function dayLabel(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
+  return `${d} ${TH_MONTHS[(m || 1) - 1]} ${y + 543}`
 }
 
 // ---------- รายงานค่าคอมต่อพนักงาน ----------
 function CommissionReport({ canEdit }: { canEdit: boolean }) {
-  const [month, setMonth] = useState<string>(thisMonth())
+  const [start, setStart] = useState<string>(firstOfThisMonth())
+  const [end, setEnd] = useState<string>(today())
   const [contracts, setContracts] = useState<Contract[]>([])
   const [installments, setInstallments] = useState<InstallmentLite[]>([])
   const [returns, setReturns] = useState<DeviceReturnRow[]>([])
@@ -105,11 +116,12 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
     load()
   }, [])
 
-  const asOf = new Date().toISOString().slice(0, 10)
+  const asOf = today()
   const report = useMemo<EmployeeCommission[]>(
     () =>
       buildCommissionReport({
-        month,
+        start,
+        end,
         contracts,
         installments,
         returns,
@@ -120,20 +132,26 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
         recruitBonuses,
         asOf,
       }),
-    [month, contracts, installments, returns, shops, employeeNames, tiers, recruitTiers, recruitBonuses, asOf],
+    [start, end, contracts, installments, returns, shops, employeeNames, tiers, recruitTiers, recruitBonuses, asOf],
   )
 
+  const periodKey = periodKeyOf(start, end)
+  const periodText = `${dayLabel(start)} – ${dayLabel(end)}`
   const monthLocked = report.some((e) => e.locked)
   const totalCaseNet = report.reduce((s, e) => s + e.net, 0)
   const totalRecruit = report.reduce((s, e) => s + e.recruitTotal, 0)
   const totalGrand = report.reduce((s, e) => s + e.grandTotal, 0)
 
   async function toggleLock() {
+    if (start > end) {
+      window.alert('ช่วงวันที่ไม่ถูกต้อง — วันเริ่มต้องไม่เกินวันสิ้นสุด')
+      return
+    }
     if (monthLocked) {
-      if (!window.confirm(`ปลดล็อกยอดเดือน ${monthLabel(month)}? ระบบจะกลับไปคิดค่าคอมเคสแบบสดอีกครั้ง`)) return
+      if (!window.confirm(`ปลดล็อกยอดช่วง ${periodText}? ระบบจะกลับไปคิดค่าคอมเคสแบบสดอีกครั้ง`)) return
       setBusy(true)
       try {
-        await unlockCommissionMonth(month)
+        await unlockCommissionMonth(periodKey)
         await load()
       } finally {
         setBusy(false)
@@ -141,20 +159,20 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
     } else {
       const updates = lockUpdatesFor(report)
       if (updates.length === 0) {
-        window.alert('เดือนนี้ยังไม่มีเคสที่บันทึก — ไม่มีอะไรให้ปิดยอด')
+        window.alert('ช่วงนี้ยังไม่มีเคสที่บันทึก — ไม่มีอะไรให้ปิดยอด')
         return
       }
       if (
         !window.confirm(
-          `ปิดยอด/ล็อกเรตค่าคอมเคส เดือน ${monthLabel(month)}? (${updates.length} เคส)\n` +
-            'หลังล็อก ค่าคอมเคสเดือนนี้จะไม่เปลี่ยนแม้แก้ขั้นค่าคอมทีหลัง\n' +
+          `ปิดยอด/ล็อกเรตค่าคอมเคส ช่วง ${periodText}? (${updates.length} เคส)\n` +
+            'หลังล็อก ค่าคอมเคสช่วงนี้จะไม่เปลี่ยนแม้แก้ขั้นค่าคอมทีหลัง\n' +
             '(หมายเหตุ: ค่าคอมหาร้านคิดสดเสมอ ล็อกไม่ได้)',
         )
       )
         return
       setBusy(true)
       try {
-        await lockCommissionMonth(month, updates)
+        await lockCommissionMonth(periodKey, updates)
         await load()
       } finally {
         setBusy(false)
@@ -174,11 +192,20 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <input
-            type="month"
-            value={month}
-            onChange={(e) => setMonth(e.target.value || thisMonth())}
+            type="date"
+            value={start}
+            max={end}
+            onChange={(e) => setStart(e.target.value || firstOfThisMonth())}
+            className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink"
+          />
+          <span className="text-ink-soft">–</span>
+          <input
+            type="date"
+            value={end}
+            min={start}
+            onChange={(e) => setEnd(e.target.value || today())}
             className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink"
           />
           {canEdit && (
@@ -201,7 +228,7 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
         <Loading />
       ) : report.length === 0 ? (
         <p className="rounded-xl bg-peach-light/40 px-4 py-6 text-center text-sm text-ink-soft">
-          เดือน {monthLabel(month)} ยังไม่มีค่าคอม — ยังไม่มีเคส/ร้าน/โบนัสที่ตกในเดือนนี้
+          ช่วง {periodText} ยังไม่มีค่าคอม — ยังไม่มีเคส/ร้าน/โบนัสที่ตกในช่วงนี้
         </p>
       ) : (
         <>
