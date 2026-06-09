@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Mail,
   PackageOpen,
+  PieChart,
   Receipt,
   Send,
   Settings,
@@ -32,6 +33,7 @@ export const NAV: NavItem[] = [
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
   { to: '/customers', label: 'ลูกค้าทั้งหมด', icon: Users },
+  { to: '/customer-overview', label: 'ภาพรวมลูกค้า', icon: PieChart },
   { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', icon: CalendarClock },
   {
     label: 'ลูกค้าล่าช้า-หนี้เสีย',
