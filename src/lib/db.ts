@@ -13,6 +13,7 @@ import type {
   Shop,
 } from './types'
 import * as mock from './mockData'
+import { DEFAULT_TIERS, type CommissionTier } from './commission'
 
 export type OptionKind =
   | 'phone_model'
@@ -241,6 +242,40 @@ export async function getSettings(): Promise<AppSettings> {
     penaltyPerDay: m.get('penalty_per_day') ?? DEFAULT_SETTINGS.penaltyPerDay,
     penaltyMaxDays: m.get('penalty_max_days') ?? DEFAULT_SETTINGS.penaltyMaxDays,
   }
+}
+
+// ---------- ขั้นบันไดค่าคอมมิชชั่น (เก็บใน app_settings เป็น JSON) ----------
+const COMMISSION_KEY = 'commission_tiers'
+
+export async function getCommissionTiers(): Promise<CommissionTier[]> {
+  if (!supabase) return DEFAULT_TIERS
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', COMMISSION_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return DEFAULT_TIERS
+  try {
+    const t = JSON.parse(data.value as string)
+    return Array.isArray(t) && t.length ? (t as CommissionTier[]) : DEFAULT_TIERS
+  } catch {
+    return DEFAULT_TIERS
+  }
+}
+
+/** บันทึกขั้นค่าคอม — เฉพาะแอดมิน (ตาม RLS). upsert เผื่อ key ยังไม่มี */
+export async function saveCommissionTiers(tiers: CommissionTier[]): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('app_settings').upsert(
+    {
+      key: COMMISSION_KEY,
+      value: JSON.stringify(tiers),
+      description: 'ขั้นบันไดค่าคอมมิชชั่น (บาท/เคส) — แก้ในหน้าตั้งค่า',
+    },
+    { onConflict: 'key' },
+  )
+  if (error) throw error
 }
 
 export async function insertContract(c: Omit<Contract, 'id'>): Promise<void> {

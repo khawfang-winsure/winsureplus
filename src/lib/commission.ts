@@ -1,0 +1,21 @@
+// ===== ค่าคอมมิชชั่นแบบขั้นบันได (ตั้งค่าได้ ไม่ hardcode) =====
+// หน่วย = บาท/เคส · คิดตอนบันทึกสัญญา · เก็บใน app_settings key='commission_tiers' (JSON)
+// สูตรคำนวณจริง + การหักคืน (clawback) จะทำในขั้นถัดไป
+
+export interface CommissionTier {
+  minCases: number // ตั้งแต่กี่เคส
+  maxCases: number | null // ถึงกี่เคส (null = ขึ้นไป)
+  bahtPerCase: number // ค่าคอมต่อเคส (บาท)
+}
+
+/** ค่าเริ่มต้น — เรต 0 ให้แอดมินกรอกเองในหน้าตั้งค่า */
+export const DEFAULT_TIERS: CommissionTier[] = [
+  { minCases: 1, maxCases: 10, bahtPerCase: 0 },
+  { minCases: 11, maxCases: 20, bahtPerCase: 0 },
+  { minCases: 21, maxCases: null, bahtPerCase: 0 },
+]
+
+/** ป้ายช่วงขั้น เช่น "1–10 เคส" หรือ "21 เคสขึ้นไป" */
+export function tierLabel(t: CommissionTier): string {
+  return t.maxCases == null ? `${t.minCases} เคสขึ้นไป` : `${t.minCases}–${t.maxCases} เคส`
+}
