@@ -182,6 +182,19 @@ export function breakdownBy(rows: CustomerRow[], dim: Exclude<Dimension, 'all'>)
   return out.sort((a, b) => b.badRate - a.badRate || b.total - a.total)
 }
 
+/** ภาพรวมลูกค้าทั้งหมดเป็นแถวเดียว (ไม่แยกกลุ่ม) */
+export function overallBreakdown(rows: CustomerRow[]): BreakdownRow {
+  const row: BreakdownRow = { group: 'ลูกค้าทั้งหมด', total: 0, counts: emptyCounts(), bad: 0, badRate: 0 }
+  for (const r of rows) {
+    if (r.category === 'closed') continue
+    row.total++
+    row.counts[r.bucket]++
+    if (BAD_BUCKETS.has(r.bucket)) row.bad++
+  }
+  row.badRate = row.total > 0 ? (row.bad / row.total) * 100 : 0
+  return row
+}
+
 const MONTH_TH = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
 
 export interface MonthlyProblem {

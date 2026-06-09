@@ -13,6 +13,7 @@ import {
   customerSummary,
   enrichCustomers,
   monthlyProblemTrend,
+  overallBreakdown,
   type CustomerRow,
   type Dimension,
 } from '../lib/customerReport'
@@ -97,7 +98,10 @@ export default function CustomerOverview() {
   const summary = useMemo(() => customerSummary(rows), [rows])
 
   const [dim, setDim] = useState<Dimension>('all')
-  const breakdown = useMemo(() => (dim === 'all' ? [] : breakdownBy(rows, dim)), [rows, dim])
+  const breakdown = useMemo(
+    () => (dim === 'all' ? [overallBreakdown(rows)] : breakdownBy(rows, dim)),
+    [rows, dim],
+  )
 
   const years = useMemo(() => yearsFromContracts(data.contracts), [data.contracts])
   const [yearSel, setYearSel] = useState<number | null>(null)
@@ -191,24 +195,20 @@ export default function CustomerOverview() {
 
           {/* ===== แยกตามมิติ ===== */}
           <Card className="mb-5">
-            <div className="mb-3 flex flex-wrap gap-2">
-              {DIMS.map((d) => (
-                <button
-                  key={d.key}
-                  onClick={() => setDim(d.key)}
-                  className={`rounded-xl border px-3.5 py-2 text-sm font-medium transition ${
-                    dim === d.key
-                      ? 'border-salmon-deep bg-salmon-deep text-white'
-                      : 'border-peach bg-cream-deep text-ink hover:bg-peach-light'
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <h3 className="font-semibold text-ink">สรุปลูกค้าตามกลุ่มความล่าช้า</h3>
+              <span className="text-sm text-ink-soft">แยกตาม:</span>
+              <select
+                value={dim}
+                onChange={(e) => setDim(e.target.value as Dimension)}
+                className="rounded-lg border border-peach bg-cream-deep px-3 py-1.5 text-sm text-ink outline-none focus:border-salmon-deep"
+              >
+                {DIMS.map((d) => (
+                  <option key={d.key} value={d.key}>{d.label}</option>
+                ))}
+              </select>
             </div>
-            {dim === 'all' ? (
-              <p className="py-4 text-center text-sm text-ink-soft">เลือกมิติด้านบนเพื่อดูแยกกลุ่ม (อาชีพ / อายุ / รุ่น / ร้าน)</p>
-            ) : breakdown.length === 0 ? (
+            {breakdown.length === 0 ? (
               <p className="py-4 text-center text-sm text-ink-soft">ไม่มีข้อมูล</p>
             ) : (
               <div className="scrollbar-thin overflow-x-auto rounded-xl border border-peach">
