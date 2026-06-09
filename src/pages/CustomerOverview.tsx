@@ -6,14 +6,17 @@ import { ListPager, ListToolbar } from '../components/ManagedList'
 import { LineChart } from '../components/LineChart'
 import { getAllStatuses, getContracts, getShops } from '../lib/db'
 import { yearsFromContracts } from '../lib/report'
+import { thaiDate } from '../lib/format'
 import {
   breakdownBy,
+  BUCKETS,
   customerSummary,
   enrichCustomers,
   monthlyProblemTrend,
   type CustomerRow,
   type Dimension,
 } from '../lib/customerReport'
+import type { OverdueBucket } from '../lib/types'
 import { useAsync } from '../lib/useAsync'
 import { useListControls } from '../lib/useListControls'
 import type { Contract } from '../lib/types'
@@ -22,11 +25,36 @@ const todayISO = new Date().toISOString().slice(0, 10)
 
 const DIMS: { key: Dimension; label: string }[] = [
   { key: 'all', label: 'ทั้งหมด' },
-  { key: 'occupation', label: 'ตามอาชีพ' },
-  { key: 'ageGroup', label: 'ตามกลุ่มอายุ' },
-  { key: 'model', label: 'ตามรุ่นสินค้า' },
-  { key: 'shop', label: 'ตามร้านค้า' },
+  { key: 'occupation', label: 'อาชีพ' },
+  { key: 'ageGroup', label: 'กลุ่มอายุ' },
+  { key: 'model', label: 'รุ่นสินค้า' },
+  { key: 'shop', label: 'ร้านค้า' },
+  { key: 'promotion', label: 'โปรโมชั่น' },
+  { key: 'term', label: 'ระยะผ่อน' },
+  { key: 'down', label: 'เรทดาวน์' },
+  { key: 'condition', label: 'สภาพเครื่อง' },
+  { key: 'origin', label: 'แหล่งที่มา' },
 ]
+
+// หัวคอลัมน์ + สีตามกลุ่มความล่าช้า
+const BUCKET_HEAD: Record<OverdueBucket, string> = {
+  normal: 'ปกติ',
+  '1-10': '1-10',
+  '11-30': '11-30',
+  '31-60': '31-60',
+  '61-90': '61-90',
+  '91-120': '91-120',
+  '120+': '120+',
+}
+const BUCKET_TONE: Record<OverdueBucket, string> = {
+  normal: 'text-green-600',
+  '1-10': 'text-amber-600',
+  '11-30': 'text-amber-600',
+  '31-60': 'text-amber-600',
+  '61-90': 'text-red-600',
+  '91-120': 'text-red-600',
+  '120+': 'text-red-600',
+}
 
 function StatCard({
   icon,
@@ -77,7 +105,25 @@ export default function CustomerOverview() {
   const trend = useMemo(() => monthlyProblemTrend(rows, year), [rows, year])
 
   const firstDefaults = useMemo(() => rows.filter((r) => r.firstDefault), [rows])
-  const fd = useListControls(firstDefaults, (r) => `${r.customerName} ${r.contractNo} ${r.shopName}`)
+  const shopOptions = useMemo(() => {
+    const m = new Map<string, string>()
+    rows.forEach((r) => m.set(r.shopId, r.shopName))
+    return [...m].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'th'))
+  }, [rows])
+  const [fdShop, setFdShop] = useState('')
+  const [fdFrom, setFdFrom] = useState('')
+  const [fdTo, setFdTo] = useState('')
+  const fdFiltered = useMemo(
+    () =>
+      firstDefaults.filter(
+        (r) =>
+          (!fdShop || r.shopId === fdShop) &&
+          (!fdFrom || (r.nextDue != null && r.nextDue >= fdFrom)) &&
+          (!fdTo || (r.nextDue != null && r.nextDue <= fdTo)),
+      ),
+    [firstDefaults, fdShop, fdFrom, fdTo],
+  )
+  const fd = useListControls(fdFiltered, (r) => `${r.customerName} ${r.contractNo} ${r.shopName}`)
 
   const activeTotal = summary.active || 1
   const pct = (n: number) => ((n / activeTotal) * 100).toFixed(0)
@@ -166,22 +212,27 @@ export default function CustomerOverview() {
               <p className="py-4 text-center text-sm text-ink-soft">ไม่มีข้อมูล</p>
             ) : (
               <div className="scrollbar-thin overflow-x-auto rounded-xl border border-peach">
-                <table className="w-full min-w-[560px] text-sm">
+                <table className="w-full min-w-[760px] text-sm">
                   <thead>
                     <tr className="bg-peach-light text-left text-ink">
-                      {['กลุ่ม', 'ทั้งหมด', 'ปกติ', 'ล่าช้า', 'หนี้เสีย', '% หนี้เสีย'].map((h) => (
-                        <th key={h} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
+                      <th className="whitespace-nowrap px-3 py-2.5 font-semibold">กลุ่ม</th>
+                      <th className="px-3 py-2.5 text-center font-semibold">ทั้งหมด</th>
+                      {BUCKETS.map((bk) => (
+                        <th key={bk} className="whitespace-nowrap px-3 py-2.5 text-center font-semibold">{BUCKET_HEAD[bk]}</th>
                       ))}
+                      <th className="px-3 py-2.5 text-center font-semibold">% เสี่ยง</th>
                     </tr>
                   </thead>
                   <tbody>
                     {breakdown.map((b, i) => (
                       <tr key={b.group} className={i % 2 ? 'bg-white' : 'bg-cream-deep'}>
                         <td className="px-3 py-2.5 font-medium text-ink">{b.group}</td>
-                        <td className="px-3 py-2.5 text-center">{b.total}</td>
-                        <td className="px-3 py-2.5 text-center text-green-600">{b.normal}</td>
-                        <td className="px-3 py-2.5 text-center text-amber-600">{b.late}</td>
-                        <td className="px-3 py-2.5 text-center font-medium text-red-600">{b.bad}</td>
+                        <td className="px-3 py-2.5 text-center font-medium">{b.total}</td>
+                        {BUCKETS.map((bk) => (
+                          <td key={bk} className={`px-3 py-2.5 text-center ${b.counts[bk] ? BUCKET_TONE[bk] : 'text-ink-soft'}`}>
+                            {b.counts[bk] || '·'}
+                          </td>
+                        ))}
                         <td className="px-3 py-2.5 text-center font-semibold text-red-600">{b.badRate.toFixed(0)}%</td>
                       </tr>
                     ))}
@@ -198,32 +249,57 @@ export default function CustomerOverview() {
             <p className="rounded-2xl border border-peach bg-cream-deep py-6 text-center text-sm text-ink-soft">ไม่มีเคสไม่จ่ายงวดแรก 🎉</p>
           ) : (
             <>
-              <ListToolbar controls={fd} searchPlaceholder="ค้นหา (ชื่อ / สัญญา / ร้าน)..." />
-              <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
-                <table className="w-full min-w-[560px] text-sm">
-                  <thead>
-                    <tr className="bg-peach-light text-left text-ink">
-                      {['ชื่อลูกค้า', 'เลขที่สัญญา', 'ร้านค้า', 'ค้างมาแล้ว'].map((h) => (
-                        <th key={h} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fd.paged.map((r, i) => (
-                      <tr
-                        key={r.contractId}
-                        onClick={() => navigate(`/contract/${r.contractId}`)}
-                        className={`cursor-pointer transition hover:bg-peach-light/60 ${i % 2 ? 'bg-white' : 'bg-cream-deep'}`}
-                      >
-                        <td className="px-3 py-2.5 font-medium text-salmon-deep">{r.customerName}</td>
-                        <td className="px-3 py-2.5">{r.contractNo}</td>
-                        <td className="px-3 py-2.5">{r.shopName}</td>
-                        <td className="px-3 py-2.5 font-medium text-red-600">{r.daysLate} วัน</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              {/* ตัวกรอง: ร้านค้า + ช่วงวันครบกำหนด */}
+              <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                <select
+                  value={fdShop}
+                  onChange={(e) => setFdShop(e.target.value)}
+                  className="rounded-lg border border-peach bg-cream-deep px-3 py-1.5 text-ink outline-none focus:border-salmon-deep"
+                >
+                  <option value="">ทุกร้าน</option>
+                  {shopOptions.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <span className="text-ink-soft">วันครบกำหนด:</span>
+                <input type="date" value={fdFrom} onChange={(e) => setFdFrom(e.target.value)} className="rounded-lg border border-peach bg-cream-deep px-3 py-1.5 text-ink outline-none focus:border-salmon-deep" />
+                <span className="text-ink-soft">ถึง</span>
+                <input type="date" value={fdTo} onChange={(e) => setFdTo(e.target.value)} className="rounded-lg border border-peach bg-cream-deep px-3 py-1.5 text-ink outline-none focus:border-salmon-deep" />
+                {(fdShop || fdFrom || fdTo) && (
+                  <button onClick={() => { setFdShop(''); setFdFrom(''); setFdTo('') }} className="rounded-lg border border-peach px-3 py-1.5 text-ink hover:bg-peach-light">ล้างตัวกรอง</button>
+                )}
               </div>
+              <ListToolbar controls={fd} searchPlaceholder="ค้นหา (ชื่อ / สัญญา / ร้าน)..." />
+              {fd.total === 0 ? (
+                <p className="rounded-2xl border border-peach bg-cream-deep py-6 text-center text-sm text-ink-soft">ไม่พบเคสตามเงื่อนไข</p>
+              ) : (
+                <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead>
+                      <tr className="bg-peach-light text-left text-ink">
+                        {['ชื่อลูกค้า', 'เลขที่สัญญา', 'ร้านค้า', 'วันครบกำหนด', 'ค้างมาแล้ว'].map((h) => (
+                          <th key={h} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fd.paged.map((r, i) => (
+                        <tr
+                          key={r.contractId}
+                          onClick={() => navigate(`/contract/${r.contractId}`)}
+                          className={`cursor-pointer transition hover:bg-peach-light/60 ${i % 2 ? 'bg-white' : 'bg-cream-deep'}`}
+                        >
+                          <td className="px-3 py-2.5 font-medium text-salmon-deep">{r.customerName}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5">{r.contractNo}</td>
+                          <td className="px-3 py-2.5">{r.shopName}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5">{r.nextDue ? thaiDate(r.nextDue) : '-'}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 font-medium text-red-600">{r.daysLate} วัน</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
               <ListPager controls={fd} />
             </>
           )}

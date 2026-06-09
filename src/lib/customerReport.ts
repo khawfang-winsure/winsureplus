@@ -1,8 +1,12 @@
 // ===== วิเคราะห์ภาพรวมลูกค้า (ปกติ / ล่าช้า / หนี้เสีย) =====
 // กฎฝั่งลูกค้า: หนี้เสีย = ค้างชำระ 60 วันขึ้นไป (ต่างจากฝั่งร้านที่ 31 วัน)
-import type { Contract, ContractStatusRow, Shop } from './types'
+import type { Contract, ContractStatusRow, OverdueBucket, Shop } from './types'
 
 export const BAD_DAYS = 60
+
+// กลุ่มความล่าช้า (ตามแถบเมนูด้านซ้าย)
+export const BUCKETS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90', '91-120', '120+']
+const BAD_BUCKETS = new Set<OverdueBucket>(['61-90', '91-120', '120+'])
 
 export type CustomerCategory = 'normal' | 'late' | 'bad' | 'closed'
 
@@ -13,16 +17,33 @@ export interface CustomerRow {
   shopId: string
   shopName: string
   category: CustomerCategory
+  bucket: OverdueBucket
   daysLate: number
+  nextDue: string | null // วันครบกำหนดงวดค้างเก่าสุด
   occupation: string
   ageGroup: string
   model: string
+  promotion: string
+  term: string
+  downRate: string
+  condition: string
+  origin: string
   firstDefault: boolean // ไม่จ่ายตั้งแต่งวดแรก (ไม่เคยจ่ายเลย + เลยกำหนด)
-  lateMonth: string | null // 'YYYY-MM' เดือนที่เริ่มล่าช้า
-  badMonth: string | null // 'YYYY-MM' เดือนที่กลายเป็นหนี้เสีย
+  lateMonth: string | null
+  badMonth: string | null
 }
 
-export type Dimension = 'all' | 'occupation' | 'ageGroup' | 'model' | 'shop'
+export type Dimension =
+  | 'all'
+  | 'occupation'
+  | 'ageGroup'
+  | 'model'
+  | 'shop'
+  | 'promotion'
+  | 'term'
+  | 'down'
+  | 'condition'
+  | 'origin'
 
 function addDaysISO(iso: string, days: number): string {
   const d = new Date(iso + 'T00:00:00')
@@ -33,15 +54,13 @@ function addDaysISO(iso: string, days: number): string {
 function ageGroupOf(birthYear: number | undefined, todayISO: string): string {
   if (!birthYear) return 'ไม่ระบุ'
   const gregYear = Number(todayISO.slice(0, 4))
-  // รองรับทั้งปี พ.ศ. (>2400) และ ค.ศ.
-  const age = birthYear > 2400 ? gregYear + 543 - birthYear : gregYear - birthYear
-  if (age < 18 || age > 100) return 'ไม่ระบุ'
-  if (age <= 22) return '18-22'
+  const age = birthYear > 2400 ? gregYear + 543 - birthYear : gregYear - birthYear // รองรับ พ.ศ./ค.ศ.
+  if (age >= 18 && age <= 22) return '18-22'
   if (age <= 30) return '23-30'
   if (age <= 40) return '31-40'
   if (age <= 50) return '41-50'
   if (age <= 60) return '51-60'
-  return '60+'
+  return 'ไม่ระบุ'
 }
 
 export function enrichCustomers(
@@ -78,10 +97,17 @@ export function enrichCustomers(
       shopId: c.shopId,
       shopName: shopName.get(c.shopId) ?? '-',
       category,
+      bucket: st?.bucket ?? 'normal',
       daysLate,
+      nextDue: st?.nextDue ?? null,
       occupation: c.occupation || 'ไม่ระบุ',
       ageGroup: ageGroupOf(c.birthYear, todayISO),
       model: c.model || 'ไม่ระบุ',
+      promotion: c.promotion || (c.hasPromotion ? 'มีโปร' : 'ไม่มีโปร'),
+      term: `${c.termMonths} เดือน`,
+      downRate: `ดาวน์ ${c.downPercent}%`,
+      condition: c.condition === 'new' ? 'มือ 1' : 'มือ 2',
+      origin: c.origin === 'th' ? 'เครื่องไทย' : 'เครื่องนอก',
       firstDefault,
       lateMonth,
       badMonth,
@@ -117,10 +143,9 @@ export function customerSummary(rows: CustomerRow[]): CustomerSummary {
 export interface BreakdownRow {
   group: string
   total: number
-  normal: number
-  late: number
+  counts: Record<OverdueBucket, number> // จำนวนแยกตามกลุ่มความล่าช้า
   bad: number
-  badRate: number // % หนี้เสีย ของกลุ่ม
+  badRate: number
 }
 
 const DIM_KEY: Record<Exclude<Dimension, 'all'>, (r: CustomerRow) => string> = {
@@ -128,18 +153,28 @@ const DIM_KEY: Record<Exclude<Dimension, 'all'>, (r: CustomerRow) => string> = {
   ageGroup: (r) => r.ageGroup,
   model: (r) => r.model,
   shop: (r) => r.shopName,
+  promotion: (r) => r.promotion,
+  term: (r) => r.term,
+  down: (r) => r.downRate,
+  condition: (r) => r.condition,
+  origin: (r) => r.origin,
 }
 
-/** แยกตามมิติ (อาชีพ/อายุ/รุ่น/ร้าน) — เฉพาะสัญญาที่ยังผ่อนอยู่ */
+function emptyCounts(): Record<OverdueBucket, number> {
+  return { normal: 0, '1-10': 0, '11-30': 0, '31-60': 0, '61-90': 0, '91-120': 0, '120+': 0 }
+}
+
+/** แยกตามมิติ + แตกความล่าช้าตามกลุ่มเมนู — เฉพาะสัญญาที่ยังผ่อนอยู่ */
 export function breakdownBy(rows: CustomerRow[], dim: Exclude<Dimension, 'all'>): BreakdownRow[] {
   const keyOf = DIM_KEY[dim]
   const map = new Map<string, BreakdownRow>()
   for (const r of rows) {
     if (r.category === 'closed') continue
     const g = keyOf(r)
-    const cur = map.get(g) ?? { group: g, total: 0, normal: 0, late: 0, bad: 0, badRate: 0 }
+    const cur = map.get(g) ?? { group: g, total: 0, counts: emptyCounts(), bad: 0, badRate: 0 }
     cur.total++
-    cur[r.category]++
+    cur.counts[r.bucket]++
+    if (BAD_BUCKETS.has(r.bucket)) cur.bad++
     map.set(g, cur)
   }
   const out = [...map.values()]
