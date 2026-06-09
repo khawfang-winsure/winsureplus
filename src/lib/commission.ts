@@ -2,7 +2,8 @@
 // หน่วย = บาท/เคส · คิดตอนบันทึกสัญญา · เก็บใน app_settings key='commission_tiers' (JSON)
 // ส่วนล่างของไฟล์ = ตัวสร้างรายงานค่าคอมต่อพนักงานต่อเดือน (gross − clawback = net)
 
-import type { Contract, DeviceReturnRow, Shop } from './types'
+import type { Contract, DeviceReturnRow, Shop, ShopGrade } from './types'
+import { gradeFor } from './report'
 
 export interface CommissionTier {
   minCases: number // ตั้งแต่กี่เคส
@@ -110,6 +111,7 @@ export interface RecruitBonusEarned {
   cases: number // จำนวนเคสเป้าที่ทำได้
   withinMonths: number // กรอบเวลา
   bonus: number // โบนัส (บาท)
+  grade: ShopGrade // เกรดร้าน ณ สิ้นกรอบเวลา (ได้โบนัสเฉพาะ A/B)
 }
 
 export interface EmployeeCommission {
@@ -170,6 +172,25 @@ function addMonths(isoDate: string, months: number): string {
   const tm = target.getUTCMonth()
   const lastDay = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate() // วันสุดท้ายของเดือนเป้าหมาย
   return new Date(Date.UTC(ty, tm, Math.min(d, lastDay))).toISOString().slice(0, 10)
+}
+
+/** จำนวนวันระหว่าง 2 วันที่ (yyyy-mm-dd) */
+function daysBetween(fromISO: string, toISO: string): number {
+  return Math.floor((Date.parse(toISO.slice(0, 10)) - Date.parse(fromISO.slice(0, 10))) / 86_400_000)
+}
+
+/** สัญญานี้ "เสี่ยง" (ล่าช้า 31 วันขึ้นไป) ณ วันที่ asOf หรือไม่ — ดูจากประวัติงวด ณ เวลานั้น
+ *  (งวดถือว่ายังไม่จ่ายถ้า paid_at ว่าง หรือจ่ายหลัง asOf) */
+function isRiskyAsOf(insts: ReportInstallment[], asOf: string): boolean {
+  let oldestUnpaidDue: string | null = null
+  for (const i of insts) {
+    const paidByAsOf = i.paidAt != null && dateOnly(i.paidAt) <= asOf
+    if (!paidByAsOf && (oldestUnpaidDue == null || i.dueDate < oldestUnpaidDue)) {
+      oldestUnpaidDue = i.dueDate
+    }
+  }
+  if (oldestUnpaidDue == null) return false
+  return daysBetween(oldestUnpaidDue, asOf) >= 31
 }
 
 interface ClawbackEvent {
@@ -369,6 +390,19 @@ export function buildCommissionReport(input: CommissionReportInput): EmployeeCom
       if (inWindow.length < rule.cases) continue
       const hitDate = inWindow[rule.cases - 1] // วันที่เคสที่ N ส่งถึง = วันได้โบนัส
       if (!inRange(hitDate)) continue
+      // เงื่อนไขเกรด: ร้านต้องเกรด A/B ณ สิ้นกรอบเวลา (windowEnd) ถึงได้โบนัส
+      const shopContracts = contracts.filter(
+        (c) => c.shopId === s.id && dateOnly(c.transactionDate) <= windowEnd,
+      )
+      let risky = 0
+      for (const c of shopContracts) {
+        if (isRiskyAsOf(instByContract.get(c.id) ?? [], windowEnd)) risky++
+      }
+      const grade = gradeFor(
+        shopContracts.length ? (risky / shopContracts.length) * 100 : 0,
+        shopContracts.length,
+      )
+      if (grade !== 'A' && grade !== 'B') continue // เกรด C ลงไป = อดโบนัส
       const e = ensureEmp(s.recruitedBy)
       e.recruitBonuses.push({
         shopId: s.id,
@@ -376,6 +410,7 @@ export function buildCommissionReport(input: CommissionReportInput): EmployeeCom
         cases: rule.cases,
         withinMonths: rule.months,
         bonus: rule.bonus,
+        grade,
       })
       e.recruitBonusAmount += rule.bonus
     }

@@ -267,8 +267,9 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
 
           <p className="mt-3 rounded-lg bg-peach-light/40 px-3 py-2 text-xs text-ink-soft">
             <strong>ค่าคอมเคส</strong> = เคสที่บันทึกในเดือนนี้ × เรตขั้นบันได − หักคืน (งวดล่าช้าครบ 30 วัน) ·{' '}
-            <strong>ค่าคอมหาร้าน</strong> = ก้อนหาร้านในเดือนนี้ + โบนัสร้านที่ส่งเคสครบเป้า (โบนัสนับเคสตาม “ร้าน”
-            ทุกคนรวมกัน) · ปิดยอดล็อกได้เฉพาะค่าคอมเคส — ค่าคอมหาร้านคิดสดเสมอ
+            <strong>ค่าคอมหาร้าน</strong> = ก้อนหาร้านในช่วงนี้ + โบนัสร้านที่ส่งเคสครบเป้า (นับเคสตาม “ร้าน”
+            ทุกคนรวมกัน · ได้โบนัสเฉพาะร้านเกรด A/B ณ สิ้นกรอบเวลา) · ปิดยอดล็อกได้เฉพาะค่าคอมเคส —
+            ค่าคอมหาร้านคิดสดเสมอ
           </p>
         </>
       )}
@@ -338,7 +339,8 @@ function EmployeeRow({
                   )}
                   {e.recruitBonuses.map((b) => (
                     <div key={b.shopId} className="pl-4">
-                      ↳ โบนัสร้าน {b.shopName} (ส่งครบ {b.cases} เคสใน {b.withinMonths} เดือน) +{baht(b.bonus)}
+                      ↳ โบนัสร้าน {b.shopName} (ส่งครบ {b.cases} เคสใน {b.withinMonths} เดือน · เกรด {b.grade}) +
+                      {baht(b.bonus)}
                     </div>
                   ))}
                 </div>
