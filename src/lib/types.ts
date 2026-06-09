@@ -166,6 +166,8 @@ export interface Contract {
   operator: string // ผู้ดำเนินการ (พิมพ์เอง)
   recordedBy?: string // ผู้บันทึก — ชื่อ ณ ตอนบันทึก (DB ประทับตราอัตโนมัติ, ใช้คิดค่าคอม)
   recordedById?: string | null // user id ของผู้บันทึก (ไว้จัดกลุ่มคิดค่าคอม)
+  commissionRateLocked?: number | null // เรตค่าคอมที่ล็อกไว้ (null = ยังไม่ปิดยอด)
+  commissionLockedMonth?: string | null // เดือนที่ปิดยอด เช่น '2026-06' (null = ยังไม่ปิด)
   notes?: string
   // --- flag กันส่งซ้ำ ---
   summarySentAt?: string | null

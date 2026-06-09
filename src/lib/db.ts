@@ -65,6 +65,8 @@ interface ContractRow {
   operator: string | null
   recorded_by: string | null
   recorded_by_name: string | null
+  commission_rate_locked: number | null
+  commission_locked_month: string | null
   notes: string | null
   summary_sent_at: string | null
   email_sent_at: string | null
@@ -105,6 +107,8 @@ function mapContract(r: ContractRow): Contract {
     operator: r.operator ?? '',
     recordedBy: r.recorded_by_name ?? '',
     recordedById: r.recorded_by ?? null,
+    commissionRateLocked: r.commission_rate_locked == null ? null : Number(r.commission_rate_locked),
+    commissionLockedMonth: r.commission_locked_month ?? null,
     notes: r.notes ?? undefined,
     summarySentAt: r.summary_sent_at,
     emailSentAt: r.email_sent_at,
@@ -278,6 +282,33 @@ export async function saveCommissionTiers(tiers: CommissionTier[]): Promise<void
   if (error) throw error
 }
 
+/** ปิดยอด (ล็อกเรต) เดือนหนึ่ง — เขียนเรตที่แช่แข็งลงทุกสัญญาที่บันทึกในเดือนนั้น
+ *  updates แต่ละตัว = { contractId, rate } โดย rate = เรต flat ของเจ้าของเคสในเดือนนั้น */
+export async function lockCommissionMonth(
+  month: string,
+  updates: { contractId: string; rate: number }[],
+): Promise<void> {
+  if (!supabase || updates.length === 0) return
+  // อัปเดตทีละเคส (จำนวนเคสต่อเดือนไม่มาก — ชัดเจนกว่าทำ bulk ผ่าน rpc)
+  for (const u of updates) {
+    const { error } = await supabase
+      .from('contracts')
+      .update({ commission_rate_locked: u.rate, commission_locked_month: month })
+      .eq('id', u.contractId)
+    if (error) throw error
+  }
+}
+
+/** ปลดล็อกเดือน — ล้างเรตที่ล็อกไว้ของทุกสัญญาที่ปิดยอดเดือนนั้น (กลับไปคิดสด) */
+export async function unlockCommissionMonth(month: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('contracts')
+    .update({ commission_rate_locked: null, commission_locked_month: null })
+    .eq('commission_locked_month', month)
+  if (error) throw error
+}
+
 export async function insertContract(c: Omit<Contract, 'id'>): Promise<void> {
   if (!supabase) {
     // โหมด mock — ยังไม่บันทึกจริง
@@ -372,6 +403,29 @@ export async function getInstallments(contractId: string): Promise<Installment[]
     .order('installment_no')
   if (error) throw error
   return ((data ?? []) as InstallmentRow[]).map(mapInstallment)
+}
+
+/** งวดผ่อนแบบย่อ (เฉพาะที่ใช้คิดค่าคอม) ของทุกสัญญา — query เดียว ไม่ N+1 */
+export interface InstallmentLite {
+  contractId: string
+  installmentNo: number
+  dueDate: string
+  paidAt: string | null
+}
+
+/** ดึงงวดทั้งหมด (ทุกสัญญา) — ใช้ตรวจประวัติ "เคยล่าช้าเกิน 30 วัน" ในรายงานค่าคอม */
+export async function getAllInstallments(): Promise<InstallmentLite[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('installments')
+    .select('contract_id, installment_no, due_date, paid_at')
+  if (error) throw error
+  return (data ?? []).map((r) => ({
+    contractId: r.contract_id as string,
+    installmentNo: r.installment_no as number,
+    dueDate: r.due_date as string,
+    paidAt: (r.paid_at as string | null) ?? null,
+  }))
 }
 
 export async function markInstallmentPaid(installmentId: string): Promise<void> {
