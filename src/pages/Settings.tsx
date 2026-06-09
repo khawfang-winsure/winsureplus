@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Pencil, Plus } from 'lucide-react'
+import { Briefcase, Pencil, Plus, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { useAuth } from '../lib/auth'
 import {
@@ -23,6 +23,15 @@ const OPTION_KINDS: { kind: OptionKind; title: string; hasDetail?: boolean }[] =
   { kind: 'promotion', title: 'โปรโมชั่น', hasDetail: true },
 ]
 
+// หมวดตั้งค่า — แยกเป็นหัวข้อย่อย กดปุ่มเลือกทีละหมวด
+type CategoryKey = 'shops' | 'device' | 'job' | 'promo'
+const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: OptionKind[] }[] = [
+  { key: 'shops', label: 'ร้านค้า', icon: Store, kinds: [] },
+  { key: 'device', label: 'ตัวเครื่อง', icon: Smartphone, kinds: ['phone_model', 'storage'] },
+  { key: 'job', label: 'อาชีพ & หลักฐาน', icon: Briefcase, kinds: ['occupation', 'occupation_proof'] },
+  { key: 'promo', label: 'โปรโมชั่น', icon: Tag, kinds: ['promotion'] },
+]
+
 const emptyData = {
   shops: [] as Shop[],
   options: {} as Record<OptionKind, Option[]>,
@@ -34,6 +43,7 @@ export default function Settings() {
 
   const [data, setData] = useState(emptyData)
   const [loading, setLoading] = useState(true)
+  const [cat, setCat] = useState<CategoryKey>('shops')
   const [shopModal, setShopModal] = useState<ShopInput | null>(null)
   const [optModal, setOptModal] = useState<OptionInput | null>(null)
 
@@ -62,6 +72,107 @@ export default function Settings() {
     await load()
   }
 
+  // ----- ส่วนร้านค้า -----
+  function renderShops() {
+    return (
+      <Card>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="font-semibold text-ink">ร้านค้า ({data.shops.length})</h3>
+          {canEdit && (
+            <Button
+              variant="ghost"
+              onClick={() =>
+                setShopModal({ code: '', name: '', bank: '', accountNo: '', accountName: '', active: true })
+              }
+            >
+              <Plus size={16} /> เพิ่มร้านค้า
+            </Button>
+          )}
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          {data.shops.map((s) => (
+            <div
+              key={s.id}
+              className={`flex items-center justify-between rounded-xl bg-white px-4 py-3 ${s.active ? '' : 'opacity-50'}`}
+            >
+              <div>
+                <p className="font-medium text-ink">{s.code} · {s.name}</p>
+                <p className="text-sm text-ink-soft">{s.bank} · {s.accountNo}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge tone={s.active ? 'green' : 'neutral'}>{s.active ? 'ใช้งาน' : 'ปิด'}</Badge>
+                {canEdit && (
+                  <>
+                    <button
+                      onClick={() => setShopModal({ ...s })}
+                      className="rounded-lg p-1.5 text-ink-soft hover:bg-peach-light"
+                      title="แก้ไข"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      onClick={() => toggleShop(s)}
+                      className="rounded-lg px-2 py-1 text-xs text-ink-soft hover:bg-peach-light"
+                    >
+                      {s.active ? 'ปิด' : 'เปิด'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    )
+  }
+
+  // ----- ส่วนตัวเลือก (รุ่น/ความจำ/อาชีพ/หลักฐาน/โปรโมชั่น) -----
+  function renderOption(kind: OptionKind) {
+    const meta = OPTION_KINDS.find((k) => k.kind === kind)!
+    return (
+      <Card key={kind}>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="font-semibold text-ink">{meta.title}</h3>
+          {canEdit && (
+            <Button
+              variant="ghost"
+              onClick={() => setOptModal({ kind, label: '', detail: '', active: true })}
+            >
+              <Plus size={16} /> เพิ่ม
+            </Button>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {data.options[kind]?.map((o) => (
+            <div
+              key={o.id}
+              className={`flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-sm shadow-sm ${o.active ? 'text-ink' : 'text-ink-soft line-through opacity-60'}`}
+            >
+              <span>{o.label}{meta.hasDetail && o.detail ? ` — ${o.detail}` : ''}</span>
+              {canEdit && (
+                <>
+                  <button
+                    onClick={() => setOptModal({ id: o.id, kind, label: o.label, detail: o.detail ?? '', active: o.active })}
+                    className="text-ink-soft hover:text-ink"
+                    title="แก้ไข"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    onClick={() => toggleOption(o)}
+                    className="text-xs text-ink-soft hover:text-ink"
+                  >
+                    {o.active ? '(ปิด)' : '(เปิด)'}
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+    )
+  }
+
   return (
     <div>
       <PageTitle sub={canEdit ? 'เพิ่ม/แก้ไข/ปิดใช้งานได้ (ปิดแทนลบ ของเก่าไม่หาย)' : 'ดูได้อย่างเดียว — การแก้ไขเฉพาะแอดมิน'}>
@@ -71,101 +182,35 @@ export default function Settings() {
       {loading ? (
         <Loading />
       ) : (
-        <div className="flex flex-col gap-4">
-          {/* ===== ร้านค้า ===== */}
-          <Card>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="font-semibold text-ink">ร้านค้า ({data.shops.length})</h3>
-              {canEdit && (
-                <Button
-                  variant="ghost"
-                  onClick={() =>
-                    setShopModal({ code: '', name: '', bank: '', accountNo: '', accountName: '', active: true })
-                  }
+        <>
+          {/* ===== ปุ่มเลือกหมวด ===== */}
+          <div className="mb-5 flex flex-wrap gap-2">
+            {CATEGORIES.map((c) => {
+              const active = cat === c.key
+              return (
+                <button
+                  key={c.key}
+                  onClick={() => setCat(c.key)}
+                  className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                    active
+                      ? 'border-salmon-deep bg-salmon-deep text-white shadow-sm'
+                      : 'border-peach bg-cream-deep text-ink hover:bg-peach-light'
+                  }`}
                 >
-                  <Plus size={16} /> เพิ่มร้านค้า
-                </Button>
-              )}
-            </div>
-            <div className="grid gap-2 md:grid-cols-2">
-              {data.shops.map((s) => (
-                <div
-                  key={s.id}
-                  className={`flex items-center justify-between rounded-xl bg-white px-4 py-3 ${s.active ? '' : 'opacity-50'}`}
-                >
-                  <div>
-                    <p className="font-medium text-ink">{s.code} · {s.name}</p>
-                    <p className="text-sm text-ink-soft">{s.bank} · {s.accountNo}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={s.active ? 'green' : 'neutral'}>{s.active ? 'ใช้งาน' : 'ปิด'}</Badge>
-                    {canEdit && (
-                      <>
-                        <button
-                          onClick={() => setShopModal({ ...s })}
-                          className="rounded-lg p-1.5 text-ink-soft hover:bg-peach-light"
-                          title="แก้ไข"
-                        >
-                          <Pencil size={15} />
-                        </button>
-                        <button
-                          onClick={() => toggleShop(s)}
-                          className="rounded-lg px-2 py-1 text-xs text-ink-soft hover:bg-peach-light"
-                        >
-                          {s.active ? 'ปิด' : 'เปิด'}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
+                  <c.icon size={17} className={active ? 'text-white' : 'text-salmon-deep'} />
+                  {c.label}
+                </button>
+              )
+            })}
+          </div>
 
-          {/* ===== ตัวเลือกต่างๆ ===== */}
-          {OPTION_KINDS.map(({ kind, title, hasDetail }) => (
-            <Card key={kind}>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-semibold text-ink">{title}</h3>
-                {canEdit && (
-                  <Button
-                    variant="ghost"
-                    onClick={() => setOptModal({ kind, label: '', detail: '', active: true })}
-                  >
-                    <Plus size={16} /> เพิ่ม
-                  </Button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {data.options[kind]?.map((o) => (
-                  <div
-                    key={o.id}
-                    className={`flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-sm shadow-sm ${o.active ? 'text-ink' : 'text-ink-soft line-through opacity-60'}`}
-                  >
-                    <span>{o.label}{hasDetail && o.detail ? ` — ${o.detail}` : ''}</span>
-                    {canEdit && (
-                      <>
-                        <button
-                          onClick={() => setOptModal({ id: o.id, kind, label: o.label, detail: o.detail ?? '', active: o.active })}
-                          className="text-ink-soft hover:text-ink"
-                          title="แก้ไข"
-                        >
-                          <Pencil size={13} />
-                        </button>
-                        <button
-                          onClick={() => toggleOption(o)}
-                          className="text-xs text-ink-soft hover:text-ink"
-                        >
-                          {o.active ? '(ปิด)' : '(เปิด)'}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Card>
-          ))}
-        </div>
+          {/* ===== เนื้อหาตามหมวดที่เลือก ===== */}
+          <div className="flex flex-col gap-4">
+            {cat === 'shops'
+              ? renderShops()
+              : CATEGORIES.find((c) => c.key === cat)!.kinds.map((kind) => renderOption(kind))}
+          </div>
+        </>
       )}
 
       {/* ===== Modal แก้ไขร้านค้า ===== */}

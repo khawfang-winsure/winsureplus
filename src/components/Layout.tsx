@@ -12,7 +12,7 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen bg-cream p-4 md:p-6">
-      <div className="mx-auto max-w-[1400px] rounded-[28px] border-2 border-indigo-300/50 bg-cream-deep p-5 md:p-7">
+      <div className="mx-auto max-w-[1400px]">
         {/* หัว */}
         <header className="mb-5 flex items-center gap-4">
           <Logo />
@@ -42,7 +42,7 @@ export default function Layout() {
 
         <div className="flex flex-col gap-5 md:flex-row">
           <Sidebar />
-          <main className="min-h-[70vh] min-w-0 flex-1 rounded-3xl bg-white p-6 shadow-sm">
+          <main className="min-h-[70vh] min-w-0 flex-1 rounded-2xl border border-peach bg-cream-deep p-6 shadow-sm">
             <Outlet />
           </main>
         </div>
