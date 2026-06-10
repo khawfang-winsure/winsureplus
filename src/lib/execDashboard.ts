@@ -114,6 +114,7 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   }
 
   const active = contracts.filter((c) => c.status === 'active')
+  const activeIds = new Set(active.map((c) => c.id))
   const closedContracts = contracts.length - active.length
 
   // ----- KPI การเงิน (พอร์ต = สัญญาที่ผ่อนอยู่) -----
@@ -160,12 +161,13 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const aging: AgingRow[] = AGING_BUCKETS.map((b) => ({ ...b, ...agingMap.get(b.bucket)! }))
   const nplRate = pct(badDebt.value, outstanding)
 
-  // ----- collection rate + กระแสเงินสด -----
+  // ----- collection rate + กระแสเงินสด (เฉพาะสัญญาที่ผ่อนอยู่ — ไม่นับเคสปิด/คืนเครื่อง) -----
   let dueToDate = 0
   let collectedDue = 0
   let expectedThisMonth = 0
   let expectedNextMonth = 0
   for (const ins of installments) {
+    if (!activeIds.has(ins.contractId)) continue
     if (ins.dueDate <= todayISO) {
       dueToDate += ins.amount
       collectedDue += Math.min(ins.paidAmount, ins.amount)
