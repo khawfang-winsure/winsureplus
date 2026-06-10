@@ -292,11 +292,14 @@ function errMsg(e: unknown): string {
   return String(e)
 }
 
-/** เวลาไทยแบบสั้น (วัน เดือน ปี เวลา) สำหรับ audit log */
+/** เวลาไทยแบบสั้น (วัน/เดือน/ปี เวลา) สำหรับ audit log — แปลงจาก ISO timestamp เต็ม */
 function thaiDateTime(iso: string): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return iso
-  return `${thaiDate(iso)} ${d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return `${dd}/${mm}/${d.getFullYear()} ${time}`
 }
 
 function PaymentModal({
