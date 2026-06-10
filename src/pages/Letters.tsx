@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { MapPin, Printer, Search } from 'lucide-react'
+import { Copy, MapPin, Printer, Search } from 'lucide-react'
 import { Badge, Button, Card, Loading, Modal, PageTitle } from '../components/ui'
 import { AddressFields } from '../components/AddressFields'
 import {
@@ -24,10 +24,12 @@ import {
   isAddressEmpty,
   nextLetterAction,
   REPLY_LABEL,
+  type AddressKind,
   type CustomerAddress,
   type LetterRecord,
   type LetterStage,
 } from '../lib/letters'
+import type { FieldItem } from './FieldVisitPrint'
 import type { Contract, ContractStatusRow } from '../lib/types'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -148,9 +150,12 @@ export default function Letters() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, tab, search, shopFilter, onlyWithAddr])
 
-  const selectableIds = visibleRows.filter(hasAddr).map((r) => r.status.contractId)
+  // ส่ง = เลือกได้เฉพาะที่มีที่อยู่; ลงพื้นที่ = เลือกได้ทุกราย
+  const selectableIds = (tab === 'send' ? visibleRows.filter(hasAddr) : tab === 'field' ? visibleRows : [])
+    .map((r) => r.status.contractId)
   const allPageSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
   const selectedSendCount = [...selected].filter((id) => allByTab.send.some((r) => r.status.contractId === id)).length
+  const selectedFieldCount = [...selected].filter((id) => allByTab.field.some((r) => r.status.contractId === id)).length
 
   function toggleSelect(id: string, on: boolean) {
     setSelected((prev) => {
@@ -197,6 +202,64 @@ export default function Letters() {
     }
     sessionStorage.setItem('letters_print', JSON.stringify(items))
     navigate('/letters/print')
+  }
+
+  // ---------- ลงพื้นที่: รวมข้อมูลทุกที่อยู่ + จัดโซนจังหวัด ----------
+  function buildFieldItems(): FieldItem[] {
+    const KINDS: AddressKind[] = ['current', 'id_card', 'work', 'registry']
+    return allByTab.field
+      .filter((r) => selected.has(r.status.contractId))
+      .map((r) => {
+        const c = r.contract
+        const a = r.addresses
+        const province =
+          a.current?.province || a.id_card?.province || a.work?.province || a.registry?.province || '(ไม่ระบุจังหวัด)'
+        return {
+          customerName: r.status.customerName,
+          contractNo: r.status.contractNo,
+          shopName: r.status.shopName,
+          daysLate: r.status.daysLate,
+          amount: r.amount,
+          device: [c?.model, c?.storage].filter(Boolean).join(' '),
+          phones: [c?.phone, c?.phoneAlt1, c?.phoneAlt2].filter(Boolean) as string[],
+          province,
+          addresses: KINDS.filter((k) => !isAddressEmpty(a[k])).map((k) => ({
+            label: ADDRESS_KIND_LABEL[k],
+            line: addressOneLine(a[k]),
+          })),
+        }
+      })
+  }
+
+  function printField() {
+    const items = buildFieldItems()
+    if (!items.length) return alert('เลือกรายการก่อนนะคะ')
+    sessionStorage.setItem('field_print', JSON.stringify(items))
+    navigate('/letters/field')
+  }
+
+  async function copyField() {
+    const items = buildFieldItems()
+    if (!items.length) return alert('เลือกรายการก่อนนะคะ')
+    const byProv = new Map<string, FieldItem[]>()
+    for (const it of items) (byProv.get(it.province) ?? byProv.set(it.province, []).get(it.province)!).push(it)
+    let text = ''
+    for (const [prov, list] of byProv) {
+      text += `=== โซน: จังหวัด${prov} (${list.length} ราย) ===\n`
+      list.forEach((it, i) => {
+        text += `${i + 1}. ${it.customerName} | สัญญา ${it.contractNo} | ${it.shopName}\n`
+        text += `   เครื่อง: ${it.device || '—'} | โทร: ${it.phones.join(' / ') || '—'}\n`
+        text += `   ล่าช้า ${it.daysLate} วัน | ค้าง ${baht(it.amount)} บาท\n`
+        it.addresses.forEach((ad) => (text += `   - ${ad.label}: ${ad.line}\n`))
+        text += '\n'
+      })
+    }
+    try {
+      await navigator.clipboard.writeText(text.trim())
+      alert('คัดลอกแล้ว ✅ วางใน LINE/แชทส่งให้คนลงพื้นที่ได้เลย')
+    } catch {
+      alert('คัดลอกไม่สำเร็จ (เบราว์เซอร์ไม่อนุญาต)')
+    }
   }
 
   async function recordSend(r: Row) {
@@ -298,7 +361,7 @@ export default function Letters() {
             <table className="w-full min-w-[640px] text-sm">
               <thead>
                 <tr className="bg-peach-light text-left text-ink">
-                  {tab === 'send' && (
+                  {(tab === 'send' || tab === 'field') && (
                     <th className="px-3 py-2.5">
                       <input type="checkbox" checked={allPageSelected} onChange={(e) => toggleSelectPage(e.target.checked)} />
                     </th>
@@ -308,7 +371,8 @@ export default function Letters() {
                   {tab === 'send' && <th className="px-3 py-2.5 font-semibold">รอบ → ที่อยู่</th>}
                   {tab === 'send' && <th className="px-3 py-2.5 text-right font-semibold">ยอดค้าง</th>}
                   {tab === 'wait' && <th className="px-3 py-2.5 font-semibold">สถานะ</th>}
-                  {tab === 'field' && <th className="px-3 py-2.5 font-semibold">ที่อยู่ที่ทำงาน</th>}
+                  {tab === 'field' && <th className="px-3 py-2.5 font-semibold">จังหวัด (โซน)</th>}
+                  {tab === 'field' && <th className="px-3 py-2.5 text-right font-semibold">ยอดค้าง</th>}
                   <th className="px-3 py-2.5"></th>
                 </tr>
               </thead>
@@ -348,6 +412,16 @@ export default function Letters() {
           </Button>
         </div>
       )}
+      {tab === 'field' && selectedFieldCount > 0 && (
+        <div className="fixed bottom-5 left-1/2 z-20 flex -translate-x-1/2 gap-2">
+          <Button onClick={printField} className="shadow-lg">
+            <Printer size={16} /> ปริ้นข้อมูลลงพื้นที่ ({selectedFieldCount})
+          </Button>
+          <Button variant="ghost" onClick={copyField} className="bg-white shadow-lg">
+            <Copy size={16} /> คัดลอกข้อมูล
+          </Button>
+        </div>
+      )}
 
       {registryFor && (
         <RegistryModal
@@ -384,11 +458,19 @@ function RowView({
   const sendSt = st.kind === 'send' ? (st as SendStage) : null
   const noAddr = sendSt ? isAddressEmpty(r.addresses[sendSt.addressKind]) : false
   const pending = r.lettersThisEpisode.find((l) => l.reply === 'pending')
+  const a = r.addresses
+  const fieldProvince =
+    a.current?.province || a.id_card?.province || a.work?.province || a.registry?.province || '(ไม่ระบุ)'
   return (
     <tr className="border-t border-peach/60 align-top">
-      {tab === 'send' && (
+      {(tab === 'send' || tab === 'field') && (
         <td className="px-3 py-2.5">
-          <input type="checkbox" checked={selected} disabled={noAddr} onChange={(e) => onSelect(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={selected}
+            disabled={tab === 'send' && noAddr}
+            onChange={(e) => onSelect(e.target.checked)}
+          />
         </td>
       )}
       <td className="px-3 py-2.5">
@@ -417,10 +499,12 @@ function RowView({
         </td>
       )}
       {tab === 'field' && (
-        <td className="px-3 py-2.5 text-xs text-ink-soft">
-          {isAddressEmpty(r.addresses.work) ? '— ยังไม่มี —' : addressOneLine(r.addresses.work)}
+        <td className="px-3 py-2.5">
+          {fieldProvince}
+          <span className="ml-1 text-xs text-ink-soft">({r.addresses ? Object.values(r.addresses).filter((x) => !isAddressEmpty(x)).length : 0} ที่อยู่)</span>
         </td>
       )}
+      {tab === 'field' && <td className="px-3 py-2.5 text-right">{baht(r.amount)} ฿</td>}
 
       <td className="px-3 py-2.5 text-right">
         {tab === 'send' && (
