@@ -11,12 +11,21 @@ import {
   getContract,
   getContractAddresses,
   getOptions,
+  getRateSets,
   getShopContractNos,
   getShops,
   insertContract,
   saveAddress,
   updateContract,
 } from '../lib/db'
+import {
+  activeRateSets,
+  financeFromPrincipal,
+  monthlyFrom,
+  multiplierFor,
+  termsOf,
+  type RateSet,
+} from '../lib/rates'
 import { isAddressEmpty, type CustomerAddress } from '../lib/letters'
 import { AddressFields } from '../components/AddressFields'
 import { useAsync } from '../lib/useAsync'
@@ -141,17 +150,18 @@ export default function AddContract() {
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
     async () => {
-      const [shops, models, storages, occupations, proofs, promotions] = await Promise.all([
+      const [shops, models, storages, occupations, proofs, promotions, rateSets] = await Promise.all([
         getShops(),
         getOptions('phone_model'),
         getOptions('storage'),
         getOptions('occupation'),
         getOptions('occupation_proof'),
         getOptions('promotion'),
+        getRateSets(),
       ])
-      return { shops, models, storages, occupations, proofs, promotions }
+      return { shops, models, storages, occupations, proofs, promotions, rateSets }
     },
-    { shops: [], models: [], storages: [], occupations: [], proofs: [], promotions: [] },
+    { shops: [], models: [], storages: [], occupations: [], proofs: [], promotions: [], rateSets: [] as RateSet[] },
   )
 
   const [f, setF] = useState<FormState>(initial)
@@ -221,6 +231,38 @@ export default function AddContract() {
     () => calcSummary(num(f.devicePrice), num(f.downPercent), num(f.commissionPercent), num(f.docFee)),
     [f.devicePrice, f.downPercent, f.commissionPercent, f.docFee],
   )
+
+  // ===== ตัวช่วยคิดค่างวดจากเรต (ตัวคูณต่อจำนวนงวด) =====
+  const [rateSetId, setRateSetId] = useState('')
+  const [rateTerm, setRateTerm] = useState(0)
+  const liveRateSets = activeRateSets(opts.rateSets)
+  // ตั้งชุดเรต/งวดเริ่มต้นเมื่อข้อมูลโหลด
+  useEffect(() => {
+    if (!liveRateSets.length) return
+    setRateSetId((prev) => prev || liveRateSets[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts.rateSets])
+  const rateSet = liveRateSets.find((s) => s.id === rateSetId) ?? null
+  const rateTerms = termsOf(rateSet)
+  useEffect(() => {
+    if (rateTerms.length && !rateTerms.includes(rateTerm)) setRateTerm(rateTerms[0])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rateSetId, opts.rateSets])
+  const principal = summary.afterDown // ยอดต้น = ยอดหลังหักดาวน์
+  const rateMult = multiplierFor(rateSet, rateTerm)
+  const rateFinance = rateMult != null ? financeFromPrincipal(principal, rateMult) : 0
+  const rateMonthly = rateMult != null ? monthlyFrom(rateFinance, rateTerm) : 0
+
+  // เติมค่าที่คิดได้ลงช่อง (ยังแก้มือต่อได้)
+  function applyRate() {
+    if (rateMult == null) return
+    setF((prev) => ({
+      ...prev,
+      financeAmount: String(rateFinance),
+      monthlyPayment: String(rateMonthly),
+      termMonths: String(rateTerm),
+    }))
+  }
 
   // สร้าง object สัญญาจากฟอร์ม เพื่อป้อนตัวสร้างข้อความ + บันทึก
   const preview: Contract = {
@@ -475,6 +517,44 @@ export default function AddContract() {
 
           <Card>
             <h3 className="mb-3 font-semibold text-ink">การเงิน — ผ่อน</h3>
+
+            {/* ตัวช่วยคิดค่างวดจากเรต */}
+            {liveRateSets.length > 0 ? (
+              <div className="mb-3 rounded-xl border border-peach bg-peach-light/40 p-3">
+                <p className="mb-2 text-sm font-semibold text-ink">คิดจากเรต (ตัวคูณต่อจำนวนงวด)</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="ชุดเรต">
+                    <Select value={rateSetId} onChange={(e) => setRateSetId(e.target.value)}>
+                      {liveRateSets.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="จำนวนงวด (ตามเรต)">
+                    <Select value={String(rateTerm)} onChange={(e) => setRateTerm(Number(e.target.value))}>
+                      {rateTerms.map((t) => (
+                        <option key={t} value={t}>{t} งวด</option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="text-ink-soft">
+                    ยอดต้น {baht(principal)} × {rateMult ?? '—'} ={' '}
+                    <b className="text-ink">ยอด {baht(rateFinance)} ฿</b> · งวดละ{' '}
+                    <b className="text-salmon-deep">{baht(rateMonthly)} ฿</b>
+                  </span>
+                  <Button variant="ghost" onClick={applyRate} disabled={rateMult == null}>
+                    ใช้เรตนี้
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <p className="mb-3 rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
+                ยังไม่ได้ตั้งเรต — ตั้งได้ที่ <b>ตั้งค่า → เรตผ่อน</b> หรือกรอกค่างวดเองด้านล่าง
+              </p>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <Field label="ยอดจัดไฟแนนซ์">
                 <Input type="number" value={f.financeAmount} onChange={(e) => set('financeAmount', e.target.value)} />

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Briefcase, Pencil, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
+import { Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
+import { RateSetsEditor } from '../components/RateSetsEditor'
 import { useAuth } from '../lib/auth'
 import {
   getAllOptions,
@@ -27,12 +28,13 @@ const OPTION_KINDS: { kind: OptionKind; title: string; hasDetail?: boolean }[] =
 ]
 
 // หมวดตั้งค่า — แยกเป็นหัวข้อย่อย กดปุ่มเลือกทีละหมวด
-type CategoryKey = 'shops' | 'device' | 'job' | 'promo' | 'perm'
+type CategoryKey = 'shops' | 'device' | 'job' | 'promo' | 'rates' | 'perm'
 const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: OptionKind[] }[] = [
   { key: 'shops', label: 'ร้านค้า', icon: Store, kinds: [] },
   { key: 'device', label: 'ตัวเครื่อง', icon: Smartphone, kinds: ['phone_model', 'storage'] },
   { key: 'job', label: 'อาชีพ & หลักฐาน', icon: Briefcase, kinds: ['occupation', 'occupation_proof'] },
   { key: 'promo', label: 'โปรโมชั่น', icon: Tag, kinds: ['promotion'] },
+  { key: 'rates', label: 'เรตผ่อน', icon: Percent, kinds: [] },
   { key: 'perm', label: 'สิทธิ์ผู้ใช้', icon: ShieldCheck, kinds: [] },
 ]
 
@@ -292,8 +294,10 @@ export default function Settings() {
           <div className="flex flex-col gap-4">
             {cat === 'shops' && renderShops()}
             {cat === 'perm' && renderPermissions()}
+            {cat === 'rates' && <RateSetsEditor canEdit={canEdit} />}
             {cat !== 'shops' &&
               cat !== 'perm' &&
+              cat !== 'rates' &&
               CATEGORIES.find((c) => c.key === cat)!.kinds.map((kind) => renderOption(kind))}
           </div>
         </>

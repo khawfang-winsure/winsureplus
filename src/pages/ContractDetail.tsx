@@ -8,6 +8,7 @@ import {
   getInstallments,
   getPaymentLog,
   getContractExtensions,
+  getRateSets,
   recordPayment,
   adjustPayment,
   cancelPayment,
@@ -18,6 +19,14 @@ import {
   type ExtensionType,
   type ReturnInput,
 } from '../lib/db'
+import {
+  activeRateSets,
+  financeFromPrincipal,
+  monthlyFrom,
+  multiplierFor,
+  termsOf,
+  type RateSet,
+} from '../lib/rates'
 import type { Contract, Installment } from '../lib/types'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
@@ -74,6 +83,7 @@ export default function ContractDetail() {
   const [installments, setInstallments] = useState<Installment[]>([])
   const [log, setLog] = useState<PaymentLogEntry[]>([])
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
+  const [rateSets, setRateSets] = useState<RateSet[]>([])
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
@@ -85,16 +95,18 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext] = await Promise.all([
+    const [c, ins, lg, ext, rs] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
       getContractExtensions(id),
+      getRateSets(),
     ])
     setContract(c)
     setInstallments(ins)
     setLog(lg)
     setExtensions(ext)
+    setRateSets(rs)
     setLoading(false)
   }, [id])
 
@@ -375,6 +387,7 @@ export default function ContractDetail() {
           contract={contract}
           installments={installments}
           extensions={extensions}
+          rateSets={rateSets}
           onClose={() => setExtendOpen(false)}
           onDone={async () => {
             setExtendOpen(false)
@@ -604,12 +617,14 @@ function ExtendModal({
   contract,
   installments,
   extensions,
+  rateSets,
   onClose,
   onDone,
 }: {
   contract: Contract
   installments: Installment[]
   extensions: ExtensionRecord[]
+  rateSets: RateSet[]
   onClose: () => void
   onDone: () => void
 }) {
@@ -619,6 +634,8 @@ function ExtendModal({
     .filter((i) => !i.paidAt && i.paidAmount > 0)
     .reduce((s, i) => s + i.paidAmount, 0)
   const baseTerm = Math.max(1, unpaidCount)
+  // ยอดคงค้างปัจจุบัน (ค่างวดที่ยังไม่จ่าย) — ใช้เป็นค่าเริ่มต้น "ยอดต้น" ตอนคิดเรต
+  const outstanding = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
 
   // ประเภทที่ยังขยายได้ตามสิทธิ์ที่เหลือ (กฎ: ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const allowed = allowedExtTypes(extensions)
@@ -629,6 +646,26 @@ function ExtendModal({
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  // ===== ตัวช่วยคิดจากเรต =====
+  const liveRateSets = activeRateSets(rateSets)
+  const [rateSetId, setRateSetId] = useState(liveRateSets[0]?.id ?? '')
+  const [rateBase, setRateBase] = useState(Math.round(outstanding)) // ยอดต้น (ปรับได้)
+  const rateSet = liveRateSets.find((s) => s.id === rateSetId) ?? null
+  const rateTermList = termsOf(rateSet)
+  const [rateTerm, setRateTerm] = useState(rateTermList[0] ?? 0)
+  const rateMult = multiplierFor(rateSet, rateTerm)
+  const rateFinance = rateMult != null ? financeFromPrincipal(rateBase, rateMult) : 0
+  // เปลี่ยนชุดเรตแล้วงวดเดิมไม่มีในชุดใหม่ → รีเซ็ตเป็นงวดแรกของชุด
+  useEffect(() => {
+    if (rateTermList.length && !rateTermList.includes(rateTerm)) setRateTerm(rateTermList[0])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rateSetId])
+  function applyRate() {
+    if (rateMult == null) return
+    setNewTerm(rateTerm)
+    setNewFinance(rateFinance)
+  }
 
   const lockDueDay = extType === 'months' // ขยายงวดอย่างเดียว = วันชำระเดิม
   const lockTermFinance = extType === 'due_day' // เปลี่ยนวันชำระอย่างเดียว = งวด/ยอดเดิม
@@ -685,13 +722,49 @@ function ExtendModal({
         </Field>
 
         <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
-          ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b>
+          ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b> · ยอดคงค้าง <b className="text-ink">{baht(outstanding)} ฿</b>
           {partialPaid > 0 && (
             <span className="mt-1 block text-amber-700">
               ⚠️ มีจ่ายบางส่วนค้างอยู่ {baht(partialPaid)} ฿ — งวดนี้จะถูกลบด้วย ควรหักออกจากยอดจัดไฟแนนซ์ใหม่
             </span>
           )}
         </div>
+
+        {/* ตัวช่วยคิดจากเรต (เฉพาะตอนขยายงวด) */}
+        {extType !== 'due_day' && liveRateSets.length > 0 && (
+          <div className="rounded-xl border border-peach bg-peach-light/40 p-3">
+            <p className="mb-2 text-sm font-semibold text-ink">คิดจากเรต (ตัวคูณต่อจำนวนงวด)</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label="ชุดเรต">
+                <Select value={rateSetId} onChange={(e) => setRateSetId(e.target.value)}>
+                  {liveRateSets.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="งวดใหม่ (ตามเรต)">
+                <Select value={String(rateTerm)} onChange={(e) => setRateTerm(Number(e.target.value))}>
+                  {rateTermList.map((t) => (
+                    <option key={t} value={t}>{t} งวด</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="ยอดต้นที่นำมาคิด (ปรับได้)">
+                <Input type="number" value={rateBase || ''} onChange={(e) => setRateBase(Number(e.target.value) || 0)} />
+              </Field>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="text-ink-soft">
+                {baht(rateBase)} × {rateMult ?? '—'} = <b className="text-ink">ยอด {baht(rateFinance)} ฿</b> · งวดละ{' '}
+                <b className="text-salmon-deep">{baht(monthlyFrom(rateFinance, rateTerm))} ฿</b>
+              </span>
+              <Button variant="ghost" onClick={applyRate} disabled={rateMult == null}>ใช้เรตนี้</Button>
+            </div>
+            <p className="mt-1 text-xs text-amber-700">
+              * ค่าเริ่มต้น "ยอดต้น" = ยอดคงค้าง — ปรับให้ตรงนโยบายร้าน (ระวังคิดดอกซ้ำถ้ายอดคงค้างรวมดอกอยู่แล้ว)
+            </p>
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="วันที่ชำระใหม่ (1–31)">

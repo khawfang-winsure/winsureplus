@@ -21,6 +21,7 @@ import {
   type RecruitBonusRule,
   type RecruitTier,
 } from './commission'
+import { DEFAULT_RATE_SETS, type RateSet } from './rates'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 
 export type OptionKind =
@@ -318,6 +319,36 @@ export async function unlockCommissionMonth(month: string): Promise<void> {
     .from('contracts')
     .update({ commission_rate_locked: null, commission_locked_month: null })
     .eq('commission_locked_month', month)
+  if (error) throw error
+}
+
+// ---------- ระบบเรตผ่อน (เก็บใน app_settings เป็น JSON) ----------
+const RATE_SETS_KEY = 'installment_rate_sets'
+
+export async function getRateSets(): Promise<RateSet[]> {
+  if (!supabase) return DEFAULT_RATE_SETS
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', RATE_SETS_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return DEFAULT_RATE_SETS
+  try {
+    const s = JSON.parse(data.value as string)
+    return Array.isArray(s) && s.length ? (s as RateSet[]) : DEFAULT_RATE_SETS
+  } catch {
+    return DEFAULT_RATE_SETS
+  }
+}
+
+/** บันทึกชุดเรต — เฉพาะแอดมิน (ตาม RLS). upsert เผื่อ key ยังไม่มี */
+export async function saveRateSets(sets: RateSet[]): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('app_settings').upsert(
+    { key: RATE_SETS_KEY, value: JSON.stringify(sets), description: 'ชุดเรตผ่อน (ตัวคูณต่อจำนวนงวด)' },
+    { onConflict: 'key' },
+  )
   if (error) throw error
 }
 
