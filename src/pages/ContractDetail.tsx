@@ -26,6 +26,23 @@ export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   both: 'เปลี่ยนวันชำระ + ขยายงวด',
 }
 
+/** สิทธิ์ที่ใช้ไปแล้วของสัญญา (ขยายได้สิทธิ์ละครั้ง) */
+export function usedExtRights(exts: ExtensionRecord[]): { date: boolean; months: boolean } {
+  return {
+    date: exts.some((e) => e.extType === 'due_day' || e.extType === 'both'),
+    months: exts.some((e) => e.extType === 'months' || e.extType === 'both'),
+  }
+}
+
+/** ประเภทที่ยังขยายได้ (ตามสิทธิ์ที่เหลือ) */
+export function allowedExtTypes(exts: ExtensionRecord[]): ExtensionType[] {
+  const u = usedExtRights(exts)
+  if (!u.date && !u.months) return ['both', 'due_day', 'months']
+  if (u.date && !u.months) return ['months']
+  if (!u.date && u.months) return ['due_day']
+  return []
+}
+
 /** พรีวิววันครบกำหนดงวดใหม่ (มิเรอร์ตรรกะใน RPC restructure_contract: งวด i = เดือนปัจจุบัน + i, clamp ปลายเดือน) */
 function previewDueDate(monthOffset: number, dueDay: number): string {
   const now = new Date()
@@ -63,6 +80,7 @@ export default function ContractDetail() {
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Installment | null>(null)
+  const [histTarget, setHistTarget] = useState<Installment | null>(null) // โมดัลประวัติของงวดหนึ่ง
 
   const load = useCallback(async () => {
     if (!id) return
@@ -105,6 +123,23 @@ export default function ContractDetail() {
   const paidCount = installments.filter((i) => i.paidAt).length
   const penaltyDue = installments.filter((i) => !i.paidAt).reduce((s, i) => s + i.penaltyAmount, 0)
 
+  // จัดกลุ่มประวัติการชำระตามงวด + แยกรายการที่งวดถูกลบไปแล้ว (installmentId หลุดเป็น null หลังขยายเวลา)
+  const liveInsIds = new Set(installments.map((i) => i.id))
+  const logByIns = new Map<string, PaymentLogEntry[]>()
+  const orphanLogs: PaymentLogEntry[] = []
+  for (const e of log) {
+    if (e.installmentId && liveInsIds.has(e.installmentId)) {
+      const arr = logByIns.get(e.installmentId)
+      if (arr) arr.push(e)
+      else logByIns.set(e.installmentId, [e])
+    } else {
+      orphanLogs.push(e)
+    }
+  }
+
+  // สิทธิ์ขยายที่ยังเหลือ (ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
+  const canExtend = allowedExtTypes(extensions).length > 0
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -121,9 +156,15 @@ export default function ContractDetail() {
           </Button>
           {contract.status === 'active' && (
             <>
-              <Button variant="ghost" onClick={() => setExtendOpen(true)}>
-                <CalendarClock size={15} /> ขยายระยะเวลา
-              </Button>
+              {canExtend ? (
+                <Button variant="ghost" onClick={() => setExtendOpen(true)}>
+                  <CalendarClock size={15} /> ขยายระยะเวลา
+                </Button>
+              ) : (
+                <span className="rounded-xl bg-peach-light/60 px-3 py-1.5 text-xs text-ink-soft">
+                  ใช้สิทธิ์ขยายระยะเวลาครบแล้ว
+                </span>
+              )}
               <Button onClick={() => setReturnOpen(true)}>
                 <PackageOpen size={15} /> คืนเครื่อง
               </Button>
@@ -211,7 +252,7 @@ export default function ContractDetail() {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {!i.paidAt && (
                           <button
                             onClick={() => setPayTarget({ ins: i, mode: 'pay' })}
@@ -236,6 +277,15 @@ export default function ContractDetail() {
                             </button>
                           </>
                         )}
+                        {logByIns.has(i.id) && (
+                          <button
+                            onClick={() => setHistTarget(i)}
+                            title="ประวัติการชำระงวดนี้"
+                            className="inline-flex items-center gap-1 rounded-lg border border-peach px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
+                          >
+                            <History size={13} /> ประวัติ ({logByIns.get(i.id)!.length})
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -246,42 +296,36 @@ export default function ContractDetail() {
         </div>
       )}
 
-      {/* ประวัติการชำระ (audit log) */}
-      <h3 className="mb-2 mt-6 flex items-center gap-1.5 font-semibold text-ink">
-        <History size={16} /> ประวัติการชำระ
-      </h3>
-      {log.length === 0 ? (
-        <p className="rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink-soft">ยังไม่มีประวัติการชำระ</p>
-      ) : (
-        <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
-          <table className="w-full min-w-[640px] text-sm">
-            <thead>
-              <tr className="bg-peach-light text-left text-ink">
-                {['เวลา', 'รายการ', 'จำนวน', 'ยอดสะสมหลังทำ', 'ผู้ทำรายการ', 'หมายเหตุ'].map((h) => (
-                  <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {log.map((e, idx) => {
-                const ins = installments.find((i) => i.id === e.installmentId)
-                return (
+      {/* ประวัติการชำระของงวดที่ถูกแทนที่ (งวดถูกลบตอนขยายระยะเวลา → ไม่ผูกกับงวดปัจจุบัน) */}
+      {orphanLogs.length > 0 && (
+        <>
+          <h3 className="mb-2 mt-6 flex items-center gap-1.5 font-semibold text-ink">
+            <History size={16} /> ประวัติการชำระงวดก่อนหน้า (ก่อนขยายระยะเวลา)
+          </h3>
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  {['เวลา', 'รายการ', 'จำนวน', 'ยอดสะสมหลังทำ', 'ผู้ทำรายการ', 'หมายเหตุ'].map((h) => (
+                    <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {orphanLogs.map((e, idx) => (
                   <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
-                    <td className="px-3 py-2.5">
-                      <Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge>
-                      {ins && <span className="ml-1.5 text-ink-soft">งวด {ins.installmentNo}</span>}
-                    </td>
+                    <td className="px-3 py-2.5"><Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge></td>
                     <td className="px-3 py-2.5">{e.action === 'cancel' ? '-' : `${baht(e.amount)} ฿`}</td>
                     <td className="px-3 py-2.5">{baht(e.paidAmountAfter)} ฿</td>
                     <td className="px-3 py-2.5">{e.byName || '—'}</td>
                     <td className="px-3 py-2.5 text-ink-soft">{e.note || '—'}</td>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
       {/* ประวัติการขยายระยะเวลา */}
@@ -318,10 +362,19 @@ export default function ContractDetail() {
         </>
       )}
 
+      {histTarget && (
+        <PaymentHistoryModal
+          ins={histTarget}
+          entries={logByIns.get(histTarget.id) ?? []}
+          onClose={() => setHistTarget(null)}
+        />
+      )}
+
       {extendOpen && (
         <ExtendModal
           contract={contract}
           installments={installments}
+          extensions={extensions}
           onClose={() => setExtendOpen(false)}
           onDone={async () => {
             setExtendOpen(false)
@@ -382,6 +435,51 @@ function thaiDateTime(iso: string): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
   return `${dd}/${mm}/${d.getFullYear()} ${time}`
+}
+
+/** ประวัติการชำระของงวดเดียว (เปิดจากปุ่ม "ประวัติ" ในแถวงวด) */
+function PaymentHistoryModal({
+  ins,
+  entries,
+  onClose,
+}: {
+  ins: Installment
+  entries: PaymentLogEntry[]
+  onClose: () => void
+}) {
+  return (
+    <Modal title={`ประวัติการชำระ — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
+      <div className="flex flex-col gap-2">
+        <p className="text-sm text-ink-soft">
+          ครบกำหนด {thaiDate(ins.dueDate)} · ค่างวด {baht(ins.amount)} ฿ · ชำระแล้ว {baht(ins.paidAmount)} ฿
+        </p>
+        {entries.length === 0 ? (
+          <p className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">ยังไม่มีรายการ</p>
+        ) : (
+          <ol className="flex flex-col gap-2">
+            {entries.map((e) => (
+              <li key={e.id} className="rounded-xl border border-peach px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge>
+                    {e.action !== 'cancel' && <b className="text-ink">{baht(e.amount)} ฿</b>}
+                  </span>
+                  <span className="text-xs text-ink-soft">{thaiDateTime(e.createdAt)}</span>
+                </div>
+                <p className="mt-1 text-xs text-ink-soft">
+                  ยอดสะสมหลังทำ {baht(e.paidAmountAfter)} ฿ · โดย {e.byName || '—'}
+                  {e.note ? ` · ${e.note}` : ''}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
+        <div className="mt-1 flex justify-end">
+          <Button variant="ghost" onClick={onClose}>ปิด</Button>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 function PaymentModal({
@@ -505,11 +603,13 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
 function ExtendModal({
   contract,
   installments,
+  extensions,
   onClose,
   onDone,
 }: {
   contract: Contract
   installments: Installment[]
+  extensions: ExtensionRecord[]
   onClose: () => void
   onDone: () => void
 }) {
@@ -520,7 +620,9 @@ function ExtendModal({
     .reduce((s, i) => s + i.paidAmount, 0)
   const baseTerm = Math.max(1, unpaidCount)
 
-  const [extType, setExtType] = useState<ExtensionType>('both')
+  // ประเภทที่ยังขยายได้ตามสิทธิ์ที่เหลือ (กฎ: ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
+  const allowed = allowedExtTypes(extensions)
+  const [extType, setExtType] = useState<ExtensionType>(allowed[0] ?? 'both')
   const [newDueDay, setNewDueDay] = useState(contract.dueDay)
   const [newTerm, setNewTerm] = useState(baseTerm)
   const [newFinance, setNewFinance] = useState(Math.round(baseTerm * contract.monthlyPayment))
@@ -571,10 +673,15 @@ function ExtendModal({
       <div className="flex flex-col gap-3">
         <Field label="ประเภทการขยาย">
           <Select value={extType} onChange={(e) => changeType(e.target.value as ExtensionType)}>
-            <option value="both">เปลี่ยนวันชำระ + ขยายจำนวนงวด</option>
-            <option value="due_day">เปลี่ยนวันที่ชำระอย่างเดียว</option>
-            <option value="months">ขยายจำนวนงวดอย่างเดียว (วันชำระเดิม)</option>
+            {allowed.includes('both') && <option value="both">เปลี่ยนวันชำระ + ขยายจำนวนงวด</option>}
+            {allowed.includes('due_day') && <option value="due_day">เปลี่ยนวันที่ชำระอย่างเดียว</option>}
+            {allowed.includes('months') && <option value="months">ขยายจำนวนงวดอย่างเดียว (วันชำระเดิม)</option>}
           </Select>
+          {allowed.length < 3 && (
+            <p className="mt-1 text-xs text-amber-700">
+              * สัญญานี้เคยใช้สิทธิ์บางส่วนแล้ว — เลือกได้เฉพาะที่ยังเหลือ
+            </p>
+          )}
         </Field>
 
         <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
