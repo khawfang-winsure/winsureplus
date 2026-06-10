@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, MailQuestion, MapPin, Printer, Search } from 'lucide-react'
+import { MapPin, Printer, Search } from 'lucide-react'
 import { Badge, Button, Card, Loading, Modal, PageTitle } from '../components/ui'
 import { AddressFields } from '../components/AddressFields'
 import {
@@ -37,6 +37,9 @@ function thaiDateFull(): string {
   return `${d.getDate()} ${['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'][d.getMonth()]} ${d.getFullYear() + 543}`
 }
 
+type TabKey = 'send' | 'wait' | 'registry' | 'field'
+type SendStage = { kind: 'send'; round: 1 | 2 | 3; addressKind: 'current' | 'id_card' | 'registry' }
+
 interface Row {
   status: ContractStatusRow
   contract?: Contract
@@ -59,6 +62,11 @@ export default function Letters() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [registryFor, setRegistryFor] = useState<Row | null>(null)
   const [showTpl, setShowTpl] = useState(false)
+  // ตัวกรอง
+  const [tab, setTab] = useState<TabKey>('send')
+  const [search, setSearch] = useState('')
+  const [shopFilter, setShopFilter] = useState('all')
+  const [onlyWithAddr, setOnlyWithAddr] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -112,60 +120,91 @@ export default function Letters() {
     return out.sort((a, b) => b.status.daysLate - a.status.daysLate)
   }, [statuses, contracts, installments, letters, addresses])
 
-  const sendRows = rows.filter((r) => r.stage.kind === 'send')
-  const waitRows = rows.filter((r) => r.stage.kind === 'waiting-reply')
-  const registryRows = rows.filter((r) => r.stage.kind === 'registry-search')
-  const fieldRows = rows.filter((r) => r.stage.kind === 'field-visit')
-
-  function addrFor(r: Row, kind: 'current' | 'id_card' | 'registry'): CustomerAddress | undefined {
-    return r.addresses[kind]
+  const allByTab: Record<TabKey, Row[]> = {
+    send: rows.filter((r) => r.stage.kind === 'send'),
+    wait: rows.filter((r) => r.stage.kind === 'waiting-reply'),
+    registry: rows.filter((r) => r.stage.kind === 'registry-search'),
+    field: rows.filter((r) => r.stage.kind === 'field-visit'),
   }
 
-  // ---------- ปริ้นที่เลือก ----------
+  const shopOptions = useMemo(() => {
+    const m = new Map<string, string>()
+    rows.forEach((r) => m.set(r.status.shopId, r.status.shopName))
+    return [...m.entries()]
+  }, [rows])
+
+  const addrFor = (r: Row, kind: 'current' | 'id_card' | 'registry') => r.addresses[kind]
+  const hasAddr = (r: Row) =>
+    r.stage.kind === 'send' && !isAddressEmpty(addrFor(r, (r.stage as SendStage).addressKind))
+
+  // กรองตามแท็บ + ค้นหา + ร้าน
+  const visibleRows = useMemo(() => {
+    let base = allByTab[tab]
+    const q = search.trim().toLowerCase()
+    if (q) base = base.filter((r) => (r.status.customerName + ' ' + r.status.contractNo).toLowerCase().includes(q))
+    if (shopFilter !== 'all') base = base.filter((r) => r.status.shopId === shopFilter)
+    if (tab === 'send' && onlyWithAddr) base = base.filter(hasAddr)
+    return base
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, tab, search, shopFilter, onlyWithAddr])
+
+  const selectableIds = visibleRows.filter(hasAddr).map((r) => r.status.contractId)
+  const allPageSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
+  const selectedSendCount = [...selected].filter((id) => allByTab.send.some((r) => r.status.contractId === id)).length
+
+  function toggleSelect(id: string, on: boolean) {
+    setSelected((prev) => {
+      const n = new Set(prev)
+      on ? n.add(id) : n.delete(id)
+      return n
+    })
+  }
+  function toggleSelectPage(on: boolean) {
+    setSelected((prev) => {
+      const n = new Set(prev)
+      selectableIds.forEach((id) => (on ? n.add(id) : n.delete(id)))
+      return n
+    })
+  }
+
   function printSelected() {
     const date = thaiDateFull()
-    const items = sendRows
-      .filter((r) => selected.has(r.status.contractId) && r.stage.kind === 'send')
+    const items = allByTab.send
+      .filter((r) => selected.has(r.status.contractId))
       .map((r) => {
-        const st = r.stage as { kind: 'send'; round: 1 | 2 | 3; addressKind: 'current' | 'id_card' | 'registry' }
-        const a = addrFor(r, st.addressKind)
-        const lines = addressOneLine(a)
-        const body = fillLetterTemplate(template, {
-          name: r.status.customerName,
-          address: lines,
-          contractNo: r.status.contractNo,
-          amount: baht(r.amount),
-          daysLate: r.status.daysLate,
-          date,
-        })
+        const st = r.stage as SendStage
+        const lines = addressOneLine(addrFor(r, st.addressKind))
         return {
           contractNo: r.status.contractNo,
           customerName: r.status.customerName,
           round: st.round,
           addressKindLabel: ADDRESS_KIND_LABEL[st.addressKind],
           addressLines: lines,
-          body,
+          body: fillLetterTemplate(template, {
+            name: r.status.customerName,
+            address: lines,
+            contractNo: r.status.contractNo,
+            amount: baht(r.amount),
+            daysLate: r.status.daysLate,
+            date,
+          }),
         }
       })
-      .filter((it) => it.addressLines.trim()) // ข้ามตัวที่ไม่มีที่อยู่
+      .filter((it) => it.addressLines.trim())
     if (items.length === 0) {
-      alert('ไม่มีรายการที่มีที่อยู่ให้ปริ้น — เลือกเคสที่มีที่อยู่ครบก่อนนะคะ')
+      alert('ไม่มีรายการที่มีที่อยู่ให้ปริ้น')
       return
     }
     sessionStorage.setItem('letters_print', JSON.stringify(items))
     navigate('/letters/print')
   }
 
-  // ---------- บันทึกส่ง (ใส่เลขพัสดุ → สร้างจดหมาย) ----------
   async function recordSend(r: Row) {
     if (r.stage.kind !== 'send') return
     const st = r.stage
     const a = addrFor(r, st.addressKind)
-    if (isAddressEmpty(a)) {
-      alert(`ยังไม่มี${ADDRESS_KIND_LABEL[st.addressKind]} — ไปเพิ่มในสัญญาก่อนนะคะ`)
-      return
-    }
-    const tracking = window.prompt(`บันทึกส่งจดหมายครั้งที่ ${st.round} (${ADDRESS_KIND_LABEL[st.addressKind]})\nใส่เลขพัสดุเพื่อยืนยันว่าส่งจริง:`)
+    if (isAddressEmpty(a)) return alert(`ยังไม่มี${ADDRESS_KIND_LABEL[st.addressKind]}`)
+    const tracking = window.prompt(`บันทึกส่งจดหมายครั้งที่ ${st.round} (${ADDRESS_KIND_LABEL[st.addressKind]})\nใส่เลขพัสดุ:`)
     if (tracking == null) return
     await insertLetter({
       contractId: r.status.contractId,
@@ -178,7 +217,6 @@ export default function Letters() {
     await load()
   }
 
-  // ---------- บันทึกผลตอบกลับ ----------
   async function setReply(r: Row, reply: 'replied' | 'no_reply') {
     const pending = r.lettersThisEpisode.find((l) => l.reply === 'pending')
     if (!pending) return
@@ -188,166 +226,128 @@ export default function Letters() {
 
   if (loading) return <Loading />
 
-  return (
-    <div className="space-y-5">
-      <PageTitle sub="ส่งจดหมายติดตามหนี้ตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)">
-        ส่งจดหมาย
-      </PageTitle>
+  const TABS: { key: TabKey; label: string }[] = [
+    { key: 'send', label: 'ถึงคิวส่ง' },
+    { key: 'wait', label: 'รอผลตอบกลับ' },
+    { key: 'registry', label: 'ค้นทะเบียนราษฎร์' },
+    { key: 'field', label: 'เตรียมลงพื้นที่' },
+  ]
 
-      {/* 1) ถึงคิวส่ง */}
+  return (
+    <div className="space-y-4 pb-20">
+      <PageTitle sub="ส่งจดหมายตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)">ส่งจดหมาย</PageTitle>
+
+      {/* แท็บสเตจ + ตัวนับ */}
+      <div className="flex flex-wrap gap-2">
+        {TABS.map((t) => {
+          const n = allByTab[t.key].length
+          const active = tab === t.key
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${
+                active ? 'border-salmon-deep bg-salmon-deep text-white' : 'border-peach bg-white text-ink hover:bg-peach-light'
+              }`}
+            >
+              {t.label}{' '}
+              <span className={`ml-1 rounded-full px-1.5 text-xs ${active ? 'bg-white/25' : 'bg-peach-light text-ink-soft'}`}>
+                {n}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
       <Card>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <FileText size={18} className="text-salmon-deep" />
-            <h3 className="font-semibold text-ink">ถึงคิวส่งจดหมาย ({sendRows.length})</h3>
+        {/* แถบเครื่องมือ: ค้นหา + กรองร้าน + เลือกทั้งหน้า */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[180px]">
+            <Search size={15} className="absolute left-3 top-2.5 text-ink-soft" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="ค้นหาชื่อ / เลขสัญญา"
+              className="w-full rounded-xl border border-peach bg-white py-2 pl-9 pr-3 text-sm text-ink"
+            />
           </div>
-          {sendRows.length > 0 && (
-            <Button onClick={printSelected} disabled={selected.size === 0}>
-              <Printer size={15} /> ปริ้นที่เลือก ({[...selected].filter((id) => sendRows.some((r) => r.status.contractId === id)).length})
-            </Button>
+          <select
+            value={shopFilter}
+            onChange={(e) => setShopFilter(e.target.value)}
+            className="rounded-xl border border-peach bg-white px-3 py-2 text-sm text-ink"
+          >
+            <option value="all">ทุกร้าน</option>
+            {shopOptions.map(([id, name]) => (
+              <option key={id} value={id}>{name}</option>
+            ))}
+          </select>
+          {tab === 'send' && (
+            <label className="flex items-center gap-1.5 text-sm text-ink-soft">
+              <input type="checkbox" checked={onlyWithAddr} onChange={(e) => setOnlyWithAddr(e.target.checked)} />
+              เฉพาะที่มีที่อยู่
+            </label>
           )}
         </div>
-        {sendRows.length === 0 ? (
-          <Empty text="ยังไม่มีเคสถึงคิวส่งจดหมาย" />
+
+        {visibleRows.length === 0 ? (
+          <p className="rounded-xl bg-peach-light/40 px-4 py-6 text-center text-sm text-ink-soft">
+            ไม่มีรายการในสเตจนี้
+          </p>
         ) : (
-          <div className="flex flex-col gap-2">
-            {sendRows.map((r) => {
-              const st = r.stage as { kind: 'send'; round: 1 | 2 | 3; addressKind: 'current' | 'id_card' | 'registry' }
-              const a = addrFor(r, st.addressKind)
-              const noAddr = isAddressEmpty(a)
-              const checked = selected.has(r.status.contractId)
-              return (
-                <div key={r.status.contractId} className="rounded-xl border border-peach bg-white px-3 py-2.5">
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={noAddr}
-                      onChange={(e) =>
-                        setSelected((prev) => {
-                          const n = new Set(prev)
-                          e.target.checked ? n.add(r.status.contractId) : n.delete(r.status.contractId)
-                          return n
-                        })
-                      }
-                      className="mt-1.5"
-                    />
-                    <div className="flex-1">
-                      <p className="font-medium text-ink">
-                        {r.status.customerName} — {r.status.contractNo}{' '}
-                        <Badge tone="red">ล่าช้า {r.status.daysLate} วัน</Badge>
-                      </p>
-                      <p className="text-sm text-ink-soft">
-                        ครั้งที่ <span className="font-semibold text-ink">{st.round}</span> →{' '}
-                        {ADDRESS_KIND_LABEL[st.addressKind]} · ค้าง {baht(r.amount)} ฿
-                      </p>
-                      {noAddr ? (
-                        <p className="text-xs text-red-600">⚠️ ยังไม่มี{ADDRESS_KIND_LABEL[st.addressKind]} — เพิ่มในสัญญาก่อน</p>
-                      ) : (
-                        <p className="text-xs text-ink-soft">{addressOneLine(a)}</p>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => recordSend(r)}
-                      disabled={noAddr}
-                      className="shrink-0 rounded-lg border border-peach px-2.5 py-1 text-xs text-ink hover:bg-peach-light disabled:opacity-40"
-                    >
-                      ✓ บันทึกส่ง
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  {tab === 'send' && (
+                    <th className="px-3 py-2.5">
+                      <input type="checkbox" checked={allPageSelected} onChange={(e) => toggleSelectPage(e.target.checked)} />
+                    </th>
+                  )}
+                  <th className="px-3 py-2.5 font-semibold">ลูกค้า / สัญญา</th>
+                  <th className="px-3 py-2.5 font-semibold">ล่าช้า</th>
+                  {tab === 'send' && <th className="px-3 py-2.5 font-semibold">รอบ → ที่อยู่</th>}
+                  {tab === 'send' && <th className="px-3 py-2.5 text-right font-semibold">ยอดค้าง</th>}
+                  {tab === 'wait' && <th className="px-3 py-2.5 font-semibold">สถานะ</th>}
+                  {tab === 'field' && <th className="px-3 py-2.5 font-semibold">ที่อยู่ที่ทำงาน</th>}
+                  <th className="px-3 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((r) => (
+                  <RowView
+                    key={r.status.contractId}
+                    r={r}
+                    tab={tab}
+                    selected={selected.has(r.status.contractId)}
+                    onSelect={(on) => toggleSelect(r.status.contractId, on)}
+                    onRecordSend={() => recordSend(r)}
+                    onReply={(v) => setReply(r, v)}
+                    onRegistry={() => setRegistryFor(r)}
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </Card>
 
-      {/* 2) รอบันทึกผลตอบกลับ */}
-      <Card>
-        <div className="mb-3 flex items-center gap-2">
-          <MailQuestion size={18} className="text-salmon-deep" />
-          <h3 className="font-semibold text-ink">รอบันทึกผลตอบกลับ ({waitRows.length})</h3>
-        </div>
-        {waitRows.length === 0 ? (
-          <Empty text="ไม่มีจดหมายที่รอผลตอบกลับ" />
-        ) : (
-          <div className="flex flex-col gap-2">
-            {waitRows.map((r) => {
-              const st = r.stage as { kind: 'waiting-reply'; round: 1 | 2 | 3 }
-              const pending = r.lettersThisEpisode.find((l) => l.reply === 'pending')
-              return (
-                <div key={r.status.contractId} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-peach bg-white px-3 py-2.5">
-                  <div>
-                    <p className="font-medium text-ink">{r.status.customerName} — {r.status.contractNo}</p>
-                    <p className="text-sm text-ink-soft">
-                      ส่งครั้งที่ {st.round} แล้ว · เลขพัสดุ {pending?.trackingNo || '—'} · {REPLY_LABEL.pending}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => setReply(r, 'replied')} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">
-                      ตอบกลับแล้ว
-                    </button>
-                    <button onClick={() => setReply(r, 'no_reply')} className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100">
-                      ไม่ตอบ/ตีกลับ
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </Card>
-
-      {/* 3) ค้นหาทะเบียนราษฎร์ */}
-      {registryRows.length > 0 && (
-        <Card>
-          <div className="mb-3 flex items-center gap-2">
-            <Search size={18} className="text-salmon-deep" />
-            <h3 className="font-semibold text-ink">ค้นหาทะเบียนราษฎร์ ({registryRows.length})</h3>
-          </div>
-          <p className="mb-3 text-sm text-ink-soft">ส่ง 2 ครั้งแล้วไม่ตอบทั้งคู่ — ค้นที่อยู่จากทะเบียนราษฎร์แล้วกรอกเพื่อส่งครั้งที่ 3</p>
-          <div className="flex flex-col gap-2">
-            {registryRows.map((r) => (
-              <div key={r.status.contractId} className="flex items-center justify-between rounded-xl border border-peach bg-white px-3 py-2.5">
-                <p className="font-medium text-ink">{r.status.customerName} — {r.status.contractNo}</p>
-                <Button variant="ghost" onClick={() => setRegistryFor(r)}>
-                  <MapPin size={15} /> กรอกที่อยู่ทะเบียน
-                </Button>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* 4) เตรียมลงพื้นที่ */}
-      {fieldRows.length > 0 && (
-        <Card>
-          <div className="mb-3 flex items-center gap-2">
-            <MapPin size={18} className="text-red-600" />
-            <h3 className="font-semibold text-ink">เตรียมลงพื้นที่ ({fieldRows.length})</h3>
-          </div>
-          <p className="mb-3 text-sm text-ink-soft">ส่งจดหมายครบ 3 ครั้งแล้วไม่ตอบ — เตรียมลงพื้นที่ (ใช้ที่อยู่ที่ทำงาน)</p>
-          <div className="flex flex-col gap-2">
-            {fieldRows.map((r) => (
-              <div key={r.status.contractId} className="rounded-xl border border-peach bg-white px-3 py-2.5">
-                <p className="font-medium text-ink">{r.status.customerName} — {r.status.contractNo}</p>
-                <p className="text-xs text-ink-soft">
-                  ที่ทำงาน: {isAddressEmpty(r.addresses.work) ? '— ยังไม่มี —' : addressOneLine(r.addresses.work)}
-                </p>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* แก้ข้อความจดหมาย */}
+      {/* ข้อความจดหมาย */}
       <Card>
         <button onClick={() => setShowTpl((v) => !v)} className="flex w-full items-center justify-between text-left">
           <span className="font-semibold text-ink">ข้อความจดหมาย (แก้ไขได้)</span>
           <span className="text-sm text-salmon-deep">{showTpl ? 'ซ่อน' : 'แก้ไข'}</span>
         </button>
-        {showTpl && <TemplateEditor template={template} onSaved={(t) => setTemplate(t)} />}
+        {showTpl && <TemplateEditor template={template} onSaved={setTemplate} />}
       </Card>
+
+      {/* แถบปริ้นลอยล่าง */}
+      {tab === 'send' && selectedSendCount > 0 && (
+        <div className="fixed bottom-5 left-1/2 z-20 -translate-x-1/2">
+          <Button onClick={printSelected} className="shadow-lg">
+            <Printer size={16} /> ปริ้นที่เลือก ({selectedSendCount})
+          </Button>
+        </div>
+      )}
 
       {registryFor && (
         <RegistryModal
@@ -363,8 +363,85 @@ export default function Letters() {
   )
 }
 
-function Empty({ text }: { text: string }) {
-  return <p className="rounded-xl bg-peach-light/40 px-4 py-5 text-center text-sm text-ink-soft">{text}</p>
+function RowView({
+  r,
+  tab,
+  selected,
+  onSelect,
+  onRecordSend,
+  onReply,
+  onRegistry,
+}: {
+  r: Row
+  tab: TabKey
+  selected: boolean
+  onSelect: (on: boolean) => void
+  onRecordSend: () => void
+  onReply: (v: 'replied' | 'no_reply') => void
+  onRegistry: () => void
+}) {
+  const st = r.stage
+  const sendSt = st.kind === 'send' ? (st as SendStage) : null
+  const noAddr = sendSt ? isAddressEmpty(r.addresses[sendSt.addressKind]) : false
+  const pending = r.lettersThisEpisode.find((l) => l.reply === 'pending')
+  return (
+    <tr className="border-t border-peach/60 align-top">
+      {tab === 'send' && (
+        <td className="px-3 py-2.5">
+          <input type="checkbox" checked={selected} disabled={noAddr} onChange={(e) => onSelect(e.target.checked)} />
+        </td>
+      )}
+      <td className="px-3 py-2.5">
+        <p className="font-medium text-ink">{r.status.customerName}</p>
+        <p className="text-xs text-ink-soft">{r.status.contractNo} · {r.status.shopName}</p>
+      </td>
+      <td className="px-3 py-2.5">
+        <Badge tone="red">{r.status.daysLate} วัน</Badge>
+      </td>
+
+      {tab === 'send' && sendSt && (
+        <td className="px-3 py-2.5">
+          <span className="font-medium text-ink">ครั้งที่ {sendSt.round}</span> ▸ {ADDRESS_KIND_LABEL[sendSt.addressKind]}
+          {noAddr ? (
+            <p className="text-xs text-red-600">⚠️ ยังไม่มีที่อยู่</p>
+          ) : (
+            <p className="text-xs text-ink-soft">{addressOneLine(r.addresses[sendSt.addressKind])}</p>
+          )}
+        </td>
+      )}
+      {tab === 'send' && <td className="px-3 py-2.5 text-right">{baht(r.amount)} ฿</td>}
+
+      {tab === 'wait' && (
+        <td className="px-3 py-2.5 text-ink-soft">
+          ส่งครั้งที่ {(st as { round: 1 | 2 | 3 }).round} · พัสดุ {pending?.trackingNo || '—'} · {REPLY_LABEL.pending}
+        </td>
+      )}
+      {tab === 'field' && (
+        <td className="px-3 py-2.5 text-xs text-ink-soft">
+          {isAddressEmpty(r.addresses.work) ? '— ยังไม่มี —' : addressOneLine(r.addresses.work)}
+        </td>
+      )}
+
+      <td className="px-3 py-2.5 text-right">
+        {tab === 'send' && (
+          <button onClick={onRecordSend} disabled={noAddr} className="rounded-lg border border-peach px-2.5 py-1 text-xs text-ink hover:bg-peach-light disabled:opacity-40">
+            ✓ บันทึกส่ง
+          </button>
+        )}
+        {tab === 'wait' && (
+          <div className="flex justify-end gap-1.5">
+            <button onClick={() => onReply('replied')} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">ตอบกลับ</button>
+            <button onClick={() => onReply('no_reply')} className="rounded-lg bg-red-50 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-100">ไม่ตอบ</button>
+          </div>
+        )}
+        {tab === 'registry' && (
+          <button onClick={onRegistry} className="rounded-lg border border-peach px-2.5 py-1 text-xs text-ink hover:bg-peach-light">
+            <MapPin size={13} className="mr-1 inline" /> กรอกที่อยู่ทะเบียน
+          </button>
+        )}
+      </td>
+    </tr>
+  )
 }
 
 function TemplateEditor({ template, onSaved }: { template: string; onSaved: (t: string) => void }) {
