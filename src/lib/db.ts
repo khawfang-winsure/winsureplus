@@ -21,6 +21,7 @@ import {
   type RecruitBonusRule,
   type RecruitTier,
 } from './commission'
+import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 
 export type OptionKind =
   | 'phone_model'
@@ -376,13 +377,14 @@ export async function saveRecruitBonuses(rules: RecruitBonusRule[]): Promise<voi
   if (error) throw error
 }
 
-export async function insertContract(c: Omit<Contract, 'id'>): Promise<void> {
+export async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
   if (!supabase) {
     // โหมด mock — ยังไม่บันทึกจริง
-    return
+    return ''
   }
-  const { error } = await supabase.from('contracts').insert(toInsert(c))
+  const { data, error } = await supabase.from('contracts').insert(toInsert(c)).select('id').single()
   if (error) throw error
+  return (data?.id as string) ?? ''
 }
 
 /** ทำเครื่องหมายว่าสรุปยอดแล้ว (กันส่งซ้ำ) — บันทึกลง DB จริง */
@@ -800,4 +802,205 @@ export async function getAllOptions(kind: OptionKind): Promise<Option[]> {
     detail: o.detail ?? undefined,
     active: o.active,
   }))
+}
+
+// ============================================================================
+// ที่อยู่ลูกค้า + จดหมายติดตามหนี้ (Phase: ส่งจดหมาย)
+// ============================================================================
+
+/** ที่อยู่ของสัญญาหนึ่ง แยกตามชนิด */
+export type ContractAddresses = Partial<Record<AddressKind, CustomerAddress>>
+
+interface AddressRow {
+  contract_id: string
+  kind: AddressKind
+  house_no: string | null
+  moo: string | null
+  soi: string | null
+  road: string | null
+  subdistrict: string | null
+  district: string | null
+  province: string | null
+  postal_code: string | null
+}
+
+function mapAddress(r: AddressRow): CustomerAddress {
+  return {
+    houseNo: r.house_no ?? undefined,
+    moo: r.moo ?? undefined,
+    soi: r.soi ?? undefined,
+    road: r.road ?? undefined,
+    subdistrict: r.subdistrict ?? undefined,
+    district: r.district ?? undefined,
+    province: r.province ?? undefined,
+    postalCode: r.postal_code ?? undefined,
+  }
+}
+
+function addressToRow(contractId: string, kind: AddressKind, a: CustomerAddress) {
+  return {
+    contract_id: contractId,
+    kind,
+    house_no: a.houseNo || null,
+    moo: a.moo || null,
+    soi: a.soi || null,
+    road: a.road || null,
+    subdistrict: a.subdistrict || null,
+    district: a.district || null,
+    province: a.province || null,
+    postal_code: a.postalCode || null,
+    updated_at: new Date().toISOString(),
+  }
+}
+
+/** ที่อยู่ทุกชนิดของสัญญาหนึ่ง */
+export async function getContractAddresses(contractId: string): Promise<ContractAddresses> {
+  if (!supabase) return {}
+  const { data, error } = await supabase
+    .from('customer_addresses')
+    .select('*')
+    .eq('contract_id', contractId)
+  if (error) throw error
+  const out: ContractAddresses = {}
+  for (const r of (data ?? []) as AddressRow[]) out[r.kind] = mapAddress(r)
+  return out
+}
+
+/** ที่อยู่ทุกสัญญา (สำหรับหน้าส่งจดหมาย) → { contractId: { current, id_card, ... } } */
+export async function getAllAddresses(): Promise<Record<string, ContractAddresses>> {
+  if (!supabase) return {}
+  const { data, error } = await supabase.from('customer_addresses').select('*')
+  if (error) throw error
+  const out: Record<string, ContractAddresses> = {}
+  for (const r of (data ?? []) as AddressRow[]) {
+    ;(out[r.contract_id] ??= {})[r.kind] = mapAddress(r)
+  }
+  return out
+}
+
+/** บันทึก/อัปเดตที่อยู่ชนิดหนึ่ง (upsert ตาม contract_id+kind) */
+export async function saveAddress(
+  contractId: string,
+  kind: AddressKind,
+  a: CustomerAddress,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('customer_addresses')
+    .upsert(addressToRow(contractId, kind, a), { onConflict: 'contract_id,kind' })
+  if (error) throw error
+}
+
+// ---------- จดหมาย ----------
+interface LetterRow {
+  id: string
+  contract_id: string
+  episode_key: string
+  round: 1 | 2 | 3
+  address_kind: 'current' | 'id_card' | 'registry'
+  recipient_snapshot: string | null
+  printed_at: string
+  tracking_no: string | null
+  reply: LetterReply
+}
+
+function mapLetter(r: LetterRow): LetterRecord {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    episodeKey: r.episode_key,
+    round: r.round,
+    addressKind: r.address_kind,
+    recipientSnapshot: r.recipient_snapshot,
+    printedAt: r.printed_at,
+    trackingNo: r.tracking_no,
+    reply: r.reply,
+  }
+}
+
+/** จดหมายทั้งหมด (ทุกสัญญา) — สำหรับหน้าส่งจดหมาย */
+export async function getAllLetters(): Promise<LetterRecord[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('collection_letters').select('*').order('printed_at')
+  if (error) throw error
+  return ((data ?? []) as LetterRow[]).map(mapLetter)
+}
+
+export async function getContractLetters(contractId: string): Promise<LetterRecord[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('collection_letters')
+    .select('*')
+    .eq('contract_id', contractId)
+    .order('printed_at')
+  if (error) throw error
+  return ((data ?? []) as LetterRow[]).map(mapLetter)
+}
+
+export interface LetterInput {
+  contractId: string
+  episodeKey: string
+  round: 1 | 2 | 3
+  addressKind: 'current' | 'id_card' | 'registry'
+  recipientSnapshot: string
+  trackingNo?: string
+}
+
+/** บันทึกการส่งจดหมาย 1 ฉบับ (reply เริ่มเป็น pending) */
+export async function insertLetter(input: LetterInput): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('collection_letters').insert({
+    contract_id: input.contractId,
+    episode_key: input.episodeKey,
+    round: input.round,
+    address_kind: input.addressKind,
+    recipient_snapshot: input.recipientSnapshot,
+    tracking_no: input.trackingNo || null,
+    printed_at: new Date().toISOString(),
+  })
+  if (error) throw error
+}
+
+/** บันทึกผลตอบกลับของจดหมาย */
+export async function updateLetterReply(id: string, reply: LetterReply): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('collection_letters').update({ reply }).eq('id', id)
+  if (error) throw error
+}
+
+/** ใส่/แก้เลขพัสดุของจดหมาย */
+export async function updateLetterTracking(id: string, trackingNo: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('collection_letters')
+    .update({ tracking_no: trackingNo || null })
+    .eq('id', id)
+  if (error) throw error
+}
+
+// ---------- ข้อความจดหมาย (template) ----------
+const LETTER_TEMPLATE_KEY = 'letter_template'
+const DEFAULT_LETTER_TEMPLATE =
+  'เรียน คุณ{{name}}\n\nตามที่ท่านได้ทำสัญญาเช่าซื้อเลขที่ {{contractNo}} ปัจจุบันท่านค้างชำระค่างวดเป็นเวลา {{daysLate}} วัน รวมเป็นเงิน {{amount}} บาท\n\nบริษัทขอให้ท่านติดต่อชำระภายใน 7 วันนับจากวันที่ได้รับจดหมายฉบับนี้\n\nจึงเรียนมาเพื่อโปรดดำเนินการ\n\nขอแสดงความนับถือ\nWIN SURE PLUS'
+
+export async function getLetterTemplate(): Promise<string> {
+  if (!supabase) return DEFAULT_LETTER_TEMPLATE
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', LETTER_TEMPLATE_KEY)
+    .maybeSingle()
+  if (error) throw error
+  return (data?.value as string) || DEFAULT_LETTER_TEMPLATE
+}
+
+export async function saveLetterTemplate(text: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert(
+      { key: LETTER_TEMPLATE_KEY, value: text, description: 'ข้อความจดหมายติดตามหนี้' },
+      { onConflict: 'key' },
+    )
+  if (error) throw error
 }

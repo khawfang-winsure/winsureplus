@@ -13,6 +13,7 @@ import ShopReport from './pages/ShopReport'
 import ShopDetail from './pages/ShopDetail'
 import Commission from './pages/Commission'
 import Letters from './pages/Letters'
+import LettersPrint from './pages/LettersPrint'
 import Settings from './pages/Settings'
 import WaitingEmail from './pages/WaitingEmail'
 import WaitingSummary from './pages/WaitingSummary'
@@ -43,6 +44,8 @@ function Gate() {
 
   return (
     <Routes>
+      {/* หน้าปริ้นจดหมาย — นอก Layout (ไม่มี sidebar เพื่อปริ้นสะอาด) */}
+      <Route path="/letters/print" element={<LettersPrint />} />
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
         <Route path="/add" element={<AddContract />} />

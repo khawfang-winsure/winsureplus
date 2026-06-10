@@ -9,12 +9,16 @@ import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
 import {
   contractNoExists,
   getContract,
+  getContractAddresses,
   getOptions,
   getShopContractNos,
   getShops,
   insertContract,
+  saveAddress,
   updateContract,
 } from '../lib/db'
+import { isAddressEmpty, type CustomerAddress } from '../lib/letters'
+import { AddressFields } from '../components/AddressFields'
 import { useAsync } from '../lib/useAsync'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
@@ -51,6 +55,8 @@ interface FormState {
   operator: string
   notes: string
 }
+
+type AddrKey = 'current' | 'id_card' | 'work'
 
 const today = new Date().toISOString().slice(0, 10)
 
@@ -155,13 +161,24 @@ export default function AddContract() {
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setF((prev) => ({ ...prev, [key]: value }))
 
-  // โหมดแก้ไข: โหลดสัญญาเดิมมาใส่ฟอร์ม
+  // ที่อยู่ (สำหรับส่งจดหมาย) — 3 ชุด กรอกตอนเพิ่มสัญญา ไม่บังคับ
+  const [addr, setAddr] = useState<Record<AddrKey, CustomerAddress>>({
+    current: {},
+    id_card: {},
+    work: {},
+  })
+  const setAddrField = (k: AddrKey, field: keyof CustomerAddress, v: string) =>
+    setAddr((p) => ({ ...p, [k]: { ...p[k], [field]: v } }))
+  const copyFromCurrent = (k: AddrKey) => setAddr((p) => ({ ...p, [k]: { ...p.current } }))
+
+  // โหมดแก้ไข: โหลดสัญญาเดิม + ที่อยู่มาใส่ฟอร์ม
   useEffect(() => {
     if (!id) return
     setLoadingContract(true)
-    getContract(id)
-      .then((c) => {
+    Promise.all([getContract(id), getContractAddresses(id)])
+      .then(([c, a]) => {
         if (c) setF(fromContract(c))
+        setAddr({ current: a.current ?? {}, id_card: a.id_card ?? {}, work: a.work ?? {} })
       })
       .finally(() => setLoadingContract(false))
   }, [id])
@@ -255,12 +272,23 @@ export default function AddContract() {
         return
       }
 
+      // หารหัสสัญญา (แก้ไข=id เดิม, เพิ่มใหม่=id ที่เพิ่งสร้าง) แล้วบันทึกที่อยู่ที่กรอก
+      const saveAddresses = async (contractId: string) => {
+        if (!contractId) return
+        const keys: AddrKey[] = ['current', 'id_card', 'work']
+        await Promise.all(
+          keys.filter((k) => !isAddressEmpty(addr[k])).map((k) => saveAddress(contractId, k, addr[k])),
+        )
+      }
+
       if (isEdit && id) {
         await updateContract(id, preview)
+        await saveAddresses(id)
         alert('แก้ไขสัญญาสำเร็จ ✅')
         if (isSupabaseConfigured) navigate('/customers')
       } else {
-        await insertContract(preview) // ฟังก์ชันละ id ออกให้เอง
+        const newId = await insertContract(preview)
+        await saveAddresses(newId)
         if (isSupabaseConfigured) {
           alert('บันทึกสัญญาสำเร็จ ✅ ไปที่หน้ารอสรุปยอด/รอส่งอีเมลได้เลย')
           navigate('/waiting-summary') // เด้งไปคิวรอสรุปยอด (เคสจะอยู่ในรอส่งอีเมลด้วย)
@@ -503,6 +531,32 @@ export default function AddContract() {
               <Field label="หมายเหตุ">
                 <Input value={f.notes} onChange={(e) => set('notes', e.target.value)} />
               </Field>
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="mb-1 font-semibold text-ink">ที่อยู่ลูกค้า (สำหรับส่งจดหมาย)</h3>
+            <p className="mb-4 text-sm text-ink-soft">
+              ไม่บังคับ — กรอกไว้เลยจะได้ไม่ต้องตามเก็บทีหลังตอนส่งจดหมาย
+            </p>
+            <div className="grid gap-5 lg:grid-cols-3">
+              <AddressFields
+                title="ที่อยู่ปัจจุบัน"
+                value={addr.current}
+                onChange={(field, v) => setAddrField('current', field, v)}
+              />
+              <AddressFields
+                title="ที่อยู่ตามบัตรประชาชน"
+                value={addr.id_card}
+                onChange={(field, v) => setAddrField('id_card', field, v)}
+                onCopy={() => copyFromCurrent('id_card')}
+              />
+              <AddressFields
+                title="ที่อยู่ที่ทำงาน"
+                value={addr.work}
+                onChange={(field, v) => setAddrField('work', field, v)}
+                onCopy={() => copyFromCurrent('work')}
+              />
             </div>
           </Card>
 
