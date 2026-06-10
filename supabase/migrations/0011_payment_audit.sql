@@ -24,7 +24,8 @@ update public.installments
 -- ---------- 2) ตารางประวัติการชำระ ----------
 create table if not exists public.payment_log (
   id uuid primary key default gen_random_uuid(),
-  installment_id uuid not null references public.installments (id) on delete cascade,
+  -- set null (ไม่ cascade) เพื่อเก็บประวัติไว้แม้งวดถูกลบตอนขยายระยะเวลา (Feature B)
+  installment_id uuid references public.installments (id) on delete set null,
   contract_id uuid not null references public.contracts (id) on delete cascade,
   action text not null check (action in ('pay', 'edit', 'cancel')),
   amount numeric not null default 0,            -- pay=ยอดที่จ่ายครั้งนี้, edit=ยอดสะสมใหม่, cancel=0

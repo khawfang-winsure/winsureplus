@@ -577,6 +577,121 @@ export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry
   }))
 }
 
+// ---------- ขยายระยะเวลา (restructure) — Feature B ----------
+export type ExtensionType = 'due_day' | 'months' | 'both'
+
+export interface RestructureInput {
+  extType: ExtensionType
+  newDueDay: number
+  newTerm: number // จำนวนงวดที่จะผ่อนใหม่
+  newFinance: number
+  note?: string
+}
+
+/** ขยายระยะเวลา (atomic RPC): ลบงวดที่ยังไม่จ่าย → สร้างงวดใหม่ + เก็บประวัติ */
+export async function restructureContract(contractId: string, input: RestructureInput): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('restructure_contract', {
+    p_contract_id: contractId,
+    p_ext_type: input.extType,
+    p_new_due_day: input.newDueDay,
+    p_new_term: input.newTerm,
+    p_new_finance: input.newFinance,
+    p_note: input.note ?? null,
+  })
+  if (error) throw error
+}
+
+/** 1 แถวประวัติการขยายระยะเวลา */
+export interface ExtensionRecord {
+  id: string
+  contractId: string
+  contractNo: string
+  customerName: string
+  extType: ExtensionType
+  oldDueDay: number | null
+  newDueDay: number | null
+  oldTerm: number | null
+  newTerm: number | null
+  oldFinance: number | null
+  newFinance: number | null
+  oldMonthly: number | null
+  newMonthly: number | null
+  newInstallments: number | null
+  note: string | null
+  recordedByName: string | null
+  createdAt: string
+}
+
+interface ExtensionRow {
+  id: string
+  contract_id: string
+  ext_type: ExtensionType
+  old_due_day: number | null
+  new_due_day: number | null
+  old_term: number | null
+  new_term: number | null
+  old_finance: number | null
+  new_finance: number | null
+  old_monthly: number | null
+  new_monthly: number | null
+  new_installments: number | null
+  note: string | null
+  recorded_by_name: string | null
+  created_at: string
+  // Supabase embed อาจคืนเป็น object หรือ array แล้วแต่การ infer relation
+  contracts?: { contract_no: string; customer_name: string } | { contract_no: string; customer_name: string }[] | null
+}
+
+function mapExtension(r: ExtensionRow): ExtensionRecord {
+  const c = Array.isArray(r.contracts) ? r.contracts[0] : r.contracts
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    contractNo: c?.contract_no ?? '',
+    customerName: c?.customer_name ?? '',
+    extType: r.ext_type,
+    oldDueDay: r.old_due_day,
+    newDueDay: r.new_due_day,
+    oldTerm: r.old_term,
+    newTerm: r.new_term,
+    oldFinance: r.old_finance != null ? Number(r.old_finance) : null,
+    newFinance: r.new_finance != null ? Number(r.new_finance) : null,
+    oldMonthly: r.old_monthly != null ? Number(r.old_monthly) : null,
+    newMonthly: r.new_monthly != null ? Number(r.new_monthly) : null,
+    newInstallments: r.new_installments,
+    note: r.note ?? null,
+    recordedByName: r.recorded_by_name ?? null,
+    createdAt: r.created_at,
+  }
+}
+
+const EXT_SELECT =
+  'id, contract_id, ext_type, old_due_day, new_due_day, old_term, new_term, old_finance, new_finance, old_monthly, new_monthly, new_installments, note, recorded_by_name, created_at'
+
+/** ประวัติการขยายของสัญญาเดียว (ใหม่ → เก่า) */
+export async function getContractExtensions(contractId: string): Promise<ExtensionRecord[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_extensions')
+    .select(EXT_SELECT)
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as ExtensionRow[]).map(mapExtension)
+}
+
+/** ประวัติการขยายทั้งหมด (สำหรับเมนู "ลูกค้าขยายระยะเวลา") พร้อมชื่อลูกค้า/เลขสัญญา */
+export async function getAllExtensions(): Promise<ExtensionRecord[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_extensions')
+    .select(`${EXT_SELECT}, contracts ( contract_no, customer_name )`)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as ExtensionRow[]).map(mapExtension)
+}
+
 interface StatusRow {
   contract_id: string
   contract_no: string

@@ -1,20 +1,43 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Pencil, PackageOpen, History } from 'lucide-react'
+import { Pencil, PackageOpen, History, CalendarClock } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
   getContract,
   getInstallments,
   getPaymentLog,
+  getContractExtensions,
   recordPayment,
   adjustPayment,
   cancelPayment,
+  restructureContract,
   submitReturn,
   type PaymentLogEntry,
+  type ExtensionRecord,
+  type ExtensionType,
   type ReturnInput,
 } from '../lib/db'
 import type { Contract, Installment } from '../lib/types'
+
+export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
+  due_day: 'เปลี่ยนวันที่ชำระ',
+  months: 'ขยายจำนวนงวด',
+  both: 'เปลี่ยนวันชำระ + ขยายงวด',
+}
+
+/** พรีวิววันครบกำหนดงวดใหม่ (มิเรอร์ตรรกะใน RPC restructure_contract: งวด i = เดือนปัจจุบัน + i, clamp ปลายเดือน) */
+function previewDueDate(monthOffset: number, dueDay: number): string {
+  const now = new Date()
+  const y0 = now.getFullYear()
+  const m0 = now.getMonth() // 0-based
+  const idx = m0 + monthOffset
+  const y = y0 + Math.floor(idx / 12)
+  const m = (idx % 12 + 12) % 12 // 0-based เดือนเป้าหมาย
+  const lastDay = new Date(y, m + 1, 0).getDate()
+  const d = Math.min(dueDay, lastDay)
+  return `${String(d).padStart(2, '0')}/${String(m + 1).padStart(2, '0')}/${y}`
+}
 
 const ACTION_LABEL: Record<PaymentLogEntry['action'], string> = {
   pay: 'รับชำระ',
@@ -33,8 +56,10 @@ export default function ContractDetail() {
   const [contract, setContract] = useState<Contract | null>(null)
   const [installments, setInstallments] = useState<Installment[]>([])
   const [log, setLog] = useState<PaymentLogEntry[]>([])
+  const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
+  const [extendOpen, setExtendOpen] = useState(false)
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Installment | null>(null)
@@ -42,10 +67,16 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg] = await Promise.all([getContract(id), getInstallments(id), getPaymentLog(id)])
+    const [c, ins, lg, ext] = await Promise.all([
+      getContract(id),
+      getInstallments(id),
+      getPaymentLog(id),
+      getContractExtensions(id),
+    ])
     setContract(c)
     setInstallments(ins)
     setLog(lg)
+    setExtensions(ext)
     setLoading(false)
   }, [id])
 
@@ -89,9 +120,14 @@ export default function ContractDetail() {
             <Pencil size={15} /> แก้ไข
           </Button>
           {contract.status === 'active' && (
-            <Button onClick={() => setReturnOpen(true)}>
-              <PackageOpen size={15} /> คืนเครื่อง
-            </Button>
+            <>
+              <Button variant="ghost" onClick={() => setExtendOpen(true)}>
+                <CalendarClock size={15} /> ขยายระยะเวลา
+              </Button>
+              <Button onClick={() => setReturnOpen(true)}>
+                <PackageOpen size={15} /> คืนเครื่อง
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -246,6 +282,52 @@ export default function ContractDetail() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* ประวัติการขยายระยะเวลา */}
+      {extensions.length > 0 && (
+        <>
+          <h3 className="mb-2 mt-6 flex items-center gap-1.5 font-semibold text-ink">
+            <CalendarClock size={16} /> ประวัติการขยายระยะเวลา
+          </h3>
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  {['เวลา', 'ประเภท', 'วันชำระ', 'ค่างวด', 'จำนวนงวด', 'ยอดจัดไฟแนนซ์', 'ผู้ทำ', 'หมายเหตุ'].map((h) => (
+                    <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {extensions.map((e, idx) => (
+                  <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
+                    <td className="px-3 py-2.5"><Badge tone="amber">{EXT_TYPE_LABEL[e.extType]}</Badge></td>
+                    <td className="px-3 py-2.5">{e.oldDueDay} → {e.newDueDay}</td>
+                    <td className="px-3 py-2.5">{baht(e.oldMonthly ?? 0)} → {baht(e.newMonthly ?? 0)}</td>
+                    <td className="px-3 py-2.5">{e.oldTerm} → {e.newTerm} <span className="text-ink-soft">(+{e.newInstallments} งวดใหม่)</span></td>
+                    <td className="px-3 py-2.5">{baht(e.oldFinance ?? 0)} → {baht(e.newFinance ?? 0)}</td>
+                    <td className="px-3 py-2.5">{e.recordedByName || '—'}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{e.note || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {extendOpen && (
+        <ExtendModal
+          contract={contract}
+          installments={installments}
+          onClose={() => setExtendOpen(false)}
+          onDone={async () => {
+            setExtendOpen(false)
+            await load()
+          }}
+        />
       )}
 
       {payTarget && (
@@ -414,6 +496,145 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ปิด</Button>
           <Button onClick={save} disabled={busy}>{busy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิก'}</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function ExtendModal({
+  contract,
+  installments,
+  onClose,
+  onDone,
+}: {
+  contract: Contract
+  installments: Installment[]
+  onClose: () => void
+  onDone: () => void
+}) {
+  const unpaidCount = installments.filter((i) => !i.paidAt).length
+  const lastPaidNo = installments.filter((i) => i.paidAt).reduce((m, i) => Math.max(m, i.installmentNo), 0)
+  const partialPaid = installments
+    .filter((i) => !i.paidAt && i.paidAmount > 0)
+    .reduce((s, i) => s + i.paidAmount, 0)
+  const baseTerm = Math.max(1, unpaidCount)
+
+  const [extType, setExtType] = useState<ExtensionType>('both')
+  const [newDueDay, setNewDueDay] = useState(contract.dueDay)
+  const [newTerm, setNewTerm] = useState(baseTerm)
+  const [newFinance, setNewFinance] = useState(Math.round(baseTerm * contract.monthlyPayment))
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const lockDueDay = extType === 'months' // ขยายงวดอย่างเดียว = วันชำระเดิม
+  const lockTermFinance = extType === 'due_day' // เปลี่ยนวันชำระอย่างเดียว = งวด/ยอดเดิม
+
+  function changeType(t: ExtensionType) {
+    setExtType(t)
+    if (t === 'due_day') {
+      setNewTerm(baseTerm)
+      setNewFinance(Math.round(baseTerm * contract.monthlyPayment))
+    }
+    if (t === 'months') {
+      setNewDueDay(contract.dueDay)
+    }
+  }
+
+  const newMonthly = newTerm > 0 ? Math.round(newFinance / newTerm) : 0
+  const firstNo = lastPaidNo + 1
+  const lastNo = lastPaidNo + newTerm
+  const totalTerm = lastPaidNo + newTerm
+  const valid = newDueDay >= 1 && newDueDay <= 31 && newTerm > 0 && newFinance >= 0
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await restructureContract(contract.id, {
+        extType,
+        newDueDay,
+        newTerm,
+        newFinance,
+        note: note || undefined,
+      })
+      onDone()
+    } catch (e) {
+      setErr(errMsg(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="ขยายระยะเวลา" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="ประเภทการขยาย">
+          <Select value={extType} onChange={(e) => changeType(e.target.value as ExtensionType)}>
+            <option value="both">เปลี่ยนวันชำระ + ขยายจำนวนงวด</option>
+            <option value="due_day">เปลี่ยนวันที่ชำระอย่างเดียว</option>
+            <option value="months">ขยายจำนวนงวดอย่างเดียว (วันชำระเดิม)</option>
+          </Select>
+        </Field>
+
+        <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
+          ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b>
+          {partialPaid > 0 && (
+            <span className="mt-1 block text-amber-700">
+              ⚠️ มีจ่ายบางส่วนค้างอยู่ {baht(partialPaid)} ฿ — งวดนี้จะถูกลบด้วย ควรหักออกจากยอดจัดไฟแนนซ์ใหม่
+            </span>
+          )}
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="วันที่ชำระใหม่ (1–31)">
+            <Input
+              type="number"
+              value={newDueDay || ''}
+              disabled={lockDueDay}
+              onChange={(e) => setNewDueDay(Number(e.target.value) || 0)}
+            />
+          </Field>
+          <Field label="จำนวนงวดที่จะผ่อนใหม่">
+            <Input
+              type="number"
+              value={newTerm || ''}
+              disabled={lockTermFinance}
+              onChange={(e) => setNewTerm(Number(e.target.value) || 0)}
+            />
+          </Field>
+          <Field label="ยอดจัดไฟแนนซ์ใหม่ (บาท)">
+            <Input
+              type="number"
+              value={newFinance || ''}
+              disabled={lockTermFinance}
+              onChange={(e) => setNewFinance(Number(e.target.value) || 0)}
+            />
+          </Field>
+        </div>
+
+        <div className="rounded-xl border border-peach bg-white px-3 py-2.5 text-sm">
+          <p className="font-semibold text-ink">สรุปงวดใหม่</p>
+          <p className="text-ink-soft">
+            ค่างวดใหม่ <b className="text-ink">{baht(newMonthly)} ฿/เดือน</b> · งวดเลขที่{' '}
+            <b className="text-ink">{firstNo}–{lastNo}</b> ({newTerm} งวด · รวมทั้งสัญญา {totalTerm} งวด)
+          </p>
+          <p className="text-ink-soft">
+            งวดแรกครบ <b className="text-ink">{previewDueDate(1, newDueDay)}</b> · งวดสุดท้ายครบ{' '}
+            <b className="text-ink">{previewDueDate(newTerm, newDueDay)}</b>
+          </p>
+          <p className="mt-1 text-red-600">งวดที่ยังไม่จ่าย {unpaidCount} งวด จะถูกลบแล้วสร้างใหม่ตามนี้</p>
+        </div>
+
+        <Field label="หมายเหตุ (ถ้ามี)">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น ลูกค้าขอลดค่างวด ผ่อนยาวขึ้น" />
+        </Field>
+
+        {err && <p className="text-sm text-red-600">{err}</p>}
+
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy || !valid}>{busy ? 'กำลังบันทึก...' : 'ยืนยันขยายระยะเวลา'}</Button>
         </div>
       </div>
     </Modal>

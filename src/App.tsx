@@ -9,6 +9,7 @@ import ContractDetail from './pages/ContractDetail'
 import DueToday from './pages/DueToday'
 import Overdue from './pages/Overdue'
 import Returns from './pages/Returns'
+import ExtendedContracts from './pages/ExtendedContracts'
 import ShopReport from './pages/ShopReport'
 import ShopDetail from './pages/ShopDetail'
 import Commission from './pages/Commission'
@@ -61,6 +62,7 @@ function Gate() {
         <Route path="/overdue/:bucket" element={<Overdue />} />
         <Route path="/letters" element={<Letters />} />
         <Route path="/returns" element={<Returns />} />
+        <Route path="/extended" element={<ExtendedContracts />} />
         <Route path="/shop-report" element={<ShopReport />} />
         <Route path="/shop/:id" element={<ShopDetail />} />
         <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to="/" replace />} />
