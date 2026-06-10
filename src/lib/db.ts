@@ -478,26 +478,30 @@ export async function getInstallments(contractId: string): Promise<Installment[]
   return ((data ?? []) as InstallmentRow[]).map(mapInstallment)
 }
 
-/** งวดผ่อนแบบย่อ (เฉพาะที่ใช้คิดค่าคอม) ของทุกสัญญา — query เดียว ไม่ N+1 */
+/** งวดผ่อนแบบย่อ (ใช้คิดค่าคอม + dashboard) ของทุกสัญญา — query เดียว ไม่ N+1 */
 export interface InstallmentLite {
   contractId: string
   installmentNo: number
   dueDate: string
   paidAt: string | null
+  amount: number
+  paidAmount: number
 }
 
-/** ดึงงวดทั้งหมด (ทุกสัญญา) — ใช้ตรวจประวัติ "เคยล่าช้าเกิน 30 วัน" ในรายงานค่าคอม */
+/** ดึงงวดทั้งหมด (ทุกสัญญา) — ใช้ตรวจประวัติล่าช้า (ค่าคอม) + มูลค่าชำระ/คงค้าง (dashboard) */
 export async function getAllInstallments(): Promise<InstallmentLite[]> {
   if (!supabase) return []
   const { data, error } = await supabase
     .from('installments')
-    .select('contract_id, installment_no, due_date, paid_at')
+    .select('contract_id, installment_no, due_date, paid_at, amount, paid_amount')
   if (error) throw error
   return (data ?? []).map((r) => ({
     contractId: r.contract_id as string,
     installmentNo: r.installment_no as number,
     dueDate: r.due_date as string,
     paidAt: (r.paid_at as string | null) ?? null,
+    amount: Number(r.amount ?? 0),
+    paidAmount: Number(r.paid_amount ?? 0),
   }))
 }
 
@@ -574,6 +578,25 @@ export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry
     note: r.note ?? null,
     byName: r.by_name ?? null,
     createdAt: r.created_at,
+  }))
+}
+
+/** การรับชำระแบบย่อ (ทุกสัญญา) สำหรับกระแสเงินสด/กราฟเก็บเงินใน dashboard */
+export interface PaymentLite {
+  action: 'pay' | 'edit' | 'cancel'
+  amount: number
+  createdAt: string
+}
+
+/** ดึง payment_log ทั้งหมด (เฉพาะ field ที่ใช้รวมยอดรับชำระรายเดือน) */
+export async function getAllPayments(): Promise<PaymentLite[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('payment_log').select('action, amount, created_at')
+  if (error) throw error
+  return (data ?? []).map((r) => ({
+    action: r.action as 'pay' | 'edit' | 'cancel',
+    amount: Number(r.amount ?? 0),
+    createdAt: r.created_at as string,
   }))
 }
 

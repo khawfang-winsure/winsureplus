@@ -13,6 +13,7 @@ import ExtendedContracts from './pages/ExtendedContracts'
 import ShopReport from './pages/ShopReport'
 import ShopDetail from './pages/ShopDetail'
 import Commission from './pages/Commission'
+import ExecDashboard from './pages/ExecDashboard'
 import Letters from './pages/Letters'
 import LettersPrint from './pages/LettersPrint'
 import FieldVisitPrint from './pages/FieldVisitPrint'
@@ -51,6 +52,7 @@ function Gate() {
       <Route path="/letters/field" element={<FieldVisitPrint />} />
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
+        <Route path="/exec" element={isAdmin ? <ExecDashboard /> : <Navigate to="/" replace />} />
         <Route path="/add" element={<AddContract />} />
         <Route path="/edit/:id" element={<AddContract />} />
         <Route path="/waiting-email" element={<WaitingEmail />} />

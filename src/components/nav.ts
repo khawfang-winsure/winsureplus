@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CalendarRange,
   Coins,
+  Gauge,
   FilePlus2,
   LayoutDashboard,
   Mail,
@@ -32,6 +33,7 @@ export interface NavItem {
 
 export const NAV: NavItem[] = [
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
+  { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true },
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
