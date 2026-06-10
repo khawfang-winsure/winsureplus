@@ -30,7 +30,7 @@ create table if not exists public.payment_log (
   amount numeric not null default 0,            -- pay=ยอดที่จ่ายครั้งนี้, edit=ยอดสะสมใหม่, cancel=0
   paid_amount_after numeric not null default 0, -- ยอดสะสมหลังทำรายการ (ไว้ตรวจย้อนหลัง)
   note text,
-  by uuid references public.profiles (id),
+  acted_by uuid references public.profiles (id),
   by_name text,
   created_at timestamptz not null default now()
 );
@@ -41,15 +41,15 @@ create index if not exists payment_log_contract_idx on public.payment_log (contr
 create or replace function public.set_payment_log_actor()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if new.by is null then
-    new.by := auth.uid();
+  if new.acted_by is null then
+    new.acted_by := auth.uid();
   end if;
   if new.by_name is null then
     new.by_name := (
       select coalesce(nullif(p.full_name, ''), u.email, '')
       from auth.users u
       left join public.profiles p on p.id = u.id
-      where u.id = new.by
+      where u.id = new.acted_by
     );
   end if;
   return new;

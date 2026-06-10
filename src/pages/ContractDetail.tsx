@@ -285,6 +285,13 @@ export default function ContractDetail() {
   )
 }
 
+/** ดึงข้อความ error ให้อ่านออก (PostgREST error เป็น object มี .message ไม่ใช่ Error instance) */
+function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
+  return String(e)
+}
+
 /** เวลาไทยแบบสั้น (วัน เดือน ปี เวลา) สำหรับ audit log */
 function thaiDateTime(iso: string): string {
   const d = new Date(iso)
@@ -318,7 +325,7 @@ function PaymentModal({
       else await adjustPayment(ins.id, amount, note || undefined)
       onDone()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      setErr(errMsg(e))
       setBusy(false)
     }
   }
@@ -386,7 +393,7 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
       await cancelPayment(ins.id, note || undefined)
       onDone()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      setErr(errMsg(e))
       setBusy(false)
     }
   }
@@ -435,7 +442,7 @@ function ReturnModal({
       await submitReturn(contractId, f)
       onDone()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      setErr(errMsg(e))
       setBusy(false)
     }
   }
