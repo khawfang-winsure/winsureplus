@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loading, PageTitle, Card, Badge } from '../components/ui'
 import { Donut } from '../components/Donut'
@@ -13,8 +14,16 @@ import {
   getAllExtensions,
   getReturns,
 } from '../lib/db'
-import { buildExecDashboard, type ExecDashboard, type RiskGroup } from '../lib/execDashboard'
+import { buildExecDashboard, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity } from '../lib/execDashboard'
 import type { ShopGrade } from '../lib/types'
+
+type Tab = 'overview' | Granularity
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'overview', label: 'ภาพรวมทั้งหมด' },
+  { key: 'day', label: 'รายวัน' },
+  { key: 'week', label: 'รายสัปดาห์' },
+  { key: 'month', label: 'รายเดือน' },
+]
 
 const todayISO = new Date().toISOString().slice(0, 10)
 
@@ -35,6 +44,7 @@ const GRADE_COLOR: Record<ShopGrade, string> = {
 
 export default function ExecDashboard() {
   const navigate = useNavigate()
+  const [tab, setTab] = useState<Tab>('overview')
   const { data, loading } = useAsync<ExecDashboard | null>(async () => {
     const [contracts, statuses, installments, shops, payments, extensions, returns] = await Promise.all([
       getContracts(),
@@ -61,8 +71,32 @@ export default function ExecDashboard() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageTitle sub={`ข้อมูล ณ ${todayISO} — ภาพรวมทั้งหมดในหน้าเดียว`}>Dashboard ผู้บริหาร</PageTitle>
+      <PageTitle sub={`ข้อมูล ณ ${todayISO}`}>Dashboard ผู้บริหาร</PageTitle>
 
+      {/* แท็บเลือกมุมมอง: ภาพรวม / รายวัน / สัปดาห์ / เดือน */}
+      <div className="flex flex-wrap gap-2">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+              tab === t.key ? 'bg-salmon-deep text-white' : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab !== 'overview' && (
+        <CashflowView
+          gran={tab}
+          rows={tab === 'day' ? d.cashflowDay : tab === 'week' ? d.cashflowWeek : d.cashflowMonth}
+        />
+      )}
+
+      {tab === 'overview' && (
+      <>
       {/* ===== แถว 1: KPI หัวใจ ===== */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <Kpi label="ลูกค้าทั้งหมด" value={String(d.totalContracts)} sub={`ผ่อนอยู่ ${d.activeContracts} · ปิด ${d.closedContracts}`} onClick={() => navigate('/customers')} />
@@ -205,6 +239,78 @@ export default function ExecDashboard() {
         <RiskTable title="หนี้เสียตามช่วงอายุ" rows={d.riskByAge} />
         <RiskTable title="หนี้เสียตามรุ่นเครื่อง" rows={d.riskByModel} />
       </div>
+      </>
+      )}
+    </div>
+  )
+}
+
+// ---------- มุมมองกระแสเงินสด รายวัน/สัปดาห์/เดือน ----------
+function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }) {
+  const unit = gran === 'day' ? 'วัน' : gran === 'week' ? 'สัปดาห์' : 'เดือน'
+  const totalIncome = rows.reduce((s, r) => s + r.income, 0)
+  const totalExpense = rows.reduce((s, r) => s + r.expense, 0)
+  const totalNet = totalIncome - totalExpense
+  const totalCases = rows.reduce((s, r) => s + r.newCases, 0)
+  // ช่วงล่าสุด (แถวสุดท้าย)
+  const last = rows[rows.length - 1]
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* สรุปรวมทั้งช่วง */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Kpi label={`เงินเข้า (รวม ${rows.length} ${unit})`} value={`฿${money(totalIncome)}`} sub="ค่างวดที่เก็บได้" tone="text-green-600" />
+        <Kpi label={`เงินออก (รวม ${rows.length} ${unit})`} value={`฿${money(totalExpense)}`} sub="โอนให้ร้าน (สัญญาใหม่)" tone="text-amber-600" />
+        <Kpi label="กระแสเงินสดสุทธิ" value={`฿${money(totalNet)}`} sub="เข้า − ออก" tone={totalNet >= 0 ? 'text-green-600' : 'text-red-600'} />
+        <Kpi label={`เคสใหม่ (${rows.length} ${unit})`} value={`${totalCases} ราย`} sub={last ? `ล่าสุด ${last.label}: ${last.newCases} ราย` : ''} />
+      </div>
+
+      {/* กราฟเข้า vs ออก */}
+      <Card>
+        <h3 className="mb-1 font-semibold text-ink">เงินเข้า vs เงินออก ราย{unit} (พันบาท)</h3>
+        <LineChart
+          labels={rows.map((r) => r.label)}
+          valueSuffix="K"
+          series={[
+            { name: 'เงินเข้า', color: '#16a34a', values: rows.map((r) => Math.round(r.income / 1000)), fill: true },
+            { name: 'เงินออก', color: '#f59e0b', values: rows.map((r) => Math.round(r.expense / 1000)) },
+          ]}
+        />
+      </Card>
+
+      {/* ตารางรายช่วง */}
+      <Card>
+        <h3 className="mb-3 font-semibold text-ink">รายละเอียดราย{unit}</h3>
+        <div className="scrollbar-thin overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-ink-soft">
+                <th className="py-2 font-semibold">ช่วง</th>
+                <th className="py-2 text-right font-semibold">เงินเข้า</th>
+                <th className="py-2 text-right font-semibold">เงินออก</th>
+                <th className="py-2 text-right font-semibold">สุทธิ</th>
+                <th className="py-2 text-right font-semibold">รับชำระ</th>
+                <th className="py-2 text-right font-semibold">เคสใหม่</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...rows].reverse().map((r) => (
+                <tr key={r.key} className="border-b border-peach/50 last:border-0">
+                  <td className="py-1.5 text-ink">{r.label}</td>
+                  <td className="py-1.5 text-right text-green-600">฿{money(r.income)}</td>
+                  <td className="py-1.5 text-right text-amber-600">฿{money(r.expense)}</td>
+                  <td className={`py-1.5 text-right font-semibold ${r.net >= 0 ? 'text-ink' : 'text-red-600'}`}>฿{money(r.net)}</td>
+                  <td className="py-1.5 text-right text-ink-soft">{r.paymentsCount}</td>
+                  <td className="py-1.5 text-right text-ink-soft">{r.newCases}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-xs text-ink-soft">
+          * เงินเข้า = ค่างวดที่บันทึกรับชำระในช่วงนั้น (อิงเวลาที่พนักงานคีย์) · เงินออก = เงินโอนให้ร้านของสัญญาใหม่ตามวันที่ทำรายการ
+        </p>
+      </Card>
     </div>
   )
 }

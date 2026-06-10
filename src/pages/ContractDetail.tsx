@@ -218,6 +218,28 @@ export default function ContractDetail() {
         </div>
       </Card>
 
+      {/* เลขอ้างอิงเครื่อง + ลูกค้า (เลขบัตรเต็มเฉพาะหน้านี้) */}
+      <Card className="mb-4 py-3">
+        <div className="grid gap-3 text-sm sm:grid-cols-4">
+          <div>
+            <p className="text-xs text-ink-soft">เลข INV</p>
+            <p className="font-semibold text-ink">{contract.invNo || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">หมายเลข SN</p>
+            <p className="font-semibold text-ink">{contract.sn || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">หมายเลข IMEI</p>
+            <p className="font-semibold text-ink">{contract.imei || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">เลขบัตรประชาชน</p>
+            <p className="font-semibold text-ink">{contract.nationalId || '—'}</p>
+          </div>
+        </div>
+      </Card>
+
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>
       {installments.length === 0 ? (

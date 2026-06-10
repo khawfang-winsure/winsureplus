@@ -45,7 +45,9 @@ interface ContractRow {
   contract_no: string
   inv_no: string | null
   sn: string | null
+  imei: string | null
   customer_name: string
+  national_id: string | null
   phone: string | null
   phone_alt1: string | null
   phone_alt2: string | null
@@ -87,7 +89,9 @@ function mapContract(r: ContractRow): Contract {
     contractNo: r.contract_no,
     invNo: r.inv_no ?? '',
     sn: r.sn ?? '',
+    imei: r.imei ?? '',
     customerName: r.customer_name,
+    nationalId: r.national_id ?? '',
     phone: r.phone ?? '',
     phoneAlt1: r.phone_alt1 ?? undefined,
     phoneAlt2: r.phone_alt2 ?? undefined,
@@ -130,7 +134,9 @@ function toInsert(c: Omit<Contract, 'id'>) {
     contract_no: c.contractNo,
     inv_no: c.invNo || null,
     sn: c.sn || null,
+    imei: c.imei || null,
     customer_name: c.customerName,
+    national_id: c.nationalId || null,
     phone: c.phone || null,
     phone_alt1: c.phoneAlt1 || null,
     phone_alt2: c.phoneAlt2 || null,

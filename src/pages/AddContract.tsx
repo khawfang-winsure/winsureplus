@@ -38,6 +38,7 @@ interface FormState {
   contractNo: string
   invNo: string
   customerName: string
+  nationalId: string
   phone: string
   phoneAlt1: string
   phoneAlt2: string
@@ -48,6 +49,7 @@ interface FormState {
   model: string
   storage: string
   sn: string
+  imei: string
   condition: DeviceCondition
   origin: DeviceOrigin
   devicePrice: string
@@ -75,6 +77,7 @@ const initial: FormState = {
   contractNo: '',
   invNo: '',
   customerName: '',
+  nationalId: '',
   phone: '',
   phoneAlt1: '',
   phoneAlt2: '',
@@ -85,6 +88,7 @@ const initial: FormState = {
   model: '',
   storage: '',
   sn: '',
+  imei: '',
   condition: 'new',
   origin: 'th',
   devicePrice: '',
@@ -113,6 +117,7 @@ function fromContract(c: Contract): FormState {
     contractNo: c.contractNo,
     invNo: c.invNo,
     customerName: c.customerName,
+    nationalId: c.nationalId ?? '',
     phone: c.phone,
     phoneAlt1: c.phoneAlt1 ?? '',
     phoneAlt2: c.phoneAlt2 ?? '',
@@ -123,6 +128,7 @@ function fromContract(c: Contract): FormState {
     model: c.model,
     storage: c.storage,
     sn: c.sn,
+    imei: c.imei ?? '',
     condition: c.condition,
     origin: c.origin,
     devicePrice: str(c.devicePrice),
@@ -270,7 +276,9 @@ export default function AddContract() {
     contractNo: f.contractNo || '—',
     invNo: f.invNo || '—',
     sn: f.sn || '—',
+    imei: f.imei || undefined,
     customerName: f.customerName || '—',
+    nationalId: f.nationalId || undefined,
     phone: f.phone,
     phoneAlt1: f.phoneAlt1,
     phoneAlt2: f.phoneAlt2,
@@ -410,6 +418,9 @@ export default function AddContract() {
               <Field label="ชื่อลูกค้า" required>
                 <Input value={f.customerName} onChange={(e) => set('customerName', e.target.value)} />
               </Field>
+              <Field label="เลขบัตรประชาชน">
+                <Input value={f.nationalId} onChange={(e) => set('nationalId', e.target.value)} placeholder="เลขบัตร 13 หลัก" />
+              </Field>
               <Field label="เบอร์โทรลูกค้า">
                 <Input value={f.phone} onChange={(e) => set('phone', e.target.value)} />
               </Field>
@@ -466,6 +477,9 @@ export default function AddContract() {
               </Field>
               <Field label="หมายเลข SN">
                 <Input value={f.sn} onChange={(e) => set('sn', e.target.value)} />
+              </Field>
+              <Field label="หมายเลข IMEI">
+                <Input value={f.imei} onChange={(e) => set('imei', e.target.value)} placeholder="เลข IMEI 15 หลัก" />
               </Field>
               <Field label="ราคาตัวเครื่อง (บาท)" required>
                 <Input type="number" value={f.devicePrice} onChange={(e) => set('devicePrice', e.target.value)} placeholder="19900" />

@@ -66,6 +66,10 @@ export interface ExecDashboard {
   riskByOccupation: RiskGroup[]
   riskByAge: RiskGroup[]
   riskByModel: RiskGroup[]
+  // กระแสเงินสด รายวัน/สัปดาห์/เดือน (เข้า=เก็บค่างวด, ออก=โอนให้ร้าน)
+  cashflowDay: CashflowRow[]
+  cashflowWeek: CashflowRow[]
+  cashflowMonth: CashflowRow[]
 }
 
 const TH_MON = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
@@ -87,6 +91,104 @@ function monthKey(iso: string): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return ''
   return `${d.getFullYear()}-${d.getMonth()}`
+}
+
+// ===== ตัวช่วยกระแสเงินสดรายวัน/สัปดาห์/เดือน =====
+export type Granularity = 'day' | 'week' | 'month'
+export interface CashflowRow {
+  key: string
+  label: string
+  income: number // เงินเข้า: ค่างวดที่เก็บได้ (payment_log action='pay')
+  expense: number // เงินออก: เงินโอนให้ร้านของสัญญาใหม่
+  net: number // สุทธิ = เข้า − ออก
+  newCases: number // จำนวนสัญญาใหม่
+  paymentsCount: number // จำนวนครั้งที่รับชำระ
+}
+
+/** เงินโอนให้ร้าน (ต้นทุนปล่อยเครื่อง) = ยอดหลังหักดาวน์ + คอม − ค่าเอกสาร */
+function netTransferOf(c: Contract): number {
+  const afterDown = c.devicePrice * (1 - (c.downPercent || 0) / 100)
+  const commission = afterDown * ((c.commissionPercent || 0) / 100)
+  return afterDown + commission - (c.docFee || 0)
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** ตีความ ISO เป็นเวลาท้องถิ่น: 'YYYY-MM-DD' = วันท้องถิ่น, timestamp = แปลงตาม TZ เครื่อง (ไทย UTC+7) */
+function localDate(iso: string): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const [y, m, d] = iso.split('-').map(Number)
+    return new Date(y, m - 1, d)
+  }
+  return new Date(iso)
+}
+const dayKeyOf = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+/** วันจันทร์ของสัปดาห์ที่ d อยู่ */
+function weekStartOf(d: Date): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const dow = (x.getDay() + 6) % 7 // จันทร์=0 ... อาทิตย์=6
+  x.setDate(x.getDate() - dow)
+  return x
+}
+
+/** สร้างตารางกระแสเงินสดย้อนหลัง count ช่วง (เก่า→ใหม่) ตามความถี่ที่เลือก */
+export function buildCashflow(
+  contracts: Contract[],
+  payments: PaymentLite[],
+  granularity: Granularity,
+  count: number,
+  todayISO: string,
+): CashflowRow[] {
+  const today = localDate(todayISO)
+  const rows: CashflowRow[] = []
+  const idx = new Map<string, number>()
+  for (let k = count - 1; k >= 0; k--) {
+    let key: string, label: string
+    if (granularity === 'day') {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - k)
+      key = dayKeyOf(d)
+      label = `${d.getDate()}/${d.getMonth() + 1}`
+    } else if (granularity === 'week') {
+      const ws = weekStartOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() - k * 7))
+      const we = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 6)
+      key = dayKeyOf(ws)
+      label = `${ws.getDate()}/${ws.getMonth() + 1}–${we.getDate()}/${we.getMonth() + 1}`
+    } else {
+      const d = new Date(today.getFullYear(), today.getMonth() - k, 1)
+      key = `${d.getFullYear()}-${d.getMonth()}`
+      label = `${TH_MON[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`
+    }
+    idx.set(key, rows.length)
+    rows.push({ key, label, income: 0, expense: 0, net: 0, newCases: 0, paymentsCount: 0 })
+  }
+
+  const keyOf = (d: Date): string => {
+    if (granularity === 'day') return dayKeyOf(d)
+    if (granularity === 'week') return dayKeyOf(weekStartOf(d))
+    return `${d.getFullYear()}-${d.getMonth()}`
+  }
+
+  // เงินเข้า — การรับชำระ
+  for (const p of payments) {
+    if (p.action !== 'pay') continue
+    const i = idx.get(keyOf(localDate(p.createdAt)))
+    if (i == null) continue
+    rows[i].income += p.amount
+    rows[i].paymentsCount++
+  }
+  // เงินออก — โอนให้ร้านของสัญญาใหม่ (ตามวันที่ทำรายการ)
+  for (const c of contracts) {
+    const i = idx.get(keyOf(localDate(c.transactionDate)))
+    if (i == null) continue
+    rows[i].expense += netTransferOf(c)
+    rows[i].newCases++
+  }
+  for (const r of rows) {
+    r.income = r0(r.income)
+    r.expense = r0(r.expense)
+    r.net = r.income - r.expense
+  }
+  return rows
 }
 
 export function buildExecDashboard(input: ExecInput): ExecDashboard {
@@ -189,10 +291,7 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   // กำไรคร่าวๆ = Σ (ยอดผ่อนทั้งสัญญา − เงินโอนต้นทุนให้ร้าน)  *ประมาณการ*
   let grossMarginEstimate = 0
   for (const c of active) {
-    const afterDown = c.devicePrice * (1 - (c.downPercent || 0) / 100)
-    const commission = afterDown * ((c.commissionPercent || 0) / 100)
-    const netTransfer = afterDown + commission - (c.docFee || 0)
-    grossMarginEstimate += c.monthlyPayment * c.termMonths - netTransfer
+    grossMarginEstimate += c.monthlyPayment * c.termMonths - netTransferOf(c)
   }
 
   // ----- ร้านค้า -----
@@ -324,5 +423,8 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     riskByOccupation,
     riskByAge,
     riskByModel,
+    cashflowDay: buildCashflow(contracts, payments, 'day', 14, todayISO),
+    cashflowWeek: buildCashflow(contracts, payments, 'week', 8, todayISO),
+    cashflowMonth: buildCashflow(contracts, payments, 'month', 12, todayISO),
   }
 }

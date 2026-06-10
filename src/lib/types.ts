@@ -136,8 +136,10 @@ export interface Contract {
   contractNo: string // เลขที่สัญญา
   invNo: string // เลขที่ INV
   sn: string // หมายเลข SN
+  imei?: string // หมายเลข IMEI ของเครื่อง
   // --- ลูกค้า ---
   customerName: string
+  nationalId?: string // เลขบัตรประชาชน (PII — แสดงในลิสต์แบบปิดบางส่วน)
   phone: string
   phoneAlt1?: string
   phoneAlt2?: string
