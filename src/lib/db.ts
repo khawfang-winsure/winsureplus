@@ -445,6 +445,8 @@ interface InstallmentRow {
   due_date: string
   amount: number
   paid_at: string | null
+  paid_amount: number | null
+  paid_by_name: string | null
   penalty_days: number
   penalty_amount: number
   status: 'pending' | 'paid' | 'late'
@@ -457,6 +459,8 @@ function mapInstallment(r: InstallmentRow): Installment {
     dueDate: r.due_date,
     amount: Number(r.amount),
     paidAt: r.paid_at,
+    paidAmount: Number(r.paid_amount ?? 0),
+    paidByName: r.paid_by_name ?? null,
     penaltyDays: r.penalty_days,
     penaltyAmount: Number(r.penalty_amount),
     status: r.status,
@@ -497,10 +501,80 @@ export async function getAllInstallments(): Promise<InstallmentLite[]> {
   }))
 }
 
-export async function markInstallmentPaid(installmentId: string): Promise<void> {
+/** บันทึกชำระ (เพิ่มยอดสะสม — จ่ายบางส่วนได้ งวดจะปิดเมื่อยอดสะสม >= ค่างวด) */
+export async function recordPayment(installmentId: string, amount: number, note?: string): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase.rpc('mark_installment_paid', { p_installment_id: installmentId })
+  const { error } = await supabase.rpc('record_payment', {
+    p_installment_id: installmentId,
+    p_amount: amount,
+    p_note: note ?? null,
+  })
   if (error) throw error
+}
+
+/** แก้ไขยอดสะสมใหม่ทั้งก้อน (กรณีพนักงานกรอกผิด) */
+export async function adjustPayment(installmentId: string, newTotal: number, note?: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('adjust_payment', {
+    p_installment_id: installmentId,
+    p_new_total: newTotal,
+    p_note: note ?? null,
+  })
+  if (error) throw error
+}
+
+/** ยกเลิกการชำระทั้งงวด (คืนเป็นค้างชำระ) */
+export async function cancelPayment(installmentId: string, note?: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('cancel_payment', {
+    p_installment_id: installmentId,
+    p_note: note ?? null,
+  })
+  if (error) throw error
+}
+
+/** 1 แถวในประวัติการชำระ */
+export interface PaymentLogEntry {
+  id: string
+  installmentId: string
+  action: 'pay' | 'edit' | 'cancel'
+  amount: number
+  paidAmountAfter: number
+  note: string | null
+  byName: string | null
+  createdAt: string
+}
+
+interface PaymentLogRow {
+  id: string
+  installment_id: string
+  action: 'pay' | 'edit' | 'cancel'
+  amount: number | null
+  paid_amount_after: number | null
+  note: string | null
+  by_name: string | null
+  created_at: string
+}
+
+/** ประวัติการชำระทั้งหมดของสัญญา (ใหม่ → เก่า) */
+export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('payment_log')
+    .select('id, installment_id, action, amount, paid_amount_after, note, by_name, created_at')
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as PaymentLogRow[]).map((r) => ({
+    id: r.id,
+    installmentId: r.installment_id,
+    action: r.action,
+    amount: Number(r.amount ?? 0),
+    paidAmountAfter: Number(r.paid_amount_after ?? 0),
+    note: r.note ?? null,
+    byName: r.by_name ?? null,
+    createdAt: r.created_at,
+  }))
 }
 
 interface StatusRow {

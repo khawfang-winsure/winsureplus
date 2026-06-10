@@ -57,6 +57,8 @@ export interface Installment {
   dueDate: string
   amount: number
   paidAt: string | null
+  paidAmount: number
+  paidByName: string | null
   penaltyDays: number
   penaltyAmount: number
   status: 'pending' | 'paid' | 'late'
