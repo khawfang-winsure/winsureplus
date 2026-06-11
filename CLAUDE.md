@@ -104,6 +104,13 @@ The Claude-in-Chrome MCP is the primary verification tool — log in as admin on
 
 The owner's global `~/.claude/CLAUDE.md` defines a Cream persona (Thai, ครีม / responds in Thai, ends with ค่ะ/คะ, calls user "พี่พิธ"). That is global and overrides default behavior — do NOT override it from this project file. This file is the **technical layer** only.
 
+## File hygiene (DON'T bloat — Pete locked 2026-06-11)
+
+- **CLAUDE.md**: target 150-180 lines, hard max 200. If adding info, ask: is it must-know every session? If not → put in `memory/` as a focused file + index in MEMORY.md.
+- **`memory/*.md`**: each file < 100 lines preferred. Use `[[name]]` links between files instead of inline-expanding everything. If a topic grows unbounded (logs, tables), split: lean summary stays in memory, raw rolling data goes to a sibling folder (see `velocity/` pattern).
+- **MEMORY.md** index: 1 line per entry, < 150 chars. Truncates at line 200 — keep it scannable.
+- When a memory file would grow past ~100 lines, **prune or split** before adding more rows. See [[feedback-file-hygiene]] for the playbook.
+
 ## Things to know
 
 - Bundle is ~650 kB — code-splitting is a known backlog item, not a priority.
