@@ -598,20 +598,48 @@ export default function AddContract() {
               </p>
             ) : null}
 
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="ยอดจัดไฟแนนซ์">
-                <Input type="number" value={f.financeAmount} onChange={(e) => set('financeAmount', e.target.value)} />
-              </Field>
-              <Field label="ค่าเช่าต่อเดือน">
-                <Input type="number" value={f.monthlyPayment} onChange={(e) => set('monthlyPayment', e.target.value)} />
-              </Field>
-              <Field label="จำนวนเดือน">
-                <Input type="number" value={f.termMonths} onChange={(e) => set('termMonths', e.target.value)} />
-              </Field>
-              <Field label="ชำระทุกวันที่ (1-31)">
-                <Input type="number" min={1} max={31} value={f.dueDay} onChange={(e) => set('dueDay', e.target.value)} />
-              </Field>
-            </div>
+            {/* โหมดเรต = ช่อง 3 ตัวที่คำนวณจากเรต ล็อกเป็น read-only (สีเทา) — ป้องกันกดผิด ส่วน "ชำระทุกวันที่" ยังกรอกได้เสมอ */}
+            {(() => {
+              const lock = financeMode === 'rate'
+              const lockCls = lock ? 'bg-slate-100 text-ink-soft cursor-not-allowed' : ''
+              return (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="ยอดจัดไฟแนนซ์">
+                    <Input
+                      type="number"
+                      value={f.financeAmount}
+                      onChange={(e) => set('financeAmount', e.target.value)}
+                      disabled={lock}
+                      readOnly={lock}
+                      className={lockCls}
+                    />
+                  </Field>
+                  <Field label="ค่าเช่าต่อเดือน">
+                    <Input
+                      type="number"
+                      value={f.monthlyPayment}
+                      onChange={(e) => set('monthlyPayment', e.target.value)}
+                      disabled={lock}
+                      readOnly={lock}
+                      className={lockCls}
+                    />
+                  </Field>
+                  <Field label="จำนวนเดือน">
+                    <Input
+                      type="number"
+                      value={f.termMonths}
+                      onChange={(e) => set('termMonths', e.target.value)}
+                      disabled={lock}
+                      readOnly={lock}
+                      className={lockCls}
+                    />
+                  </Field>
+                  <Field label="ชำระทุกวันที่ (1-31)">
+                    <Input type="number" min={1} max={31} value={f.dueDay} onChange={(e) => set('dueDay', e.target.value)} />
+                  </Field>
+                </div>
+              )
+            })()}
           </Card>
 
           <Card>
