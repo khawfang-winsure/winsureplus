@@ -6,6 +6,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 WIN SURE PLUS — iPhone installment tracker for shop-partner business. Replaces multi-tab Google Sheets with single-form data entry that generates transfer summaries, follow-up emails, due-date tracking, late-fee bucketing, and shop performance reports. Owner is non-coder (พิธ); infra was previously delegated to fiancée (เตย) but Supabase + Vercel MCP write access is now granted to Claude — manage deploys, migrations, env, and Edge Functions directly via MCP rather than walking the user through manual steps.
 
+## 🚨 SOLO BAN — Cream never writes source code (hard rule)
+
+Cream **must delegate ALL source code edits to specialists** — even 1-2 line changes. Cream's allowed direct edits are **non-code only**:
+- `.claude/agents/*.md` (HR), `CLAUDE.md` (HR-ish), `memory/*.md` (Cream's notes)
+- `.env` / env vars (config, not code)
+- Bash commands (git, gh, npm, MCP calls)
+
+**Forbidden for Cream — must spawn specialist:**
+- `src/**/*` → spawn `view-frontend-uxui` (UI) / `bam-business-analyst` (pure logic) / `cheese-backend-db` (db.ts)
+- `supabase/migrations/*` → `cheese-backend-db`
+- `supabase/functions/*` → `cheese-backend-db`
+- `package.json`, `tsconfig.json`, `vite.config.*` → specialist + ติ๊ก review
+
+**Why:** Cream's context is shared across the session; reading/editing code burns context fast and degrades MCP/Chrome tool reliability (Pete observed hallucinations). Keep Cream lean for orchestration; specialists do the heavy file I/O. See [[feedback-no-solo-code]].
+
+## Pre-deploy approval (per push)
+
+Before every `git push`, Cream summarizes what will deploy → waits for Pete's explicit ✓ → then pushes. No blanket approvals. No fast-path carve-out (replaces an earlier 007 rule). After Vercel Ready, smoke-test on prod per the checklist below.
+
+## Production deploy checklist
+
+```
+[ ] npm run build clean (TS strict, no warnings-as-errors)
+[ ] ติ๊ก reviewed diff (any change ≥2 files OR touches src/lib/)
+[ ] Migration applied via MCP (if any) + verify has_table_privilege for new tables
+[ ] Edge Function deployed via MCP (if any) + curl smoke (auth/route/response shape)
+[ ] git push → Vercel deploy state = success (poll `gh api ... status`)
+[ ] Chrome MCP smoke 3 critical flows on the live preview URL
+[ ] Console clean (no English errors, no React warnings)
+```
+
+## Velocity log + Parallel dispatch
+
+- After every specialist task-notification, append a row to `velocity/log_<YYYY-MM>.md` (gitignored, rolling monthly). Summary patterns + size buckets live in [[team-velocity]] (lean, ~30 lines).
+- For tasks expected >20 min, prefer parallel fan-out. Three working patterns: **Layer cake** (BA + Backend + Frontend on disjoint files), **Multi-page sweep** (Workflow tool with `parallel()`), **Read-only review** (ติ๊ก + แป้ง parallel). Details + anti-patterns in [[parallel-dispatch-patterns]].
+- Sequential always: migration apply, Edge Function deploy, same-file edits (or use `isolation: "worktree"`).
+
+## Design-Quality (when shipping UI)
+
+For new/redesigned screens: run axe-core via Chrome MCP `javascript_tool` on the live preview, target 0 violations; verify computed-style type scale (display = real bold), keyboard + Esc + focus-trap in modals, no nested-interactive. Reviewer ติ๊ก checks; Cream gates deploy on a11y pass for UI changes (skip for backend-only changes).
+
 ## Commands
 
 ```bash
