@@ -4,6 +4,7 @@ import { Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, 
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
 import { RateSetsEditor } from '../components/RateSetsEditor'
+import { UsersAdmin } from '../components/UsersAdmin'
 import { useAuth } from '../lib/auth'
 import {
   getAllOptions,
@@ -39,19 +40,6 @@ const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: Op
   { key: 'users', label: 'สิทธิ์ผู้ใช้', icon: ShieldCheck, kinds: [], adminOnly: true },
 ]
 
-// ===== โครงสิทธิ์ผู้ใช้ (ตัวอย่างที่เสนอ — ยังไม่บันทึกจริง รอกำหนดอีกครั้ง) =====
-const PERMISSIONS: { key: string; label: string; staffDefault: boolean }[] = [
-  { key: 'view_contracts', label: 'ดูรายชื่อลูกค้า / สัญญา', staffDefault: true },
-  { key: 'add_contract', label: 'เพิ่มสัญญาใหม่', staffDefault: true },
-  { key: 'edit_contract', label: 'แก้ไขสัญญา (รวมย้อนหลัง)', staffDefault: false },
-  { key: 'confirm_payment', label: 'ยืนยันการชำระเงิน', staffDefault: true },
-  { key: 'manage_return', label: 'จัดการคืนเครื่อง', staffDefault: true },
-  { key: 'gen_summary', label: 'สร้างข้อความสรุปยอด / อีเมล', staffDefault: true },
-  { key: 'view_report', label: 'ดูรายงานวัดผลร้านค้า', staffDefault: false },
-  { key: 'manage_settings', label: 'จัดการตั้งค่า (ร้าน / ตัวเลือก)', staffDefault: false },
-  { key: 'manage_users', label: 'จัดการสิทธิ์ผู้ใช้', staffDefault: false },
-]
-
 const emptyData = {
   shops: [] as Shop[],
   options: {} as Record<OptionKind, Option[]>,
@@ -73,10 +61,6 @@ export default function Settings() {
   const [loading, setLoading] = useState(true)
   const [shopModal, setShopModal] = useState<ShopInput | null>(null)
   const [optModal, setOptModal] = useState<OptionInput | null>(null)
-  // สิทธิ์พนักงาน (ตัวอย่าง — ยังไม่บันทึกจริง)
-  const [staffPerms, setStaffPerms] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(PERMISSIONS.map((p) => [p.key, p.staffDefault])),
-  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -216,57 +200,6 @@ export default function Settings() {
     )
   }
 
-  // ----- ส่วนสิทธิ์ผู้ใช้ (ตัวอย่างโครงสร้าง — ยังไม่บันทึกจริง) -----
-  function renderPermissions() {
-    return (
-      <Card>
-        <h3 className="mb-1 font-semibold text-ink">สิทธิ์ผู้ใช้งาน</h3>
-        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
-          🔧 นี่คือ <b>ตัวอย่างโครงสร้าง</b>ที่เสนอไว้ — ยังไม่มีผลจริง (ผู้บริหารมีสิทธิ์ทั้งหมดเสมอ).
-          พี่กำหนดได้ว่าจะให้ <b>พนักงาน</b> ทำอะไรได้บ้าง แล้วค่อยบอกหนูบันทึกจริงทีหลังค่ะ
-        </div>
-        <div className="overflow-x-auto rounded-xl border border-peach">
-          <table className="w-full min-w-[460px] text-sm">
-            <thead>
-              <tr className="bg-peach-light text-left text-ink">
-                <th className="px-4 py-2.5 font-semibold">สิทธิ์การใช้งาน</th>
-                <th className="w-28 px-3 py-2.5 text-center font-semibold">พนักงาน</th>
-                <th className="w-28 px-3 py-2.5 text-center font-semibold">ผู้บริหาร</th>
-              </tr>
-            </thead>
-            <tbody>
-              {PERMISSIONS.map((p, i) => (
-                <tr key={p.key} className={i % 2 ? 'bg-white' : 'bg-cream-deep'}>
-                  <td className="px-4 py-2.5 text-ink">{p.label}</td>
-                  <td className="px-3 py-2.5 text-center">
-                    <input
-                      type="checkbox"
-                      checked={!!staffPerms[p.key]}
-                      disabled={!canEdit}
-                      onChange={(e) => setStaffPerms((prev) => ({ ...prev, [p.key]: e.target.checked }))}
-                      className="h-4 w-4 accent-salmon-deep"
-                    />
-                  </td>
-                  <td className="px-3 py-2.5 text-center">
-                    {/* ผู้บริหารมีสิทธิ์ทั้งหมดเสมอ */}
-                    <input type="checkbox" checked readOnly disabled className="h-4 w-4 accent-salmon-deep opacity-70" />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {canEdit && (
-          <div className="mt-4 flex justify-end">
-            <Button disabled title="ยังไม่เปิดใช้ — รอกำหนดสิทธิ์จริง">
-              บันทึกสิทธิ์ (เร็วๆ นี้)
-            </Button>
-          </div>
-        )}
-      </Card>
-    )
-  }
-
   return (
     <div>
       <PageTitle sub={canEdit ? 'เพิ่ม/แก้ไข/ปิดใช้งานได้ (ปิดแทนลบ ของเก่าไม่หาย)' : 'ดูได้อย่างเดียว — การแก้ไขเฉพาะแอดมิน'}>
@@ -301,7 +234,7 @@ export default function Settings() {
           {/* ===== เนื้อหาตามหมวดที่เลือก ===== */}
           <div className="flex flex-col gap-4">
             {cat === 'shops' && renderShops()}
-            {cat === 'users' && renderPermissions()}
+            {cat === 'users' && <UsersAdmin />}
             {cat === 'rates' && <RateSetsEditor canEdit={canEdit} />}
             {cat !== 'shops' &&
               cat !== 'users' &&

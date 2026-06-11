@@ -963,6 +963,60 @@ export async function getEmployees(): Promise<Employee[]> {
   }))
 }
 
+// ---------- จัดการ user (เฉพาะแอดมิน) ผ่าน Edge Function 'admin-users' ----------
+export interface AdminUserRow {
+  id: string
+  fullName: string
+  role: Role
+  active: boolean
+  email: string | null
+  createdAt: string
+}
+
+/** เรียก Edge Function (กลางทาง — จัดการ auth + service_role + RLS รวมในตัว) */
+async function callAdminUsers(body: Record<string, unknown>): Promise<any> {
+  if (!supabase) throw new Error('โหมดตัวอย่าง: ยังไม่เชื่อม Supabase')
+  const { data, error } = await supabase.functions.invoke('admin-users', { body })
+  if (error) {
+    // FunctionsHttpError: error.message อาจไม่บอกตัวจริงที่ Edge Function ส่งกลับ — ลองอ่าน context
+    const ctx = (error as any).context
+    let detail: string | null = null
+    try {
+      if (ctx?.body) {
+        const text = typeof ctx.body === 'string' ? ctx.body : await new Response(ctx.body).text()
+        try { detail = JSON.parse(text).error ?? text } catch { detail = text }
+      }
+    } catch { /* ignore */ }
+    throw new Error(detail || error.message)
+  }
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+export async function listAdminUsers(): Promise<AdminUserRow[]> {
+  const data = await callAdminUsers({ action: 'list' })
+  return (data?.users ?? []).map((u: any): AdminUserRow => ({
+    id: u.id,
+    fullName: u.full_name || '(ไม่มีชื่อ)',
+    role: u.role as Role,
+    active: u.active !== false,
+    email: u.email ?? null,
+    createdAt: u.created_at,
+  }))
+}
+
+export async function createAdminUser(input: { email: string; password: string; fullName: string; role: Role }): Promise<void> {
+  await callAdminUsers({ action: 'create', ...input })
+}
+
+export async function updateAdminUser(input: { id: string; fullName?: string; role?: Role; password?: string }): Promise<void> {
+  await callAdminUsers({ action: 'update', ...input })
+}
+
+export async function setAdminUserActive(id: string, active: boolean): Promise<void> {
+  await callAdminUsers({ action: 'setActive', id, active })
+}
+
 // ---------- จัดการร้านค้า (เฉพาะแอดมิน ตาม RLS) ----------
 export interface ShopInput {
   id?: string
