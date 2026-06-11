@@ -239,6 +239,8 @@ export default function AddContract() {
   )
 
   // ===== ตัวช่วยคิดค่างวดจากเรต (ตัวคูณต่อจำนวนงวด) =====
+  // โหมดกรอกการเงิน: 'manual' = พิมพ์เลขเอง (ค่าเริ่มต้น เหมาะกับข้อมูลเก่า) / 'rate' = คำนวณจากเรต
+  const [financeMode, setFinanceMode] = useState<'manual' | 'rate'>('manual')
   const [rateSetId, setRateSetId] = useState('')
   const [rateTerm, setRateTerm] = useState(0)
   const liveRateSets = activeRateSets(opts.rateSets)
@@ -530,10 +532,37 @@ export default function AddContract() {
           </Card>
 
           <Card>
-            <h3 className="mb-3 font-semibold text-ink">การเงิน — ผ่อน</h3>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold text-ink">การเงิน — ผ่อน</h3>
+              {/* สลับโหมด: กรอกเลขเอง (ข้อมูลเก่า) / คำนวณจากเรต (สัญญาใหม่) */}
+              <div className="inline-flex overflow-hidden rounded-xl border border-peach">
+                <button
+                  type="button"
+                  onClick={() => setFinanceMode('manual')}
+                  className={`px-3 py-1.5 text-sm transition ${
+                    financeMode === 'manual'
+                      ? 'bg-salmon-deep text-white'
+                      : 'bg-white text-ink-soft hover:bg-peach-light/40'
+                  }`}
+                >
+                  กรอกเลขเอง
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFinanceMode('rate')}
+                  className={`px-3 py-1.5 text-sm transition ${
+                    financeMode === 'rate'
+                      ? 'bg-salmon-deep text-white'
+                      : 'bg-white text-ink-soft hover:bg-peach-light/40'
+                  }`}
+                >
+                  คำนวณจากเรต
+                </button>
+              </div>
+            </div>
 
-            {/* ตัวช่วยคิดค่างวดจากเรต */}
-            {liveRateSets.length > 0 ? (
+            {/* ตัวช่วยคิดค่างวดจากเรต — โชว์เฉพาะตอนเลือกโหมด "คำนวณจากเรต" */}
+            {financeMode === 'rate' && liveRateSets.length > 0 ? (
               <div className="mb-3 rounded-xl border border-peach bg-peach-light/40 p-3">
                 <p className="mb-2 text-sm font-semibold text-ink">คิดจากเรต (ตัวคูณต่อจำนวนงวด)</p>
                 <div className="grid grid-cols-2 gap-3">
@@ -563,11 +592,11 @@ export default function AddContract() {
                   </Button>
                 </div>
               </div>
-            ) : (
+            ) : financeMode === 'rate' ? (
               <p className="mb-3 rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
-                ยังไม่ได้ตั้งเรต — ตั้งได้ที่ <b>ตั้งค่า → เรตผ่อน</b> หรือกรอกค่างวดเองด้านล่าง
+                ยังไม่ได้ตั้งเรต — ตั้งได้ที่ <b>ตั้งค่า → เรตผ่อน</b> หรือสลับเป็น "กรอกเลขเอง" ก็ได้ค่ะ
               </p>
-            )}
+            ) : null}
 
             <div className="grid grid-cols-2 gap-3">
               <Field label="ยอดจัดไฟแนนซ์">
