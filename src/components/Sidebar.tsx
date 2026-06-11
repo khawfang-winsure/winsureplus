@@ -26,7 +26,10 @@ export default function Sidebar() {
       >
         {items.map((item) => {
           if (item.children) {
-            const groupActive = item.children.some((c) => pathname === c.to)
+            // กรอง child เมนูที่เป็น admin only ตอน role=staff
+            const visibleChildren = item.children.filter((c) => !c.adminOnly || isAdmin)
+            if (visibleChildren.length === 0) return null
+            const groupActive = visibleChildren.some((c) => pathname === c.to)
             return (
               <div key={item.label} className="flex flex-col gap-1">
                 <div
@@ -39,7 +42,7 @@ export default function Sidebar() {
                 </div>
                 {/* เมนูย่อย: ซ่อนตอนแถบหุบ โผล่ตอน hover */}
                 <div className="ml-5 flex flex-col gap-1 border-l border-peach pl-3 md:hidden md:group-hover:flex">
-                  {item.children.map((child) => (
+                  {visibleChildren.map((child) => (
                     <NavLink
                       key={child.to}
                       to={child.to}

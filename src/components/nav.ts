@@ -21,6 +21,7 @@ import {
 export interface NavChild {
   to: string
   label: string
+  adminOnly?: boolean
 }
 
 export interface NavItem {
@@ -57,5 +58,16 @@ export const NAV: NavItem[] = [
   { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
   { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
   { to: '/commission', label: 'ค่าคอมมิชชั่น', icon: Coins, adminOnly: true },
-  { to: '/settings', label: 'ตั้งค่า', icon: Settings },
+  {
+    label: 'ตั้งค่า',
+    icon: Settings,
+    children: [
+      { to: '/settings/shops', label: 'ตั้งค่าร้านค้า' },
+      { to: '/settings/device', label: 'ตั้งค่าตัวเครื่อง' },
+      { to: '/settings/job', label: 'ตั้งค่าอาชีพ' },
+      { to: '/settings/promo', label: 'ตั้งค่าโปรโมชั่น' },
+      { to: '/settings/rates', label: 'ตั้งค่าเรตผ่อน' },
+      { to: '/settings/users', label: 'ตั้งค่าสิทธิ์ผู้ใช้', adminOnly: true },
+    ],
+  },
 ]

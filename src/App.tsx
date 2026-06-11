@@ -68,7 +68,8 @@ function Gate() {
         <Route path="/shop-report" element={<ShopReport />} />
         <Route path="/shop/:id" element={<ShopDetail />} />
         <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to="/" replace />} />
-        <Route path="/settings" element={<Settings />} />
+        <Route path="/settings" element={<Navigate to="/settings/shops" replace />} />
+        <Route path="/settings/:cat" element={<Settings />} />
         <Route path="*" element={<Navigate to="/add" replace />} />
       </Route>
     </Routes>

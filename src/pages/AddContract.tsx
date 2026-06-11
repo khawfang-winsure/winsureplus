@@ -256,6 +256,13 @@ export default function AddContract() {
     if (rateTerms.length && !rateTerms.includes(rateTerm)) setRateTerm(rateTerms[0])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rateSetId, opts.rateSets])
+
+  // เคสใหม่: auto-fill ผู้ดำเนินการ = ชื่อผู้ที่ล็อกอิน (พนักงานไม่ต้องพิมพ์เอง)
+  // เคสแก้ไข: คง operator เดิมไว้ (audit trail — ไม่ใช่ "ใครเป็นคนกดล่าสุด")
+  useEffect(() => {
+    if (!isEdit && myName) setF((prev) => ({ ...prev, operator: myName }))
+  }, [isEdit, myName])
+
   const principal = summary.afterDown // ยอดต้น = ยอดหลังหักดาวน์
   const rateMult = multiplierFor(rateSet, rateTerm)
   const rateFinance = rateMult != null ? financeFromPrincipal(principal, rateMult) : 0
@@ -643,7 +650,7 @@ export default function AddContract() {
           </Card>
 
           <Card>
-            <h3 className="mb-3 font-semibold text-ink">โปรโมชั่น & ผู้ดำเนินการ</h3>
+            <h3 className="mb-3 font-semibold text-ink">โปรโมชั่น</h3>
             <div className="grid grid-cols-2 gap-3">
               <Field label="มีโปรโมชั่นไหม">
                 <Select
@@ -671,11 +678,19 @@ export default function AddContract() {
                   </Select>
                 </Field>
               )}
-              <Field label="ผู้ดำเนินการ" required>
-                <Input value={f.operator} onChange={(e) => set('operator', e.target.value)} />
-                {!isEdit && myName && (
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="mb-3 font-semibold text-ink">ผู้ดำเนินการ</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={isEdit ? 'ผู้ดำเนินการ (ค่าเดิมในสัญญา)' : 'ผู้ดำเนินการ (อัตโนมัติจากผู้ที่ล็อกอิน)'}>
+                <div className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-ink-soft">
+                  {f.operator || myName || '— กรุณาล็อกอินก่อนเพิ่มสัญญา —'}
+                </div>
+                {!isEdit && (
                   <p className="mt-1 text-xs text-ink-soft">
-                    📝 ระบบจะบันทึกผู้บันทึกเป็น <span className="font-semibold text-ink">{myName}</span> โดยอัตโนมัติ (ใช้คิดค่าคอม)
+                    📝 บันทึกอัตโนมัติ ใช้คิดค่าคอมมิชชั่นให้พนักงานคนนี้
                   </p>
                 )}
               </Field>

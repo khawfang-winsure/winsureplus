@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
@@ -27,15 +28,15 @@ const OPTION_KINDS: { kind: OptionKind; title: string; hasDetail?: boolean }[] =
   { kind: 'promotion', title: 'โปรโมชั่น', hasDetail: true },
 ]
 
-// หมวดตั้งค่า — แยกเป็นหัวข้อย่อย กดปุ่มเลือกทีละหมวด
-type CategoryKey = 'shops' | 'device' | 'job' | 'promo' | 'rates' | 'perm'
-const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: OptionKind[] }[] = [
+// หมวดตั้งค่า — แยกเป็นหัวข้อย่อย เลือกผ่าน URL /settings/:cat (สลับจาก sidebar submenu หรือปุ่มหน้านี้)
+type CategoryKey = 'shops' | 'device' | 'job' | 'promo' | 'rates' | 'users'
+const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: OptionKind[]; adminOnly?: boolean }[] = [
   { key: 'shops', label: 'ร้านค้า', icon: Store, kinds: [] },
   { key: 'device', label: 'ตัวเครื่อง', icon: Smartphone, kinds: ['phone_model', 'storage'] },
   { key: 'job', label: 'อาชีพ & หลักฐาน', icon: Briefcase, kinds: ['occupation', 'occupation_proof'] },
   { key: 'promo', label: 'โปรโมชั่น', icon: Tag, kinds: ['promotion'] },
   { key: 'rates', label: 'เรตผ่อน', icon: Percent, kinds: [] },
-  { key: 'perm', label: 'สิทธิ์ผู้ใช้', icon: ShieldCheck, kinds: [] },
+  { key: 'users', label: 'สิทธิ์ผู้ใช้', icon: ShieldCheck, kinds: [], adminOnly: true },
 ]
 
 // ===== โครงสิทธิ์ผู้ใช้ (ตัวอย่างที่เสนอ — ยังไม่บันทึกจริง รอกำหนดอีกครั้ง) =====
@@ -59,10 +60,17 @@ const emptyData = {
 export default function Settings() {
   const { role, configured } = useAuth()
   const canEdit = !configured || role === 'admin'
+  const isAdmin = canEdit
+  const navigate = useNavigate()
+  const { cat: catParam } = useParams<{ cat: CategoryKey }>()
+
+  // กรองเฉพาะหมวดที่ user ดูได้ (staff ไม่เห็น 'users')
+  const visibleCats = CATEGORIES.filter((c) => !c.adminOnly || isAdmin)
+  const cat: CategoryKey = visibleCats.some((c) => c.key === catParam) ? (catParam as CategoryKey) : 'shops'
+  const setCat = (next: CategoryKey) => navigate(`/settings/${next}`)
 
   const [data, setData] = useState(emptyData)
   const [loading, setLoading] = useState(true)
-  const [cat, setCat] = useState<CategoryKey>('shops')
   const [shopModal, setShopModal] = useState<ShopInput | null>(null)
   const [optModal, setOptModal] = useState<OptionInput | null>(null)
   // สิทธิ์พนักงาน (ตัวอย่าง — ยังไม่บันทึกจริง)
@@ -269,9 +277,9 @@ export default function Settings() {
         <Loading />
       ) : (
         <>
-          {/* ===== ปุ่มเลือกหมวด ===== */}
+          {/* ===== ปุ่มเลือกหมวด (สลับได้จากที่นี่หรือ sidebar submenu) ===== */}
           <div className="mb-5 flex flex-wrap gap-2">
-            {CATEGORIES.map((c) => {
+            {visibleCats.map((c) => {
               const active = cat === c.key
               return (
                 <button
@@ -293,10 +301,10 @@ export default function Settings() {
           {/* ===== เนื้อหาตามหมวดที่เลือก ===== */}
           <div className="flex flex-col gap-4">
             {cat === 'shops' && renderShops()}
-            {cat === 'perm' && renderPermissions()}
+            {cat === 'users' && renderPermissions()}
             {cat === 'rates' && <RateSetsEditor canEdit={canEdit} />}
             {cat !== 'shops' &&
-              cat !== 'perm' &&
+              cat !== 'users' &&
               cat !== 'rates' &&
               CATEGORIES.find((c) => c.key === cat)!.kinds.map((kind) => renderOption(kind))}
           </div>
