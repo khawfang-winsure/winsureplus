@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pencil, Search, X } from 'lucide-react'
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
@@ -35,10 +35,16 @@ export default function AllCustomers() {
   )
 
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
-  const [bucketFilter, setBucketFilter] = useState('')
+  const [bucketFilter, setBucketFilter] = useState<OverdueBucket | 'overdue' | ''>(() => {
+    const p = searchParams.get('bucket')
+    if (p === 'overdue') return 'overdue'
+    if (p && (BUCKET_OPTS as string[]).includes(p)) return p as OverdueBucket
+    return ''
+  })
   const [shopFilter, setShopFilter] = useState('')
   const [modelFilter, setModelFilter] = useState('')
 
@@ -72,7 +78,10 @@ export default function AllCustomers() {
     const q = query.trim().toLowerCase()
     return data.contracts.filter((c) => {
       if (statusFilter && c.status !== statusFilter) return false
-      if (bucketFilter && (statusBy.get(c.id)?.bucket ?? 'normal') !== bucketFilter) return false
+      if (bucketFilter) {
+        const b = statusBy.get(c.id)?.bucket ?? 'normal'
+        if (bucketFilter === 'overdue' ? b === 'normal' : b !== bucketFilter) return false
+      }
       if (shopFilter && c.shopId !== shopFilter) return false
       if (modelFilter && c.model !== modelFilter) return false
       if (q) {
@@ -133,8 +142,9 @@ export default function AllCustomers() {
                   <option key={s} value={s}>{statusLabel(s)}</option>
                 ))}
               </Select>
-              <Select value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value)} className="!w-auto min-w-[140px]">
+              <Select value={bucketFilter} onChange={(e) => setBucketFilter(e.target.value as OverdueBucket | 'overdue' | '')} className="!w-auto min-w-[140px]">
                 <option value="">ทุกความล่าช้า</option>
+                <option value="overdue">ล่าช้าทั้งหมด</option>
                 {BUCKET_OPTS.map((b) => (
                   <option key={b} value={b}>{BUCKET_LABEL[b]}</option>
                 ))}

@@ -4,6 +4,7 @@ import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, Sho
 import type { InstallmentLite, PaymentLite, ExtensionRecord } from './db'
 import { ageRange } from './format'
 import { buildShopReport, topShopsByCases } from './report'
+import { buildCommissionReport, type CommissionTier, type RecruitTier, type RecruitBonusRule } from './commission'
 
 const BAD_DEBT_DAYS = 60 // หนี้เสียฝั่งลูกค้า = ล่าช้า ≥ 60 วัน
 
@@ -16,12 +17,54 @@ export interface ExecInput {
   extensions: ExtensionRecord[]
   returns: DeviceReturnRow[]
   todayISO: string // 'YYYY-MM-DD'
+  // optional commission config — absent when ExecDashboard.tsx hasn't been wired yet (W2.B task)
+  commissionTiers?: CommissionTier[]
+  recruitTiers?: RecruitTier[]
+  recruitBonuses?: RecruitBonusRule[]
+  employeeNames?: Record<string, string> // user id → ชื่อ
 }
 
 export interface StatusGroup { count: number; value: number }
 export interface AgingRow { bucket: string; label: string; count: number; value: number }
 export interface RiskGroup { key: string; total: number; badDebt: number; rate: number }
 export interface TrendPoint { label: string }
+
+// ===== Morning Briefing types =====
+
+export interface BriefingCommissionLiability {
+  total: number
+  topEarner: { name: string; amount: number } | null // null ถ้าไม่มีค่าคอมเดือนนี้
+  top5: Array<{ name: string; amount: number }>
+}
+
+export interface BriefingAlert {
+  level: 'red' | 'amber'
+  text: string
+}
+
+export interface BriefingStaffCase {
+  name: string
+  casesThisMonth: number
+  casesLastMonth: number
+  momDelta: number              // = thisMonth − lastMonth
+  portfolioOutstanding: number  // ยอดคงค้างของ active contracts ของพนักงานคนนี้
+  nplRate: number               // 0..100 (active contracts ของคนนี้ที่หนี้เสีย)
+}
+
+export interface BriefingMonthlyPL {
+  income: number
+  expense: number
+  net: number
+  monthLabel: string // เช่น "มิ.ย. 2026"
+}
+
+export interface Briefing {
+  commissionLiabilityThisMonth: BriefingCommissionLiability
+  nplDeltaPct: number    // currentMonthNPL% − previousMonthNPL% (positive = แย่ลง)
+  alerts: BriefingAlert[]
+  staffCases: BriefingStaffCase[]
+  monthlyPL: BriefingMonthlyPL | null
+}
 
 export interface ExecDashboard {
   // KPI
@@ -70,6 +113,8 @@ export interface ExecDashboard {
   cashflowDay: CashflowRow[]
   cashflowWeek: CashflowRow[]
   cashflowMonth: CashflowRow[]
+  // Morning Briefing panel (W2.B)
+  briefing: Briefing
 }
 
 const TH_MON = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
@@ -191,13 +236,208 @@ export function buildCashflow(
   return rows
 }
 
+// ===== Morning Briefing — helper สำหรับ NPL ณ สิ้นเดือนที่แล้ว =====
+// หมายเหตุ: installments.paidAmount คือยอดสะสม ณ ปัจจุบัน ไม่ใช่ time-stamped
+// ดังนั้น "NPL เดือนที่แล้ว" เป็นการประมาณ: นับงวดที่ due ≤ สิ้นเดือนที่แล้ว
+// และยังไม่มี paid_at (หรือ paid_at > สิ้นเดือนที่แล้ว) + ล่าช้า ≥ 60 วัน
+function nplRateAsOfEndOfLastMonth(
+  contracts: Contract[],
+  installments: InstallmentLite[],
+  endOfLastMonth: string, // yyyy-mm-dd
+): number {
+  const instByContract = new Map<string, InstallmentLite[]>()
+  for (const ins of installments) {
+    const arr = instByContract.get(ins.contractId)
+    if (arr) arr.push(ins)
+    else instByContract.set(ins.contractId, [ins])
+  }
+  let totalOut = 0
+  let badOut = 0
+  for (const c of contracts) {
+    if (c.status !== 'active') continue
+    const insts = instByContract.get(c.id) ?? []
+    // ยอดคงค้าง ณ endOfLastMonth (ประมาณ — ใช้ paidAmount ปัจจุบัน)
+    let scheduled = 0
+    let paid = 0
+    for (const ins of insts) {
+      scheduled += ins.amount
+      paid += ins.paidAmount
+    }
+    const out = Math.max(0, scheduled - paid)
+    totalOut += out
+    // หาวันครบกำหนดงวดเก่าสุดที่ยังไม่ถูกชำระ ณ endOfLastMonth
+    let oldestUnpaidDue: string | null = null
+    for (const ins of insts) {
+      if (ins.dueDate > endOfLastMonth) continue
+      const paidByEndOfLastMonth = ins.paidAt != null && ins.paidAt.slice(0, 10) <= endOfLastMonth
+      if (!paidByEndOfLastMonth) {
+        if (oldestUnpaidDue == null || ins.dueDate < oldestUnpaidDue) oldestUnpaidDue = ins.dueDate
+      }
+    }
+    if (oldestUnpaidDue != null) {
+      const daysLate =
+        Math.floor((Date.parse(endOfLastMonth) - Date.parse(oldestUnpaidDue)) / 86_400_000)
+      if (daysLate >= BAD_DEBT_DAYS) badOut += out
+    }
+  }
+  return pct(badOut, totalOut)
+}
+
+// ===== Morning Briefing builder =====
+function buildBriefing(
+  input: ExecInput,
+  // ผลลัพธ์จาก buildExecDashboard ที่คำนวณไปแล้ว
+  nplRate: number,
+  earlyDefault: StatusGroup,
+  riskyShops: ShopReportRow[],
+  cashflowMonth: CashflowRow[],
+  outstandingOf: (cid: string) => number,
+  statusBy: Map<string, ContractStatusRow>,
+  curMonthKey: string,
+  prevMonthKey: string,
+  curYear: number,
+  curMonthIndex: number,
+): Briefing {
+  const { contracts, installments, shops, returns, todayISO } = input
+
+  // ─── commissionLiabilityThisMonth ───
+  let commissionLiability: BriefingCommissionLiability = {
+    total: 0,
+    topEarner: null,
+    top5: [],
+  }
+  if (input.commissionTiers && input.recruitTiers && input.recruitBonuses) {
+    const [y, m] = todayISO.slice(0, 7).split('-').map(Number)
+    const monthStart = `${y}-${String(m).padStart(2, '0')}-01`
+    const report = buildCommissionReport({
+      start: monthStart,
+      end: todayISO,
+      contracts,
+      installments: installments.map((ins) => ({
+        contractId: ins.contractId,
+        installmentNo: ins.installmentNo,
+        dueDate: ins.dueDate,
+        paidAt: ins.paidAt,
+      })),
+      returns,
+      shops,
+      employeeNames: input.employeeNames ?? {},
+      tiers: input.commissionTiers,
+      recruitTiers: input.recruitTiers,
+      recruitBonuses: input.recruitBonuses,
+      asOf: todayISO,
+    })
+    const sorted = [...report].sort((a, b) => b.grandTotal - a.grandTotal)
+    const top5 = sorted.slice(0, 5).filter((e) => e.grandTotal > 0).map((e) => ({
+      name: e.employeeName,
+      amount: e.grandTotal,
+    }))
+    const total = sorted.reduce((s, e) => s + e.grandTotal, 0)
+    commissionLiability = {
+      total,
+      topEarner: top5.length > 0 ? top5[0] : null,
+      top5,
+    }
+  }
+
+  // ─── nplDeltaPct ───
+  // สิ้นเดือนที่แล้ว: วันสุดท้ายของเดือน prevMonthKey
+  const [py, pm] = prevMonthKey.split('-').map(Number)
+  const lastDayOfPrevMonth = new Date(py, pm + 1, 0) // เดือน JS 0-based, +1 แล้ว day=0 = วันสุดท้าย
+  const endOfLastMonth = `${lastDayOfPrevMonth.getFullYear()}-${String(lastDayOfPrevMonth.getMonth() + 1).padStart(2, '0')}-${String(lastDayOfPrevMonth.getDate()).padStart(2, '0')}`
+  const prevNplRate = nplRateAsOfEndOfLastMonth(contracts, installments, endOfLastMonth)
+  const nplDeltaPct = nplRate - prevNplRate
+
+  // ─── alerts (สร้างเรียงตามลำดับ: red ก่อน, cap 3 ทั้งหมด) ───
+  const alerts: BriefingAlert[] = []
+  if (nplRate >= 20) {
+    alerts.push({ level: 'red', text: 'หนี้เสียเกิน 20% ของพอร์ต — ต้องดูเร่งด่วน' })
+  }
+  if (earlyDefault.count >= 3) {
+    alerts.push({ level: 'red', text: `ลูกค้าไม่จ่ายงวดแรก ${earlyDefault.count} ราย เดือนนี้` })
+  }
+  for (const shop of riskyShops) {
+    if (alerts.length >= 3) break
+    if (shop.riskyRate >= 50) {
+      const rate = Math.round(shop.riskyRate)
+      alerts.push({
+        level: 'amber',
+        text: `ร้าน ${shop.name} หนี้เสียสูง (${rate}%) — ควรหยุดรับเคสชั่วคราว`,
+      })
+    }
+  }
+
+  // ─── staffCases ───
+  const empKey = (c: Contract) => c.recordedById ?? 'unknown'
+  const empName = (c: Contract) =>
+    (input.employeeNames?.[empKey(c)]) ?? (c.recordedBy || '(ไม่ระบุ)')
+
+  // เดือนนี้ + เดือนที่แล้ว: นับเคส (สัญญาทุกสถานะ)
+  const casesByEmpMonth = new Map<string, { name: string; thisMonth: number; lastMonth: number }>()
+  for (const c of contracts) {
+    const id = empKey(c)
+    const mk = monthKey(c.transactionDate)
+    let entry = casesByEmpMonth.get(id)
+    if (!entry) {
+      entry = { name: empName(c), thisMonth: 0, lastMonth: 0 }
+      casesByEmpMonth.set(id, entry)
+    }
+    if (mk === curMonthKey) entry.thisMonth++
+    else if (mk === prevMonthKey) entry.lastMonth++
+  }
+  // ยอดคงค้าง + NPL ต่อพนักงาน (เฉพาะ active contracts)
+  const activeContracts = contracts.filter((c) => c.status === 'active')
+  const empOutstanding = new Map<string, number>()
+  const empBadDebt = new Map<string, number>()
+  for (const c of activeContracts) {
+    const id = empKey(c)
+    const out = outstandingOf(c.id)
+    empOutstanding.set(id, (empOutstanding.get(id) ?? 0) + out)
+    const days = statusBy.get(c.id)?.daysLate ?? 0
+    if (days >= BAD_DEBT_DAYS) {
+      empBadDebt.set(id, (empBadDebt.get(id) ?? 0) + out)
+    }
+  }
+  const staffCases: BriefingStaffCase[] = [...casesByEmpMonth.entries()]
+    .map(([id, v]) => {
+      const portfolioOut = empOutstanding.get(id) ?? 0
+      const badDebtOut = empBadDebt.get(id) ?? 0
+      return {
+        name: v.name,
+        casesThisMonth: v.thisMonth,
+        casesLastMonth: v.lastMonth,
+        momDelta: v.thisMonth - v.lastMonth,
+        portfolioOutstanding: Math.round(portfolioOut),
+        nplRate: pct(badDebtOut, portfolioOut),
+      }
+    })
+    .sort((a, b) => b.casesThisMonth - a.casesThisMonth)
+
+  // ─── monthlyPL ───
+  let monthlyPL: BriefingMonthlyPL | null = null
+  const lastCf = cashflowMonth[cashflowMonth.length - 1]
+  if (lastCf) {
+    monthlyPL = {
+      income: lastCf.income,
+      expense: lastCf.expense,
+      net: lastCf.net,
+      monthLabel: `${TH_MON[curMonthIndex]} ${curYear}`,
+    }
+  }
+
+  return { commissionLiabilityThisMonth: commissionLiability, nplDeltaPct, alerts, staffCases, monthlyPL }
+}
+
 export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const { contracts, statuses, installments, shops, payments, extensions, returns, todayISO } = input
   const today = new Date(`${todayISO}T00:00:00`)
   const curYear = today.getFullYear()
-  const curMonthKey = `${curYear}-${today.getMonth()}`
-  const nextMonthDate = new Date(curYear, today.getMonth() + 1, 1)
+  const curMonthIndex = today.getMonth() // 0-based
+  const curMonthKey = `${curYear}-${curMonthIndex}`
+  const nextMonthDate = new Date(curYear, curMonthIndex + 1, 1)
   const nextMonthKey = `${nextMonthDate.getFullYear()}-${nextMonthDate.getMonth()}`
+  const prevMonthDate = new Date(curYear, curMonthIndex - 1, 1)
+  const prevMonthKey = `${prevMonthDate.getFullYear()}-${prevMonthDate.getMonth()}`
 
   const statusBy = new Map(statuses.map((s) => [s.contractId, s]))
   const contractById = new Map(contracts.map((c) => [c.id, c]))
@@ -341,7 +581,7 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const trendKeys: string[] = []
   const trendLabels: string[] = []
   for (let k = 11; k >= 0; k--) {
-    const d = new Date(curYear, today.getMonth() - k, 1)
+    const d = new Date(curYear, curMonthIndex - k, 1)
     trendKeys.push(`${d.getFullYear()}-${d.getMonth()}`)
     trendLabels.push(`${TH_MON[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`)
   }
@@ -387,6 +627,24 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const riskByAge = riskBy((c) => ageRange(c.birthYear, curYear))
   const riskByModel = riskBy((c) => c.model || '-')
 
+  const cashflowDay = buildCashflow(contracts, payments, 'day', 14, todayISO)
+  const cashflowWeek = buildCashflow(contracts, payments, 'week', 8, todayISO)
+  const cashflowMonth = buildCashflow(contracts, payments, 'month', 12, todayISO)
+
+  const briefing = buildBriefing(
+    input,
+    nplRate,
+    earlyDefault,
+    riskyShops,
+    cashflowMonth,
+    outstandingOf,
+    statusBy,
+    curMonthKey,
+    prevMonthKey,
+    curYear,
+    curMonthIndex,
+  )
+
   return {
     totalContracts: contracts.length,
     activeContracts: active.length,
@@ -423,8 +681,9 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     riskByOccupation,
     riskByAge,
     riskByModel,
-    cashflowDay: buildCashflow(contracts, payments, 'day', 14, todayISO),
-    cashflowWeek: buildCashflow(contracts, payments, 'week', 8, todayISO),
-    cashflowMonth: buildCashflow(contracts, payments, 'month', 12, todayISO),
+    cashflowDay,
+    cashflowWeek,
+    cashflowMonth,
+    briefing,
   }
 }

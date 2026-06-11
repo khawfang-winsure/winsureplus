@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Loading, PageTitle, Card, Badge } from '../components/ui'
 import { Donut } from '../components/Donut'
 import { LineChart } from '../components/LineChart'
+import MorningBriefing from '../components/MorningBriefing'
 import { baht } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import {
@@ -13,6 +14,10 @@ import {
   getAllPayments,
   getAllExtensions,
   getReturns,
+  getCommissionTiers,
+  getRecruitTiers,
+  getRecruitBonuses,
+  getEmployees,
 } from '../lib/db'
 import { buildExecDashboard, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity } from '../lib/execDashboard'
 import type { ShopGrade } from '../lib/types'
@@ -46,7 +51,7 @@ export default function ExecDashboard() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('overview')
   const { data, loading } = useAsync<ExecDashboard | null>(async () => {
-    const [contracts, statuses, installments, shops, payments, extensions, returns] = await Promise.all([
+    const [contracts, statuses, installments, shops, payments, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees] = await Promise.all([
       getContracts(),
       getAllStatuses(),
       getAllInstallments(),
@@ -54,8 +59,25 @@ export default function ExecDashboard() {
       getAllPayments(),
       getAllExtensions(),
       getReturns(),
+      getCommissionTiers(),
+      getRecruitTiers(),
+      getRecruitBonuses(),
+      getEmployees(),
     ])
-    return buildExecDashboard({ contracts, statuses, installments, shops, payments, extensions, returns, todayISO })
+    return buildExecDashboard({
+      contracts,
+      statuses,
+      installments,
+      shops,
+      payments,
+      extensions,
+      returns,
+      todayISO,
+      commissionTiers,
+      recruitTiers,
+      recruitBonuses,
+      employeeNames: Object.fromEntries(employees.map((e) => [e.id, e.fullName])),
+    })
   }, null)
 
   if (loading || !data) {
@@ -72,6 +94,15 @@ export default function ExecDashboard() {
   return (
     <div className="flex flex-col gap-5">
       <PageTitle sub={`ข้อมูล ณ ${todayISO}`}>Dashboard ผู้บริหาร</PageTitle>
+
+      {/* ===== Morning Briefing (above tabs, scrolls naturally) ===== */}
+      <MorningBriefing
+        data={d.briefing}
+        npl={d.nplRate}
+        newCases={d.newContractsThisMonth}
+        collectedThisMonth={d.receivedThisMonth}
+        expectedThisMonth={d.expectedThisMonth}
+      />
 
       {/* แท็บเลือกมุมมอง: ภาพรวม / รายวัน / สัปดาห์ / เดือน */}
       <div className="flex flex-wrap gap-2">
@@ -97,6 +128,25 @@ export default function ExecDashboard() {
 
       {tab === 'overview' && (
       <>
+      {/* ===== P&L strip รายเดือน ===== */}
+      {d.briefing.monthlyPL !== null && (
+        <Card>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            <span className="font-semibold text-ink">รายเดือน {d.briefing.monthlyPL.monthLabel}</span>
+            <span className="text-green-600">เข้า ฿{money(d.briefing.monthlyPL.income)}</span>
+            <span className="text-amber-600">ออก ฿{money(d.briefing.monthlyPL.expense)}</span>
+            <span className={`font-semibold ${d.briefing.monthlyPL.net >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              สุทธิ ฿{money(d.briefing.monthlyPL.net)}
+            </span>
+          </div>
+        </Card>
+      )}
+
+      {/* ===== ผลงานพนักงานรายเดือน ===== */}
+      {d.briefing.staffCases.length > 0 && (
+        <StaffCaseTable rows={d.briefing.staffCases} />
+      )}
+
       {/* ===== แถว 1: KPI หัวใจ ===== */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <Kpi label="ลูกค้าทั้งหมด" value={String(d.totalContracts)} sub={`ผ่อนอยู่ ${d.activeContracts} · ปิด ${d.closedContracts}`} onClick={() => navigate('/customers')} />
@@ -408,6 +458,58 @@ function ShopMini({ rows, navigate, metric }: { rows: import('../lib/types').Sho
         </li>
       ))}
     </ul>
+  )
+}
+
+function StaffCaseTable({ rows }: { rows: import('../lib/execDashboard').BriefingStaffCase[] }) {
+  const [showAll, setShowAll] = useState(false)
+  const CAP = 8
+  const visible = showAll ? rows : rows.slice(0, CAP)
+  return (
+    <Card>
+      <h3 className="mb-3 font-semibold text-ink">ผลงานพนักงาน (เคสรายเดือน)</h3>
+      <div className="scrollbar-thin overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="border-b border-peach text-left text-xs text-ink-soft">
+              <th className="py-2 font-semibold">ชื่อ</th>
+              <th className="py-2 text-right font-semibold">เคสเดือนนี้</th>
+              <th className="py-2 text-right font-semibold">เคสเดือนก่อน</th>
+              <th className="py-2 text-right font-semibold">MoM</th>
+              <th className="py-2 text-right font-semibold">ยอดคงค้าง</th>
+              <th className="py-2 text-right font-semibold">NPL%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((s) => {
+              const momColor = s.momDelta > 0 ? 'text-green-600' : s.momDelta < 0 ? 'text-red-600' : 'text-ink-soft'
+              const momSign = s.momDelta > 0 ? '+' : ''
+              const nplTone: 'green' | 'amber' | 'red' = s.nplRate >= 20 ? 'red' : s.nplRate >= 10 ? 'amber' : 'green'
+              return (
+                <tr key={s.name} className="border-b border-peach/50 last:border-0">
+                  <td className="py-2 text-ink">{s.name}</td>
+                  <td className="py-2 text-right text-ink">{s.casesThisMonth}</td>
+                  <td className="py-2 text-right text-ink-soft">{s.casesLastMonth}</td>
+                  <td className={`py-2 text-right font-medium ${momColor}`}>{momSign}{s.momDelta}</td>
+                  <td className="py-2 text-right text-ink-soft">฿{money(s.portfolioOutstanding)}</td>
+                  <td className="py-2 text-right">
+                    <Badge tone={nplTone}>{s.nplRate.toFixed(1)}%</Badge>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > CAP && !showAll && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="mt-3 text-xs text-salmon-deep hover:underline"
+        >
+          ดูทั้งหมด ({rows.length} คน)
+        </button>
+      )}
+    </Card>
   )
 }
 

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Pencil, PackageOpen, History, CalendarClock } from 'lucide-react'
+import { Pencil, PackageOpen, History, CalendarClock, MoreHorizontal } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
@@ -286,41 +286,15 @@ export default function ContractDetail() {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {!i.paidAt && (
-                          <button
-                            onClick={() => setPayTarget({ ins: i, mode: 'pay' })}
-                            className="rounded-lg bg-salmon-deep px-3 py-1 text-xs font-semibold text-white hover:brightness-105"
-                          >
-                            รับชำระ
-                          </button>
-                        )}
-                        {i.paidAmount > 0 && (
-                          <>
-                            <button
-                              onClick={() => setPayTarget({ ins: i, mode: 'edit' })}
-                              className="rounded-lg border border-peach px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
-                            >
-                              แก้ไขยอด
-                            </button>
-                            <button
-                              onClick={() => setCancelTarget(i)}
-                              className="rounded-lg border border-red-300 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
-                            >
-                              ยกเลิก
-                            </button>
-                          </>
-                        )}
-                        {logByIns.has(i.id) && (
-                          <button
-                            onClick={() => setHistTarget(i)}
-                            title="ประวัติการชำระงวดนี้"
-                            className="inline-flex items-center gap-1 rounded-lg border border-peach px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
-                          >
-                            <History size={13} /> ประวัติ ({logByIns.get(i.id)!.length})
-                          </button>
-                        )}
-                      </div>
+                      <RowActions
+                        ins={i}
+                        hasLog={logByIns.has(i.id)}
+                        logCount={logByIns.get(i.id)?.length ?? 0}
+                        onPay={() => setPayTarget({ ins: i, mode: 'pay' })}
+                        onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
+                        onCancel={() => setCancelTarget(i)}
+                        onHistory={() => setHistTarget(i)}
+                      />
                     </td>
                   </tr>
                 )
@@ -470,6 +444,128 @@ function thaiDateTime(iso: string): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
   return `${dd}/${mm}/${d.getFullYear()} ${time}`
+}
+
+/** ปุ่มแถวงวด: รับชำระ (primary) + "⋯" overflow menu (แก้ไขยอด/ยกเลิก) + ประวัติ (visible)
+ *  a11y: Esc ปิด menu + คืน focus กลับ trigger; click-outside ปิด; เลือก item แล้วปิดอัตโนมัติ */
+function RowActions({
+  ins,
+  hasLog,
+  logCount,
+  onPay,
+  onEdit,
+  onCancel,
+  onHistory,
+}: {
+  ins: Installment
+  hasLog: boolean
+  logCount: number
+  onPay: () => void
+  onEdit: () => void
+  onCancel: () => void
+  onHistory: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // ปิด menu เมื่อกด Esc + คืน focus ไปที่ trigger
+  useEffect(() => {
+    if (!open) return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
+  // ปิด menu เมื่อคลิกนอก
+  useEffect(() => {
+    if (!open) return
+    function onPointerDown(e: PointerEvent) {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target as Node) &&
+        triggerRef.current && !triggerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [open])
+
+  function select(action: () => void) {
+    setOpen(false)
+    triggerRef.current?.focus()
+    action()
+  }
+
+  return (
+    <div className="relative flex flex-wrap items-center gap-1.5">
+      {/* รับชำระ — primary, โชว์เสมอถ้างวดยังไม่ปิด */}
+      {!ins.paidAt && (
+        <button
+          onClick={onPay}
+          className="rounded-lg bg-salmon-deep px-3 py-1 text-xs font-semibold text-white hover:brightness-105"
+        >
+          รับชำระ
+        </button>
+      )}
+
+      {/* "⋯" overflow menu — โชว์เมื่อมียอดที่ชำระแล้ว (แก้ไขยอด / ยกเลิก อยู่ใน menu) */}
+      {ins.paidAmount > 0 && (
+        <div className="relative">
+          <button
+            ref={triggerRef}
+            aria-label="ตัวเลือกเพิ่มเติม"
+            aria-expanded={open}
+            aria-haspopup="menu"
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center justify-center rounded-lg border border-peach p-1 text-ink-soft hover:bg-peach-light/40"
+          >
+            <MoreHorizontal size={15} />
+          </button>
+
+          {open && (
+            <div
+              ref={menuRef}
+              role="menu"
+              className="absolute right-0 top-full z-20 mt-1 min-w-[120px] rounded-xl border border-peach bg-white py-1 shadow-lg"
+            >
+              <button
+                role="menuitem"
+                onClick={() => select(onEdit)}
+                className="w-full px-3 py-2 text-left text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
+              >
+                แก้ไขยอด
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => select(onCancel)}
+                className="w-full px-3 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50"
+              >
+                ยกเลิก
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ประวัติ — โชว์เสมอถ้ามีประวัติ */}
+      {hasLog && (
+        <button
+          onClick={onHistory}
+          title="ประวัติการชำระงวดนี้"
+          className="inline-flex items-center gap-1 rounded-lg border border-peach px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
+        >
+          <History size={13} /> ประวัติ ({logCount})
+        </button>
+      )}
+    </div>
+  )
 }
 
 /** ประวัติการชำระของงวดเดียว (เปิดจากปุ่ม "ประวัติ" ในแถวงวด) */

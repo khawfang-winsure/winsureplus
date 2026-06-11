@@ -33,6 +33,7 @@ export default function Sidebar() {
             return (
               <div key={item.label} className="flex flex-col gap-1">
                 <div
+                  title="วางเมาส์เพื่อขยายเมนูย่อย"
                   className={`${itemBase} cursor-default ${
                     groupActive ? 'text-salmon-deep' : 'text-ink'
                   }`}

@@ -173,9 +173,12 @@ export default function AddContract() {
   const [f, setF] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
   const [loadingContract, setLoadingContract] = useState(isEdit)
+  const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setF((prev) => ({ ...prev, [key]: value }))
+    if (errors[key]) setErrors((prev) => { const next = { ...prev }; delete next[key]; return next })
+  }
 
   // ที่อยู่ (สำหรับส่งจดหมาย) — 3 ชุด กรอกตอนเพิ่มสัญญา ไม่บังคับ
   const [addr, setAddr] = useState<Record<AddrKey, CustomerAddress>>({
@@ -230,7 +233,6 @@ export default function AddContract() {
     }
   }, [f.shopId, isEdit])
 
-  const shop = opts.shops.find((s) => s.id === f.shopId)
   const currentYear = new Date().getFullYear()
 
   const summary = useMemo(
@@ -318,8 +320,14 @@ export default function AddContract() {
   }
 
   async function handleSave() {
-    if (!f.contractNo || !f.customerName || !shop) {
-      alert('กรุณากรอก เลขที่สัญญา / ชื่อลูกค้า / ร้านค้า ก่อนนะคะ')
+    const newErrors: Partial<Record<keyof FormState, string>> = {}
+    if (!f.contractNo) newErrors.contractNo = 'กรุณากรอกเลขที่สัญญา'
+    if (!f.customerName) newErrors.customerName = 'กรุณากรอกชื่อลูกค้า'
+    if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
+    if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
+    if (!f.devicePrice || num(f.devicePrice) <= 0) newErrors.devicePrice = 'กรุณากรอกราคาตัวเครื่อง'
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors)
       return
     }
     setSaving(true)
@@ -399,6 +407,7 @@ export default function AddContract() {
                     </option>
                   ))}
                 </Select>
+                {errors.shopId && <p className="mt-1 text-xs text-red-600">{errors.shopId}</p>}
               </Field>
               <Field label="เลขที่สัญญา" required>
                 <Input
@@ -414,9 +423,11 @@ export default function AddContract() {
                     เลือกร้านแล้วระบบจะรันเลขถัดไปให้ — แก้เองได้ (เคสแรกของร้านพิมพ์เอง)
                   </p>
                 )}
+                {errors.contractNo && <p className="mt-1 text-xs text-red-600">{errors.contractNo}</p>}
               </Field>
               <Field label="เลข INV" required>
                 <Input value={f.invNo} onChange={(e) => set('invNo', e.target.value)} placeholder="INV-..." />
+                {errors.invNo && <p className="mt-1 text-xs text-red-600">{errors.invNo}</p>}
               </Field>
             </div>
           </Card>
@@ -426,6 +437,7 @@ export default function AddContract() {
             <div className="grid grid-cols-2 gap-3">
               <Field label="ชื่อลูกค้า" required>
                 <Input value={f.customerName} onChange={(e) => set('customerName', e.target.value)} />
+                {errors.customerName && <p className="mt-1 text-xs text-red-600">{errors.customerName}</p>}
               </Field>
               <Field label="เลขบัตรประชาชน">
                 <Input value={f.nationalId} onChange={(e) => set('nationalId', e.target.value)} placeholder="เลขบัตร 13 หลัก" />
@@ -492,6 +504,7 @@ export default function AddContract() {
               </Field>
               <Field label="ราคาตัวเครื่อง (บาท)" required>
                 <Input type="number" value={f.devicePrice} onChange={(e) => set('devicePrice', e.target.value)} placeholder="19900" />
+                {errors.devicePrice && <p className="mt-1 text-xs text-red-600">{errors.devicePrice}</p>}
               </Field>
               <Field label="สภาพสินค้า">
                 <Select value={f.condition} onChange={(e) => set('condition', e.target.value as DeviceCondition)}>

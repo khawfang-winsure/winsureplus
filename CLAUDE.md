@@ -1,119 +1,123 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+ไฟล์นี้บอกแนวทางให้ Claude Code (claude.ai/code) ทำงานในโปรเจกต์นี้ — Pete (เจ้าของ) อ่านได้เพื่อรู้ว่าตอนนี้กฎอะไรล็อกอยู่บ้าง
 
-## Project
+## โปรเจกต์
 
-WIN SURE PLUS — iPhone installment tracker for shop-partner business. Replaces multi-tab Google Sheets with single-form data entry that generates transfer summaries, follow-up emails, due-date tracking, late-fee bucketing, and shop performance reports. Owner is non-coder (พิธ); infra was previously delegated to fiancée (เตย) but Supabase + Vercel MCP write access is now granted to Claude — manage deploys, migrations, env, and Edge Functions directly via MCP rather than walking the user through manual steps.
+**WIN SURE PLUS** — เว็บติดตามลูกค้าผ่อน iPhone ผ่านร้านพาร์ทเนอร์ มาแทน Google Sheets หลายชีต กรอกครั้งเดียวได้ครบ: ข้อมูลลูกค้า, สรุปยอดโอนให้ร้าน, ข้อความอีเมล, ติดตามค่างวด, จัดกลุ่มลูกค้าล่าช้า, รายงานวัดผลร้าน
 
-## 🚨 SOLO BAN — Cream never writes source code (hard rule)
+- เจ้าของ: **พี่พิธ** (non-coder) — เคยให้แฟน **เตย** ดูแลฝั่ง infra
+- ตอนนี้ Cream มีสิทธิ์ Supabase + Vercel MCP เต็ม — จัดการ deploy / migration / env / Edge Function ตรงผ่าน MCP เลย **ไม่ต้องสอนพี่ทำ manual**
 
-Cream **must delegate ALL source code edits to specialists** — even 1-2 line changes. Cream's allowed direct edits are **non-code only**:
-- `.claude/agents/*.md` (HR), `CLAUDE.md` (HR-ish), `memory/*.md` (Cream's notes)
-- `.env` / env vars (config, not code)
-- Bash commands (git, gh, npm, MCP calls)
+## 🚨 กฎ 0: ครีมห้ามเขียน source code (locked 2026-06-11)
 
-**Forbidden for Cream — must spawn specialist:**
-- `src/**/*` → spawn `view-frontend-uxui` (UI) / `bam-business-analyst` (pure logic) / `cheese-backend-db` (db.ts)
-- `supabase/migrations/*` → `cheese-backend-db`
-- `supabase/functions/*` → `cheese-backend-db`
+ครีมต้อง **spawn specialist ทุกครั้ง** ที่จะแก้ไฟล์ source code — แม้แค่ 1-2 บรรทัด แม้เสีย 15 วินาที. ห้ามมี fast-path
+
+**ครีมแก้ตรงได้ (non-code เท่านั้น):**
+- `.claude/agents/*.md` (HR), `CLAUDE.md` (HR-ish), `memory/*.md` (โน้ตของครีม)
+- `.env` / env vars (ค่าตั้งค่า ไม่ใช่ code)
+- คำสั่ง Bash (git / gh / npm / MCP)
+
+**ครีมห้ามแก้ — ต้องส่ง specialist:**
+- `src/**/*` → ส่งน้องวิว (UI) / แบม (business logic) / น้องชีส (db.ts)
+- `supabase/migrations/*` → น้องชีส
+- `supabase/functions/*` → น้องชีส
 - `package.json`, `tsconfig.json`, `vite.config.*` → specialist + ติ๊ก review
 
-**Why:** Cream's context is shared across the session; reading/editing code burns context fast and degrades MCP/Chrome tool reliability (Pete observed hallucinations). Keep Cream lean for orchestration; specialists do the heavy file I/O. See [[feedback-no-solo-code]].
+**ทำไม:** context ของครีมแชร์ทั้ง session ถ้าอ่าน/แก้ code มากๆ จะหลอน + ใช้ Chrome MCP / Supabase MCP ผิด. ให้ specialist รับภาระอ่านไฟล์หนักๆ ครีมสงวน context ไว้ orchestrate. รายละเอียดเต็มที่ [[feedback-no-solo-code]]
 
-## Pre-deploy approval (per push)
+## ขออนุมัติ Pete ก่อน push ทุกครั้ง
 
-Before every `git push`, Cream summarizes what will deploy → waits for Pete's explicit ✓ → then pushes. No blanket approvals. No fast-path carve-out (replaces an earlier 007 rule). After Vercel Ready, smoke-test on prod per the checklist below.
+ก่อน `git push` ทุกรอบ ครีมต้องสรุปสั้นๆ ว่ากำลังจะ deploy อะไร → รอ ✓ จากพี่ → ค่อย push. **ไม่มีการอนุมัติเหมาๆ ล่วงหน้า** หลัง Vercel = Ready ต้อง smoke test บน prod ตาม checklist ด้านล่าง
 
-## Production deploy checklist
+## Checklist ก่อนถือว่า "เสร็จ" (Deploy)
 
 ```
-[ ] npm run build clean (TS strict, no warnings-as-errors)
-[ ] ติ๊ก reviewed diff (any change ≥2 files OR touches src/lib/)
-[ ] Migration applied via MCP (if any) + verify has_table_privilege for new tables
-[ ] Edge Function deployed via MCP (if any) + curl smoke (auth/route/response shape)
-[ ] git push → Vercel deploy state = success (poll `gh api ... status`)
-[ ] Chrome MCP smoke 3 critical flows on the live preview URL
-[ ] Console clean (no English errors, no React warnings)
+[ ] npm run build clean (TS strict ห้าม warning)
+[ ] ติ๊ก review diff (ถ้าแตะ ≥2 ไฟล์ หรือแตะ src/lib/)
+[ ] Migration ผ่าน MCP สำเร็จ (ถ้ามี) + verify has_table_privilege ของตารางใหม่
+[ ] Edge Function deploy ผ่าน MCP สำเร็จ (ถ้ามี) + curl smoke
+[ ] git push → Vercel = success (poll gh api commits/sha/status)
+[ ] Chrome MCP smoke test 3 flow ที่กระทบ
+[ ] Console clean (ไม่มี error / React warning)
 ```
 
-## Velocity log + Parallel dispatch
+## บันทึกเวลา + ขนาน Specialist
 
-- After every specialist task-notification, append a row to `velocity/log_<YYYY-MM>.md` (gitignored, rolling monthly). Summary patterns + size buckets live in [[team-velocity]] (lean, ~30 lines).
-- For tasks expected >20 min, prefer parallel fan-out. Three working patterns: **Layer cake** (BA + Backend + Frontend on disjoint files), **Multi-page sweep** (Workflow tool with `parallel()`), **Read-only review** (ติ๊ก + แป้ง parallel). Details + anti-patterns in [[parallel-dispatch-patterns]].
-- Sequential always: migration apply, Edge Function deploy, same-file edits (or use `isolation: "worktree"`).
+- ทุกครั้งที่ specialist ส่งผลกลับมา (task-notification ให้ `duration_ms`) ครีม **เขียน 1 บรรทัด** ลง `velocity/log_<YYYY-MM>.md` (gitignored, รายเดือน). สรุป pattern + size buckets เก็บไว้ที่ [[team-velocity]] (สั้น ~30 บรรทัด)
+- งานที่ประเมินว่า > 20 นาที — พิจารณา parallel: **Layer cake** (แบม + น้องชีส + น้องวิว เขียนคนละไฟล์), **Multi-page sweep** (ใช้ Workflow tool `parallel()`), **Read-only review** (ติ๊ก + แป้ง อ่านขนาน). รายละเอียด + anti-pattern ที่ [[parallel-dispatch-patterns]]
+- ห้าม parallel: migration apply, Edge Function deploy, แก้ไฟล์เดียวกัน 2 ตัว (เว้นใช้ `isolation: "worktree"`)
 
-## Design-Quality (when shipping UI)
+## คุณภาพ UI (เฉพาะตอน ship หน้าใหม่/รื้อใหม่)
 
-For new/redesigned screens: run axe-core via Chrome MCP `javascript_tool` on the live preview, target 0 violations; verify computed-style type scale (display = real bold), keyboard + Esc + focus-trap in modals, no nested-interactive. Reviewer ติ๊ก checks; Cream gates deploy on a11y pass for UI changes (skip for backend-only changes).
+ครีมรัน axe-core ผ่าน Chrome MCP `javascript_tool` บน preview สด ตั้งเป้า 0 violations + วัด computed style typography (display = bold จริง) + ทดสอบ keyboard / Esc / focus-trap ใน modal. ติ๊กเช็คอีกรอบ. **งานที่แตะแค่ logic/backend ข้ามขั้นนี้ได้**
 
-## Commands
+## คำสั่งใช้บ่อย
 
 ```bash
-npm install        # one-time setup
-npm run dev        # local dev at http://localhost:5173 — uses mockData if .env missing
-npm run build      # tsc -b && vite build — MUST PASS before every push
-npm run preview    # preview production build locally
+npm install        # ครั้งแรกครั้งเดียว
+npm run dev        # local dev ที่ http://localhost:5173 (ใช้ mockData ถ้าไม่มี .env)
+npm run build      # tsc -b && vite build — ต้องผ่านก่อน push ทุกครั้ง
 ```
 
-**Always run `npm run build` before pushing.** TypeScript is strict (`noUnusedLocals`); `npm run dev` skips full TS checking so unused vars, type mismatches, and bad imports compile fine in dev but fail Vercel production deploy.
+**ต้อง `npm run build` ก่อน push เสมอ** — TS strict (`noUnusedLocals`) `npm run dev` ข้าม TS check บางอัน ที่ผ่าน dev อาจ fail Vercel production deploy
 
-## Deploy Flow
+## Deploy flow
 
-- `main` branch → Production at `winsureplus.vercel.app`
-- `redesign` branch → Preview at `winsureplus-git-redesign-winsureplus-projects.vercel.app`
-- Push to GitHub auto-deploys to Vercel. Verify deploy state with `gh api repos/khawfang-winsure/winsureplus/commits/<sha>/status --jq '.state'` (poll with an `until` loop, not chained sleeps).
-- **Vite embeds env vars at build time.** Changing a Vercel env var has no effect until a rebuild — push an empty commit (`git commit --allow-empty`) or use Vercel Redeploy with cache OFF.
-- Vercel env vars are scoped per environment (Production / Preview / Development). Setting only Production breaks the redesign preview URL — set all three for shared secrets.
+- branch `main` → Production ที่ `winsureplus.vercel.app`
+- branch `redesign` → Preview ที่ `winsureplus-git-redesign-winsureplus-projects.vercel.app`
+- push GitHub → Vercel auto-deploy. ตรวจสถานะด้วย `gh api repos/khawfang-winsure/winsureplus/commits/<sha>/status --jq '.state'` (poll ด้วย `until` loop ไม่ใช่ sleep ติดกัน)
+- **Vite ฝัง env var ตอน build** — เปลี่ยน env บน Vercel ต้อง rebuild ถึงจะมีผล (push empty commit หรือกด Redeploy ที่ปิด cache)
+- env บน Vercel แยกตาม environment (Production / Preview / Development) — ติ๊กให้ครบ 3 ทุกตัว ไม่งั้น branch redesign จะไม่เห็น
 
-## Architecture
+## สถาปัตยกรรม (สรุปสั้นๆ)
 
-**Pure-function-first.** Business logic lives in `src/lib/` as plain functions (`calc.ts`, `rates.ts`, `messages.ts`, `execDashboard.ts`, `commission.ts`, `letters.ts`). UI files import these for display; tests/REST cross-checks invoke them directly. When adding a feature, write the pure function first, then wire it into a page.
+**Pure-function-first** — business logic อยู่ที่ `src/lib/` เป็นฟังก์ชันบริสุทธิ์ (`calc.ts`, `rates.ts`, `messages.ts`, `execDashboard.ts`, `commission.ts`, `letters.ts`). เพิ่ม feature ใหม่ → เขียน pure function ก่อน แล้วค่อย wire เข้า page
 
-**Data layer (`src/lib/db.ts`)** is the single Supabase boundary. Pages never touch `supabase.from(...)` directly — they call `getContracts/insertContract/updateContract/getAllInstallments/...`. `db.ts` maps DB row shapes to the domain types in `src/lib/types.ts`. When Supabase is not configured, `isSupabaseConfigured = false` and helpers fall back to `mockData.ts` so dev works without keys.
+**ชั้นข้อมูล `src/lib/db.ts` เป็นช่องทางเดียวไป Supabase** — pages ห้ามเรียก `supabase.from(...)` ตรงๆ ต้องเรียก `getContracts/insertContract/getAllInstallments/...` ใน db.ts. ไฟล์นี้ map row จาก DB → domain type ที่ `src/lib/types.ts`. ถ้าไม่ได้ตั้ง Supabase → `isSupabaseConfigured = false` ระบบใช้ `mockData.ts` แทน dev ได้โดยไม่ต้อง key
 
-**Auth (`src/lib/auth.tsx`).** `AuthProvider` wraps the app; `useAuth()` returns `{ session, role: 'admin' | 'staff', name, configured, signIn, signOut }`. Role comes from `profiles.role` (RLS-protected). Admin-only routes are guarded in `App.tsx` (`isAdmin ? <Page/> : <Navigate to="/" />`) AND in `src/components/nav.ts` (`adminOnly: true` on the NAV entry or its NavChild — `Sidebar.tsx` filters both levels).
+**Auth** — `src/lib/auth.tsx` มี `AuthProvider` ครอบทั้งแอป, `useAuth()` คืน `{ session, role: 'admin' | 'staff', name, configured, signIn, signOut }`. role มาจาก `profiles.role` (มี RLS คุม). route สำหรับ admin ต้อง guard 2 ชั้น: ใน `App.tsx` (`isAdmin ? <Page/> : <Navigate />`) **และ** ใน `src/components/nav.ts` (`adminOnly: true`) — Sidebar กรอง 2 ระดับ
 
-**Routing.** Single `App.tsx` with `react-router-dom v6`. Settings is the only nested route group: `/settings/:cat` where `cat ∈ {shops, device, job, promo, rates, users}`; the page reads `useParams().cat` and renders the right sub-section. NAV in `src/components/nav.ts` defines sidebar order, icons, admin gates, and submenu children. Settings deliberately keeps in-page tab buttons even though the sidebar shows submenu — both write to the same URL; don't "deduplicate" by removing one (sidebar uses hover-expand and is unreachable once the user is on the page).
+**Routing** — `App.tsx` ใช้ `react-router-dom v6`. Settings เป็น nested route เดียว: `/settings/:cat` (cat ∈ shops/device/job/promo/rates/users). page อ่าน `useParams().cat`. NAV ที่ `nav.ts` กำหนดลำดับ icon admin gate submenu. Settings ตั้งใจมีทั้ง sidebar submenu + tab ในหน้า — 2 ทางเขียน URL เดียวกัน อย่ารวมหรือลบทิ้ง
 
-**Pricing/rate model.** No multiplier is stored on the contract — only the result (`financeAmount`, `monthlyPayment`, `termMonths`). `app_settings.installment_rate_sets` holds reusable rate-set/term tables; `AddContract.tsx` lets the operator toggle between manual entry (for old data with unknown multipliers) and rate-driven calc (for new contracts). Both `Math.round` — half-up rounding for positive amounts. Old contracts with unknown multipliers stay typeable directly.
+**เรตผ่อน** — สัญญาไม่เก็บตัวคูณ เก็บแค่ผลลัพธ์ (`financeAmount`, `monthlyPayment`, `termMonths`). `app_settings.installment_rate_sets` เก็บชุดเรต/จำนวนงวด. `AddContract.tsx` ให้สลับ manual entry (ข้อมูลเก่าที่ไม่รู้ตัวคูณ) ↔ rate-driven (สัญญาใหม่). ปัดเศษด้วย `Math.round` (0.5 ขึ้นไปขึ้น)
 
-**Status & buckets.** `v_contract_status` is the Postgres view that computes `daysLate` and `bucket` (`normal | 1-10 | 11-30 | 31-60 | 61-90 | 91-120 | 120+`). Pages query it via `getAllStatuses()` and join client-side for filtering. The `payment_log` table (Feature A — payment audit) records every confirm/edit/cancel with the actor — income calculations sum `action='pay'`.
+**สถานะ + กลุ่มล่าช้า** — `v_contract_status` view ใน Postgres คำนวณ `daysLate` + `bucket` (`normal | 1-10 | 11-30 | 31-60 | 61-90 | 91-120 | 120+`). page เรียกผ่าน `getAllStatuses()` แล้ว filter ฝั่ง client. ตาราง `payment_log` (Feature A) บันทึก confirm/edit/cancel ทุกครั้ง พร้อมคนทำ — รายได้นับเฉพาะ `action='pay'`
 
-**Edge Functions.** `supabase/functions/admin-users/index.ts` is deployed via Supabase MCP `deploy_edge_function` (not via CLI) with `verify_jwt: false` at the gateway — the function does its own auth check with `userClient.auth.getUser()` and a `profiles.role='admin' AND active=true` lookup. Frontend calls via `supabase.functions.invoke('admin-users', { body })`; the wrapper auto-attaches the user JWT and apikey.
+**Edge Function** — `supabase/functions/admin-users/index.ts` deploy ผ่าน Supabase MCP `deploy_edge_function` (ไม่ใช่ CLI) ตั้ง `verify_jwt: false` ที่ gateway. function ตรวจ auth เองด้วย `userClient.auth.getUser()` + ดู profile.role='admin' AND active=true. frontend เรียกผ่าน `supabase.functions.invoke('admin-users', { body })`
 
-## Supabase: New API Key Migration Trap
+## กับดักของ Supabase Key ใหม่ (สำคัญ — แก้ครั้งสุดท้าย 11 มิ.ย. 2026)
 
-**Critical:** Supabase migrated from legacy `anon`/`service_role` JWT keys to new `sb_publishable_xxx` / `sb_secret_xxx` tokens. The legacy `service_role` JWT had **implicit BYPASS RLS**; the new `sb_secret_xxx` maps to the Postgres `service_role` role normally and **requires explicit GRANTs**. Migration `0017_grant_service_role_public.sql` grants `SELECT/INSERT/UPDATE/DELETE` on all `public.*` tables + `ALTER DEFAULT PRIVILEGES` for future tables. Without it: `permission denied for table profiles (42501)` inside Edge Functions.
+Supabase ย้ายจาก legacy `anon`/`service_role` JWT keys → `sb_publishable_xxx` / `sb_secret_xxx` tokens. legacy service_role JWT มี **implicit BYPASS RLS** แต่ `sb_secret_xxx` ใหม่ map เป็น Postgres role `service_role` แบบปกติ — **ต้อง GRANT explicit**. migration `0017_grant_service_role_public.sql` grant SELECT/INSERT/UPDATE/DELETE บนทุก `public.*` table + `ALTER DEFAULT PRIVILEGES` ให้ตารางใหม่ในอนาคต. ไม่ทำอันนี้ → Edge Function ที่ใช้ service_role จะเจอ `permission denied for table profiles (42501)`
 
-For any new table or schema-touching migration, verify the GRANT pattern from 0017 still covers it (it does for `public.*` because of default privileges, but extension schemas need explicit grants).
+ถ้าสร้าง table ใหม่ในโปรเจกต์: ใน `public.*` ใช้ default privileges ของ 0017 ได้ทันที. ใน schema อื่น (ขยายในอนาคต) ต้อง GRANT ใหม่
 
-`VITE_SUPABASE_ANON_KEY` in Vercel now holds the **publishable** key (`sb_publishable_...`). Don't replace it with a legacy JWT.
+`VITE_SUPABASE_ANON_KEY` บน Vercel ตอนนี้ใช้ **publishable** key (`sb_publishable_...`) ไม่ใช่ legacy JWT
 
-## Migrations
+## Migration
 
-Numbered SQL files in `supabase/migrations/0001_init.sql` … `0017_*`. Apply via `mcp__supabase__apply_migration` rather than walking the user through SQL Editor. New migrations should be additive (`add column if not exists`, `create or replace`, `drop trigger if exists` before recreate) — production data must not break.
+ไฟล์ SQL เลขเรียง `supabase/migrations/0001_init.sql` … `0017_*` ปัจจุบัน. apply ผ่าน `mcp__supabase__apply_migration` (ไม่สอนพี่ใช้ SQL Editor). migration ใหม่ต้องเป็นแบบ additive (`add column if not exists`, `create or replace`, `drop trigger if exists` ก่อนสร้างใหม่) — ห้ามทำ data จริงพัง
 
-`0016_user_management.sql` adds a `prevent_self_deactivation` BEFORE-UPDATE trigger on `profiles` (admins can't lock themselves out). When changing user-management logic, mind this trigger — it raises `exception` on self-deactivate, propagating as a 500 to the Edge Function.
+`0016_user_management.sql` มี trigger `prevent_self_deactivation` กัน admin ปิดบัญชีตัวเอง — เปลี่ยน user management ต้องเลี่ยง trigger นี้
 
 ## Live Testing
 
-The Claude-in-Chrome MCP is the primary verification tool — log in as admin once in the connected browser, then drive the live `redesign` preview URL via `mcp__Claude_in_Chrome__navigate` + `javascript_tool`. Extract the anon (publishable) key from the JS bundle and the access token from `localStorage` for direct REST/Edge-Function checks. Native `alert()`/`confirm()` block the renderer and time out CDP — override `window.alert = () => {}; window.confirm = () => true` before clicking save buttons.
+Claude-in-Chrome MCP เป็นเครื่องมือหลัก — login admin ใน browser ที่ connect อยู่ครั้งเดียว แล้วใช้ `mcp__Claude_in_Chrome__navigate` + `javascript_tool` driver. ดึง anon (publishable) key จาก JS bundle + access token จาก `localStorage` ไปเช็ค REST / Edge Function ตรงๆ ได้. ระวัง native `alert()`/`confirm()` block renderer ทำ CDP timeout — override `window.alert = () => {}; window.confirm = () => true` ก่อนคลิกปุ่ม save
 
-## Style/Voice
+## Style / Voice
 
-The owner's global `~/.claude/CLAUDE.md` defines a Cream persona (Thai, ครีม / responds in Thai, ends with ค่ะ/คะ, calls user "พี่พิธ"). That is global and overrides default behavior — do NOT override it from this project file. This file is the **technical layer** only.
+global `~/.claude/CLAUDE.md` ของพี่กำหนด Cream persona (ไทย, ครีม, ตอบไทย, ลงท้าย ค่ะ/คะ, เรียกพี่ "พี่พิธ"). global ทับ default behavior — **ห้าม override จากไฟล์นี้** ไฟล์นี้คือ technical layer เท่านั้น
 
-## File hygiene (DON'T bloat — Pete locked 2026-06-11)
+## File hygiene (กฎจำกัดบรรทัด — locked 2026-06-11)
 
-- **CLAUDE.md**: target 150-180 lines, hard max 200. If adding info, ask: is it must-know every session? If not → put in `memory/` as a focused file + index in MEMORY.md.
-- **`memory/*.md`**: each file < 100 lines preferred. Use `[[name]]` links between files instead of inline-expanding everything. If a topic grows unbounded (logs, tables), split: lean summary stays in memory, raw rolling data goes to a sibling folder (see `velocity/` pattern).
-- **MEMORY.md** index: 1 line per entry, < 150 chars. Truncates at line 200 — keep it scannable.
-- When a memory file would grow past ~100 lines, **prune or split** before adding more rows. See [[feedback-file-hygiene]] for the playbook.
+- **CLAUDE.md**: เป้า 150-180 บรรทัด, max 200. เพิ่มของ → ถามตัวเองก่อน: must-know ทุก session ไหม? ถ้าไม่ → ลง memory + index ที่ MEMORY.md
+- **memory/*.md**: แต่ละไฟล์ < 100 บรรทัด. ใช้ `[[name]]` link หากันแทนการ expand ทั้งหมดในไฟล์เดียว. หัวข้อโตไม่จำกัด (log, table) → split: summary lean อยู่ memory, raw rolling data ออกไป folder ข้างนอก (เช่น `velocity/`)
+- **MEMORY.md** index: 1 บรรทัดต่อ entry, < 150 char. truncate ที่บรรทัด 200 — เก็บให้อ่านได้เร็ว
+- ไฟล์ memory ใกล้ 100 บรรทัด → **prune หรือ split** ก่อนใส่เพิ่ม. ดู [[feedback-file-hygiene]]
 
-## Things to know
+## เรื่องที่ต้องรู้ไว้ (technical debt + edge cases)
 
-- Bundle is ~650 kB — code-splitting is a known backlog item, not a priority.
-- Many pages query the full contracts list with `select('*')` and filter client-side. `national_id` ships to all staff browsers and is masked at render time only (`maskNationalId` in `format.ts`). The "secure PII at the API layer" backlog is acknowledged but not yet planned.
-- Seed/test data lives in production DB (test contracts named `TESTQ-*` etc.). Don't delete; verify before mutating.
-- `ExtendModal` uses `outstanding` as the principal for rate-based extensions — this can double-count interest on already-interest-bearing balances. Flagged for owner policy decision; don't "fix" without confirmation.
+- bundle ~650 kB — code-splitting อยู่ใน backlog ไม่ใช่ priority
+- หลาย page query contracts ทั้งหมดด้วย `select('*')` แล้ว filter ฝั่ง client. `national_id` ส่งถึง browser พนักงานทุกคน แต่ render-time mask ด้วย `maskNationalId` ใน `format.ts`. "secure PII ที่ API layer" รู้แล้วแต่ยังไม่ทำ
+- ข้อมูลทดสอบ/seed อยู่ใน DB production จริง (สัญญาชื่อ `TESTQ-*` ฯลฯ) — ห้ามลบ verify ก่อน mutate
+- `ExtendModal` ใช้ `outstanding` เป็นต้นในการคำนวณเรตของการขยาย — อาจคิดดอกซ้อนถ้ายอดมีดอกแล้ว Flag ให้พี่ตัดสินใจ policy แล้ว **อย่า "fix" จนกว่าพี่จะ confirm**
