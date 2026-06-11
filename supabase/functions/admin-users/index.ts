@@ -1,15 +1,8 @@
-// Edge Function: admin-users (รูปแบบใหม่ — ใช้ withSupabase + asymmetric JWT)
-// auth: ["publishable", "secret"] — รองรับทั้ง publishable key จาก frontend และ secret key จาก server
-// ctx.supabase = client พร้อม JWT ของ caller
-// ctx.authMode = 'publishable' | 'secret' (ถ้า secret = bypass RLS)
-//
-// Endpoints (POST JSON):
-//  { action: 'list' } -> AdminUserRow[]
-//  { action: 'create', email, password, fullName, role }
-//  { action: 'update', id, fullName?, role?, password? }
-//  { action: 'setActive', id, active }
+// Edge Function: admin-users — withSupabase + manual user client
+// ใช้ withSupabase ตรวจ apikey, สร้าง user client เองเพื่อพา Authorization JWT ไปด้วย
+// adminClient ใช้ service_role (bypass RLS) สำหรับ user mgmt
 
-// @ts-nocheck — Deno runtime, ไม่ตรงกับ Node TS frontend
+// @ts-nocheck
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "jsr:@supabase/server@^1";
 import { createClient } from "npm:@supabase/supabase-js@2.46.1";
@@ -27,18 +20,28 @@ const json = (body: unknown, status = 200) =>
   });
 
 export default {
-  fetch: withSupabase({ auth: ["publishable", "secret"] }, async (req, ctx) => {
+  fetch: withSupabase({ auth: ["publishable", "secret"] }, async (req, _ctx) => {
     if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
     if (req.method !== "POST") return json({ error: "POST only" }, 405);
 
-    const { data: { user }, error: userErr } = await ctx.supabase.auth.getUser();
-    if (userErr || !user) return json({ error: "ต้องล็อกอินก่อน" }, 401);
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    // ใช้ legacy anon ที่ auto-inject (รับทั้ง publishable JWT จาก gateway)
+    const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-    const adminClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { auth: { persistSession: false } },
-    );
+    // สร้าง user client เอง พา Authorization JWT (Bearer access_token) ไปด้วย
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    });
+    const { data: { user }, error: userErr } = await userClient.auth.getUser();
+    if (userErr || !user) {
+      return json({ error: "ต้องล็อกอินก่อน", detail: userErr?.message }, 401);
+    }
+
+    // admin client (service role) — bypass RLS
+    const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
     const { data: callerProfile, error: profileErr } = await adminClient
       .from("profiles").select("role, active").eq("id", user.id).maybeSingle();
