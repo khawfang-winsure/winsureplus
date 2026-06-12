@@ -1009,8 +1009,11 @@ export async function listAdminUsers(): Promise<AdminUserRow[]> {
   }))
 }
 
-export async function createAdminUser(input: { email: string; password: string; fullName: string; role: Role }): Promise<void> {
-  await callAdminUsers({ action: 'create', ...input })
+export async function createAdminUser(input: { email: string; password: string; fullName: string; role: Role }): Promise<string> {
+  const data = await callAdminUsers({ action: 'create', ...input })
+  const id = data?.id
+  if (!id) throw new Error('createAdminUser: Edge Function did not return id')
+  return id as string
 }
 
 export async function updateAdminUser(input: { id: string; fullName?: string; role?: Role; password?: string }): Promise<void> {

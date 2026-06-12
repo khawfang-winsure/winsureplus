@@ -25,7 +25,7 @@ export default function Layout() {
                 <p className="text-sm font-medium text-ink">{email}</p>
                 {role && (
                   <Badge tone={role === 'admin' ? 'green' : 'neutral'}>
-                    {role === 'admin' ? 'แอดมิน' : 'พนักงาน'}
+                    {role === 'admin' ? 'แอดมิน' : role === 'freelancer' ? 'ผู้ติดตามหนี้' : 'พนักงาน'}
                   </Badge>
                 )}
               </div>

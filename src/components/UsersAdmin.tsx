@@ -258,10 +258,9 @@ function UserEditModal({
     }
     setBusy(true)
     try {
-      let savedId = value.id
+      let savedId: string | undefined = value.id
       if (isNew) {
-        // createAdminUser อาจ return id — ถ้า W3.A คืน void ให้ reload list หา id จาก email แทน
-        await createAdminUser({ email: f.email, password: f.password, fullName: f.fullName, role: f.role })
+        savedId = await createAdminUser({ email: f.email, password: f.password, fullName: f.fullName, role: f.role })
       } else {
         await updateAdminUser({
           id: value.id!,
