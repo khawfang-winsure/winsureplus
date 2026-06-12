@@ -1769,7 +1769,8 @@ export interface EscalateContract {
   contractNo: string
   customerName: string
   grade: ContractGrade | null
-  outstanding: number  // penalty_due — ใช้ sort; ดู note ใน advisor: ยอดจริงใช้ monthly_payment × remaining ถ้าต้องการ
+  outstanding: number     // penalty_due — ใช้แสดงผล UI (display เหมือนเดิม)
+  estOutstanding: number  // monthly_payment × remaining_installments — ใช้ sort (0024)
   daysLate: number
   shopName: string
   totalAttempts: number
@@ -1807,16 +1808,15 @@ export async function getEscalateContracts(): Promise<EscalateContract[]> {
 
   // Step 2: ดึง status + details จาก v_contract_status สำหรับ ids เหล่านั้น
   // filter status='active' — ESCALATE ใช้กับสัญญาที่ยังมีผลเท่านั้น
-  // sort: penalty_due desc, days_late desc — top 100 rows
-  // NOTE: penalty_due เป็นยอดค่าปรับ (cap ~7 วัน × 100 บาท/วัน = ~700 บาท) ไม่ใช่ยอดค้างทั้งหมด
-  //   เป็น sort key ที่อ่อนแอ Pete อาจต้องการ sort ด้วย monthly_payment × remaining_installments แทน
-  //   — flag ไว้ใน CLAUDE.md / ถาม Pete ก่อน wave ถัดไปถ้า UI มี sort control
+  // sort: est_outstanding desc (0024), secondary days_late desc — top 100 rows
+  // est_outstanding = monthly_payment × remaining_installments (สะท้อนภาระหนี้จริง)
+  // penalty_due ยังดึงมาเพื่อ display (outstanding field ใน UI ยังใช้ penalty_due ตามเดิม)
   const { data: statusData, error: statusError } = await supabase
     .from('v_contract_status')
-    .select('contract_id, contract_no, customer_name, shop_name, days_late, penalty_due, grade')
+    .select('contract_id, contract_no, customer_name, shop_name, days_late, penalty_due, grade, est_outstanding')
     .eq('status', 'active')
     .in('contract_id', escalateIds)
-    .order('penalty_due', { ascending: false })
+    .order('est_outstanding', { ascending: false })
     .order('days_late', { ascending: false })
     .limit(100)
   if (statusError) throw statusError
@@ -1828,6 +1828,7 @@ export async function getEscalateContracts(): Promise<EscalateContract[]> {
     shop_name: string | null
     days_late: number
     penalty_due: number
+    est_outstanding: number
     grade: string | null
   }[]).map((r) => ({
     contractId: r.contract_id,
@@ -1835,6 +1836,7 @@ export async function getEscalateContracts(): Promise<EscalateContract[]> {
     customerName: r.customer_name,
     grade: (r.grade ?? null) as ContractGrade | null,
     outstanding: Number(r.penalty_due),
+    estOutstanding: Number(r.est_outstanding),
     daysLate: r.days_late,
     shopName: r.shop_name ?? '-',
     totalAttempts: statsMap.get(r.contract_id) ?? 0,
