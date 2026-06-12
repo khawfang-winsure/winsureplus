@@ -1430,6 +1430,7 @@ export interface AddFollowUpInput {
   followUpResult: FollowUpResult
   nextFollowUpAt?: string | null    // ISO timestamp — ถ้า result='promised' trigger sync ไป contracts
   promisedAmount?: number | null    // ยอดที่สัญญาไว้ (Wave 1B — ส่งเมื่อ result='promised')
+  phoneDialed?: string | null       // Wave 1B: เบอร์ที่หมุน (phone/phone_alt1/phone_alt2/พิมพ์เอง) → 0021
 }
 
 export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
@@ -1441,6 +1442,7 @@ export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
     follow_up_result: input.followUpResult,
     next_follow_up_at: input.nextFollowUpAt ?? null,
     promised_amount: input.promisedAmount ?? null,
+    phone_dialed: input.phoneDialed ?? null,
   })
   if (error) throw error
 }
@@ -1479,17 +1481,23 @@ export interface FreelancerQueueRow {
   contractNo: string
   customerName: string
   phone: string | null
+  phoneAlt1: string | null           // Wave 1B: เบอร์สำรอง 1
+  phoneAlt2: string | null           // Wave 1B: เบอร์สำรอง 2
+  deviceModel: string                // Wave 1B: model + storage รวม (e.g. "iPhone 15 Pro 256GB")
   shopId: string
   shopName: string
   grade: ContractGrade
   daysLate: number
   monthlyPayment: number
-  outstanding: number // ยอดค้าง (penaltyDue)
+  installmentsPaid: number           // Wave 1B: งวดที่จ่ายแล้ว = term_months - remaining_installments
+  installmentsTotal: number          // Wave 1B: จำนวนงวดทั้งหมด (term_months)
+  outstanding: number                // ยอดค่าปรับค้าง (penaltyDue) — ยังคงไว้เพื่อ backward compat
+  principalDue: number               // Wave 1B: ยอดเงินต้นค้าง = sum(amount - paid_amount) งวดที่ยังไม่ปิด
   dnc: boolean
   lawyerEngaged: boolean
   disputed: boolean
   // --- Wave 1B: promise state (denormalized จาก contracts ผ่าน trigger) ---
-  promiseToPayDate: string | null   // ISO date
+  promiseToPayDate: string | null    // ISO date
   promisedAmount: number | null
   // --- Wave 1B: aggregate (90-day window, client-side reduce จาก follow_ups) ---
   totalAttempts: number              // จำนวน follow_ups ทั้งหมดใน 90 วัน
@@ -1509,12 +1517,18 @@ interface QueueStatusRow {
   days_late: number
   penalty_due: number
   grade: string | null
+  remaining_installments: number
 }
 
 interface QueueContractRow {
   id: string
   phone: string | null
+  phone_alt1: string | null
+  phone_alt2: string | null
+  model: string | null
+  storage: string | null
   monthly_payment: number | null
+  term_months: number | null
   current_grade: string | null
   dnc: boolean
   lawyer_engaged: boolean
@@ -1528,7 +1542,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   // ดึงจาก v_contract_status (status=active, bucket != normal)
   const { data: statusData, error: statusError } = await supabase
     .from('v_contract_status')
-    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments')
     .eq('status', 'active')
     .neq('bucket', 'normal')
     .in('grade', grades)
@@ -1538,12 +1552,12 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const statusRows = (statusData ?? []) as QueueStatusRow[]
   if (statusRows.length === 0) return []
 
-  // ดึง phone + monthly_payment + promise fields จาก contracts
+  // ดึง phone + model + monthly_payment + promise fields จาก contracts
   const ids = statusRows.map((r) => r.contract_id)
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
     .select(
-      'id, phone, monthly_payment, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount',
+      'id, phone, phone_alt1, phone_alt2, model, storage, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount',
     )
     .in('id', ids)
   if (contractError) throw contractError
@@ -1551,6 +1565,29 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const contractMap = new Map(
     ((contractData ?? []) as QueueContractRow[]).map((c) => [c.id, c]),
   )
+
+  // Query 4: installments ที่ยังไม่ปิด (paid_at IS NULL) เพื่อคำนวณ principalDue per contract
+  // principalDue = sum(amount - coalesce(paid_amount, 0)) ของงวดยังไม่ปิด
+  // NOTE: ถ้า queue ขนาดใหญ่ query นี้อาจถึง PostgREST row-cap (1000) → aggregate view เป็น fix ที่แท้จริง
+  //   ตอนนี้ queue จำกัดด้วย RLS grade-scope → จำนวนงวดควรอยู่ในช่วงปลอดภัย
+  const { data: instData, error: instErr } = await supabase
+    .from('installments')
+    .select('contract_id, amount, paid_amount')
+    .in('contract_id', ids)
+    .is('paid_at', null)
+  if (instErr) throw instErr
+
+  // Client-side reduce: principalDue per contract_id
+  const principalMap = new Map<string, number>()
+  for (const inst of (instData ?? []) as {
+    contract_id: string
+    amount: number
+    paid_amount: number | null
+  }[]) {
+    const prev = principalMap.get(inst.contract_id) ?? 0
+    const rowDue = Number(inst.amount) - Number(inst.paid_amount ?? 0)
+    principalMap.set(inst.contract_id, prev + Math.max(0, rowDue))
+  }
 
   // Query 3: aggregate follow_ups ย้อนหลัง 90 วัน (single round-trip)
   // successfulAttempts = result IN ('contacted','promised','paid','returned','other')
@@ -1637,17 +1674,27 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       contactedToday: false,
       lastContactedByName: null,
     }
+    const termMonths = Number(c?.term_months ?? 0)
+    const statusRemaining = r.remaining_installments ?? 0
+    const installmentsPaid = Math.max(0, termMonths - statusRemaining)
+    const modelParts = [c?.model, c?.storage].filter(Boolean)
     return {
       contractId: r.contract_id,
       contractNo: r.contract_no,
       customerName: r.customer_name,
       phone: c?.phone ?? null,
+      phoneAlt1: c?.phone_alt1 ?? null,
+      phoneAlt2: c?.phone_alt2 ?? null,
+      deviceModel: modelParts.join(' '),
       shopId: r.shop_id,
       shopName: r.shop_name ?? '-',
       grade: (r.grade ?? c?.current_grade ?? 'E') as ContractGrade,
       daysLate: r.days_late,
       monthlyPayment: Number(c?.monthly_payment ?? 0),
+      installmentsPaid,
+      installmentsTotal: termMonths,
       outstanding: Number(r.penalty_due),
+      principalDue: principalMap.get(r.contract_id) ?? 0,
       dnc: c?.dnc ?? false,
       lawyerEngaged: c?.lawyer_engaged ?? false,
       disputed: c?.disputed ?? false,
@@ -1792,4 +1839,257 @@ export async function getEscalateContracts(): Promise<EscalateContract[]> {
     shopName: r.shop_name ?? '-',
     totalAttempts: statsMap.get(r.contract_id) ?? 0,
   }))
+}
+
+// ---------- Freelancer Performance Dashboard (Wave 1B) ----------
+
+/** ข้อมูล performance ต่อ freelancer ใน 30 วัน (สำหรับ /performance-dashboard) */
+export interface FreelancerPerformanceRow {
+  authorId: string
+  fullName: string
+  // email ไม่พร้อมใช้จาก frontend client (auth.users ไม่ expose ผ่าน PostgREST)
+  // ถ้า Pete ต้องการ email → ต้องดึงผ่าน Edge Function admin-users ใน wave ถัดไป
+  email: null
+  assignedGrades: string[]           // grade ที่ active (ended_at IS NULL)
+  totalAttempts: number              // รวมทุก grade
+  successfulAttempts: number
+  promiseCount: number
+  resolutionCount: number
+  uniqueContracts: number
+  lastActivityAt: string | null
+  // Wave 2: attribution metrics (real values — ไม่ใช่ placeholder 0)
+  promiseKeptCount: number           // row count ของ promises ที่มี payment ภายใน 7 วัน
+  promiseKeptCredit: number          // credit รวม (split-equally: 1/N per co-promise group)
+  promisesTotal: number              // promises ทั้งหมดที่มี next_follow_up_at ใน 30 วัน (denominator)
+  escalateContracts: number          // สัญญาในเกรดที่ assigned + ESCALATE tier
+  totalAssigned: number              // สัญญา active ทั้งหมดในเกรดที่ assigned
+  byGrade: Array<{
+    grade: 'A' | 'B' | 'C' | 'D' | 'E'
+    totalAttempts: number
+    successfulAttempts: number
+    promiseCount: number
+    resolutionCount: number
+    uniqueContracts: number
+  }>
+}
+
+interface PerfViewRow {
+  author_id: string
+  current_grade: string | null
+  total_attempts: number
+  successful_attempts: number
+  promise_count: number
+  resolution_count: number
+  unique_contracts: number
+  last_activity_at: string | null
+}
+
+interface FgaRow {
+  freelancer_id: string
+  grade: string
+}
+
+interface FreelancerProfileRow {
+  id: string
+  full_name: string | null
+}
+
+interface AttributionRow {
+  author_id: string
+  promises_kept_count: number
+  promises_kept_credit: number
+  promises_total: number
+}
+
+interface GradeCountRow {
+  current_grade: string
+  contract_count: number
+}
+
+interface GradeEscalateRow {
+  current_grade: string
+  escalate_count: number
+}
+
+/**
+ * ดึง performance ของ freelancer ทุกคนใน 30 วันล่าสุด
+ * ใช้กับ admin + staff (fga_read policy ใน 0022 อนุญาต staff อ่าน grade assignments ทุกคน)
+ * Freelancer ที่ไม่มี follow_up ใน 30 วัน → ยัง list (all-zero row)
+ */
+export async function getFreelancerPerformance(): Promise<FreelancerPerformanceRow[]> {
+  if (!supabase) return []
+
+  // Step 1: ดึง active freelancer profiles (role='freelancer', active=true)
+  // profiles_read_staff_view ใน 0022 อนุญาต staff อ่าน role='freelancer' rows
+  const { data: profileData, error: profileErr } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .eq('role', 'freelancer')
+    .eq('active', true)
+  if (profileErr) throw profileErr
+
+  const freelancers = (profileData ?? []) as FreelancerProfileRow[]
+  if (freelancers.length === 0) return []
+
+  const freelancerIds = freelancers.map((p) => p.id)
+
+  // Step 2: ดึง grade assignments ที่ active (ended_at IS NULL) ของ freelancer ทุกคน
+  // fga_read ใน 0022 อนุญาต admin + staff + freelancer ตัวเอง
+  const { data: fgaData, error: fgaErr } = await supabase
+    .from('freelancer_grade_assignments')
+    .select('freelancer_id, grade')
+    .in('freelancer_id', freelancerIds)
+    .is('ended_at', null)
+  if (fgaErr) throw fgaErr
+
+  // build grade map: freelancer_id → string[]
+  const gradeMap = new Map<string, string[]>()
+  for (const row of (fgaData ?? []) as FgaRow[]) {
+    const existing = gradeMap.get(row.freelancer_id) ?? []
+    existing.push(row.grade)
+    gradeMap.set(row.freelancer_id, existing)
+  }
+
+  // Step 3: ดึง performance aggregate จาก v_freelancer_performance_30d
+  // view security_invoker=on → RLS ของ follow_ups + contracts apply
+  // admin/staff เห็นทุก row; freelancer เห็นเฉพาะ in-grade contracts
+  const { data: perfData, error: perfErr } = await supabase
+    .from('v_freelancer_performance_30d')
+    .select('author_id, current_grade, total_attempts, successful_attempts, promise_count, resolution_count, unique_contracts, last_activity_at')
+    .in('author_id', freelancerIds)
+  if (perfErr) throw perfErr
+
+  // Client-side merge: aggregate per author_id + build byGrade array
+  type ByGradeAgg = {
+    grade: 'A' | 'B' | 'C' | 'D' | 'E'
+    totalAttempts: number
+    successfulAttempts: number
+    promiseCount: number
+    resolutionCount: number
+    uniqueContracts: number
+  }
+  type Agg = {
+    totalAttempts: number
+    successfulAttempts: number
+    promiseCount: number
+    resolutionCount: number
+    uniqueContracts: number
+    lastActivityAt: string | null
+    byGrade: ByGradeAgg[]
+  }
+
+  const aggMap = new Map<string, Agg>()
+  for (const row of (perfData ?? []) as PerfViewRow[]) {
+    const agg = aggMap.get(row.author_id) ?? {
+      totalAttempts: 0,
+      successfulAttempts: 0,
+      promiseCount: 0,
+      resolutionCount: 0,
+      uniqueContracts: 0,
+      lastActivityAt: null,
+      byGrade: [],
+    }
+    agg.totalAttempts += row.total_attempts
+    agg.successfulAttempts += row.successful_attempts
+    agg.promiseCount += row.promise_count
+    agg.resolutionCount += row.resolution_count
+    agg.uniqueContracts += row.unique_contracts
+    // lastActivityAt: เก็บค่าล่าสุดสุด (max)
+    if (
+      row.last_activity_at != null &&
+      (agg.lastActivityAt == null || row.last_activity_at > agg.lastActivityAt)
+    ) {
+      agg.lastActivityAt = row.last_activity_at
+    }
+    if (row.current_grade != null) {
+      agg.byGrade.push({
+        grade: row.current_grade as 'A' | 'B' | 'C' | 'D' | 'E',
+        totalAttempts: row.total_attempts,
+        successfulAttempts: row.successful_attempts,
+        promiseCount: row.promise_count,
+        resolutionCount: row.resolution_count,
+        uniqueContracts: row.unique_contracts,
+      })
+    }
+    aggMap.set(row.author_id, agg)
+  }
+
+  // Step 4: ดึง promise attribution จาก v_promise_attribution_30d (Wave 2)
+  // promises_kept_count = raw row count ที่ kept=true
+  // promises_kept_credit = split-equally credit sum (1/N per co-promise group)
+  // promises_total = denominator: promises ทั้งหมดที่มี next_follow_up_at ใน 30 วัน
+  const { data: attrData, error: attrErr } = await supabase
+    .from('v_promise_attribution_30d')
+    .select('author_id, promises_kept_count, promises_kept_credit, promises_total')
+    .in('author_id', freelancerIds)
+  if (attrErr) throw attrErr
+
+  // build attribution map: author_id → AttributionRow
+  const attrMap = new Map<string, AttributionRow>()
+  for (const row of (attrData ?? []) as AttributionRow[]) {
+    attrMap.set(row.author_id, row)
+  }
+
+  // Step 5: ดึง grade → active contract count จาก v_grade_active_counts (cap-safe: ≤6 rows)
+  // ใช้สำหรับคำนวณ totalAssigned per freelancer = sum counts ในเกรดที่ assigned
+  const { data: gradeCountData, error: gradeCountErr } = await supabase
+    .from('v_grade_active_counts')
+    .select('current_grade, contract_count')
+  if (gradeCountErr) throw gradeCountErr
+
+  const gradeCountMap = new Map<string, number>()
+  for (const row of (gradeCountData ?? []) as GradeCountRow[]) {
+    gradeCountMap.set(row.current_grade, row.contract_count)
+  }
+
+  // Step 6: ดึง grade → escalate contract count จาก v_grade_escalate_counts (cap-safe: ≤6 rows)
+  // ใช้สำหรับคำนวณ escalateContracts per freelancer = sum escalate_count ในเกรดที่ assigned
+  const { data: escCountData, error: escCountErr } = await supabase
+    .from('v_grade_escalate_counts')
+    .select('current_grade, escalate_count')
+  if (escCountErr) throw escCountErr
+
+  const escCountMap = new Map<string, number>()
+  for (const row of (escCountData ?? []) as GradeEscalateRow[]) {
+    escCountMap.set(row.current_grade, row.escalate_count)
+  }
+
+  // รวม freelancer ทุกคน — รวมถึงคนที่ไม่มี follow_up ใน 30 วัน (all-zero)
+  return freelancers.map((p): FreelancerPerformanceRow => {
+    const agg = aggMap.get(p.id)
+    const attr = attrMap.get(p.id)
+    const assignedGrades = gradeMap.get(p.id) ?? []
+
+    // totalAssigned = sum of active contract counts for each assigned grade
+    const totalAssigned = assignedGrades.reduce(
+      (sum, g) => sum + (gradeCountMap.get(g) ?? 0),
+      0,
+    )
+
+    // escalateContracts = sum of escalate counts for each assigned grade
+    const escalateContracts = assignedGrades.reduce(
+      (sum, g) => sum + (escCountMap.get(g) ?? 0),
+      0,
+    )
+
+    return {
+      authorId: p.id,
+      fullName: p.full_name ?? '-',
+      email: null,
+      assignedGrades,
+      totalAttempts: agg?.totalAttempts ?? 0,
+      successfulAttempts: agg?.successfulAttempts ?? 0,
+      promiseCount: agg?.promiseCount ?? 0,
+      resolutionCount: agg?.resolutionCount ?? 0,
+      uniqueContracts: agg?.uniqueContracts ?? 0,
+      lastActivityAt: agg?.lastActivityAt ?? null,
+      // Wave 2 attribution — real values
+      promiseKeptCount: attr?.promises_kept_count ?? 0,
+      promiseKeptCredit: attr ? Number(attr.promises_kept_credit) : 0,
+      promisesTotal: attr?.promises_total ?? 0,
+      escalateContracts,
+      totalAssigned,
+      byGrade: agg?.byGrade ?? [],
+    }
+  })
 }

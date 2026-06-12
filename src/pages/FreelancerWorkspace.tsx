@@ -190,7 +190,19 @@ function QueueRow({
           {r.customerName}
         </p>
         <p className="text-xs text-ink-soft">{r.contractNo}</p>
+        {/* รุ่น iPhone */}
+        {r.deviceModel && (
+          <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>
+        )}
+        {/* เบอร์หลัก */}
         {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+        {/* เบอร์สำรอง */}
+        {(r.phoneAlt1 || r.phoneAlt2) && (
+          <p className="text-xs text-ink-soft">
+            📞 สำรอง:{' '}
+            {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}
+          </p>
+        )}
         {/* team awareness */}
         {r.lastResult !== null && r.lastContactedAt !== null && (
           <p className="mt-0.5 text-xs text-ink-soft">
@@ -226,12 +238,26 @@ function QueueRow({
       <td className="px-4 py-3 text-right">
         <span className="font-semibold text-red-600">{r.daysLate}</span>
       </td>
-      {/* ค่างวด */}
-      <td className="px-4 py-3 text-right text-sm text-ink">{baht(r.monthlyPayment)} ฿</td>
-      {/* ยอดค้าง */}
+      {/* งวด X/Y */}
+      <td className="px-4 py-3 text-right text-sm text-ink">
+        {r.installmentsTotal === 0
+          ? <span className="text-ink-soft">—</span>
+          : <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>
+        }
+      </td>
+      {/* ค่างวด + ค่าปรับ */}
       <td className="px-4 py-3 text-right">
+        <p className="text-sm text-ink">{baht(r.monthlyPayment)} ฿</p>
         {r.outstanding > 0 ? (
-          <span className="font-semibold text-red-600">{baht(r.outstanding)} ฿</span>
+          <p className="text-xs font-semibold text-red-600">{baht(r.outstanding)} ฿ ค่าปรับ</p>
+        ) : (
+          <p className="text-xs text-ink-soft">-</p>
+        )}
+      </td>
+      {/* เงินต้นค้าง */}
+      <td className="px-4 py-3 text-right">
+        {r.principalDue > 0 ? (
+          <span className="font-semibold text-red-600">{baht(r.principalDue)} ฿</span>
         ) : (
           <span className="text-ink-soft">-</span>
         )}
@@ -548,8 +574,9 @@ export default function FreelancerWorkspace() {
                                   <th className="px-4 py-3 text-center">เกรด</th>
                                   <th className="px-4 py-3 text-center">คะแนน</th>
                                   <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
-                                  <th className="px-4 py-3 text-right">ค่างวด</th>
-                                  <th className="px-4 py-3 text-right">ยอดค้าง</th>
+                                  <th className="px-4 py-3 text-right">งวด</th>
+                                  <th className="px-4 py-3 text-right">ค่างวด / ค่าปรับ</th>
+                                  <th className="px-4 py-3 text-right">เงินต้นค้าง</th>
                                   <th className="px-4 py-3" />
                                 </tr>
                               </thead>
@@ -642,6 +669,13 @@ export default function FreelancerWorkspace() {
             phone: selectedContract.phone,
             shopName: selectedContract.shopName,
             daysLate: selectedContract.daysLate,
+            deviceModel: selectedContract.deviceModel,
+            phoneAlt1: selectedContract.phoneAlt1,
+            phoneAlt2: selectedContract.phoneAlt2,
+            installmentsPaid: selectedContract.installmentsPaid,
+            installmentsTotal: selectedContract.installmentsTotal,
+            penaltyDue: selectedContract.outstanding,
+            principalDue: selectedContract.principalDue,
           }}
           publicHolidays={publicHolidays}
           adminOverride={role === 'admin'}

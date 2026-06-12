@@ -50,6 +50,14 @@ interface ContractSummary {
   shopName: string
   daysLate: number
   address?: string // เผื่อส่งมาแสดง
+  // Wave 1B optional fields (populated once db.ts update lands)
+  deviceModel?: string
+  phoneAlt1?: string | null
+  phoneAlt2?: string | null
+  installmentsPaid?: number
+  installmentsTotal?: number
+  penaltyDue?: number
+  principalDue?: number
 }
 
 interface Props {
@@ -69,6 +77,7 @@ interface FormState {
   nextFollowUpAt: string    // ฟิลด์นัดทั่วไป (ผลอื่นๆ ที่ไม่ใช่ promised)
   promisedDate: string      // วันที่ลูกค้าสัญญาจะจ่าย (เฉพาะ result=promised, required)
   promisedAmount: string    // จำนวนเงินที่สัญญา (optional string → parse ก่อนส่ง)
+  phoneDialed: string       // เบอร์ที่โทร ('__other' = พิมพ์เอง, '' = ไม่ระบุ)
 }
 
 /** คืน yyyy-mm-dd ของวันนี้บวก n วัน โดยใช้เวลาท้องถิ่น (ป้องกัน UTC drift) */
@@ -86,19 +95,26 @@ function localToday(): string {
   return localDatePlusDays(0)
 }
 
-const INITIAL_FORM: FormState = {
+// phoneDialed ไม่รวมใน INITIAL_FORM (ต้องใช้ contract.phone ซึ่งรู้ตอน render)
+// ใช้ makeInitialForm(phone) แทนตอน useState init
+const BASE_FORM = {
   noteText: '',
-  contactMethod: 'phone',
-  followUpResult: 'no_answer',
+  contactMethod: 'phone' as FollowUpContactMethod,
+  followUpResult: 'no_answer' as FollowUpResult,
   nextFollowUpAt: '',
   promisedDate: localDatePlusDays(7),
   promisedAmount: '',
 }
 
+function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneAlt2?: string | null): FormState {
+  return { ...BASE_FORM, phoneDialed: phone ?? phoneAlt1 ?? phoneAlt2 ?? '' }
+}
+
 export default function FollowUpModal({ contract, onClose, publicHolidays = new Set(), adminOverride = false }: Props) {
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
-  const [form, setForm] = useState<FormState>(INITIAL_FORM)
+  const [form, setForm] = useState<FormState>(() => makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
+  const [customPhoneDialed, setCustomPhoneDialed] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -161,6 +177,14 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
         isPromised && form.promisedAmount !== ''
           ? Number(form.promisedAmount)
           : null
+      // คำนวณ phoneDialed ที่จะส่ง DB
+      const isPhoneMethod = form.contactMethod === 'phone'
+      const hasAnyPhone = !!(contract.phone || contract.phoneAlt1 || contract.phoneAlt2)
+      const resolvedPhoneDialed = (!isPhoneMethod || !hasAnyPhone)
+        ? null
+        : form.phoneDialed === '__other'
+          ? customPhoneDialed.trim() || null
+          : form.phoneDialed || null
       const input: AddFollowUpInput = {
         contractId: contract.contractId,
         noteText: form.noteText.trim(),
@@ -171,9 +195,11 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
           ? `${form.promisedDate}T12:00:00+07:00`
           : form.nextFollowUpAt || null,
         promisedAmount: parsedAmount,
+        phoneDialed: resolvedPhoneDialed,
       }
       await addFollowUp(input)
-      setForm(INITIAL_FORM)
+      setForm(makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
+      setCustomPhoneDialed('')
       setSaved(true)
       await loadHistory()
     } catch (e) {
@@ -194,10 +220,43 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
       {/* สรุปสัญญา */}
       <div className="mb-4 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
         <p className="font-medium text-ink">{contract.contractNo}</p>
-        <p className="text-ink-soft">
-          ร้าน: {contract.shopName}
-          {contract.phone && <span> · โทร: {contract.phone}</span>}
-        </p>
+        {contract.deviceModel && (
+          <p className="text-ink-soft">รุ่น: {contract.deviceModel}</p>
+        )}
+        {contract.installmentsPaid !== undefined &&
+          contract.installmentsTotal !== undefined &&
+          contract.installmentsTotal > 0 && (
+            <p className="text-ink-soft">
+              งวด {contract.installmentsPaid}/{contract.installmentsTotal}
+            </p>
+          )}
+        {contract.penaltyDue !== undefined && (
+          <p className="text-ink-soft">
+            ค่าปรับสะสม:{' '}
+            <span className={contract.penaltyDue > 0 ? 'font-semibold text-red-600' : ''}>
+              {contract.penaltyDue.toLocaleString('th-TH')} ฿
+            </span>
+          </p>
+        )}
+        {contract.principalDue !== undefined && (
+          <p className="text-ink-soft">
+            เงินต้นคงค้าง:{' '}
+            <span className={contract.principalDue > 0 ? 'font-semibold text-red-600' : ''}>
+              {contract.principalDue.toLocaleString('th-TH')} ฿
+            </span>
+          </p>
+        )}
+        <p className="mt-1 text-ink-soft">ร้าน: {contract.shopName}</p>
+        {/* เบอร์โทรทั้งหมด */}
+        {contract.phone && (
+          <p className="text-ink-soft">เบอร์หลัก: {contract.phone}</p>
+        )}
+        {contract.phoneAlt1 && (
+          <p className="text-ink-soft">เบอร์สำรอง 1: {contract.phoneAlt1}</p>
+        )}
+        {contract.phoneAlt2 && (
+          <p className="text-ink-soft">เบอร์สำรอง 2: {contract.phoneAlt2}</p>
+        )}
         <p className="mt-1">
           <Badge tone="red">ค้าง {contract.daysLate} วัน</Badge>
         </p>
@@ -220,6 +279,17 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
             onChange={(e) => set('noteText', e.target.value)}
             disabled={outsideHours}
           />
+          <p
+            className={`mt-1 text-right text-xs ${
+              form.noteText.length > 200
+                ? 'text-amber-600'
+                : form.noteText.length < 5
+                  ? 'text-red-500'
+                  : 'text-ink-soft'
+            }`}
+          >
+            {form.noteText.length}/200 ตัวอักษร
+          </p>
         </Field>
 
         <Field label="วิธีการติดต่อ" required>
@@ -290,6 +360,39 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
             />
           </Field>
         )}
+
+        {/* phoneDialed dropdown — แสดงเฉพาะ method=phone และมีเบอร์อย่างน้อย 1 เบอร์ */}
+        {form.contactMethod === 'phone' &&
+          (contract.phone || contract.phoneAlt1 || contract.phoneAlt2) && (
+            <Field label="เบอร์ที่โทร">
+              <Select
+                value={form.phoneDialed}
+                onChange={(e) => set('phoneDialed', e.target.value)}
+                disabled={outsideHours}
+              >
+                {contract.phone && (
+                  <option value={contract.phone}>หลัก: {contract.phone}</option>
+                )}
+                {contract.phoneAlt1 && (
+                  <option value={contract.phoneAlt1}>สำรอง 1: {contract.phoneAlt1}</option>
+                )}
+                {contract.phoneAlt2 && (
+                  <option value={contract.phoneAlt2}>สำรอง 2: {contract.phoneAlt2}</option>
+                )}
+                <option value="__other">อื่นๆ (พิมพ์เอง)</option>
+              </Select>
+              {form.phoneDialed === '__other' && (
+                <input
+                  type="tel"
+                  className="mt-2 w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
+                  placeholder="กรอกเบอร์โทร"
+                  value={customPhoneDialed}
+                  onChange={(e) => setCustomPhoneDialed(e.target.value)}
+                  disabled={outsideHours}
+                />
+              )}
+            </Field>
+          )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
         {saved && <p className="text-sm text-green-700">บันทึกแล้ว</p>}

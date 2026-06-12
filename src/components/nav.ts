@@ -60,6 +60,7 @@ export const NAV: NavItem[] = [
   { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
   { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
   { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
+  { to: '/staff-performance', label: 'Performance ฟรีแลนซ์', icon: BarChart3 },
   { to: '/commission', label: 'ค่าคอมมิชชั่น', icon: Coins, adminOnly: true },
   {
     label: 'ตั้งค่า',

@@ -22,6 +22,7 @@ import WaitingEmail from './pages/WaitingEmail'
 import WaitingSummary from './pages/WaitingSummary'
 import Login from './pages/Login'
 import FreelancerWorkspace from './pages/FreelancerWorkspace'
+import StaffPerformance from './pages/StaffPerformance'
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ function Gate() {
   const { ready, configured, session, role } = useAuth()
   const isAdmin = !configured || role === 'admin'
   const isFreelancer = configured && role === 'freelancer'
+  const isAdminOrStaff = isAdmin || role === 'staff'
 
   if (!ready) {
     return (
@@ -73,6 +75,7 @@ function Gate() {
         <Route path="/extended" element={isFreelancer ? <Navigate to="/queue" replace /> : <ExtendedContracts />} />
         <Route path="/shop-report" element={isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
         <Route path="/shop/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />
+        <Route path="/staff-performance" element={isAdminOrStaff ? <StaffPerformance /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
         <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to="/" replace />} />
         <Route path="/settings" element={isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
         <Route path="/settings/:cat" element={isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
