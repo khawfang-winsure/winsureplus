@@ -97,3 +97,83 @@ export function overdueBucket(daysLate: number):
   if (daysLate <= 120) return '91-120'
   return '120+'
 }
+
+export interface ExtensionPrincipalArgs {
+  afterDownOriginal: number // contracts.after_down (เงินต้นแท้ตอนสร้างสัญญา)
+  originalTerm: number // contracts.term_months (จำนวนงวดเดิม)
+  unpaidInstallments: number // นับงวดที่ paid_at IS NULL
+  newTerm: number // จำนวนงวดที่จะขยายเพิ่ม (> 0)
+  newRate: number // เรตขยาย (เช่น 1.1)
+  partialPaid?: number // ยอดที่ลูกค้าจ่ายแล้วในงวดที่ยังเปิดอยู่ (Σ paidAmount where paidAt IS NULL); default 0
+}
+
+export interface ExtensionPrincipalResult {
+  principalRemaining: number // เงินต้นที่เหลือ (จำนวนเต็ม)
+  newFinance: number // ยอดผ่อนรวมใหม่ (= principal × rate)
+  newMonthly: number // ค่างวดต่อเดือนใหม่
+}
+
+/**
+ * คำนวณยอดใหม่หลังขยายระยะเวลา — Option A (Principal-Only)
+ * Pete decision 2026-06-13: ใช้เงินต้นแท้ที่เหลือคูณเรตใหม่ ไม่คิดดอกซ้อน
+ *
+ * สูตร:
+ *   principalRaw       = afterDownOriginal × (unpaidInstallments / originalTerm)
+ *   partial            = max(0, partialPaid ?? 0)
+ *   principalRemaining = max(0, round(principalRaw − partial))
+ *   newFinance         = round(principalRemaining × newRate)
+ *   newMonthly         = round(newFinance / newTerm)
+ *
+ * Trace 1: afterDown=25,000 / term=12 / unpaid=6 / partial=0 / newTerm=6 / rate=1.1
+ *   principalRemaining = round(25,000 × 6/12)  = 12,500
+ *   newFinance         = round(12,500 × 1.1)   = 13,750
+ *   newMonthly         = round(13,750 / 6)     = 2,292
+ *
+ * Trace 2: afterDown=10,000 / term=10 / unpaid=10 / partial=0 / newTerm=12 / rate=1.15
+ *   principalRemaining = round(10,000 × 10/10) = 10,000
+ *   newFinance         = round(10,000 × 1.15)  = 11,500
+ *   newMonthly         = round(11,500 / 12)    = 958
+ *
+ * Trace 3: afterDown=20,000 / term=12 / unpaid=1 / partial=0 / newTerm=3 / rate=1.05
+ *   principalRemaining = round(20,000 × 1/12)  = 1,667
+ *   newFinance         = round(1,667 × 1.05)   = 1,750
+ *   newMonthly         = round(1,750 / 3)      = 583
+ *
+ * Trace 4: unpaidInstallments === 0 → principalRemaining=0, newFinance=0, newMonthly=0
+ *   (caller ควรแสดง warning ให้ user ทราบ)
+ *
+ * Trace 5 (partial pay credit): afterDown=25,000 / term=12 / unpaid=6 / partial=2,000 / newTerm=6 / rate=1.1
+ *   principalRaw       = 25,000 × 6/12 = 12,500
+ *   principalRemaining = 12,500 − 2,000 = 10,500
+ *   newFinance         = round(10,500 × 1.1) = 11,550
+ *   newMonthly         = round(11,550 / 6)   = 1,925
+ *
+ * Trace 6 (over-paid partial → clamp 0): afterDown=25,000 / term=12 / unpaid=6 / partial=15,000 / newTerm=6 / rate=1.1
+ *   principalRaw       = 12,500
+ *   principalRemaining = max(0, 12,500 − 15,000) = 0
+ *   newFinance = 0, newMonthly = 0
+ */
+export function calcExtensionPrincipal(
+  args: ExtensionPrincipalArgs,
+): ExtensionPrincipalResult {
+  const { afterDownOriginal, originalTerm, unpaidInstallments, newTerm, newRate } = args
+
+  // --- validation (throw ก่อน compute เสมอ) ---
+  if (afterDownOriginal <= 0) throw new Error('เงินต้นต้องมากกว่า 0')
+  if (originalTerm <= 0) throw new Error('จำนวนงวดเดิมต้องมากกว่า 0')
+  if (newTerm <= 0) throw new Error('จำนวนงวดต้องมากกว่า 0')
+  if (newRate <= 0) throw new Error('เรตต้องมากกว่า 0')
+  if (unpaidInstallments < 0) throw new Error('จำนวนงวดที่ยังไม่ชำระต้องไม่น้อยกว่า 0')
+  if (unpaidInstallments > originalTerm)
+    throw new Error('จำนวนงวดที่ยังไม่ชำระเกินจำนวนงวดเดิม')
+  if ((args.partialPaid ?? 0) < 0) throw new Error('ยอดจ่ายบางส่วนต้องไม่น้อยกว่า 0')
+
+  // --- compute ---
+  const partial = Math.max(0, args.partialPaid ?? 0)
+  const principalRaw = afterDownOriginal * (unpaidInstallments / originalTerm)
+  const principalRemaining = Math.max(0, Math.round(principalRaw - partial))
+  const newFinance = Math.round(principalRemaining * newRate)
+  const newMonthly = newTerm > 0 ? Math.round(newFinance / newTerm) : 0
+
+  return { principalRemaining, newFinance, newMonthly }
+}

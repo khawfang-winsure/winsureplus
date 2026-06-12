@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
@@ -23,12 +23,11 @@ import {
 } from '../lib/db'
 import {
   activeRateSets,
-  financeFromPrincipal,
-  monthlyFrom,
   multiplierFor,
   termsOf,
   type RateSet,
 } from '../lib/rates'
+import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
 import type { Contract, Installment } from '../lib/types'
@@ -801,58 +800,81 @@ function ExtendModal({
     .filter((i) => !i.paidAt && i.paidAmount > 0)
     .reduce((s, i) => s + i.paidAmount, 0)
   const baseTerm = Math.max(1, unpaidCount)
-  // ยอดคงค้างปัจจุบัน (ค่างวดที่ยังไม่จ่าย) — ใช้เป็นค่าเริ่มต้น "ยอดต้น" ตอนคิดเรต
+  // ยอดคงค้าง (Σ amount − paidAmount ของงวดที่ไม่ปิด) — ใช้แสดง breakdown เท่านั้น ไม่ใช้คำนวณค่างวด
   const outstanding = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
+  // ค่าปรับค้างชำระรวม
+  const penaltyDue = installments.filter((i) => !i.paidAt).reduce((s, i) => s + i.penaltyAmount, 0)
+  // เงินต้นแท้ตอนทำสัญญา (สูตรเดียวกับ DB generated column after_down)
+  const afterDown = calcSummary(contract.devicePrice, contract.downPercent, contract.commissionPercent, contract.docFee).afterDown
 
   // ประเภทที่ยังขยายได้ตามสิทธิ์ที่เหลือ (กฎ: ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const allowed = allowedExtTypes(extensions)
   const [extType, setExtType] = useState<ExtensionType>(allowed[0] ?? 'both')
   const [newDueDay, setNewDueDay] = useState(contract.dueDay)
-  const [newTerm, setNewTerm] = useState(baseTerm)
-  const [newFinance, setNewFinance] = useState(Math.round(baseTerm * contract.monthlyPayment))
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // ===== ตัวช่วยคิดจากเรต =====
+  // ===== ตัวช่วยคิดจากเรต (Option A — Principal-Only) =====
   const liveRateSets = activeRateSets(rateSets)
   const [rateSetId, setRateSetId] = useState(liveRateSets[0]?.id ?? '')
-  const [rateBase, setRateBase] = useState(Math.round(outstanding)) // ยอดต้น (ปรับได้)
   const rateSet = liveRateSets.find((s) => s.id === rateSetId) ?? null
   const rateTermList = termsOf(rateSet)
   const [rateTerm, setRateTerm] = useState(rateTermList[0] ?? 0)
   const rateMult = multiplierFor(rateSet, rateTerm)
-  const rateFinance = rateMult != null ? financeFromPrincipal(rateBase, rateMult) : 0
+
   // เปลี่ยนชุดเรตแล้วงวดเดิมไม่มีในชุดใหม่ → รีเซ็ตเป็นงวดแรกของชุด
   useEffect(() => {
     if (rateTermList.length && !rateTermList.includes(rateTerm)) setRateTerm(rateTermList[0])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rateSetId])
-  function applyRate() {
-    if (rateMult == null) return
-    setNewTerm(rateTerm)
-    setNewFinance(rateFinance)
-  }
+
+  // คำนวณ Option A: ใช้เงินต้นแท้ที่เหลือ ไม่คิดดอกซ้อน; หัก partialPaid ที่จ่ายแล้วในงวดที่ยังเปิด
+  const calc = useMemo(() => {
+    if (extType === 'due_day') return null
+    if (afterDown <= 0 || contract.termMonths <= 0) return null
+    if (rateMult == null || rateTerm <= 0) return null
+    try {
+      return calcExtensionPrincipal({
+        afterDownOriginal: afterDown,
+        originalTerm: contract.termMonths,
+        unpaidInstallments: unpaidCount,
+        newTerm: rateTerm,
+        newRate: rateMult,
+        partialPaid,
+      })
+    } catch {
+      return null
+    }
+  }, [extType, afterDown, contract.termMonths, unpaidCount, rateTerm, rateMult, partialPaid])
 
   const lockDueDay = extType === 'months' // ขยายงวดอย่างเดียว = วันชำระเดิม
-  const lockTermFinance = extType === 'due_day' // เปลี่ยนวันชำระอย่างเดียว = งวด/ยอดเดิม
 
   function changeType(t: ExtensionType) {
     setExtType(t)
-    if (t === 'due_day') {
-      setNewTerm(baseTerm)
-      setNewFinance(Math.round(baseTerm * contract.monthlyPayment))
-    }
     if (t === 'months') {
       setNewDueDay(contract.dueDay)
     }
   }
 
-  const newMonthly = newTerm > 0 ? Math.round(newFinance / newTerm) : 0
+  // สำหรับ due_day: ใช้งวด/ยอดเดิม; สำหรับ months/both: ใช้ผลจาก calc
+  const activeTerm = extType === 'due_day' ? baseTerm : (calc?.newFinance != null ? rateTerm : baseTerm)
+  const activeFinance = extType === 'due_day'
+    ? Math.round(baseTerm * contract.monthlyPayment)
+    : (calc?.newFinance ?? Math.round(baseTerm * contract.monthlyPayment))
+  const activeMonthly = extType === 'due_day'
+    ? (baseTerm > 0 ? Math.round(Math.round(baseTerm * contract.monthlyPayment) / baseTerm) : 0)
+    : (calc?.newMonthly ?? 0)
+
   const firstNo = lastPaidNo + 1
-  const lastNo = lastPaidNo + newTerm
-  const totalTerm = lastPaidNo + newTerm
-  const valid = newDueDay >= 1 && newDueDay <= 31 && newTerm > 0 && newFinance >= 0
+  const lastNo = lastPaidNo + activeTerm
+  const totalTerm = lastPaidNo + activeTerm
+
+  // breakdown สำหรับ months/both
+  const oldInterest = outstanding - (calc?.principalRemaining ?? outstanding)
+  const totalOutstanding = outstanding + penaltyDue
+
+  const canSubmit = newDueDay >= 1 && newDueDay <= 31 && activeTerm > 0 && activeFinance >= 0
 
   async function save() {
     setBusy(true)
@@ -861,8 +883,8 @@ function ExtendModal({
       await restructureContract(contract.id, {
         extType,
         newDueDay,
-        newTerm,
-        newFinance,
+        newTerm: activeTerm,
+        newFinance: activeFinance,
         note: note || undefined,
       })
       onDone()
@@ -872,9 +894,30 @@ function ExtendModal({
     }
   }
 
+  // Guard: สัญญาเก่าไม่มีข้อมูลเงินต้น
+  const missingPrincipal = afterDown <= 0 || contract.termMonths <= 0
+
+  // Guard: สัญญาผ่อนหมดแล้ว
+  const alreadyPaidOff = unpaidCount === 0
+
   return (
     <Modal title="ขยายระยะเวลา" onClose={onClose}>
       <div className="flex flex-col gap-3">
+
+        {/* Guard: สัญญาผ่อนหมดแล้ว */}
+        {alreadyPaidOff && (
+          <div className="rounded-xl bg-green-50 px-3 py-2.5 text-sm text-green-700">
+            สัญญานี้ผ่อนหมดแล้ว ไม่ต้องขยายระยะเวลา
+          </div>
+        )}
+
+        {/* Guard: ไม่มีข้อมูลเงินต้น */}
+        {!alreadyPaidOff && missingPrincipal && (
+          <div className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+            สัญญาเก่าไม่มีข้อมูลเงินต้นแท้ ไม่สามารถขยายด้วยสูตรใหม่ — ติดต่อแอดมิน
+          </div>
+        )}
+
         <Field label="ประเภทการขยาย">
           <Select value={extType} onChange={(e) => changeType(e.target.value as ExtensionType)}>
             {allowed.includes('both') && <option value="both">เปลี่ยนวันชำระ + ขยายจำนวนงวด</option>}
@@ -891,8 +934,8 @@ function ExtendModal({
         <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
           ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b> · ยอดคงค้าง <b className="text-ink">{baht(outstanding)} ฿</b>
           {partialPaid > 0 && (
-            <span className="mt-1 block text-amber-700">
-              ⚠️ มีจ่ายบางส่วนค้างอยู่ {baht(partialPaid)} ฿ — งวดนี้จะถูกลบด้วย ควรหักออกจากยอดจัดไฟแนนซ์ใหม่
+            <span className="mt-1 block rounded-lg bg-green-50 px-2 py-1 text-green-700">
+              หักยอดที่จ่ายบางส่วน {baht(partialPaid)} ฿ ออกจากเงินต้นค้างให้ลูกค้าแล้ว
             </span>
           )}
         </div>
@@ -900,8 +943,8 @@ function ExtendModal({
         {/* ตัวช่วยคิดจากเรต (เฉพาะตอนขยายงวด) */}
         {extType !== 'due_day' && liveRateSets.length > 0 && (
           <div className="rounded-xl border border-peach bg-peach-light/40 p-3">
-            <p className="mb-2 text-sm font-semibold text-ink">คิดจากเรต (ตัวคูณต่อจำนวนงวด)</p>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <p className="mb-2 text-sm font-semibold text-ink">เลือกเรตขยาย (คำนวณจากเงินต้นแท้)</p>
+            <div className="grid gap-3 sm:grid-cols-2">
               <Field label="ชุดเรต">
                 <Select value={rateSetId} onChange={(e) => setRateSetId(e.target.value)}>
                   {liveRateSets.map((s) => (
@@ -909,66 +952,74 @@ function ExtendModal({
                   ))}
                 </Select>
               </Field>
-              <Field label="งวดใหม่ (ตามเรต)">
+              <Field label="จำนวนงวดใหม่">
                 <Select value={String(rateTerm)} onChange={(e) => setRateTerm(Number(e.target.value))}>
                   {rateTermList.map((t) => (
                     <option key={t} value={t}>{t} งวด</option>
                   ))}
                 </Select>
               </Field>
-              <Field label="ยอดต้นที่นำมาคิด (ปรับได้)">
-                <Input type="number" value={rateBase || ''} onChange={(e) => setRateBase(Number(e.target.value) || 0)} />
-              </Field>
             </div>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span className="text-ink-soft">
-                {baht(rateBase)} × {rateMult ?? '—'} = <b className="text-ink">ยอด {baht(rateFinance)} ฿</b> · งวดละ{' '}
-                <b className="text-salmon-deep">{baht(monthlyFrom(rateFinance, rateTerm))} ฿</b>
-              </span>
-              <Button variant="ghost" onClick={applyRate} disabled={rateMult == null}>ใช้เรตนี้</Button>
-            </div>
-            <p className="mt-1 text-xs text-amber-700">
-              * ค่าเริ่มต้น "ยอดต้น" = ยอดคงค้าง — ปรับให้ตรงนโยบายร้าน (ระวังคิดดอกซ้ำถ้ายอดคงค้างรวมดอกอยู่แล้ว)
+            <p className="mt-2 text-xs text-ink-soft">
+              เรต: <b className="text-ink">{rateMult ?? '—'}</b> · เงินต้นแท้: <b className="text-ink">{baht(afterDown)} ฿</b> · งวดที่ยังไม่ชำระ: <b className="text-ink">{unpaidCount}</b> งวด
             </p>
           </div>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="วันที่ชำระใหม่ (1–31)">
-            <Input
-              type="number"
-              value={newDueDay || ''}
-              disabled={lockDueDay}
-              onChange={(e) => setNewDueDay(Number(e.target.value) || 0)}
-            />
-          </Field>
-          <Field label="จำนวนงวดที่จะผ่อนใหม่">
-            <Input
-              type="number"
-              value={newTerm || ''}
-              disabled={lockTermFinance}
-              onChange={(e) => setNewTerm(Number(e.target.value) || 0)}
-            />
-          </Field>
-          <Field label="ยอดจัดไฟแนนซ์ใหม่ (บาท)">
-            <Input
-              type="number"
-              value={newFinance || ''}
-              disabled={lockTermFinance}
-              onChange={(e) => setNewFinance(Number(e.target.value) || 0)}
-            />
-          </Field>
-        </div>
+        {/* Breakdown ยอดคงค้าง (แสดงเฉพาะขยายงวด + calc พร้อม) */}
+        {extType !== 'due_day' && calc != null && (
+          <div className="rounded-xl border border-peach-light bg-white p-3 text-sm">
+            <p className="mb-2 font-semibold text-ink">รายละเอียดยอดคงค้าง</p>
+            <div className="flex flex-col gap-1">
+              <div className="flex justify-between text-ink-soft">
+                <span>ยอดคงค้างรวม (ไม่รวมค่าปรับ)</span>
+                <b className="text-ink">{baht(outstanding)} ฿</b>
+              </div>
+              <div className="flex justify-between pl-4 text-ink-soft">
+                <span>เงินต้นค้าง</span>
+                <span className="font-semibold text-ink">{baht(calc.principalRemaining)} ฿</span>
+              </div>
+              <div className="flex justify-between pl-4 text-ink-soft">
+                <span>ดอกเบี้ยเก่า (ลูกค้าจ่ายผ่านงวดใหม่)</span>
+                <span>{baht(Math.max(0, oldInterest))} ฿</span>
+              </div>
+              {penaltyDue > 0 && (
+                <div className="flex justify-between text-ink-soft">
+                  <span>ค่าปรับสะสม (จ่ายแยก)</span>
+                  <span className="text-red-600">{baht(penaltyDue)} ฿</span>
+                </div>
+              )}
+              <div className="mt-1 flex justify-between border-t border-peach pt-1 font-semibold">
+                <span className="text-ink">รวมทั้งสิ้น</span>
+                <span className="text-ink">{baht(totalOutstanding)} ฿</span>
+              </div>
+            </div>
+            <div className="mt-3 rounded-lg bg-peach-light/60 px-3 py-2 text-sm">
+              ขยาย <b className="text-ink">{rateTerm}</b> งวด × เรต <b className="text-ink">{rateMult}</b>{' '}
+              → ค่างวดใหม่: <b className="text-salmon-deep">{baht(calc.newMonthly)} ฿/เดือน</b>
+              {' '}(ยอดจัดไฟแนนซ์ {baht(calc.newFinance)} ฿)
+            </div>
+          </div>
+        )}
+
+        <Field label="วันที่ชำระใหม่ (1–31)">
+          <Input
+            type="number"
+            value={newDueDay || ''}
+            disabled={lockDueDay}
+            onChange={(e) => setNewDueDay(Number(e.target.value) || 0)}
+          />
+        </Field>
 
         <div className="rounded-xl border border-peach bg-white px-3 py-2.5 text-sm">
           <p className="font-semibold text-ink">สรุปงวดใหม่</p>
           <p className="text-ink-soft">
-            ค่างวดใหม่ <b className="text-ink">{baht(newMonthly)} ฿/เดือน</b> · งวดเลขที่{' '}
-            <b className="text-ink">{firstNo}–{lastNo}</b> ({newTerm} งวด · รวมทั้งสัญญา {totalTerm} งวด)
+            ค่างวดใหม่ <b className="text-ink">{baht(activeMonthly)} ฿/เดือน</b> · งวดเลขที่{' '}
+            <b className="text-ink">{firstNo}–{lastNo}</b> ({activeTerm} งวด · รวมทั้งสัญญา {totalTerm} งวด)
           </p>
           <p className="text-ink-soft">
             งวดแรกครบ <b className="text-ink">{previewDueDate(1, newDueDay)}</b> · งวดสุดท้ายครบ{' '}
-            <b className="text-ink">{previewDueDate(newTerm, newDueDay)}</b>
+            <b className="text-ink">{previewDueDate(activeTerm, newDueDay)}</b>
           </p>
           <p className="mt-1 text-red-600">งวดที่ยังไม่จ่าย {unpaidCount} งวด จะถูกลบแล้วสร้างใหม่ตามนี้</p>
         </div>
@@ -981,7 +1032,9 @@ function ExtendModal({
 
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || !valid}>{busy ? 'กำลังบันทึก...' : 'ยืนยันขยายระยะเวลา'}</Button>
+          <Button onClick={save} disabled={busy || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)}>
+            {busy ? 'กำลังบันทึก...' : 'ยืนยันขยายระยะเวลา'}
+          </Button>
         </div>
       </div>
     </Modal>
