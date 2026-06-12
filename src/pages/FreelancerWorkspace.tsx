@@ -6,10 +6,16 @@ import {
   getMyAssignedGrades,
   getPublicHolidays,
   type ContractGrade,
+  type FollowUpResult,
   type FreelancerQueueRow,
 } from '../lib/db'
 import { useAuth } from '../lib/auth'
 import { isContactWindowOpen } from '../lib/contactHours'
+import {
+  computePriorityScore,
+  type PriorityTier,
+  type SuppressReason,
+} from '../lib/priorityQueue'
 import FollowUpModal from '../components/FollowUpModal'
 
 // ===== ป้ายกำกับเกรด + สีตาม Badge tone =====
@@ -20,6 +26,58 @@ const GRADE_TONE: Record<ContractGrade, 'red' | 'amber' | 'neutral'> = {
   D: 'amber',
   E: 'red',
 }
+
+// ===== emoji + label ต่อ tier =====
+const TIER_EMOJI: Record<PriorityTier, string> = {
+  HOT: '🔥',
+  WARM: '⚡',
+  COLD: '❄️',
+  ESCALATE: '🚨',
+}
+
+const TIER_LABEL: Record<PriorityTier, string> = {
+  HOT: 'HOT',
+  WARM: 'WARM',
+  COLD: 'COLD',
+  ESCALATE: 'ESCALATE',
+}
+
+// ===== Badge color ต่อ tier (ใช้ inline style เพราะ Badge ไม่มี salmon/custom tone) =====
+const TIER_SCORE_CLS: Record<PriorityTier, string> = {
+  HOT: 'bg-red-100 text-red-700',
+  WARM: 'bg-amber-100 text-amber-700',
+  COLD: 'bg-blue-100 text-blue-600',
+  ESCALATE: 'bg-purple-100 text-purple-700',
+}
+
+// ===== label แสดงผล FollowUpResult เป็นภาษาไทย =====
+const RESULT_LABEL: Record<FollowUpResult, string> = {
+  contacted: 'ติดต่อสำเร็จ',
+  no_answer: 'ไม่รับสาย',
+  promised: 'สัญญาจะจ่าย',
+  refused: 'ปฏิเสธ',
+  paid: 'จ่ายแล้ว',
+  returned: 'คืนเครื่อง',
+  other: 'อื่นๆ',
+}
+
+// ===== tooltip ภาษาไทยสำหรับ suppressReason =====
+const SUPPRESS_LABEL: Record<NonNullable<SuppressReason>, string> = {
+  DNC: 'สัญญานี้อยู่ในสถานะห้ามติดต่อ (DNC)',
+  LAWYER: 'สัญญานี้มีทนายความ กรุณาติดต่อทนายแทน',
+  CAP: 'ติดต่อครบแล้วสำหรับวันนี้',
+  PROMISE_PENDING: 'ลูกค้าสัญญาจะจ่าย รอถึงวันนัด',
+}
+
+// ===== default expand per tier (localStorage: "true"/"false") =====
+const TIER_DEFAULT_OPEN: Record<PriorityTier, boolean> = {
+  HOT: true,
+  WARM: true,
+  COLD: false,
+  ESCALATE: true,
+}
+
+const TIER_ORDER: PriorityTier[] = ['HOT', 'WARM', 'COLD', 'ESCALATE']
 
 // ===== Banner นอกเวลาทวงถาม =====
 function OutsideHoursBanner() {
@@ -33,7 +91,171 @@ function OutsideHoursBanner() {
   )
 }
 
-// ===== Component =====
+// ===== relative time helper (Bangkok UTC+7) =====
+function relativeContactTime(isoTimestamp: string): string {
+  // แปลง timestamp เป็น Bangkok local date + time
+  const bkkMs = new Date(isoTimestamp).getTime() + 7 * 3600 * 1000
+  const bkkDate = new Date(bkkMs)
+  const datePart = bkkDate.toISOString().slice(0, 10) // yyyy-mm-dd
+
+  const nowBkkMs = Date.now() + 7 * 3600 * 1000
+  const nowBkk = new Date(nowBkkMs)
+  const todayPart = nowBkk.toISOString().slice(0, 10)
+
+  const yesterdayMs = nowBkkMs - 86400 * 1000
+  const yesterdayPart = new Date(yesterdayMs).toISOString().slice(0, 10)
+
+  const hh = String(bkkDate.getUTCHours()).padStart(2, '0')
+  const mm = String(bkkDate.getUTCMinutes()).padStart(2, '0')
+  const timeStr = `${hh}:${mm}`
+
+  if (datePart === todayPart) return `วันนี้ ${timeStr}`
+  if (datePart === yesterdayPart) return `เมื่อวาน ${timeStr}`
+  const [, mo, dy] = datePart.split('-')
+  return `${dy}/${mo}`
+}
+
+// ===== Row ขยายในแต่ละ section =====
+interface ScoredRow {
+  row: FreelancerQueueRow
+  score: number
+  tier: PriorityTier
+  actionableNow: boolean
+  suppressReason: SuppressReason
+}
+
+// ===== Section collapsible =====
+function SectionHeader({
+  tier,
+  count,
+  open,
+  onToggle,
+}: {
+  tier: PriorityTier
+  count: number
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-sm font-semibold text-ink transition hover:bg-peach-light/40"
+    >
+      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[tier]}`}>
+        {TIER_EMOJI[tier]} {TIER_LABEL[tier]} ({count})
+      </span>
+      <span className="ml-auto text-ink-soft">{open ? '▲' : '▼'}</span>
+    </button>
+  )
+}
+
+// ===== Row ใน Tab 1 =====
+function QueueRow({
+  sr,
+  outsideHours,
+  onSelect,
+}: {
+  sr: ScoredRow
+  outsideHours: boolean
+  onSelect: (r: FreelancerQueueRow) => void
+}) {
+  const r = sr.row
+  const isBlocked = r.dnc || r.lawyerEngaged
+  const disableButton = outsideHours || !sr.actionableNow
+
+  let tooltip = ''
+  if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
+  else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+
+  // promise badge color
+  const todayPart = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+  const promiseOverdue =
+    r.promiseToPayDate !== null && r.promiseToPayDate < todayPart
+
+  const [, pMonth, pDay] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
+
+  return (
+    <tr className="border-b border-peach last:border-0 hover:bg-peach-light/20">
+      {/* ลูกค้า */}
+      <td className="px-4 py-3">
+        {/* status flags */}
+        {(r.dnc || r.lawyerEngaged || r.disputed) && (
+          <div className="mb-1 flex flex-wrap gap-1">
+            {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ (DNC)</Badge>}
+            {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ มีทนายความ</Badge>}
+            {r.disputed && <Badge tone="amber">📋 โต้แย้งยอด</Badge>}
+          </div>
+        )}
+        <p className={`font-medium ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
+          {r.customerName}
+        </p>
+        <p className="text-xs text-ink-soft">{r.contractNo}</p>
+        {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+        {/* team awareness */}
+        {r.lastResult !== null && r.lastContactedAt !== null && (
+          <p className="mt-0.5 text-xs text-ink-soft">
+            🕐 {r.lastContactedByName ?? '?'}{' '}
+            {relativeContactTime(r.lastContactedAt)}{' '}
+            — {RESULT_LABEL[r.lastResult]}
+          </p>
+        )}
+        {/* promise badge */}
+        {r.promiseToPayDate !== null && pDay !== null && pMonth !== null && (
+          <span
+            className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+              promiseOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+            }`}
+          >
+            📅 สัญญาจะจ่าย {pDay}/{pMonth}
+          </span>
+        )}
+      </td>
+      {/* ร้าน */}
+      <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
+      {/* เกรด */}
+      <td className="px-4 py-3 text-center">
+        <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+      </td>
+      {/* score badge */}
+      <td className="px-4 py-3 text-center">
+        <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
+          {TIER_EMOJI[sr.tier]} {sr.score}
+        </span>
+      </td>
+      {/* ค้าง (วัน) */}
+      <td className="px-4 py-3 text-right">
+        <span className="font-semibold text-red-600">{r.daysLate}</span>
+      </td>
+      {/* ค่างวด */}
+      <td className="px-4 py-3 text-right text-sm text-ink">{baht(r.monthlyPayment)} ฿</td>
+      {/* ยอดค้าง */}
+      <td className="px-4 py-3 text-right">
+        {r.outstanding > 0 ? (
+          <span className="font-semibold text-red-600">{baht(r.outstanding)} ฿</span>
+        ) : (
+          <span className="text-ink-soft">-</span>
+        )}
+      </td>
+      {/* ปุ่ม */}
+      <td className="px-4 py-3">
+        <button
+          disabled={disableButton}
+          onClick={() => !disableButton && onSelect(r)}
+          title={tooltip || undefined}
+          className={`whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+            disableButton
+              ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
+              : 'border-peach bg-white text-ink hover:bg-peach-light/50'
+          }`}
+        >
+          บันทึกติดตาม
+        </button>
+      </td>
+    </tr>
+  )
+}
+
+// ===== Component หลัก =====
 export default function FreelancerWorkspace() {
   const { role } = useAuth()
   const [assignedGrades, setAssignedGrades] = useState<ContractGrade[]>([])
@@ -43,10 +265,40 @@ export default function FreelancerWorkspace() {
   const [shopFilter, setShopFilter] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
   const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
+  const [activeTab, setActiveTab] = useState<'todo' | 'done'>('todo')
 
-  // ตรวจเวลา render-time (ไม่มี ticking — กฎนี้เป็น UX hint เท่านั้น DB trigger บังคับจริง)
+  // section expand states (localStorage-backed)
+  const [sectionOpen, setSectionOpen] = useState<Record<PriorityTier, boolean>>(() => {
+    const load = (tier: PriorityTier): boolean => {
+      try {
+        const stored = localStorage.getItem(`worklist-section-${tier}`)
+        return stored === null ? TIER_DEFAULT_OPEN[tier] : stored === 'true'
+      } catch {
+        return TIER_DEFAULT_OPEN[tier]
+      }
+    }
+    return {
+      HOT: load('HOT'),
+      WARM: load('WARM'),
+      COLD: load('COLD'),
+      ESCALATE: load('ESCALATE'),
+    }
+  })
+
+  function toggleSection(tier: PriorityTier) {
+    setSectionOpen((prev) => {
+      const next = { ...prev, [tier]: !prev[tier] }
+      try {
+        localStorage.setItem(`worklist-section-${tier}`, String(next[tier]))
+      } catch {
+        // ignore storage errors
+      }
+      return next
+    })
+  }
+
+  // ตรวจเวลา render-time
   const windowResult = isContactWindowOpen(new Date(), publicHolidays)
-  // admin ข้ามกฎเวลา (DB trigger ยกเว้น admin อยู่แล้ว) — freelancer/staff บังคับปกติ
   const outsideHours = role !== 'admin' && !windowResult.ok
 
   // โหลด public holidays ครั้งเดียวตอน mount
@@ -58,7 +310,7 @@ export default function FreelancerWorkspace() {
   const loadGrades = useCallback(async () => {
     const grades = await getMyAssignedGrades()
     setAssignedGrades(grades)
-    setSelectedGrades(grades) // เลือกทุกเกรดโดยค่าตั้งต้น
+    setSelectedGrades(grades)
     return grades
   }, [])
 
@@ -91,7 +343,7 @@ export default function FreelancerWorkspace() {
     })
   }
 
-  // ดึงรายการร้านไม่ซ้ำจากแถวที่โหลดมา (ไม่ต้องเรียก shops_basic เพิ่ม)
+  // ดึงรายการร้านไม่ซ้ำ
   const shopOptions = useMemo(() => {
     const seen = new Map<string, string>()
     for (const r of rows) seen.set(r.shopId, r.shopName)
@@ -104,13 +356,86 @@ export default function FreelancerWorkspace() {
     [rows, shopFilter],
   )
 
+  // แบ่ง 2 กลุ่ม: contacted today (Tab 2) vs ยังไม่ (Tab 1)
+  const todayRows = useMemo(() => filtered.filter((r) => r.contactedToday), [filtered])
+  const pendingRows = useMemo(() => filtered.filter((r) => !r.contactedToday), [filtered])
+
+  // คำนวณ priority สำหรับ Tab 1 — memoized
+  const today = useMemo(() => new Date(), [])
+  const scoredRows = useMemo((): ScoredRow[] => {
+    return pendingRows.map((r) => {
+      const result = computePriorityScore(
+        {
+          grade: r.grade,
+          outstanding: r.outstanding,
+          daysLate: r.daysLate,
+          dnc: r.dnc,
+          lawyerEngaged: r.lawyerEngaged,
+          disputed: r.disputed,
+          promiseToPayDate: r.promiseToPayDate,
+          totalAttempts: r.totalAttempts,
+          successfulAttempts: r.successfulAttempts,
+          lastResult: r.lastResult,
+          lastContactedAt: r.lastContactedAt,
+          contactedToday: r.contactedToday,
+        },
+        today,
+      )
+      return {
+        row: r,
+        score: result.score,
+        tier: result.tier,
+        actionableNow: result.actionableNow,
+        suppressReason: result.suppressReason,
+      }
+    })
+  }, [pendingRows, today])
+
+  // จัดกลุ่มตาม tier (sort desc by score within tier)
+  const tierGroups = useMemo((): Record<PriorityTier, ScoredRow[]> => {
+    const groups: Record<PriorityTier, ScoredRow[]> = {
+      HOT: [],
+      WARM: [],
+      COLD: [],
+      ESCALATE: [],
+    }
+    for (const sr of scoredRows) {
+      groups[sr.tier].push(sr)
+    }
+    for (const tier of TIER_ORDER) {
+      groups[tier].sort((a, b) => b.score - a.score)
+    }
+    return groups
+  }, [scoredRows])
+
+  // refresh ทั้งหมด
+  function handleRefresh() {
+    if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+  }
+
+  // หลังปิด modal → reload เพื่อ sync contactedToday
+  function handleModalClose() {
+    setSelectedContract(null)
+    if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+  }
+
   return (
     <div>
-      <PageTitle sub="รายการลูกค้าที่ต้องติดตามตามเกรดที่ได้รับมอบหมาย">
-        คิวติดตามหนี้ — ผู้ติดตามหนี้
-      </PageTitle>
+      {/* Header + refresh */}
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <PageTitle sub="รายการลูกค้าที่ต้องติดตามตามเกรดที่ได้รับมอบหมาย">
+          คิวติดตามหนี้ — ผู้ติดตามหนี้
+        </PageTitle>
+        <button
+          onClick={handleRefresh}
+          className="mt-1 flex shrink-0 items-center gap-1.5 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-medium text-ink transition hover:bg-peach-light/50"
+          title="โหลดข้อมูลใหม่"
+        >
+          🔄 รีเฟรช
+        </button>
+      </div>
 
-      {/* banner นอกเวลา (แสดงเฉพาะเมื่อนอกเวลากฎหมาย) */}
+      {/* banner นอกเวลา */}
       {outsideHours && <OutsideHoursBanner />}
 
       {/* grade filter chips */}
@@ -154,7 +479,7 @@ export default function FreelancerWorkspace() {
         </Card>
       )}
 
-      {/* ตารางคิว */}
+      {/* เนื้อหาหลัก */}
       {loading ? (
         <Loading />
       ) : assignedGrades.length === 0 ? (
@@ -162,95 +487,149 @@ export default function FreelancerWorkspace() {
           title="ยังไม่ได้รับมอบหมายเกรด"
           hint="กรุณาติดต่อผู้ดูแลระบบเพื่อรับมอบหมายเกรดการติดตามหนี้"
         />
-      ) : filtered.length === 0 ? (
-        <EmptyState
-          title="ยังไม่มีลูกค้าที่ต้องตามในเกรดที่ได้รับมอบหมาย"
-          hint="เมื่อมีลูกค้าค้างชำระในเกรดของคุณ จะปรากฏที่นี่"
-        />
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
-                <th className="px-4 py-3">ลูกค้า</th>
-                <th className="px-4 py-3">ร้าน</th>
-                <th className="px-4 py-3 text-center">เกรด</th>
-                <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
-                <th className="px-4 py-3 text-right">ค่างวด</th>
-                <th className="px-4 py-3 text-right">ยอดค้าง</th>
-                <th className="px-4 py-3" />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => {
-                const isBlocked = r.dnc || r.lawyerEngaged
-                const disableButton = outsideHours || isBlocked
+        <>
+          {/* === Tab bar === */}
+          <div className="mb-4 flex gap-2">
+            <button
+              onClick={() => setActiveTab('todo')}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === 'todo'
+                  ? 'bg-salmon-deep text-white'
+                  : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              🎯 ที่ต้องโทร ({pendingRows.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('done')}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === 'done'
+                  ? 'bg-salmon-deep text-white'
+                  : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              ✅ ติดต่อแล้ววันนี้ ({todayRows.length})
+            </button>
+          </div>
 
-                // คำอธิบาย tooltip
-                let blockReason = ''
-                if (outsideHours) blockReason = 'นอกเวลาทวงถามตามกฎหมาย'
-                else if (r.dnc) blockReason = 'สัญญานี้อยู่ในสถานะห้ามติดต่อ (DNC)'
-                else if (r.lawyerEngaged) blockReason = 'สัญญานี้มีทนายความ กรุณาติดต่อทนายแทน'
-
-                return (
-                  <tr
-                    key={r.contractId}
-                    className="border-b border-peach last:border-0 hover:bg-peach-light/20"
-                  >
-                    <td className="px-4 py-3">
-                      {/* บรรทัดธงสถานะ (ถ้ามี) */}
-                      {(r.dnc || r.lawyerEngaged || r.disputed) && (
-                        <div className="mb-1 flex flex-wrap gap-1">
-                          {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ (DNC)</Badge>}
-                          {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ มีทนายความ</Badge>}
-                          {r.disputed && <Badge tone="amber">📋 โต้แย้งยอด</Badge>}
-                        </div>
-                      )}
-                      <p className={`font-medium ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
-                        {r.customerName}
-                      </p>
-                      <p className="text-xs text-ink-soft">{r.contractNo}</p>
-                      {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
-                    </td>
-                    <td className="px-4 py-3 text-ink-soft">{r.shopName}</td>
-                    <td className="px-4 py-3 text-center">
-                      <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="font-semibold text-red-600">{r.daysLate}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-ink">{baht(r.monthlyPayment)} ฿</td>
-                    <td className="px-4 py-3 text-right">
-                      {r.outstanding > 0 ? (
-                        <span className="font-semibold text-red-600">{baht(r.outstanding)} ฿</span>
-                      ) : (
-                        <span className="text-ink-soft">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        disabled={disableButton}
-                        onClick={() => !disableButton && setSelectedContract(r)}
-                        title={blockReason || undefined}
-                        className={`whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition ${
-                          disableButton
-                            ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
-                            : 'border-peach bg-white text-ink hover:bg-peach-light/50'
-                        }`}
+          {/* === Tab 1: ที่ต้องโทร === */}
+          {activeTab === 'todo' && (
+            <>
+              {pendingRows.length === 0 ? (
+                <EmptyState
+                  title="ยังไม่มีลูกค้าที่ต้องตามในเกรดที่ได้รับมอบหมาย"
+                  hint="เมื่อมีลูกค้าค้างชำระในเกรดของคุณ จะปรากฏที่นี่"
+                />
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {TIER_ORDER.map((tier) => {
+                    const group = tierGroups[tier]
+                    if (group.length === 0) return null
+                    const open = sectionOpen[tier]
+                    return (
+                      <div
+                        key={tier}
+                        className="overflow-hidden rounded-2xl border border-peach bg-white shadow-sm"
                       >
-                        บันทึกติดตาม
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-          <p className="px-4 py-2 text-xs text-ink-soft">
-            แสดง {filtered.length} รายการ
-            {shopFilter && ` (กรองตามร้าน)`}
-          </p>
-        </div>
+                        <SectionHeader
+                          tier={tier}
+                          count={group.length}
+                          open={open}
+                          onToggle={() => toggleSection(tier)}
+                        />
+                        {open && (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
+                                  <th className="px-4 py-3">ลูกค้า</th>
+                                  <th className="px-4 py-3">ร้าน</th>
+                                  <th className="px-4 py-3 text-center">เกรด</th>
+                                  <th className="px-4 py-3 text-center">คะแนน</th>
+                                  <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                                  <th className="px-4 py-3 text-right">ค่างวด</th>
+                                  <th className="px-4 py-3 text-right">ยอดค้าง</th>
+                                  <th className="px-4 py-3" />
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {group.map((sr) => (
+                                  <QueueRow
+                                    key={sr.row.contractId}
+                                    sr={sr}
+                                    outsideHours={outsideHours}
+                                    onSelect={setSelectedContract}
+                                  />
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* === Tab 2: ติดต่อแล้ววันนี้ === */}
+          {activeTab === 'done' && (
+            <>
+              {todayRows.length === 0 ? (
+                <EmptyState
+                  title="ยังไม่มีรายการที่ติดต่อวันนี้"
+                  hint="เมื่อบันทึกติดตามสำเร็จแล้ว รายการจะย้ายมาที่นี่"
+                />
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
+                        <th className="px-4 py-3">ลูกค้า / สัญญา</th>
+                        <th className="px-4 py-3 text-center">เกรด</th>
+                        <th className="px-4 py-3">ผลล่าสุด</th>
+                        <th className="px-4 py-3">เวลา</th>
+                        <th className="px-4 py-3">โดย</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {todayRows.map((r) => (
+                        <tr
+                          key={r.contractId}
+                          className="border-b border-peach last:border-0 hover:bg-peach-light/20"
+                        >
+                          <td className="px-4 py-3">
+                            <p className="font-medium text-ink">{r.customerName}</p>
+                            <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                          </td>
+                          <td className="px-4 py-3 text-ink-soft">
+                            {r.lastResult !== null ? RESULT_LABEL[r.lastResult] : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-ink-soft">
+                            {r.lastContactedAt !== null
+                              ? relativeContactTime(r.lastContactedAt)
+                              : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-ink-soft">
+                            {r.lastContactedByName ?? '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="px-4 py-2 text-xs text-ink-soft">
+                    แสดง {todayRows.length} รายการที่ติดต่อวันนี้
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+        </>
       )}
 
       {/* modal */}
@@ -265,7 +644,8 @@ export default function FreelancerWorkspace() {
             daysLate: selectedContract.daysLate,
           }}
           publicHolidays={publicHolidays}
-          onClose={() => setSelectedContract(null)}
+          adminOverride={role === 'admin'}
+          onClose={handleModalClose}
         />
       )}
     </div>

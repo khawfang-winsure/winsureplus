@@ -191,4 +191,7 @@ export interface Contract {
   lawyerEngagedAt?: string | null // วันที่ส่งทนาย (ISO date)
   disputed?: boolean // อยู่ระหว่างข้อพิพาท
   disputedSince?: string | null // วันที่เริ่มข้อพิพาท (ISO date)
+  // --- promise to pay (Wave 1B — 0020) ---
+  promiseToPayDate?: string | null // วันนัดชำระ ISO yyyy-mm-dd (sync จาก trigger)
+  promisedAmount?: number | null   // ยอดที่สัญญาไว้ (บาท)
 }

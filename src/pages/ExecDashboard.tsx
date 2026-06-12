@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loading, PageTitle, Card, Badge } from '../components/ui'
 import { Donut } from '../components/Donut'
@@ -18,6 +18,8 @@ import {
   getRecruitTiers,
   getRecruitBonuses,
   getEmployees,
+  getEscalateContracts,
+  type EscalateContract,
 } from '../lib/db'
 import { buildExecDashboard, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity } from '../lib/execDashboard'
 import type { ShopGrade } from '../lib/types'
@@ -289,6 +291,9 @@ export default function ExecDashboard() {
         <RiskTable title="หนี้เสียตามช่วงอายุ" rows={d.riskByAge} />
         <RiskTable title="หนี้เสียตามรุ่นเครื่อง" rows={d.riskByModel} />
       </div>
+
+      {/* ===== แถว 8: ESCALATE — ลูกค้าที่ต้องแอดมินตรวจสอบ ===== */}
+      <EscalateWidget navigate={navigate} />
       </>
       )}
     </div>
@@ -534,6 +539,121 @@ function RiskTable({ title, rows }: { title: string; rows: RiskGroup[] }) {
             ))}
           </tbody>
         </table>
+      )}
+    </Card>
+  )
+}
+
+// ---------- ESCALATE widget — ลูกค้าที่ฟรีแลนซ์ติดต่อไม่ได้ ≥10 ครั้ง ----------
+function EscalateWidget({ navigate }: { navigate: (to: string) => void }) {
+  const [rows, setRows] = useState<EscalateContract[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  // reload counter — เพิ่มค่าเพื่อ trigger re-fetch (ใช้กับปุ่ม retry)
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError(null)
+    getEscalateContracts()
+      .then((data) => { if (active) setRows(data) })
+      .catch((e: unknown) => {
+        if (active) setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [tick])
+
+  // โทนสีเกรด: A|B → green, C → amber, D|E หรืออื่นๆ → red, null → neutral
+  function gradeTone(grade: EscalateContract['grade']): 'green' | 'amber' | 'red' | 'neutral' {
+    if (grade === 'A' || grade === 'B') return 'green'
+    if (grade === 'C') return 'amber'
+    if (grade === null) return 'neutral'
+    return 'red'
+  }
+
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="font-semibold text-ink">
+            🚨 ลูกค้าที่ต้องแอดมินตรวจสอบ (ESCALATE)
+            {!loading && !error && (
+              <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                {rows.length} รายการ
+              </span>
+            )}
+          </h3>
+          <p className="mt-0.5 text-xs text-ink-soft">
+            ลูกค้าที่ฟรีแลนซ์พยายามติดต่อแล้ว ≥10 ครั้งโดยไม่สำเร็จ
+          </p>
+        </div>
+      </div>
+
+      {loading && <p className="text-sm text-ink-soft">กำลังโหลด...</p>}
+
+      {error && !loading && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-red-600">{error}</p>
+          <button
+            onClick={() => setTick((n) => n + 1)}
+            className="self-start rounded-xl border border-peach px-3 py-1.5 text-sm text-ink-soft hover:bg-peach-light"
+          >
+            ลองใหม่
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && rows.length === 0 && (
+        <p className="text-sm text-ink-soft">ยังไม่มีลูกค้าใน ESCALATE bucket</p>
+      )}
+
+      {!loading && !error && rows.length > 0 && (
+        <div className="scrollbar-thin overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="py-2 font-semibold">ลูกค้า / สัญญา</th>
+                <th className="py-2 font-semibold">เกรด</th>
+                <th className="py-2 text-right font-semibold">ค้างกี่วัน</th>
+                <th className="py-2 text-right font-semibold">ค่าปรับคงค้าง</th>
+                <th className="py-2 text-right font-semibold">จำนวนครั้งที่ลอง</th>
+                <th className="py-2 font-semibold">ดำเนินการ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.contractId} className="border-b border-peach/50 last:border-0">
+                  <td className="py-2">
+                    <p className="font-medium text-ink">{r.customerName}</p>
+                    <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                  </td>
+                  <td className="py-2">
+                    <Badge tone={gradeTone(r.grade)}>{r.grade ?? '-'}</Badge>
+                  </td>
+                  <td className="py-2 text-right">
+                    <span className="font-semibold text-red-600">{r.daysLate}</span>
+                    <span className="ml-0.5 text-xs text-ink-soft">วัน</span>
+                  </td>
+                  <td className="py-2 text-right text-amber-600">฿{money(r.outstanding)}</td>
+                  <td className="py-2 text-right">
+                    <span className="font-semibold text-ink">{r.totalAttempts}</span>
+                    <span className="ml-0.5 text-xs text-ink-soft">ครั้ง</span>
+                  </td>
+                  <td className="py-2">
+                    <button
+                      onClick={() => navigate(`/contract/${r.contractId}`)}
+                      className="rounded-lg border border-peach px-2.5 py-1 text-xs text-salmon-deep hover:bg-peach-light"
+                    >
+                      จัดการ
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   )

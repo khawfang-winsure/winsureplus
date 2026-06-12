@@ -90,6 +90,8 @@ interface ContractRow {
   lawyer_engaged_at: string | null
   disputed: boolean | null
   disputed_since: string | null
+  promise_to_pay_date: string | null
+  promised_amount: number | null
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -143,6 +145,8 @@ function mapContract(r: ContractRow): Contract {
     lawyerEngagedAt: r.lawyer_engaged_at ?? null,
     disputed: r.disputed ?? false,
     disputedSince: r.disputed_since ?? null,
+    promiseToPayDate: r.promise_to_pay_date ?? null,
+    promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
   }
 }
 
@@ -1424,7 +1428,8 @@ export interface AddFollowUpInput {
   noteText: string
   contactMethod: FollowUpContactMethod
   followUpResult: FollowUpResult
-  nextFollowUpAt?: string | null
+  nextFollowUpAt?: string | null    // ISO timestamp — ถ้า result='promised' trigger sync ไป contracts
+  promisedAmount?: number | null    // ยอดที่สัญญาไว้ (Wave 1B — ส่งเมื่อ result='promised')
 }
 
 export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
@@ -1435,6 +1440,7 @@ export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
     contact_method: input.contactMethod,
     follow_up_result: input.followUpResult,
     next_follow_up_at: input.nextFollowUpAt ?? null,
+    promised_amount: input.promisedAmount ?? null,
   })
   if (error) throw error
 }
@@ -1482,6 +1488,16 @@ export interface FreelancerQueueRow {
   dnc: boolean
   lawyerEngaged: boolean
   disputed: boolean
+  // --- Wave 1B: promise state (denormalized จาก contracts ผ่าน trigger) ---
+  promiseToPayDate: string | null   // ISO date
+  promisedAmount: number | null
+  // --- Wave 1B: aggregate (90-day window, client-side reduce จาก follow_ups) ---
+  totalAttempts: number              // จำนวน follow_ups ทั้งหมดใน 90 วัน
+  successfulAttempts: number         // จำนวนที่ result IN ('contacted','promised','paid','returned','other') ใน 90 วัน
+  lastResult: FollowUpResult | null  // result ของรายการล่าสุด
+  lastContactedAt: string | null     // created_at ของรายการล่าสุด (ISO timestamp)
+  contactedToday: boolean            // มี follow_up วันนี้ (Bangkok) ที่ result ≠ 'no_answer'
+  lastContactedByName: string | null // ชื่อคนโทรล่าสุด สำหรับ team-awareness
 }
 
 interface QueueStatusRow {
@@ -1503,6 +1519,8 @@ interface QueueContractRow {
   dnc: boolean
   lawyer_engaged: boolean
   disputed: boolean
+  promise_to_pay_date: string | null
+  promised_amount: number | null
 }
 
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
@@ -1520,11 +1538,13 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const statusRows = (statusData ?? []) as QueueStatusRow[]
   if (statusRows.length === 0) return []
 
-  // ดึง phone + monthly_payment จาก contracts
+  // ดึง phone + monthly_payment + promise fields จาก contracts
   const ids = statusRows.map((r) => r.contract_id)
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
-    .select('id, phone, monthly_payment, current_grade, dnc, lawyer_engaged, disputed')
+    .select(
+      'id, phone, monthly_payment, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount',
+    )
     .in('id', ids)
   if (contractError) throw contractError
 
@@ -1532,8 +1552,91 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     ((contractData ?? []) as QueueContractRow[]).map((c) => [c.id, c]),
   )
 
+  // Query 3: aggregate follow_ups ย้อนหลัง 90 วัน (single round-trip)
+  // successfulAttempts = result IN ('contacted','promised','paid','returned','other')
+  // (ไม่นับ 'no_answer', 'refused', หรือ null — ตรงกับ v_follow_up_stats_90d ใน 0020)
+  const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString()
+  // todayBkk: วันที่ปัจจุบันตาม Bangkok timezone (UTC+7) ในรูป yyyy-mm-dd
+  const todayBkk = (() => {
+    const d = new Date(Date.now() + 7 * 3600 * 1000)
+    return d.toISOString().slice(0, 10)
+  })()
+  const { data: followUpsData, error: fuErr } = await supabase
+    .from('follow_ups')
+    .select('contract_id, follow_up_result, created_at, author_name')
+    .in('contract_id', ids)
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+  if (fuErr) throw fuErr
+
+  // Client-side reduce: สร้าง aggregate map per contract_id
+  type FuAgg = {
+    totalAttempts: number
+    successfulAttempts: number
+    lastResult: FollowUpResult | null
+    lastContactedAt: string | null
+    contactedToday: boolean
+    lastContactedByName: string | null
+  }
+  const fuMap = new Map<string, FuAgg>()
+  for (const fu of (followUpsData ?? []) as {
+    contract_id: string
+    follow_up_result: FollowUpResult | null
+    created_at: string
+    author_name: string | null
+  }[]) {
+    const agg = fuMap.get(fu.contract_id) ?? {
+      totalAttempts: 0,
+      successfulAttempts: 0,
+      lastResult: null,
+      lastContactedAt: null,
+      contactedToday: false,
+      lastContactedByName: null,
+    }
+    agg.totalAttempts++
+    // successfulAttempts: ตาม priorityQueue.ts line 17 — result ∈ {contacted, promised, paid, returned, other}
+    // ไม่นับ 'no_answer' (ไม่ติดต่อได้) และ 'refused' (ปฏิเสธ) และ null (ไม่ระบุ)
+    // ความแตกต่างจาก contactedToday: contactedToday ใช้ result !== 'no_answer' (PDPA daily-cap semantics)
+    if (
+      fu.follow_up_result === 'contacted' ||
+      fu.follow_up_result === 'promised' ||
+      fu.follow_up_result === 'paid' ||
+      fu.follow_up_result === 'returned' ||
+      fu.follow_up_result === 'other'
+    ) {
+      agg.successfulAttempts++
+    }
+    // lastResult + lastContactedAt + lastContactedByName: ใช้แถวแรก (order desc → ล่าสุดอยู่หน้า)
+    if (agg.lastResult === null) {
+      agg.lastResult = fu.follow_up_result
+      agg.lastContactedAt = fu.created_at
+      agg.lastContactedByName = fu.author_name
+    }
+    // contactedToday: ต้อง shift created_at เป็น Bangkok ก่อนเทียบ (กัน off-by-one)
+    if (!agg.contactedToday && fu.follow_up_result !== 'no_answer') {
+      // ตัด timezone offset +07:00 ออก → เหลือ date part ใน Bangkok
+      const fuBkkDate = new Date(
+        new Date(fu.created_at).getTime() + 7 * 3600 * 1000,
+      )
+        .toISOString()
+        .slice(0, 10)
+      if (fuBkkDate === todayBkk) {
+        agg.contactedToday = true
+      }
+    }
+    fuMap.set(fu.contract_id, agg)
+  }
+
   return statusRows.map((r): FreelancerQueueRow => {
     const c = contractMap.get(r.contract_id)
+    const agg = fuMap.get(r.contract_id) ?? {
+      totalAttempts: 0,
+      successfulAttempts: 0,
+      lastResult: null,
+      lastContactedAt: null,
+      contactedToday: false,
+      lastContactedByName: null,
+    }
     return {
       contractId: r.contract_id,
       contractNo: r.contract_no,
@@ -1548,6 +1651,14 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       dnc: c?.dnc ?? false,
       lawyerEngaged: c?.lawyer_engaged ?? false,
       disputed: c?.disputed ?? false,
+      promiseToPayDate: c?.promise_to_pay_date ?? null,
+      promisedAmount: c?.promised_amount == null ? null : Number(c.promised_amount),
+      totalAttempts: agg.totalAttempts,
+      successfulAttempts: agg.successfulAttempts,
+      lastResult: agg.lastResult,
+      lastContactedAt: agg.lastContactedAt,
+      contactedToday: agg.contactedToday,
+      lastContactedByName: agg.lastContactedByName,
     }
   })
 }
@@ -1593,4 +1704,92 @@ export async function getPublicHolidays(): Promise<Set<string>> {
   const { data, error } = await supabase.from('public_holidays').select('date')
   if (error) throw error
   return new Set<string>((data ?? []).map((r: { date: string }) => String(r.date)))
+}
+
+// ---------- ESCALATE list (Wave 1B) ----------
+
+/**
+ * สัญญาที่อยู่ในสถานะ ESCALATE:
+ *   totalAttempts ≥ 10 AND successfulAttempts = 0 ภายใน 90 วันย้อนหลัง
+ *   (successfulAttempts = result IN ('contacted','promised','paid','returned','other')
+ *    ไม่นับ 'no_answer', 'refused', หรือ null — ตรงกับ v_follow_up_stats_90d ใน 0020)
+ *
+ * สำหรับ Exec Dashboard widget — admin sees all (contracts RLS is_admin() → true)
+ * จำกัด 100 rows เรียงตาม outstanding desc (penalty_due), daysLate desc
+ */
+export interface EscalateContract {
+  contractId: string
+  contractNo: string
+  customerName: string
+  grade: ContractGrade | null
+  outstanding: number  // penalty_due — ใช้ sort; ดู note ใน advisor: ยอดจริงใช้ monthly_payment × remaining ถ้าต้องการ
+  daysLate: number
+  shopName: string
+  totalAttempts: number
+}
+
+export async function getEscalateContracts(): Promise<EscalateContract[]> {
+  if (!supabase) return []
+
+  // Step 1: ดึง aggregate จาก v_follow_up_stats_90d (SQL GROUP BY ใน DB — ไม่มี PostgREST row-cap)
+  // successfulAttempts นิยาม: result ∈ {contacted, promised, paid, returned, other} — ดูนิยามใน view
+  // PostgREST row-cap ปัญหา: raw follow_ups 90 วัน อาจเกิน default 1000 rows;
+  //   aggregate view return N rows = N distinct contracts ในช่วง 90 วัน — ต่ำกว่า cap มาก
+  const { data: statsData, error: statsError } = await supabase
+    .from('v_follow_up_stats_90d')
+    .select('contract_id, total_attempts, successful_attempts')
+    .gte('total_attempts', 10)
+    .eq('successful_attempts', 0)
+  if (statsError) throw statsError
+
+  const escalateIds = ((statsData ?? []) as {
+    contract_id: string
+    total_attempts: number
+    successful_attempts: number
+  }[]).map((r) => r.contract_id)
+
+  if (escalateIds.length === 0) return []
+
+  // Build lookup map for totalAttempts
+  const statsMap = new Map(
+    ((statsData ?? []) as { contract_id: string; total_attempts: number }[]).map((r) => [
+      r.contract_id,
+      r.total_attempts,
+    ]),
+  )
+
+  // Step 2: ดึง status + details จาก v_contract_status สำหรับ ids เหล่านั้น
+  // filter status='active' — ESCALATE ใช้กับสัญญาที่ยังมีผลเท่านั้น
+  // sort: penalty_due desc, days_late desc — top 100 rows
+  // NOTE: penalty_due เป็นยอดค่าปรับ (cap ~7 วัน × 100 บาท/วัน = ~700 บาท) ไม่ใช่ยอดค้างทั้งหมด
+  //   เป็น sort key ที่อ่อนแอ Pete อาจต้องการ sort ด้วย monthly_payment × remaining_installments แทน
+  //   — flag ไว้ใน CLAUDE.md / ถาม Pete ก่อน wave ถัดไปถ้า UI มี sort control
+  const { data: statusData, error: statusError } = await supabase
+    .from('v_contract_status')
+    .select('contract_id, contract_no, customer_name, shop_name, days_late, penalty_due, grade')
+    .eq('status', 'active')
+    .in('contract_id', escalateIds)
+    .order('penalty_due', { ascending: false })
+    .order('days_late', { ascending: false })
+    .limit(100)
+  if (statusError) throw statusError
+
+  return ((statusData ?? []) as {
+    contract_id: string
+    contract_no: string
+    customer_name: string
+    shop_name: string | null
+    days_late: number
+    penalty_due: number
+    grade: string | null
+  }[]).map((r) => ({
+    contractId: r.contract_id,
+    contractNo: r.contract_no,
+    customerName: r.customer_name,
+    grade: (r.grade ?? null) as ContractGrade | null,
+    outstanding: Number(r.penalty_due),
+    daysLate: r.days_late,
+    shopName: r.shop_name ?? '-',
+    totalAttempts: statsMap.get(r.contract_id) ?? 0,
+  }))
 }

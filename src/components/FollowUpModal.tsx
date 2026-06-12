@@ -57,6 +57,8 @@ interface Props {
   onClose: () => void
   /** Set ของวันหยุดราชการ (yyyy-mm-dd) รับจาก parent เพื่อกัน duplicate query */
   publicHolidays?: Set<string>
+  /** Admin can record follow-ups outside contact hours (DB trigger also exempts admin) */
+  adminOverride?: boolean
 }
 
 // ===== ฟอร์มสถานะ =====
@@ -64,7 +66,24 @@ interface FormState {
   noteText: string
   contactMethod: FollowUpContactMethod
   followUpResult: FollowUpResult
-  nextFollowUpAt: string
+  nextFollowUpAt: string    // ฟิลด์นัดทั่วไป (ผลอื่นๆ ที่ไม่ใช่ promised)
+  promisedDate: string      // วันที่ลูกค้าสัญญาจะจ่าย (เฉพาะ result=promised, required)
+  promisedAmount: string    // จำนวนเงินที่สัญญา (optional string → parse ก่อนส่ง)
+}
+
+/** คืน yyyy-mm-dd ของวันนี้บวก n วัน โดยใช้เวลาท้องถิ่น (ป้องกัน UTC drift) */
+function localDatePlusDays(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+/** คืน yyyy-mm-dd ของวันนี้ (ท้องถิ่น) */
+function localToday(): string {
+  return localDatePlusDays(0)
 }
 
 const INITIAL_FORM: FormState = {
@@ -72,9 +91,11 @@ const INITIAL_FORM: FormState = {
   contactMethod: 'phone',
   followUpResult: 'no_answer',
   nextFollowUpAt: '',
+  promisedDate: localDatePlusDays(7),
+  promisedAmount: '',
 }
 
-export default function FollowUpModal({ contract, onClose, publicHolidays = new Set() }: Props) {
+export default function FollowUpModal({ contract, onClose, publicHolidays = new Set(), adminOverride = false }: Props) {
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
   const [form, setForm] = useState<FormState>(INITIAL_FORM)
@@ -84,7 +105,7 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
 
   // ตรวจเวลา ณ ตอนที่เปิด modal (render-time check — UX เท่านั้น DB trigger บังคับจริง)
   const contactWindow = isContactWindowOpen(new Date(), publicHolidays)
-  const outsideHours = !contactWindow.ok
+  const outsideHours = !adminOverride && !contactWindow.ok
 
   // โหลดประวัติ
   const loadHistory = async () => {
@@ -120,15 +141,36 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
       setError('บันทึกการติดตามต้องมีอย่างน้อย 5 ตัวอักษร')
       return
     }
+    // validation เพิ่มเติมสำหรับ promised
+    if (form.followUpResult === 'promised') {
+      if (!form.promisedDate) {
+        setError('กรุณากรอกวันที่ลูกค้าสัญญาจะจ่าย')
+        return
+      }
+      if (form.promisedAmount !== '' && Number(form.promisedAmount) < 0) {
+        setError('จำนวนเงินที่สัญญาต้องไม่ติดลบ')
+        return
+      }
+    }
     setSaving(true)
     setError(null)
     try {
+      // แยก payload ตามประเภทผล
+      const isPromised = form.followUpResult === 'promised'
+      const parsedAmount =
+        isPromised && form.promisedAmount !== ''
+          ? Number(form.promisedAmount)
+          : null
       const input: AddFollowUpInput = {
         contractId: contract.contractId,
         noteText: form.noteText.trim(),
         contactMethod: form.contactMethod,
         followUpResult: form.followUpResult,
-        nextFollowUpAt: form.nextFollowUpAt || null,
+        // promised → Bangkok noon timestamp; อื่นๆ → ฟิลด์นัดทั่วไป
+        nextFollowUpAt: isPromised
+          ? `${form.promisedDate}T12:00:00+07:00`
+          : form.nextFollowUpAt || null,
+        promisedAmount: parsedAmount,
       }
       await addFollowUp(input)
       setForm(INITIAL_FORM)
@@ -208,15 +250,46 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
           </Select>
         </Field>
 
-        <Field label="นัดติดต่อครั้งต่อไป (ไม่บังคับ)">
-          <input
-            type="date"
-            className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
-            value={form.nextFollowUpAt}
-            onChange={(e) => set('nextFollowUpAt', e.target.value)}
-            disabled={outsideHours}
-          />
-        </Field>
+        {/* ฟิลด์เฉพาะ result=promised: วันที่ลูกค้าสัญญา (required) + จำนวนเงิน (optional) */}
+        {form.followUpResult === 'promised' && (
+          <>
+            <Field label="วันที่ลูกค้าสัญญาจะจ่าย" required>
+              <input
+                type="date"
+                className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
+                value={form.promisedDate}
+                min={localToday()}
+                onChange={(e) => set('promisedDate', e.target.value)}
+                disabled={outsideHours}
+              />
+            </Field>
+            <Field label="จำนวนเงินที่สัญญา (บาท)">
+              <input
+                type="number"
+                min={0}
+                step="any"
+                className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
+                placeholder="ไม่บังคับ"
+                value={form.promisedAmount}
+                onChange={(e) => set('promisedAmount', e.target.value)}
+                disabled={outsideHours}
+              />
+            </Field>
+          </>
+        )}
+
+        {/* ฟิลด์นัดทั่วไป — แสดงเฉพาะผลที่ไม่ใช่ promised */}
+        {form.followUpResult !== 'promised' && (
+          <Field label="นัดติดต่อครั้งต่อไป (ไม่บังคับ)">
+            <input
+              type="date"
+              className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
+              value={form.nextFollowUpAt}
+              onChange={(e) => set('nextFollowUpAt', e.target.value)}
+              disabled={outsideHours}
+            />
+          </Field>
+        )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
         {saved && <p className="text-sm text-green-700">บันทึกแล้ว</p>}
