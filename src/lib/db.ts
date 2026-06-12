@@ -82,6 +82,14 @@ interface ContractRow {
   summary_sent_at: string | null
   email_sent_at: string | null
   current_grade: string | null
+  dnc: boolean | null
+  dnc_reason: string | null
+  lawyer_engaged: boolean | null
+  lawyer_name: string | null
+  lawyer_phone: string | null
+  lawyer_engaged_at: string | null
+  disputed: boolean | null
+  disputed_since: string | null
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -127,6 +135,14 @@ function mapContract(r: ContractRow): Contract {
     summarySentAt: r.summary_sent_at,
     emailSentAt: r.email_sent_at,
     currentGrade: r.current_grade ?? null,
+    dnc: r.dnc ?? false,
+    dncReason: r.dnc_reason ?? null,
+    lawyerEngaged: r.lawyer_engaged ?? false,
+    lawyerName: r.lawyer_name ?? null,
+    lawyerPhone: r.lawyer_phone ?? null,
+    lawyerEngagedAt: r.lawyer_engaged_at ?? null,
+    disputed: r.disputed ?? false,
+    disputedSince: r.disputed_since ?? null,
   }
 }
 
@@ -1463,6 +1479,9 @@ export interface FreelancerQueueRow {
   daysLate: number
   monthlyPayment: number
   outstanding: number // ยอดค้าง (penaltyDue)
+  dnc: boolean
+  lawyerEngaged: boolean
+  disputed: boolean
 }
 
 interface QueueStatusRow {
@@ -1481,6 +1500,9 @@ interface QueueContractRow {
   phone: string | null
   monthly_payment: number | null
   current_grade: string | null
+  dnc: boolean
+  lawyer_engaged: boolean
+  disputed: boolean
 }
 
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
@@ -1502,7 +1524,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const ids = statusRows.map((r) => r.contract_id)
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
-    .select('id, phone, monthly_payment, current_grade')
+    .select('id, phone, monthly_payment, current_grade, dnc, lawyer_engaged, disputed')
     .in('id', ids)
   if (contractError) throw contractError
 
@@ -1523,6 +1545,52 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       daysLate: r.days_late,
       monthlyPayment: Number(c?.monthly_payment ?? 0),
       outstanding: Number(r.penalty_due),
+      dnc: c?.dnc ?? false,
+      lawyerEngaged: c?.lawyer_engaged ?? false,
+      disputed: c?.disputed ?? false,
     }
   })
+}
+
+// ---------- Compliance flags ----------
+
+export type ContractFlagPatch = {
+  dnc?: boolean
+  dncReason?: string | null
+  lawyerEngaged?: boolean
+  lawyerName?: string | null
+  lawyerPhone?: string | null
+  lawyerEngagedAt?: string | null // date ISO
+  disputed?: boolean
+  disputedSince?: string | null // date ISO
+}
+
+/** ตั้ง/ปลด compliance flags บนสัญญา (admin+staff ผ่าน RLS contracts_write; trigger กัน staff ปลด) */
+export async function setContractFlags(
+  contractId: string,
+  patch: ContractFlagPatch,
+): Promise<void> {
+  if (!supabase) return // mock mode — no-op
+  const upd: Record<string, unknown> = {}
+  if (patch.dnc !== undefined) upd.dnc = patch.dnc
+  if (patch.dncReason !== undefined) upd.dnc_reason = patch.dncReason
+  if (patch.lawyerEngaged !== undefined) upd.lawyer_engaged = patch.lawyerEngaged
+  if (patch.lawyerName !== undefined) upd.lawyer_name = patch.lawyerName
+  if (patch.lawyerPhone !== undefined) upd.lawyer_phone = patch.lawyerPhone
+  if (patch.lawyerEngagedAt !== undefined) upd.lawyer_engaged_at = patch.lawyerEngagedAt
+  if (patch.disputed !== undefined) upd.disputed = patch.disputed
+  if (patch.disputedSince !== undefined) upd.disputed_since = patch.disputedSince
+  if (Object.keys(upd).length === 0) return // ไม่มีอะไรให้อัปเดต
+  const { error } = await supabase.from('contracts').update(upd).eq('id', contractId)
+  if (error) throw error
+}
+
+/** ดึงวันหยุดราชการทั้งหมดจาก public_holidays → Set<'YYYY-MM-DD'>
+ *  mock mode: return empty Set (UI treat ทุกวันเป็น weekday — acceptable degrade)
+ */
+export async function getPublicHolidays(): Promise<Set<string>> {
+  if (!supabase) return new Set<string>()
+  const { data, error } = await supabase.from('public_holidays').select('date')
+  if (error) throw error
+  return new Set<string>((data ?? []).map((r: { date: string }) => String(r.date)))
 }

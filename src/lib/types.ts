@@ -182,4 +182,13 @@ export interface Contract {
   emailSentAt?: string | null
   // --- เกรดปัจจุบัน (คำนวณจาก days_late, เก็บใน DB — เพิ่มใน 0018) ---
   currentGrade?: string | null // 'A'|'B'|'C'|'D'|'E' หรือ null (ปกติ/ไม่ active)
+  // --- flag สถานะพิเศษ (Wave 3) ---
+  dnc?: boolean // ห้ามโทร (Do Not Contact)
+  dncReason?: string | null // เหตุผลที่ห้ามโทร
+  lawyerEngaged?: boolean // ส่งทนายแล้ว
+  lawyerName?: string | null // ชื่อทนาย
+  lawyerPhone?: string | null // เบอร์ทนาย
+  lawyerEngagedAt?: string | null // วันที่ส่งทนาย (ISO date)
+  disputed?: boolean // อยู่ระหว่างข้อพิพาท
+  disputedSince?: string | null // วันที่เริ่มข้อพิพาท (ISO date)
 }

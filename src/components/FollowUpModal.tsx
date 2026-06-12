@@ -9,6 +9,8 @@ import {
   type FollowUpEntry,
   type FollowUpResult,
 } from '../lib/db'
+import { isContactWindowOpen } from '../lib/contactHours'
+import { getComplianceErrorMessage } from '../lib/complianceErrors'
 
 // ===== ป้ายกำกับ enum =====
 const METHOD_LABEL: Record<FollowUpContactMethod, string> = {
@@ -53,6 +55,8 @@ interface ContractSummary {
 interface Props {
   contract: ContractSummary
   onClose: () => void
+  /** Set ของวันหยุดราชการ (yyyy-mm-dd) รับจาก parent เพื่อกัน duplicate query */
+  publicHolidays?: Set<string>
 }
 
 // ===== ฟอร์มสถานะ =====
@@ -70,7 +74,7 @@ const INITIAL_FORM: FormState = {
   nextFollowUpAt: '',
 }
 
-export default function FollowUpModal({ contract, onClose }: Props) {
+export default function FollowUpModal({ contract, onClose, publicHolidays = new Set() }: Props) {
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
   const [form, setForm] = useState<FormState>(INITIAL_FORM)
@@ -78,13 +82,17 @@ export default function FollowUpModal({ contract, onClose }: Props) {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // ตรวจเวลา ณ ตอนที่เปิด modal (render-time check — UX เท่านั้น DB trigger บังคับจริง)
+  const contactWindow = isContactWindowOpen(new Date(), publicHolidays)
+  const outsideHours = !contactWindow.ok
+
   // โหลดประวัติ
   const loadHistory = async () => {
     setHistLoading(true)
     try {
       const entries = await getFollowUps(contract.contractId)
       setHistory(entries)
-    } catch (e) {
+    } catch {
       // ไม่บล็อก UI หากโหลดประวัติไม่ได้
       setHistory([])
     } finally {
@@ -103,6 +111,11 @@ export default function FollowUpModal({ contract, onClose }: Props) {
   }
 
   async function handleSave() {
+    // pre-check เวลาก่อนส่ง (DB ก็จะ reject แต่ UX จะเร็วกว่า)
+    if (outsideHours) {
+      setError('นอกเวลาทวงถามตามกฎหมาย (08:00–20:00 จ–ศ / 08:00–18:00 ส–อา+วันหยุด)')
+      return
+    }
     if (form.noteText.trim().length < 5) {
       setError('บันทึกการติดตามต้องมีอย่างน้อย 5 ตัวอักษร')
       return
@@ -122,7 +135,13 @@ export default function FollowUpModal({ contract, onClose }: Props) {
       setSaved(true)
       await loadHistory()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ')
+      // แปล compliance error P0001 → ภาษาไทย ถ้าไม่ใช่ compliance error → fallback ข้อความเดิม
+      const complianceMsg = getComplianceErrorMessage(e)
+      if (complianceMsg) {
+        setError(complianceMsg)
+      } else {
+        setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ')
+      }
     } finally {
       setSaving(false)
     }
@@ -142,6 +161,13 @@ export default function FollowUpModal({ contract, onClose }: Props) {
         </p>
       </div>
 
+      {/* banner นอกเวลา */}
+      {outsideHours && (
+        <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          นอกเวลาทวงถามตามกฎหมาย — ไม่สามารถบันทึกการติดต่อได้ขณะนี้
+        </div>
+      )}
+
       {/* ฟอร์มบันทึก */}
       <div className="flex flex-col gap-3">
         <Field label="บันทึกการติดตาม" required>
@@ -150,6 +176,7 @@ export default function FollowUpModal({ contract, onClose }: Props) {
             placeholder="รายละเอียดการติดตาม (อย่างน้อย 5 ตัวอักษร)"
             value={form.noteText}
             onChange={(e) => set('noteText', e.target.value)}
+            disabled={outsideHours}
           />
         </Field>
 
@@ -157,6 +184,7 @@ export default function FollowUpModal({ contract, onClose }: Props) {
           <Select
             value={form.contactMethod}
             onChange={(e) => set('contactMethod', e.target.value as FollowUpContactMethod)}
+            disabled={outsideHours}
           >
             {(Object.keys(METHOD_LABEL) as FollowUpContactMethod[]).map((m) => (
               <option key={m} value={m}>
@@ -170,6 +198,7 @@ export default function FollowUpModal({ contract, onClose }: Props) {
           <Select
             value={form.followUpResult}
             onChange={(e) => set('followUpResult', e.target.value as FollowUpResult)}
+            disabled={outsideHours}
           >
             {(Object.keys(RESULT_LABEL) as FollowUpResult[]).map((r) => (
               <option key={r} value={r}>
@@ -182,9 +211,10 @@ export default function FollowUpModal({ contract, onClose }: Props) {
         <Field label="นัดติดต่อครั้งต่อไป (ไม่บังคับ)">
           <input
             type="date"
-            className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40"
+            className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
             value={form.nextFollowUpAt}
             onChange={(e) => set('nextFollowUpAt', e.target.value)}
+            disabled={outsideHours}
           />
         </Field>
 
@@ -192,7 +222,7 @@ export default function FollowUpModal({ contract, onClose }: Props) {
         {saved && <p className="text-sm text-green-700">บันทึกแล้ว</p>}
 
         <div className="flex gap-2 pt-1">
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={saving || outsideHours}>
             {saving ? 'กำลังบันทึก...' : 'บันทึก'}
           </Button>
           <Button variant="ghost" onClick={onClose}>

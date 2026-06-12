@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Card, EmptyState, Loading, PageTitle } from '../components/ui'
+import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht } from '../lib/format'
 import {
   getFreelancerQueue,
   getMyAssignedGrades,
+  getPublicHolidays,
   type ContractGrade,
   type FreelancerQueueRow,
 } from '../lib/db'
+import { useAuth } from '../lib/auth'
+import { isContactWindowOpen } from '../lib/contactHours'
 import FollowUpModal from '../components/FollowUpModal'
 
 // ===== ป้ายกำกับเกรด + สีตาม Badge tone =====
@@ -18,14 +21,38 @@ const GRADE_TONE: Record<ContractGrade, 'red' | 'amber' | 'neutral'> = {
   E: 'red',
 }
 
+// ===== Banner นอกเวลาทวงถาม =====
+function OutsideHoursBanner() {
+  return (
+    <div className="mb-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+      <span className="font-semibold">นอกเวลาทวงถามตามกฎหมาย</span>
+      {' '}— การติดต่อลูกค้าอนุญาตเฉพาะ{' '}
+      <span className="font-medium">08:00–20:00 (จ–ศ)</span> และ{' '}
+      <span className="font-medium">08:00–18:00 (ส–อา+วันหยุดราชการ)</span>
+    </div>
+  )
+}
+
 // ===== Component =====
 export default function FreelancerWorkspace() {
+  const { role } = useAuth()
   const [assignedGrades, setAssignedGrades] = useState<ContractGrade[]>([])
   const [selectedGrades, setSelectedGrades] = useState<ContractGrade[]>([])
   const [rows, setRows] = useState<FreelancerQueueRow[]>([])
   const [loading, setLoading] = useState(true)
   const [shopFilter, setShopFilter] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
+  const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
+
+  // ตรวจเวลา render-time (ไม่มี ticking — กฎนี้เป็น UX hint เท่านั้น DB trigger บังคับจริง)
+  const windowResult = isContactWindowOpen(new Date(), publicHolidays)
+  // admin ข้ามกฎเวลา (DB trigger ยกเว้น admin อยู่แล้ว) — freelancer/staff บังคับปกติ
+  const outsideHours = role !== 'admin' && !windowResult.ok
+
+  // โหลด public holidays ครั้งเดียวตอน mount
+  useEffect(() => {
+    getPublicHolidays().then(setPublicHolidays)
+  }, [])
 
   // โหลดเกรดที่ได้รับมอบหมาย
   const loadGrades = useCallback(async () => {
@@ -82,6 +109,9 @@ export default function FreelancerWorkspace() {
       <PageTitle sub="รายการลูกค้าที่ต้องติดตามตามเกรดที่ได้รับมอบหมาย">
         คิวติดตามหนี้ — ผู้ติดตามหนี้
       </PageTitle>
+
+      {/* banner นอกเวลา (แสดงเฉพาะเมื่อนอกเวลากฎหมาย) */}
+      {outsideHours && <OutsideHoursBanner />}
 
       {/* grade filter chips */}
       {assignedGrades.length > 0 && (
@@ -152,42 +182,68 @@ export default function FreelancerWorkspace() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r) => (
-                <tr
-                  key={r.contractId}
-                  className="border-b border-peach last:border-0 hover:bg-peach-light/20"
-                >
-                  <td className="px-4 py-3">
-                    <p className="font-medium text-ink">{r.customerName}</p>
-                    <p className="text-xs text-ink-soft">{r.contractNo}</p>
-                    {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
-                  </td>
-                  <td className="px-4 py-3 text-ink-soft">{r.shopName}</td>
-                  <td className="px-4 py-3 text-center">
-                    <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className="font-semibold text-red-600">{r.daysLate}</span>
-                  </td>
-                  <td className="px-4 py-3 text-right text-ink">{baht(r.monthlyPayment)} ฿</td>
-                  <td className="px-4 py-3 text-right">
-                    {r.outstanding > 0 ? (
-                      <span className="font-semibold text-red-600">{baht(r.outstanding)} ฿</span>
-                    ) : (
-                      <span className="text-ink-soft">-</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Button
-                      variant="ghost"
-                      onClick={() => setSelectedContract(r)}
-                      className="whitespace-nowrap text-xs"
-                    >
-                      บันทึกติดตาม
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {filtered.map((r) => {
+                const isBlocked = r.dnc || r.lawyerEngaged
+                const disableButton = outsideHours || isBlocked
+
+                // คำอธิบาย tooltip
+                let blockReason = ''
+                if (outsideHours) blockReason = 'นอกเวลาทวงถามตามกฎหมาย'
+                else if (r.dnc) blockReason = 'สัญญานี้อยู่ในสถานะห้ามติดต่อ (DNC)'
+                else if (r.lawyerEngaged) blockReason = 'สัญญานี้มีทนายความ กรุณาติดต่อทนายแทน'
+
+                return (
+                  <tr
+                    key={r.contractId}
+                    className="border-b border-peach last:border-0 hover:bg-peach-light/20"
+                  >
+                    <td className="px-4 py-3">
+                      {/* บรรทัดธงสถานะ (ถ้ามี) */}
+                      {(r.dnc || r.lawyerEngaged || r.disputed) && (
+                        <div className="mb-1 flex flex-wrap gap-1">
+                          {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ (DNC)</Badge>}
+                          {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ มีทนายความ</Badge>}
+                          {r.disputed && <Badge tone="amber">📋 โต้แย้งยอด</Badge>}
+                        </div>
+                      )}
+                      <p className={`font-medium ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
+                        {r.customerName}
+                      </p>
+                      <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                      {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+                    </td>
+                    <td className="px-4 py-3 text-ink-soft">{r.shopName}</td>
+                    <td className="px-4 py-3 text-center">
+                      <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="font-semibold text-red-600">{r.daysLate}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-ink">{baht(r.monthlyPayment)} ฿</td>
+                    <td className="px-4 py-3 text-right">
+                      {r.outstanding > 0 ? (
+                        <span className="font-semibold text-red-600">{baht(r.outstanding)} ฿</span>
+                      ) : (
+                        <span className="text-ink-soft">-</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        disabled={disableButton}
+                        onClick={() => !disableButton && setSelectedContract(r)}
+                        title={blockReason || undefined}
+                        className={`whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                          disableButton
+                            ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
+                            : 'border-peach bg-white text-ink hover:bg-peach-light/50'
+                        }`}
+                      >
+                        บันทึกติดตาม
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
           <p className="px-4 py-2 text-xs text-ink-soft">
@@ -208,6 +264,7 @@ export default function FreelancerWorkspace() {
             shopName: selectedContract.shopName,
             daysLate: selectedContract.daysLate,
           }}
+          publicHolidays={publicHolidays}
           onClose={() => setSelectedContract(null)}
         />
       )}

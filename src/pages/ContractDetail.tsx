@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Pencil, PackageOpen, History, CalendarClock, MoreHorizontal } from 'lucide-react'
+import { Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
@@ -14,6 +14,8 @@ import {
   cancelPayment,
   restructureContract,
   submitReturn,
+  setContractFlags,
+  type ContractFlagPatch,
   type PaymentLogEntry,
   type ExtensionRecord,
   type ExtensionType,
@@ -27,6 +29,8 @@ import {
   termsOf,
   type RateSet,
 } from '../lib/rates'
+import { getComplianceErrorMessage } from '../lib/complianceErrors'
+import { useAuth } from '../lib/auth'
 import type { Contract, Installment } from '../lib/types'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
@@ -79,6 +83,7 @@ const ACTION_TONE: Record<PaymentLogEntry['action'], 'green' | 'amber' | 'red'> 
 export default function ContractDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { role } = useAuth()
   const [contract, setContract] = useState<Contract | null>(null)
   const [installments, setInstallments] = useState<Installment[]>([])
   const [log, setLog] = useState<PaymentLogEntry[]>([])
@@ -87,6 +92,7 @@ export default function ContractDetail() {
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
+  const [flagsOpen, setFlagsOpen] = useState(false)
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Installment | null>(null)
@@ -239,6 +245,37 @@ export default function ContractDetail() {
           </div>
         </div>
       </Card>
+
+      {/* ===== สถานะพิเศษ (admin + staff เห็น; freelancer ซ่อน) ===== */}
+      {(role === 'admin' || role === 'staff') && (
+        <Card className="mb-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+              <ShieldAlert size={15} /> สถานะพิเศษ
+            </p>
+            <Button variant="ghost" onClick={() => setFlagsOpen(true)}>
+              แก้ไขสถานะ
+            </Button>
+          </div>
+          <p className="mt-1 text-xs text-ink-soft">
+            DNC / มีทนายความ / โต้แย้งยอด — แก้ไขโดยผู้ดูแลระบบหรือพนักงาน (ปลดโดย admin เท่านั้น)
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {contract.dnc ? (
+              <Badge tone="red">ห้ามติดต่อ (DNC)</Badge>
+            ) : null}
+            {contract.lawyerEngaged ? (
+              <Badge tone="amber">มีทนายความ</Badge>
+            ) : null}
+            {contract.disputed ? (
+              <Badge tone="amber">โต้แย้งยอดหนี้</Badge>
+            ) : null}
+            {!contract.dnc && !contract.lawyerEngaged && !contract.disputed && (
+              <span className="text-xs text-ink-soft">— ไม่มีสถานะพิเศษ</span>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>
@@ -423,6 +460,18 @@ export default function ContractDetail() {
             await load()
           }}
           contractId={contract.id}
+        />
+      )}
+
+      {flagsOpen && (
+        <FlagsModal
+          contract={contract}
+          role={role}
+          onClose={() => setFlagsOpen(false)}
+          onDone={async () => {
+            setFlagsOpen(false)
+            await load()
+          }}
         />
       )}
     </div>
@@ -1022,6 +1071,197 @@ function ReturnModal({
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
           <Button onClick={save} disabled={busy}>{busy ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ===== ฟอร์มสถานะพิเศษ =====
+interface FlagsFormState {
+  dnc: boolean
+  dncReason: string
+  lawyerEngaged: boolean
+  lawyerName: string
+  lawyerPhone: string
+  lawyerEngagedAt: string
+  disputed: boolean
+  disputedSince: string
+}
+
+/**
+ * Modal แก้ไข compliance flags (DNC / มีทนายความ / โต้แย้งยอด)
+ * - admin: เซ็ต + ปลดได้ทุกธง
+ * - staff: เซ็ตได้ แต่ DB trigger จะ reject การปลด (แสดง error ภาษาไทย)
+ */
+function FlagsModal({
+  contract,
+  role,
+  onClose,
+  onDone,
+}: {
+  contract: Contract
+  role: string | null
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [f, setF] = useState<FlagsFormState>(() => ({
+    dnc: contract.dnc ?? false,
+    dncReason: contract.dncReason ?? '',
+    lawyerEngaged: contract.lawyerEngaged ?? false,
+    lawyerName: contract.lawyerName ?? '',
+    lawyerPhone: contract.lawyerPhone ?? '',
+    lawyerEngagedAt: contract.lawyerEngagedAt ?? '',
+    disputed: contract.disputed ?? false,
+    disputedSince: contract.disputedSince ?? '',
+  }))
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  function toggle<K extends keyof FlagsFormState>(key: K, value: FlagsFormState[K]) {
+    setF((prev) => ({ ...prev, [key]: value }))
+    setErr(null)
+  }
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    try {
+      const patch: ContractFlagPatch = {
+        dnc: f.dnc,
+        dncReason: f.dncReason || null,
+        lawyerEngaged: f.lawyerEngaged,
+        lawyerName: f.lawyerEngaged ? (f.lawyerName || null) : null,
+        lawyerPhone: f.lawyerEngaged ? (f.lawyerPhone || null) : null,
+        lawyerEngagedAt: f.lawyerEngaged ? (f.lawyerEngagedAt || null) : null,
+        disputed: f.disputed,
+        disputedSince: f.disputed ? (f.disputedSince || null) : null,
+      }
+      await setContractFlags(contract.id, patch)
+      onDone()
+    } catch (e) {
+      // ตรวจ compliance error ก่อน (4 codes จาก trigger)
+      const complianceMsg = getComplianceErrorMessage(e)
+      if (complianceMsg) {
+        setErr(complianceMsg)
+        return
+      }
+      // ตรวจ "permission denied: only admin can unset" จาก trigger ฝั่ง staff
+      const raw = errMsg(e)
+      if (raw.toLowerCase().includes('only admin can unset')) {
+        setErr('เฉพาะแอดมินเท่านั้นที่สามารถปลดสถานะนี้ได้')
+      } else {
+        setErr(raw)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="แก้ไขสถานะพิเศษ" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        {role !== 'admin' && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            พนักงานสามารถเพิ่มสถานะได้ แต่การปลดสถานะต้องดำเนินการโดยแอดมิน
+          </p>
+        )}
+
+        {/* DNC */}
+        <div className="rounded-xl border border-red-200 bg-red-50/40 p-3">
+          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <input
+              type="checkbox"
+              checked={f.dnc}
+              onChange={(e) => toggle('dnc', e.target.checked)}
+              className="h-4 w-4 accent-red-600"
+            />
+            ห้ามติดต่อ (DNC)
+          </label>
+          {f.dnc && (
+            <div className="mt-2">
+              <Field label="เหตุผล (ไม่บังคับ)">
+                <Input
+                  value={f.dncReason}
+                  onChange={(e) => toggle('dncReason', e.target.value)}
+                  placeholder="เช่น ลูกค้าขอให้หยุดติดต่อ"
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {/* มีทนายความ */}
+        <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <input
+              type="checkbox"
+              checked={f.lawyerEngaged}
+              onChange={(e) => toggle('lawyerEngaged', e.target.checked)}
+              className="h-4 w-4 accent-amber-600"
+            />
+            มีทนายความเข้าดำเนินคดี
+          </label>
+          {f.lawyerEngaged && (
+            <div className="mt-2 flex flex-col gap-2">
+              <Field label="ชื่อทนายความ">
+                <Input
+                  value={f.lawyerName}
+                  onChange={(e) => toggle('lawyerName', e.target.value)}
+                  placeholder="ชื่อ-นามสกุลทนายความ"
+                />
+              </Field>
+              <Field label="เบอร์ติดต่อทนายความ">
+                <Input
+                  value={f.lawyerPhone}
+                  onChange={(e) => toggle('lawyerPhone', e.target.value)}
+                  placeholder="0xx-xxx-xxxx"
+                />
+              </Field>
+              <Field label="วันที่เริ่มมีทนายความ">
+                <input
+                  type="date"
+                  className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40"
+                  value={f.lawyerEngagedAt}
+                  onChange={(e) => toggle('lawyerEngagedAt', e.target.value)}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {/* โต้แย้งยอด */}
+        <div className="rounded-xl border border-yellow-200 bg-yellow-50/40 p-3">
+          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <input
+              type="checkbox"
+              checked={f.disputed}
+              onChange={(e) => toggle('disputed', e.target.checked)}
+              className="h-4 w-4 accent-yellow-600"
+            />
+            โต้แย้งยอดหนี้
+          </label>
+          {f.disputed && (
+            <div className="mt-2">
+              <Field label="เริ่มโต้แย้งเมื่อ">
+                <input
+                  type="date"
+                  className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40"
+                  value={f.disputedSince}
+                  onChange={(e) => toggle('disputedSince', e.target.value)}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {err && <p className="text-sm text-red-600">{err}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy}>
+            {busy ? 'กำลังบันทึก...' : 'บันทึกสถานะ'}
+          </Button>
         </div>
       </div>
     </Modal>
