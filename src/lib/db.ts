@@ -81,6 +81,7 @@ interface ContractRow {
   notes: string | null
   summary_sent_at: string | null
   email_sent_at: string | null
+  current_grade: string | null
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -125,6 +126,7 @@ function mapContract(r: ContractRow): Contract {
     notes: r.notes ?? undefined,
     summarySentAt: r.summary_sent_at,
     emailSentAt: r.email_sent_at,
+    currentGrade: r.current_grade ?? null,
   }
 }
 
@@ -764,6 +766,7 @@ interface StatusRow {
   penalty_due: number
   days_late: number
   bucket: OverdueBucket
+  grade: string | null
 }
 
 function mapStatus(r: StatusRow): ContractStatusRow {
@@ -779,6 +782,7 @@ function mapStatus(r: StatusRow): ContractStatusRow {
     penaltyDue: Number(r.penalty_due),
     daysLate: r.days_late,
     bucket: r.bucket,
+    grade: r.grade ?? null,
   }
 }
 
@@ -928,7 +932,7 @@ export async function markNotificationRead(id: string): Promise<void> {
 }
 
 // ---------- สิทธิ์ผู้ใช้ ----------
-export type Role = 'admin' | 'staff'
+export type Role = 'admin' | 'staff' | 'freelancer'
 
 export async function getMyProfile(): Promise<{ role: Role; fullName: string } | null> {
   if (!supabase) return { role: 'admin', fullName: 'ผู้ดูแลระบบ (ทดลอง)' } // โหมด mock เปิดสิทธิ์เต็มเพื่อทดลอง UI
@@ -1306,4 +1310,216 @@ export async function saveLetterTemplate(text: string): Promise<void> {
       { onConflict: 'key' },
     )
   if (error) throw error
+}
+
+// ============================================================================
+// ผู้ติดตามหนี้ (Freelancer) — Wave 3
+// ============================================================================
+
+export type ContractGrade = 'A' | 'B' | 'C' | 'D' | 'E'
+/** Alias ใช้ใน UsersAdmin — เกรด A-E ที่มอบหมายให้ผู้ติดตามหนี้ */
+export type FreelancerGrade = ContractGrade
+
+// ---------- FreelancerRow (camelCase domain type) ----------
+export interface FreelancerRow {
+  id: string
+  fullName: string
+  email: string | null
+  active: boolean
+  grades: string[] // เกรดที่ได้รับมอบหมาย (active assignments เท่านั้น)
+}
+
+/** รายชื่อผู้ติดตามหนี้ทั้งหมด + เกรดที่มอบหมาย (admin only — ผ่าน Edge Function) */
+export async function listFreelancers(): Promise<FreelancerRow[]> {
+  const data = await callAdminUsers({ action: 'listFreelancers' })
+  return (data?.freelancers ?? []).map((f: any): FreelancerRow => ({
+    id: f.id,
+    fullName: f.fullName || '(ไม่มีชื่อ)',
+    email: f.email ?? null,
+    active: f.active !== false,
+    grades: Array.isArray(f.grades) ? f.grades : [],
+  }))
+}
+
+/** เกรดที่มอบหมายให้ผู้ติดตามหนี้คนหนึ่ง (admin or self — ผ่าน Edge Function) */
+export async function getFreelancerGrades(id: string): Promise<string[]> {
+  const data = await callAdminUsers({ action: 'listFreelancerGrades', id })
+  return Array.isArray(data?.grades) ? data.grades : []
+}
+
+/** ตั้งเกรดให้ผู้ติดตามหนี้คนหนึ่ง (full-replace — admin only, ผ่าน Edge Function) */
+export async function setFreelancerGrades(id: string, grades: string[]): Promise<void> {
+  await callAdminUsers({ action: 'setFreelancerGrades', id, grades })
+}
+export type FollowUpContactMethod = 'phone' | 'line' | 'sms' | 'visit' | 'other'
+export type FollowUpResult =
+  | 'contacted'
+  | 'no_answer'
+  | 'promised'
+  | 'refused'
+  | 'paid'
+  | 'returned'
+  | 'other'
+
+export interface FollowUpEntry {
+  id: string
+  contractId: string
+  authorId: string
+  authorName: string
+  noteText: string
+  contactMethod: FollowUpContactMethod
+  followUpResult: FollowUpResult
+  nextFollowUpAt: string | null
+  createdAt: string
+}
+
+interface FollowUpRow {
+  id: string
+  contract_id: string
+  author_id: string
+  author_name: string
+  note_text: string
+  contact_method: FollowUpContactMethod
+  follow_up_result: FollowUpResult
+  next_follow_up_at: string | null
+  created_at: string
+}
+
+function mapFollowUp(r: FollowUpRow): FollowUpEntry {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    authorId: r.author_id,
+    authorName: r.author_name,
+    noteText: r.note_text,
+    contactMethod: r.contact_method,
+    followUpResult: r.follow_up_result,
+    nextFollowUpAt: r.next_follow_up_at,
+    createdAt: r.created_at,
+  }
+}
+
+/** บันทึกการติดตามใหม่ */
+export interface AddFollowUpInput {
+  contractId: string
+  noteText: string
+  contactMethod: FollowUpContactMethod
+  followUpResult: FollowUpResult
+  nextFollowUpAt?: string | null
+}
+
+export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('follow_ups').insert({
+    contract_id: input.contractId,
+    note_text: input.noteText,
+    contact_method: input.contactMethod,
+    follow_up_result: input.followUpResult,
+    next_follow_up_at: input.nextFollowUpAt ?? null,
+  })
+  if (error) throw error
+}
+
+/** ดึงประวัติการติดตามของสัญญาหนึ่ง (ใหม่ → เก่า) */
+export async function getFollowUps(contractId: string): Promise<FollowUpEntry[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('follow_ups')
+    .select('*')
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as FollowUpRow[]).map(mapFollowUp)
+}
+
+/** เกรดที่ได้รับมอบหมายของผู้ติดตามหนี้ที่ล็อกอินอยู่ */
+export async function getMyAssignedGrades(): Promise<ContractGrade[]> {
+  if (!supabase) return []
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return []
+  const { data, error } = await supabase
+    .from('freelancer_grade_assignments')
+    .select('grade')
+    .eq('freelancer_id', user.id)
+    .is('ended_at', null)
+  if (error) throw error
+  return (data ?? []).map((r) => r.grade as ContractGrade)
+}
+
+/** ดึงสัญญาในเกรดที่ระบุ (สำหรับคิวผู้ติดตามหนี้) — query จาก v_contract_status */
+export interface FreelancerQueueRow {
+  contractId: string
+  contractNo: string
+  customerName: string
+  phone: string | null
+  shopId: string
+  shopName: string
+  grade: ContractGrade
+  daysLate: number
+  monthlyPayment: number
+  outstanding: number // ยอดค้าง (penaltyDue)
+}
+
+interface QueueStatusRow {
+  contract_id: string
+  contract_no: string
+  customer_name: string
+  shop_id: string
+  shop_name: string | null
+  days_late: number
+  penalty_due: number
+  grade: string | null
+}
+
+interface QueueContractRow {
+  id: string
+  phone: string | null
+  monthly_payment: number | null
+  current_grade: string | null
+}
+
+export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
+  if (!supabase || grades.length === 0) return []
+  // ดึงจาก v_contract_status (status=active, bucket != normal)
+  const { data: statusData, error: statusError } = await supabase
+    .from('v_contract_status')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade')
+    .eq('status', 'active')
+    .neq('bucket', 'normal')
+    .in('grade', grades)
+    .order('days_late', { ascending: false })
+  if (statusError) throw statusError
+
+  const statusRows = (statusData ?? []) as QueueStatusRow[]
+  if (statusRows.length === 0) return []
+
+  // ดึง phone + monthly_payment จาก contracts
+  const ids = statusRows.map((r) => r.contract_id)
+  const { data: contractData, error: contractError } = await supabase
+    .from('contracts')
+    .select('id, phone, monthly_payment, current_grade')
+    .in('id', ids)
+  if (contractError) throw contractError
+
+  const contractMap = new Map(
+    ((contractData ?? []) as QueueContractRow[]).map((c) => [c.id, c]),
+  )
+
+  return statusRows.map((r): FreelancerQueueRow => {
+    const c = contractMap.get(r.contract_id)
+    return {
+      contractId: r.contract_id,
+      contractNo: r.contract_no,
+      customerName: r.customer_name,
+      phone: c?.phone ?? null,
+      shopId: r.shop_id,
+      shopName: r.shop_name ?? '-',
+      grade: (r.grade ?? c?.current_grade ?? 'E') as ContractGrade,
+      daysLate: r.days_late,
+      monthlyPayment: Number(c?.monthly_payment ?? 0),
+      outstanding: Number(r.penalty_due),
+    }
+  })
 }

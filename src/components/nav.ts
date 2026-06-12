@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Mail,
   PackageOpen,
+  Phone,
   PieChart,
   Receipt,
   Send,
@@ -30,9 +31,11 @@ export interface NavItem {
   icon: LucideIcon
   children?: NavChild[]
   adminOnly?: boolean // ซ่อนจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
+  freelancerOnly?: boolean // เห็นเฉพาะผู้ติดตามหนี้ — ซ่อนจาก admin/staff
 }
 
 export const NAV: NavItem[] = [
+  { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true },
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },

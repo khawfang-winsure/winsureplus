@@ -5,13 +5,19 @@ import { Loader2, Pencil, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Modal, Select } from './ui'
 import {
   createAdminUser,
+  getFreelancerGrades,
   listAdminUsers,
   setAdminUserActive,
+  setFreelancerGrades,
   updateAdminUser,
   type AdminUserRow,
+  type FreelancerGrade,
   type Role,
 } from '../lib/db'
 import { useAuth } from '../lib/auth'
+
+// เกรดผู้ติดตามหนี้ (A–E ตาม 0018 schema)
+const FREELANCER_GRADES: FreelancerGrade[] = ['A', 'B', 'C', 'D', 'E']
 
 interface EditState {
   id?: string // มี id = แก้ไข, ไม่มี = สร้างใหม่
@@ -30,12 +36,24 @@ export function UsersAdmin() {
   const [error, setError] = useState<string | null>(null)
   const [edit, setEdit] = useState<EditState | null>(null)
   const [busy, setBusy] = useState(false)
+  // แคชเกรดผู้ติดตามหนี้ per user id (โหลดครั้งเดียวพร้อม user list)
+  const [gradeMap, setGradeMap] = useState<Record<string, FreelancerGrade[]>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      setUsers(await listAdminUsers())
+      const rows = await listAdminUsers()
+      setUsers(rows)
+      // โหลดเกรดสำหรับทุก freelancer พร้อมกัน
+      const freelancers = rows.filter((u) => u.role === 'freelancer')
+      const entries = await Promise.all(
+        freelancers.map(async (u) => {
+          const grades = await getFreelancerGrades(u.id)
+          return [u.id, grades] as [string, FreelancerGrade[]]
+        }),
+      )
+      setGradeMap(Object.fromEntries(entries))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -70,6 +88,19 @@ export function UsersAdmin() {
     }
   }
 
+  function roleBadge(u: AdminUserRow) {
+    if (u.role === 'admin') return <Badge tone="amber">แอดมิน</Badge>
+    if (u.role === 'freelancer') return <Badge tone="neutral">ผู้ติดตามหนี้</Badge>
+    return <Badge tone="neutral">พนักงาน</Badge>
+  }
+
+  function gradeCell(u: AdminUserRow) {
+    if (u.role !== 'freelancer') return <span className="text-ink-soft">—</span>
+    const grades = gradeMap[u.id]
+    if (!grades || grades.length === 0) return <span className="text-amber-600 text-xs">ไม่มีเกรด</span>
+    return <span className="text-ink text-xs font-medium">{grades.join(', ')}</span>
+  }
+
   return (
     <Card>
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -97,11 +128,12 @@ export function UsersAdmin() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-peach">
-          <table className="w-full min-w-[640px] text-sm">
+          <table className="w-full min-w-[700px] text-sm">
             <thead>
               <tr className="bg-peach-light text-left text-ink">
                 <th className="px-4 py-2.5 font-semibold">ชื่อ-อีเมล</th>
-                <th className="w-24 px-3 py-2.5 text-center font-semibold">สิทธิ์</th>
+                <th className="w-28 px-3 py-2.5 text-center font-semibold">สิทธิ์</th>
+                <th className="w-24 px-3 py-2.5 text-center font-semibold">เกรด</th>
                 <th className="w-24 px-3 py-2.5 text-center font-semibold">สถานะ</th>
                 <th className="w-40 px-3 py-2.5 text-right font-semibold">จัดการ</th>
               </tr>
@@ -113,11 +145,8 @@ export function UsersAdmin() {
                     <p className="font-medium text-ink">{u.fullName}</p>
                     <p className="text-xs text-ink-soft">{u.email || '—'}</p>
                   </td>
-                  <td className="px-3 py-2.5 text-center">
-                    <Badge tone={u.role === 'admin' ? 'amber' : 'neutral'}>
-                      {u.role === 'admin' ? 'แอดมิน' : 'พนักงาน'}
-                    </Badge>
-                  </td>
+                  <td className="px-3 py-2.5 text-center">{roleBadge(u)}</td>
+                  <td className="px-3 py-2.5 text-center">{gradeCell(u)}</td>
                   <td className="px-3 py-2.5 text-center">
                     <Badge tone={u.active ? 'green' : 'neutral'}>{u.active ? 'ใช้งาน' : 'ปิด'}</Badge>
                   </td>
@@ -151,7 +180,7 @@ export function UsersAdmin() {
               ))}
               {users.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-ink-soft">
+                  <td colSpan={5} className="px-4 py-6 text-center text-ink-soft">
                     ยังไม่มีผู้ใช้งานในระบบ
                   </td>
                 </tr>
@@ -164,6 +193,7 @@ export function UsersAdmin() {
       {edit && (
         <UserEditModal
           value={edit}
+          existingGrades={edit.id && edit.role === 'freelancer' ? (gradeMap[edit.id] ?? []) : []}
           onClose={() => setEdit(null)}
           onSaved={async () => {
             setEdit(null)
@@ -177,18 +207,33 @@ export function UsersAdmin() {
 
 function UserEditModal({
   value,
+  existingGrades,
   onClose,
   onSaved,
 }: {
   value: EditState
+  existingGrades: FreelancerGrade[]
   onClose: () => void
   onSaved: () => void
 }) {
   const isNew = !value.id
   const [f, setF] = useState<EditState>(value)
+  const [selectedGrades, setSelectedGrades] = useState<FreelancerGrade[]>(existingGrades)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const set = <K extends keyof EditState>(k: K, v: EditState[K]) => setF((p) => ({ ...p, [k]: v }))
+
+  // เมื่อ role เปลี่ยนออกจาก freelancer ให้ล้าง grade ที่เลือกออก
+  function handleRoleChange(newRole: Role) {
+    set('role', newRole)
+    if (newRole !== 'freelancer') setSelectedGrades([])
+  }
+
+  function toggleGrade(grade: FreelancerGrade) {
+    setSelectedGrades((prev) =>
+      prev.includes(grade) ? prev.filter((g) => g !== grade) : [...prev, grade],
+    )
+  }
 
   async function save() {
     setErr(null)
@@ -213,7 +258,9 @@ function UserEditModal({
     }
     setBusy(true)
     try {
+      let savedId = value.id
       if (isNew) {
+        // createAdminUser อาจ return id — ถ้า W3.A คืน void ให้ reload list หา id จาก email แทน
         await createAdminUser({ email: f.email, password: f.password, fullName: f.fullName, role: f.role })
       } else {
         await updateAdminUser({
@@ -222,6 +269,11 @@ function UserEditModal({
           role: f.role,
           password: f.password || undefined,
         })
+        savedId = value.id
+      }
+      // sync เกรดผู้ติดตามหนี้ (full-replace)
+      if (f.role === 'freelancer' && savedId) {
+        await setFreelancerGrades(savedId, selectedGrades)
       }
       onSaved()
     } catch (e) {
@@ -229,6 +281,9 @@ function UserEditModal({
       setBusy(false)
     }
   }
+
+  const isFreelancer = f.role === 'freelancer'
+  const noGradeWarning = isFreelancer && selectedGrades.length === 0
 
   return (
     <Modal title={isNew ? 'เพิ่มผู้ใช้งาน' : 'แก้ไขผู้ใช้งาน'} onClose={onClose}>
@@ -247,11 +302,46 @@ function UserEditModal({
           <Input value={f.fullName} onChange={(e) => set('fullName', e.target.value)} placeholder="เช่น สมชาย ใจดี" />
         </Field>
         <Field label="สิทธิ์" required>
-          <Select value={f.role} onChange={(e) => set('role', e.target.value as Role)}>
+          <Select value={f.role} onChange={(e) => handleRoleChange(e.target.value as Role)}>
             <option value="staff">พนักงาน (staff)</option>
             <option value="admin">แอดมิน (admin)</option>
+            <option value="freelancer">ผู้ติดตามหนี้ (freelancer)</option>
           </Select>
         </Field>
+
+        {isFreelancer && (
+          <div className="rounded-xl border border-peach bg-peach-light/40 px-4 py-3">
+            <p className="mb-2 text-sm font-medium text-ink">เกรดที่รับผิดชอบ</p>
+            <div className="flex flex-wrap gap-2">
+              {FREELANCER_GRADES.map((grade) => {
+                const checked = selectedGrades.includes(grade)
+                return (
+                  <button
+                    key={grade}
+                    type="button"
+                    onClick={() => toggleGrade(grade)}
+                    className={`min-w-[2.5rem] rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
+                      checked
+                        ? 'border-salmon-deep bg-salmon-deep text-white shadow-sm'
+                        : 'border-peach bg-white text-ink-soft hover:border-salmon-deep/60 hover:text-ink'
+                    }`}
+                  >
+                    {grade}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="mt-2 text-xs text-ink-soft">
+              เลือกได้หลายเกรด — ลูกค้าค้างวันมากขึ้นจะข้ามไปเกรดถัดไปอัตโนมัติ
+            </p>
+            {noGradeWarning && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+                ⚠️ ผู้ติดตามหนี้ที่ไม่มีเกรดจะไม่เห็นลูกค้าใดๆ
+              </p>
+            )}
+          </div>
+        )}
+
         <Field label={isNew ? 'รหัสผ่าน (อย่างน้อย 6 ตัว)' : 'รหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)'} required={isNew}>
           <Input
             type="text"

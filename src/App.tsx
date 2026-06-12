@@ -21,6 +21,7 @@ import Settings from './pages/Settings'
 import WaitingEmail from './pages/WaitingEmail'
 import WaitingSummary from './pages/WaitingSummary'
 import Login from './pages/Login'
+import FreelancerWorkspace from './pages/FreelancerWorkspace'
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
 function Gate() {
   const { ready, configured, session, role } = useAuth()
   const isAdmin = !configured || role === 'admin'
+  const isFreelancer = configured && role === 'freelancer'
 
   if (!ready) {
     return (
@@ -51,26 +53,30 @@ function Gate() {
       <Route path="/letters/print" element={<LettersPrint />} />
       <Route path="/letters/field" element={<FieldVisitPrint />} />
       <Route element={<Layout />}>
-        <Route index element={<Dashboard />} />
+        {/* ผู้ติดตามหนี้ — เห็นเฉพาะ /queue */}
+        <Route path="/queue" element={<FreelancerWorkspace />} />
+
+        {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue */}
+        <Route index element={isFreelancer ? <Navigate to="/queue" replace /> : <Dashboard />} />
         <Route path="/exec" element={isAdmin ? <ExecDashboard /> : <Navigate to="/" replace />} />
-        <Route path="/add" element={<AddContract />} />
-        <Route path="/edit/:id" element={<AddContract />} />
-        <Route path="/waiting-email" element={<WaitingEmail />} />
-        <Route path="/waiting-summary" element={<WaitingSummary />} />
-        <Route path="/customers" element={<AllCustomers />} />
-        <Route path="/customer-overview" element={<CustomerOverview />} />
-        <Route path="/contract/:id" element={<ContractDetail />} />
-        <Route path="/due" element={<DueToday />} />
-        <Route path="/overdue/:bucket" element={<Overdue />} />
-        <Route path="/letters" element={<Letters />} />
-        <Route path="/returns" element={<Returns />} />
-        <Route path="/extended" element={<ExtendedContracts />} />
-        <Route path="/shop-report" element={<ShopReport />} />
-        <Route path="/shop/:id" element={<ShopDetail />} />
+        <Route path="/add" element={isFreelancer ? <Navigate to="/queue" replace /> : <AddContract />} />
+        <Route path="/edit/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <AddContract />} />
+        <Route path="/waiting-email" element={isFreelancer ? <Navigate to="/queue" replace /> : <WaitingEmail />} />
+        <Route path="/waiting-summary" element={isFreelancer ? <Navigate to="/queue" replace /> : <WaitingSummary />} />
+        <Route path="/customers" element={isFreelancer ? <Navigate to="/queue" replace /> : <AllCustomers />} />
+        <Route path="/customer-overview" element={isFreelancer ? <Navigate to="/queue" replace /> : <CustomerOverview />} />
+        <Route path="/contract/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <ContractDetail />} />
+        <Route path="/due" element={isFreelancer ? <Navigate to="/queue" replace /> : <DueToday />} />
+        <Route path="/overdue/:bucket" element={isFreelancer ? <Navigate to="/queue" replace /> : <Overdue />} />
+        <Route path="/letters" element={isFreelancer ? <Navigate to="/queue" replace /> : <Letters />} />
+        <Route path="/returns" element={isFreelancer ? <Navigate to="/queue" replace /> : <Returns />} />
+        <Route path="/extended" element={isFreelancer ? <Navigate to="/queue" replace /> : <ExtendedContracts />} />
+        <Route path="/shop-report" element={isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
+        <Route path="/shop/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />
         <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to="/" replace />} />
-        <Route path="/settings" element={<Navigate to="/settings/shops" replace />} />
-        <Route path="/settings/:cat" element={<Settings />} />
-        <Route path="*" element={<Navigate to="/add" replace />} />
+        <Route path="/settings" element={isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
+        <Route path="/settings/:cat" element={isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
+        <Route path="*" element={<Navigate to={isFreelancer ? '/queue' : '/add'} replace />} />
       </Route>
     </Routes>
   )

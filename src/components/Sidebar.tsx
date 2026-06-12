@@ -16,7 +16,14 @@ export default function Sidebar() {
   const { pathname } = useLocation()
   const { role, configured } = useAuth()
   const isAdmin = !configured || role === 'admin' // โหมด mock เปิดเต็ม
-  const items = NAV.filter((item) => !item.adminOnly || isAdmin)
+  const isFreelancer = configured && role === 'freelancer'
+
+  // ผู้ติดตามหนี้เห็นเฉพาะ freelancerOnly; admin/staff เห็นเฉพาะที่ไม่ใช่ freelancerOnly
+  const items = NAV.filter((item) => {
+    if (isFreelancer) return item.freelancerOnly === true
+    if (item.freelancerOnly) return false
+    return !item.adminOnly || isAdmin
+  })
 
   return (
     // ตัวกันที่ (spacer): จองความกว้างแถบไอคอนบนเดสก์ท็อป เพื่อให้ aside ลอย overlay ได้

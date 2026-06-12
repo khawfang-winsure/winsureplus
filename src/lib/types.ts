@@ -77,6 +77,7 @@ export interface ContractStatusRow {
   penaltyDue: number
   daysLate: number
   bucket: OverdueBucket
+  grade: string | null // A-E หรือ null (ปกติ/ปิดแล้ว) — เพิ่มใน 0018
 }
 
 export interface DeviceReturnRow {
@@ -179,4 +180,6 @@ export interface Contract {
   // --- flag กันส่งซ้ำ ---
   summarySentAt?: string | null
   emailSentAt?: string | null
+  // --- เกรดปัจจุบัน (คำนวณจาก days_late, เก็บใน DB — เพิ่มใน 0018) ---
+  currentGrade?: string | null // 'A'|'B'|'C'|'D'|'E' หรือ null (ปกติ/ไม่ active)
 }
