@@ -142,6 +142,7 @@ export default function DevicePipeline() {
                     <td className="py-3 pr-4">
                       <p className="font-medium text-ink">{r.customerName}</p>
                       <p className="text-xs text-ink-soft">{r.contractNo} · เริ่ม {thaiDate(r.createdAt.slice(0, 10))}</p>
+                      <p className="text-xs text-ink-soft">{r.deviceModel ?? '—'}</p>
                     </td>
                     <td className="py-3 pr-4">
                       <Badge tone={STATUS_TONE[status]}>

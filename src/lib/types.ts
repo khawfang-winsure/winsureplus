@@ -100,6 +100,7 @@ export interface DeviceReturnRow {
   shippedAt?: string | null
   deviceStatusUpdatedAt?: string | null
   deviceStatusBy?: string | null
+  deviceModel?: string | null
 }
 
 export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'

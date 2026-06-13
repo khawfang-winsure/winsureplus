@@ -903,7 +903,7 @@ interface ReturnRow {
   repair_fee: number
   checked_at: string | null
   created_at: string
-  contracts: { contract_no: string; customer_name: string } | null
+  contracts: { contract_no: string; customer_name: string; model: string | null; storage: string | null } | null
   // Device Pipeline columns (0027)
   tracking_number: string | null
   device_status: DeviceStatus | null
@@ -919,7 +919,7 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
   if (!supabase) return []
   let query = supabase
     .from('device_returns')
-    .select('*, contracts(contract_no, customer_name)')
+    .select('*, contracts(contract_no, customer_name, model, storage)')
     .order('created_at', { ascending: false })
   if (filter?.deviceStatus && filter.deviceStatus !== 'all') {
     query = query.eq('device_status', filter.deviceStatus)
@@ -946,6 +946,7 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
     shippedAt: r.shipped_at,
     deviceStatusUpdatedAt: r.device_status_updated_at,
     deviceStatusBy: r.device_status_by,
+    deviceModel: [r.contracts?.model, r.contracts?.storage].filter(Boolean).join(' ') || null,
   }))
 }
 
