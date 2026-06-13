@@ -115,9 +115,10 @@ function computeTeamSummary(rows: FreelancerPerformanceRow[]): TeamSummary {
 interface DrillDownProps {
   row: FreelancerPerformanceRow
   onClose: () => void
+  daysWindow: number
 }
 
-function DrillDownPanel({ row, onClose }: DrillDownProps) {
+function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
   const inp = toInput(row)
   const kpi = computePerformanceKPIs(inp)
 
@@ -204,7 +205,7 @@ function DrillDownPanel({ row, onClose }: DrillDownProps) {
         </div>
       )}
       {row.byGrade.length === 0 && (
-        <p className="text-sm text-ink-soft">ยังไม่มีข้อมูล follow-up ใน 30 วันล่าสุด</p>
+        <p className="text-sm text-ink-soft">ยังไม่มีข้อมูล follow-up ใน {daysWindow} วันล่าสุด</p>
       )}
 
       {/* Last activity */}
@@ -220,20 +221,27 @@ function DrillDownPanel({ row, onClose }: DrillDownProps) {
 export default function StaffPerformance() {
   const [rows, setRows] = useState<FreelancerPerformanceRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [daysWindow, setDaysWindow] = useState<7 | 30 | 90>(30)
 
   useEffect(() => {
-    getFreelancerPerformance()
+    if (!loading) setRefreshing(true)
+    getFreelancerPerformance(daysWindow)
       .then((d) => {
         setRows(d)
+        setSelectedId(null)
         setLoading(false)
+        setRefreshing(false)
       })
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
         setLoading(false)
+        setRefreshing(false)
       })
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [daysWindow])
 
   const teamSummary = computeTeamSummary(rows)
 
@@ -247,9 +255,21 @@ export default function StaffPerformance() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <PageTitle sub="ข้อมูล 30 วันล่าสุด" count={{ shown: rows.length }}>
-        สรุปภาพรวมการติดตามหนี้
-      </PageTitle>
+      <div className="flex items-start justify-between">
+        <PageTitle sub={`ข้อมูล ${daysWindow} วันล่าสุด`} count={{ shown: rows.length }}>
+          สรุปภาพรวมการติดตามหนี้
+        </PageTitle>
+        <select
+          value={daysWindow}
+          onChange={(e) => setDaysWindow(Number(e.target.value) as 7 | 30 | 90)}
+          disabled={refreshing}
+          className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink outline-none transition focus:border-salmon-deep disabled:opacity-50"
+        >
+          <option value={7}>7 วันล่าสุด</option>
+          <option value={30}>30 วันล่าสุด</option>
+          <option value={90}>90 วันล่าสุด</option>
+        </select>
+      </div>
 
       {/* Error */}
       {error && (
@@ -371,6 +391,7 @@ export default function StaffPerformance() {
                           <DrillDownPanel
                             row={selectedRow}
                             onClose={() => setSelectedId(null)}
+                            daysWindow={daysWindow}
                           />
                         </td>
                       </tr>

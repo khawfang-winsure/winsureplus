@@ -1991,11 +1991,12 @@ interface GradeEscalateRow {
 }
 
 /**
- * ดึง performance ของ freelancer ทุกคนใน 30 วันล่าสุด
+ * ดึง performance ของ freelancer ทุกคนใน p_days วันล่าสุด (default 30)
  * ใช้กับ admin + staff (fga_read policy ใน 0022 อนุญาต staff อ่าน grade assignments ทุกคน)
- * Freelancer ที่ไม่มี follow_up ใน 30 วัน → ยัง list (all-zero row)
+ * Freelancer ที่ไม่มี follow_up ใน window → ยัง list (all-zero row)
+ * @param days จำนวนวันย้อนหลัง (1–90, default 30)
  */
-export async function getFreelancerPerformance(): Promise<FreelancerPerformanceRow[]> {
+export async function getFreelancerPerformance(days: number = 30): Promise<FreelancerPerformanceRow[]> {
   if (!supabase) return []
 
   // Step 1: ดึง active freelancer profiles (role='freelancer', active=true)
@@ -2029,13 +2030,11 @@ export async function getFreelancerPerformance(): Promise<FreelancerPerformanceR
     gradeMap.set(row.freelancer_id, existing)
   }
 
-  // Step 3: ดึง performance aggregate จาก v_freelancer_performance_30d
-  // view security_invoker=on → RLS ของ follow_ups + contracts apply
+  // Step 3: ดึง performance aggregate ผ่าน get_freelancer_perf(p_days)
+  // function security_invoker → RLS ของ follow_ups + contracts apply ตาม caller's role
   // admin/staff เห็นทุก row; freelancer เห็นเฉพาะ in-grade contracts
   const { data: perfData, error: perfErr } = await supabase
-    .from('v_freelancer_performance_30d')
-    .select('author_id, current_grade, total_attempts, successful_attempts, promise_count, resolution_count, unique_contracts, last_activity_at')
-    .in('author_id', freelancerIds)
+    .rpc('get_freelancer_perf', { p_days: days })
   if (perfErr) throw perfErr
 
   // Client-side merge: aggregate per author_id + build byGrade array
@@ -2093,14 +2092,12 @@ export async function getFreelancerPerformance(): Promise<FreelancerPerformanceR
     aggMap.set(row.author_id, agg)
   }
 
-  // Step 4: ดึง promise attribution จาก v_promise_attribution_30d (Wave 2)
+  // Step 4: ดึง promise attribution ผ่าน get_promise_attribution(p_days) (Wave 2)
   // promises_kept_count = raw row count ที่ kept=true
-  // promises_kept_credit = split-equally credit sum (1/N per co-promise group)
-  // promises_total = denominator: promises ทั้งหมดที่มี next_follow_up_at ใน 30 วัน
+  // promises_kept_credit = split-equally credit sum (1/N per co-promise group, payment-anchored 5-day)
+  // promises_total = denominator: promises ทั้งหมดที่มี next_follow_up_at ใน p_days วัน
   const { data: attrData, error: attrErr } = await supabase
-    .from('v_promise_attribution_30d')
-    .select('author_id, promises_kept_count, promises_kept_credit, promises_total')
-    .in('author_id', freelancerIds)
+    .rpc('get_promise_attribution', { p_days: days })
   if (attrErr) throw attrErr
 
   // build attribution map: author_id → AttributionRow
