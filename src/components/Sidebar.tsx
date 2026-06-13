@@ -17,9 +17,11 @@ export default function Sidebar() {
   const { role, configured } = useAuth()
   const isAdmin = !configured || role === 'admin' // โหมด mock เปิดเต็ม
   const isFreelancer = configured && role === 'freelancer'
+  const isExecutive = configured && role === 'executive'
 
-  // ผู้ติดตามหนี้เห็นเฉพาะ freelancerOnly; admin/staff เห็นเฉพาะที่ไม่ใช่ freelancerOnly
+  // executive เห็นเฉพาะ executiveVisible; freelancer เห็นเฉพาะ freelancerOnly; admin/staff ตามปกติ
   const items = NAV.filter((item) => {
+    if (isExecutive) return item.executiveVisible === true
     if (isFreelancer) return item.freelancerOnly === true
     if (item.freelancerOnly) return false
     return !item.adminOnly || isAdmin

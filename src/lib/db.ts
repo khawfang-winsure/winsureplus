@@ -966,7 +966,7 @@ export async function markNotificationRead(id: string): Promise<void> {
 }
 
 // ---------- สิทธิ์ผู้ใช้ ----------
-export type Role = 'admin' | 'staff' | 'freelancer'
+export type Role = 'admin' | 'staff' | 'freelancer' | 'executive'
 
 export async function getMyProfile(): Promise<{ role: Role; fullName: string } | null> {
   if (!supabase) return { role: 'admin', fullName: 'ผู้ดูแลระบบ (ทดลอง)' } // โหมด mock เปิดสิทธิ์เต็มเพื่อทดลอง UI

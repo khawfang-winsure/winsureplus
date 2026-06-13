@@ -33,12 +33,13 @@ export interface NavItem {
   children?: NavChild[]
   adminOnly?: boolean // ซ่อนจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
   freelancerOnly?: boolean // เห็นเฉพาะผู้ติดตามหนี้ — ซ่อนจาก admin/staff
+  executiveVisible?: boolean // executive เห็นด้วยทั้งที่ adminOnly=true
 }
 
 export const NAV: NavItem[] = [
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
-  { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true },
+  { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },

@@ -90,6 +90,7 @@ export function UsersAdmin() {
 
   function roleBadge(u: AdminUserRow) {
     if (u.role === 'admin') return <Badge tone="amber">แอดมิน</Badge>
+    if (u.role === 'executive') return <Badge tone="green">ผู้บริหาร</Badge>
     if (u.role === 'freelancer') return <Badge tone="neutral">ผู้ติดตามหนี้</Badge>
     return <Badge tone="neutral">พนักงาน</Badge>
   }
@@ -304,6 +305,7 @@ function UserEditModal({
           <Select value={f.role} onChange={(e) => handleRoleChange(e.target.value as Role)}>
             <option value="staff">พนักงาน (staff)</option>
             <option value="admin">แอดมิน (admin)</option>
+            <option value="executive">ผู้บริหาร (executive)</option>
             <option value="freelancer">ผู้ติดตามหนี้ (freelancer)</option>
           </Select>
         </Field>

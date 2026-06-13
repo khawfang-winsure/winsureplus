@@ -36,6 +36,7 @@ function Gate() {
   const { ready, configured, session, role } = useAuth()
   const isAdmin = !configured || role === 'admin'
   const isFreelancer = configured && role === 'freelancer'
+  const isExecutive = configured && role === 'executive'
   const isAdminOrStaff = isAdmin || role === 'staff'
 
   if (!ready) {
@@ -52,34 +53,35 @@ function Gate() {
   return (
     <Routes>
       {/* หน้าปริ้น — นอก Layout (ไม่มี sidebar เพื่อปริ้นสะอาด) */}
-      <Route path="/letters/print" element={<LettersPrint />} />
-      <Route path="/letters/field" element={<FieldVisitPrint />} />
+      {/* executive ไม่เห็นข้อมูลลูกค้ารายคน → redirect กลับ /exec */}
+      <Route path="/letters/print" element={isExecutive ? <Navigate to="/exec" replace /> : <LettersPrint />} />
+      <Route path="/letters/field" element={isExecutive ? <Navigate to="/exec" replace /> : <FieldVisitPrint />} />
       <Route element={<Layout />}>
         {/* ผู้ติดตามหนี้ — เห็นเฉพาะ /queue */}
-        <Route path="/queue" element={<FreelancerWorkspace />} />
+        <Route path="/queue" element={isExecutive ? <Navigate to="/exec" replace /> : <FreelancerWorkspace />} />
 
-        {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue */}
-        <Route index element={isFreelancer ? <Navigate to="/queue" replace /> : <Dashboard />} />
-        <Route path="/exec" element={isAdmin ? <ExecDashboard /> : <Navigate to="/" replace />} />
-        <Route path="/add" element={isFreelancer ? <Navigate to="/queue" replace /> : <AddContract />} />
-        <Route path="/edit/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <AddContract />} />
-        <Route path="/waiting-email" element={isFreelancer ? <Navigate to="/queue" replace /> : <WaitingEmail />} />
-        <Route path="/waiting-summary" element={isFreelancer ? <Navigate to="/queue" replace /> : <WaitingSummary />} />
-        <Route path="/customers" element={isFreelancer ? <Navigate to="/queue" replace /> : <AllCustomers />} />
-        <Route path="/customer-overview" element={isFreelancer ? <Navigate to="/queue" replace /> : <CustomerOverview />} />
-        <Route path="/contract/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <ContractDetail />} />
-        <Route path="/due" element={isFreelancer ? <Navigate to="/queue" replace /> : <DueToday />} />
-        <Route path="/overdue/:bucket" element={isFreelancer ? <Navigate to="/queue" replace /> : <Overdue />} />
-        <Route path="/letters" element={isFreelancer ? <Navigate to="/queue" replace /> : <Letters />} />
-        <Route path="/returns" element={isFreelancer ? <Navigate to="/queue" replace /> : <Returns />} />
-        <Route path="/extended" element={isFreelancer ? <Navigate to="/queue" replace /> : <ExtendedContracts />} />
-        <Route path="/shop-report" element={isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
-        <Route path="/shop/:id" element={isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />
-        <Route path="/staff-performance" element={isAdminOrStaff ? <StaffPerformance /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
-        <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to="/" replace />} />
-        <Route path="/settings" element={isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
-        <Route path="/settings/:cat" element={isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
-        <Route path="*" element={<Navigate to={isFreelancer ? '/queue' : '/add'} replace />} />
+        {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue; executive ไป /exec */}
+        <Route index element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Dashboard />} />
+        <Route path="/exec" element={(isAdmin || isExecutive) ? <ExecDashboard /> : <Navigate to="/" replace />} />
+        <Route path="/add" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <AddContract />} />
+        <Route path="/edit/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <AddContract />} />
+        <Route path="/waiting-email" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingEmail />} />
+        <Route path="/waiting-summary" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingSummary />} />
+        <Route path="/customers" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <AllCustomers />} />
+        <Route path="/customer-overview" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <CustomerOverview />} />
+        <Route path="/contract/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ContractDetail />} />
+        <Route path="/due" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <DueToday />} />
+        <Route path="/overdue/:bucket" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Overdue />} />
+        <Route path="/letters" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Letters />} />
+        <Route path="/returns" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Returns />} />
+        <Route path="/extended" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ExtendedContracts />} />
+        <Route path="/shop-report" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
+        <Route path="/shop/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />
+        <Route path="/staff-performance" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <StaffPerformance /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
+        <Route path="/commission" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <Commission /> : <Navigate to="/" replace />} />
+        <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
+        <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
+        <Route path="*" element={<Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/add'} replace />} />
       </Route>
     </Routes>
   )

@@ -69,7 +69,7 @@ export default {
       if (action === "create") {
         const { email, password, fullName, role } = body;
         if (!email || !password || !fullName) return json({ error: "email/password/fullName ครบทุกช่อง" }, 400);
-        if (role !== "admin" && role !== "staff" && role !== "freelancer") return json({ error: "role ต้องเป็น admin, staff หรือ freelancer" }, 400);
+        if (role !== "admin" && role !== "staff" && role !== "freelancer" && role !== "executive") return json({ error: "role ต้องเป็น admin, staff, freelancer หรือ executive" }, 400);
         const { data: created, error: createErr } = await adminClient.auth.admin.createUser({
           email, password, email_confirm: true, user_metadata: { full_name: fullName },
         });
@@ -85,7 +85,7 @@ export default {
         if (!id) return json({ error: "id required" }, 400);
         const patch: any = {};
         if (typeof fullName === "string") patch.full_name = fullName;
-        if (role === "admin" || role === "staff" || role === "freelancer") patch.role = role;
+        if (role === "admin" || role === "staff" || role === "freelancer" || role === "executive") patch.role = role;
         if (Object.keys(patch).length) {
           const { error } = await adminClient.from("profiles").update(patch).eq("id", id);
           if (error) throw error;
