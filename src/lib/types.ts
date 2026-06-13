@@ -91,6 +91,15 @@ export interface DeviceReturnRow {
   repairFee: number
   checkedAt: string | null
   createdAt: string
+  // --- Device Pipeline (0027) ---
+  trackingNumber?: string | null
+  deviceStatus?: 'pending_check' | 'checked' | 'pending_sale' | 'priced' | 'transferred' | 'shipped' | null
+  salePrice?: number | null
+  pricedAt?: string | null
+  transferredAt?: string | null
+  shippedAt?: string | null
+  deviceStatusUpdatedAt?: string | null
+  deviceStatusBy?: string | null
 }
 
 export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'

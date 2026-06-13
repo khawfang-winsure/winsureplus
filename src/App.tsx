@@ -23,6 +23,7 @@ import WaitingSummary from './pages/WaitingSummary'
 import Login from './pages/Login'
 import FreelancerWorkspace from './pages/FreelancerWorkspace'
 import StaffPerformance from './pages/StaffPerformance'
+import DevicePipeline from './pages/DevicePipeline'
 
 export default function App() {
   return (
@@ -74,6 +75,7 @@ function Gate() {
         <Route path="/overdue/:bucket" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Overdue />} />
         <Route path="/letters" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Letters />} />
         <Route path="/returns" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Returns />} />
+        <Route path="/device-pipeline" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <DevicePipeline />} />
         <Route path="/extended" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ExtendedContracts />} />
         <Route path="/shop-report" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
         <Route path="/shop/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />

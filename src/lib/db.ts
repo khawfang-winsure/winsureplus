@@ -23,6 +23,7 @@ import {
 } from './commission'
 import { DEFAULT_RATE_SETS, type RateSet } from './rates'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
+import type { DeviceStatus } from './returnWorkflow'
 
 export type OptionKind =
   | 'phone_model'
@@ -903,14 +904,27 @@ interface ReturnRow {
   checked_at: string | null
   created_at: string
   contracts: { contract_no: string; customer_name: string } | null
+  // Device Pipeline columns (0027)
+  tracking_number: string | null
+  device_status: DeviceStatus | null
+  sale_price: number | null
+  priced_at: string | null
+  transferred_at: string | null
+  shipped_at: string | null
+  device_status_updated_at: string | null
+  device_status_by: string | null
 }
 
-export async function getReturns(): Promise<DeviceReturnRow[]> {
+export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' }): Promise<DeviceReturnRow[]> {
   if (!supabase) return []
-  const { data, error } = await supabase
+  let query = supabase
     .from('device_returns')
     .select('*, contracts(contract_no, customer_name)')
     .order('created_at', { ascending: false })
+  if (filter?.deviceStatus && filter.deviceStatus !== 'all') {
+    query = query.eq('device_status', filter.deviceStatus)
+  }
+  const { data, error } = await query
   if (error) throw error
   return ((data ?? []) as ReturnRow[]).map((r) => ({
     id: r.id,
@@ -923,7 +937,55 @@ export async function getReturns(): Promise<DeviceReturnRow[]> {
     repairFee: Number(r.repair_fee),
     checkedAt: r.checked_at,
     createdAt: r.created_at,
+    // Device Pipeline fields (0027)
+    trackingNumber: r.tracking_number,
+    deviceStatus: r.device_status,
+    salePrice: r.sale_price == null ? null : Number(r.sale_price),
+    pricedAt: r.priced_at,
+    transferredAt: r.transferred_at,
+    shippedAt: r.shipped_at,
+    deviceStatusUpdatedAt: r.device_status_updated_at,
+    deviceStatusBy: r.device_status_by,
   }))
+}
+
+/** อัปเดตสถานะ Device Pipeline (เปลี่ยนสถานะ + timestamp + tracking + ราคา)
+ *  @param updatedBy ชื่อผู้ดำเนินการ (useAuth().name) — optional เพื่อ backward compat
+ */
+export async function updateReturnWorkflow(
+  returnId: string,
+  patch: {
+    deviceStatus?: DeviceStatus
+    trackingNumber?: string
+    salePrice?: number
+    updatedBy?: string
+  },
+): Promise<void> {
+  if (!supabase) return
+  const now = new Date().toISOString()
+  const update: Record<string, unknown> = {}
+
+  if (patch.trackingNumber !== undefined) {
+    update.tracking_number = patch.trackingNumber
+  }
+  if (patch.salePrice !== undefined) {
+    update.sale_price = patch.salePrice
+  }
+  if (patch.deviceStatus !== undefined) {
+    update.device_status = patch.deviceStatus
+    update.device_status_updated_at = now
+    update.device_status_by = patch.updatedBy ?? null
+    // ประทับเวลาตามสถานะที่เข้าถึงครั้งแรก
+    if (patch.deviceStatus === 'priced') update.priced_at = now
+    if (patch.deviceStatus === 'transferred') update.transferred_at = now
+    if (patch.deviceStatus === 'shipped') update.shipped_at = now
+  }
+
+  const { error } = await supabase
+    .from('device_returns')
+    .update(update)
+    .eq('id', returnId)
+  if (error) throw error
 }
 
 // ---------- แจ้งเตือน ----------
