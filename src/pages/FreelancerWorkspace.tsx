@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Search } from 'lucide-react'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht } from '../lib/format'
 import {
@@ -78,6 +79,11 @@ const TIER_DEFAULT_OPEN: Record<PriorityTier, boolean> = {
 }
 
 const TIER_ORDER: PriorityTier[] = ['HOT', 'WARM', 'COLD', 'ESCALATE']
+
+// strip dashes/spaces จากเบอร์โทรเพื่อเทียบแบบ normalize
+function stripPhone(p: string): string {
+  return p.replace(/[\s-]/g, '')
+}
 
 // ===== Banner นอกเวลาทวงถาม =====
 function OutsideHoursBanner() {
@@ -289,6 +295,7 @@ export default function FreelancerWorkspace() {
   const [rows, setRows] = useState<FreelancerQueueRow[]>([])
   const [loading, setLoading] = useState(true)
   const [shopFilter, setShopFilter] = useState<string>('')
+  const [searchTerm, setSearchTerm] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
   const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
   const [activeTab, setActiveTab] = useState<'todo' | 'done'>('todo')
@@ -376,11 +383,23 @@ export default function FreelancerWorkspace() {
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [rows])
 
-  // กรองตามร้าน
-  const filtered = useMemo(
-    () => (shopFilter ? rows.filter((r) => r.shopId === shopFilter) : rows),
-    [rows, shopFilter],
-  )
+  // กรองตามร้าน + search term (universal — ใช้ก่อน split todayRows/pendingRows)
+  const filtered = useMemo(() => {
+    let result = shopFilter ? rows.filter((r) => r.shopId === shopFilter) : rows
+    const q = searchTerm.trim().toLowerCase()
+    if (q) {
+      const qPhone = stripPhone(q)
+      result = result.filter(
+        (r) =>
+          r.customerName?.toLowerCase().includes(q) ||
+          r.contractNo?.toLowerCase().includes(q) ||
+          stripPhone(r.phone ?? '').includes(qPhone) ||
+          stripPhone(r.phoneAlt1 ?? '').includes(qPhone) ||
+          stripPhone(r.phoneAlt2 ?? '').includes(qPhone),
+      )
+    }
+    return result
+  }, [rows, shopFilter, searchTerm])
 
   // แบ่ง 2 กลุ่ม: contacted today (Tab 2) vs ยังไม่ (Tab 1)
   const todayRows = useMemo(() => filtered.filter((r) => r.contactedToday), [filtered])
@@ -464,6 +483,20 @@ export default function FreelancerWorkspace() {
       {/* banner นอกเวลา */}
       {outsideHours && <OutsideHoursBanner />}
 
+      {/* search box */}
+      <div className="mb-4 max-w-sm">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-soft" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="ค้นหา ชื่อลูกค้า / เลขสัญญา / เบอร์โทร"
+            className="w-full rounded-xl border border-peach bg-white py-2 pl-9 pr-3 text-sm text-ink outline-none transition focus:border-salmon-deep"
+          />
+        </div>
+      </div>
+
       {/* grade filter chips */}
       {assignedGrades.length > 0 && (
         <Card className="mb-4">
@@ -543,10 +576,17 @@ export default function FreelancerWorkspace() {
           {activeTab === 'todo' && (
             <>
               {pendingRows.length === 0 ? (
-                <EmptyState
-                  title="ยังไม่มีลูกค้าที่ต้องตามในเกรดที่ได้รับมอบหมาย"
-                  hint="เมื่อมีลูกค้าค้างชำระในเกรดของคุณ จะปรากฏที่นี่"
-                />
+                searchTerm.trim() ? (
+                  <EmptyState
+                    title="ไม่พบลูกค้าที่ค้นหา"
+                    hint="ลองเปลี่ยนคำค้นหา หรือล้างช่องค้นหาเพื่อดูทั้งหมด"
+                  />
+                ) : (
+                  <EmptyState
+                    title="ยังไม่มีลูกค้าที่ต้องตามในเกรดที่ได้รับมอบหมาย"
+                    hint="เมื่อมีลูกค้าค้างชำระในเกรดของคุณ จะปรากฏที่นี่"
+                  />
+                )
               ) : (
                 <div className="flex flex-col gap-3">
                   {TIER_ORDER.map((tier) => {
@@ -605,10 +645,17 @@ export default function FreelancerWorkspace() {
           {activeTab === 'done' && (
             <>
               {todayRows.length === 0 ? (
-                <EmptyState
-                  title="ยังไม่มีรายการที่ติดต่อวันนี้"
-                  hint="เมื่อบันทึกติดตามสำเร็จแล้ว รายการจะย้ายมาที่นี่"
-                />
+                searchTerm.trim() ? (
+                  <EmptyState
+                    title="ไม่พบลูกค้าที่ค้นหา"
+                    hint="ลองเปลี่ยนคำค้นหา หรือล้างช่องค้นหาเพื่อดูทั้งหมด"
+                  />
+                ) : (
+                  <EmptyState
+                    title="ยังไม่มีรายการที่ติดต่อวันนี้"
+                    hint="เมื่อบันทึกติดตามสำเร็จแล้ว รายการจะย้ายมาที่นี่"
+                  />
+                )
               ) : (
                 <div className="overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm">
                   <table className="w-full text-sm">
