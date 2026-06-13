@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import { FileCheck, Mail, Pencil, Search, X } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { FileCheck, Mail, Pencil, Search, User, X } from 'lucide-react'
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import { getAllInstallments, getAllStatuses, getContracts, getShops } from '../lib/db'
@@ -269,7 +269,14 @@ export default function AllCustomers() {
                             <span className="mr-3">บัตร: {maskNationalId(c.nationalId)}</span>
                             <span className="mr-3">IMEI: {c.imei || '—'}</span>
                             <span className="mr-3">SN: {c.sn || '—'}</span>
-                            <span>INV: {c.invNo || '—'}</span>
+                            <span className="mr-3">INV: {c.invNo || '—'}</span>
+                            <Link
+                              to={`/customer/${c.id}`}
+                              className="inline-flex items-center gap-1 text-salmon-deep hover:underline"
+                            >
+                              <User size={11} />
+                              ดูทุกสัญญา
+                            </Link>
                           </td>
                         </tr>
                       </tbody>

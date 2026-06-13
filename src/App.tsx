@@ -24,6 +24,7 @@ import Login from './pages/Login'
 import FreelancerWorkspace from './pages/FreelancerWorkspace'
 import StaffPerformance from './pages/StaffPerformance'
 import DevicePipeline from './pages/DevicePipeline'
+import CustomerDetail from './pages/CustomerDetail'
 
 export default function App() {
   return (
@@ -71,6 +72,7 @@ function Gate() {
         <Route path="/customers" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <AllCustomers />} />
         <Route path="/customer-overview" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <CustomerOverview />} />
         <Route path="/contract/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ContractDetail />} />
+        <Route path="/customer/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <CustomerDetail />} />
         <Route path="/due" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <DueToday />} />
         <Route path="/overdue/:bucket" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Overdue />} />
         <Route path="/letters" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Letters />} />

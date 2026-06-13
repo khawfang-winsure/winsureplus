@@ -4,6 +4,7 @@
 import { supabase } from './supabase'
 import type {
   Contract,
+  ContractStatus,
   ContractStatusRow,
   DeviceReturnRow,
   Installment,
@@ -1918,6 +1919,240 @@ export async function getEscalateContracts(): Promise<EscalateContract[]> {
     shopName: r.shop_name ?? '-',
     totalAttempts: statsMap.get(r.contract_id) ?? 0,
   }))
+}
+
+// ---------- Customer Aggregate (หน้า /customer/:contractId) ----------
+
+/**
+ * ข้อมูลครบของลูกค้า 1 คน รวมทุกสัญญาที่เขามี
+ * ระบุตัวลูกค้าด้วย contractId (reference) → ดึง national_id → หาสัญญาทั้งหมด
+ */
+export interface CustomerContractItem {
+  contractId: string
+  contractNo: string
+  shopId: string | null
+  shopName: string | null
+  deviceModel: string                   // "iPhone 15 Pro 256GB"
+  status: ContractStatus | string       // ค่าจาก DB: active | closed | returned | returned_closed | online
+  monthlyPayment: number
+  termMonths: number
+  remainingInstallments: number
+  paidInstallments: number              // termMonths - remainingInstallments
+  outstanding: number                   // sum(amount - paid_amount) งวดที่ยังไม่ปิด
+  penaltyDue: number
+  daysLate: number
+  bucket: string
+  createdAt: string
+}
+
+export interface CustomerAggregate {
+  // ข้อมูลตัวตนลูกค้า (snapshot จาก contract ตัวอ้างอิง)
+  customerName: string
+  nationalId: string | null
+  phone: string | null
+  phoneAlt1: string | null
+  phoneAlt2: string | null
+
+  // รายชื่อสัญญาทุกอันของลูกค้านี้
+  contracts: CustomerContractItem[]
+
+  // aggregate
+  totalContracts: number
+  totalOutstanding: number    // sum outstanding เฉพาะ status='active'
+  totalPenalty: number        // sum penaltyDue เฉพาะ status='active'
+  activeContracts: number     // count(status='active')
+  closedContracts: number     // count(status ≠ 'active')
+}
+
+// row types สำหรับ query ภายใน
+interface CustomerContractBaseRow {
+  id: string
+  contract_no: string
+  shop_id: string | null
+  model: string | null
+  storage: string | null
+  status: string
+  monthly_payment: number | null
+  term_months: number | null
+  created_at: string
+}
+
+interface ShopsBasicRow {
+  id: string
+  name: string
+}
+
+interface AggStatusRow {
+  contract_id: string
+  remaining_installments: number
+  penalty_due: number
+  days_late: number
+  bucket: string
+}
+
+interface AggInstallmentRow {
+  contract_id: string
+  amount: number
+  paid_amount: number | null
+}
+
+/**
+ * ดึงข้อมูลครบของลูกค้า 1 คน โดยใช้ contractId เป็น reference
+ * Logic: หา national_id จาก reference contract → query สัญญาทั้งหมดของลูกค้า
+ * Fallback: ถ้า national_id ว่าง → ใช้ customer_name + phone แทน
+ * @returns null ถ้าไม่พบ contract ที่อ้างอิง
+ */
+export async function getCustomerAggregate(referenceContractId: string): Promise<CustomerAggregate | null> {
+  if (!supabase) return null
+
+  // Step 1: ดึงข้อมูลตัวตนลูกค้าจาก reference contract
+  const { data: refData, error: refErr } = await supabase
+    .from('contracts')
+    .select('customer_name, national_id, phone, phone_alt1, phone_alt2')
+    .eq('id', referenceContractId)
+    .maybeSingle()
+  if (refErr) throw refErr
+  if (!refData) return null
+
+  const customerName: string = refData.customer_name as string
+  const nationalId: string | null = (refData.national_id as string | null) || null  // coerce '' → null
+  const phone: string | null = (refData.phone as string | null) || null
+  const phoneAlt1: string | null = (refData.phone_alt1 as string | null) || null
+  const phoneAlt2: string | null = (refData.phone_alt2 as string | null) || null
+
+  // Step 2: ดึง contract ทุกอันของลูกค้า (รวม closed/returned ด้วย)
+  // ขับด้วย contracts ไม่ใช่ v_contract_status เพราะ view อาจไม่มีแถวสำหรับ closed contracts
+  let contractQuery = supabase
+    .from('contracts')
+    .select('id, contract_no, shop_id, model, storage, status, monthly_payment, term_months, created_at')
+
+  if (nationalId) {
+    contractQuery = contractQuery.eq('national_id', nationalId)
+  } else if (phone) {
+    contractQuery = contractQuery.eq('customer_name', customerName).eq('phone', phone)
+  } else {
+    contractQuery = contractQuery.eq('customer_name', customerName)
+  }
+
+  contractQuery = contractQuery.order('created_at', { ascending: false })
+  const { data: contractData, error: contractErr } = await contractQuery
+  if (contractErr) throw contractErr
+
+  const baseContracts = (contractData ?? []) as CustomerContractBaseRow[]
+  if (baseContracts.length === 0) {
+    // fallback: ถ้า national_id หาไม่เจอ (edge case — ส่งแค่ reference contract เดียว)
+    return {
+      customerName,
+      nationalId,
+      phone,
+      phoneAlt1,
+      phoneAlt2,
+      contracts: [],
+      totalContracts: 0,
+      totalOutstanding: 0,
+      totalPenalty: 0,
+      activeContracts: 0,
+      closedContracts: 0,
+    }
+  }
+
+  const ids = baseContracts.map((c) => c.id)
+
+  // Step 3: ดึง status aggregate จาก v_contract_status (left-join semantics: missing row → defaults)
+  const { data: statusData, error: statusErr } = await supabase
+    .from('v_contract_status')
+    .select('contract_id, remaining_installments, penalty_due, days_late, bucket')
+    .in('contract_id', ids)
+  if (statusErr) throw statusErr
+
+  const statusMap = new Map<string, AggStatusRow>()
+  for (const r of (statusData ?? []) as AggStatusRow[]) {
+    statusMap.set(r.contract_id, r)
+  }
+
+  // Step 4: ดึง installments ที่ยังไม่ปิด (paid_at IS NULL) → คำนวณ outstanding per contract
+  const { data: instData, error: instErr } = await supabase
+    .from('installments')
+    .select('contract_id, amount, paid_amount')
+    .in('contract_id', ids)
+    .is('paid_at', null)
+  if (instErr) throw instErr
+
+  const outstandingMap = new Map<string, number>()
+  for (const inst of (instData ?? []) as AggInstallmentRow[]) {
+    const prev = outstandingMap.get(inst.contract_id) ?? 0
+    const rowDue = Number(inst.amount) - Number(inst.paid_amount ?? 0)
+    outstandingMap.set(inst.contract_id, prev + Math.max(0, rowDue))
+  }
+
+  // Step 5: ดึง shop names จาก shops_basic (id, name เท่านั้น — ไม่มี RLS กัน freelancer)
+  const shopIds = [...new Set(baseContracts.map((c) => c.shop_id).filter((id): id is string => id != null))]
+  const shopNameMap = new Map<string, string>()
+  if (shopIds.length > 0) {
+    const { data: shopData, error: shopErr } = await supabase
+      .from('shops_basic')
+      .select('id, name')
+      .in('id', shopIds)
+    if (shopErr) throw shopErr
+    for (const s of (shopData ?? []) as ShopsBasicRow[]) {
+      shopNameMap.set(s.id, s.name)
+    }
+  }
+
+  // Step 6: รวมเป็น CustomerContractItem[]
+  const contracts: CustomerContractItem[] = baseContracts.map((c): CustomerContractItem => {
+    const st = statusMap.get(c.id)
+    const termMonths = Number(c.term_months ?? 0)
+    const remainingInstallments = st?.remaining_installments ?? 0
+    const paidInstallments = Math.max(0, termMonths - remainingInstallments)
+    const modelParts = [c.model, c.storage].filter(Boolean)
+    return {
+      contractId: c.id,
+      contractNo: c.contract_no,
+      shopId: c.shop_id ?? null,
+      shopName: c.shop_id ? (shopNameMap.get(c.shop_id) ?? null) : null,
+      deviceModel: modelParts.join(' '),
+      status: c.status,
+      monthlyPayment: Number(c.monthly_payment ?? 0),
+      termMonths,
+      remainingInstallments,
+      paidInstallments,
+      outstanding: outstandingMap.get(c.id) ?? 0,
+      penaltyDue: Number(st?.penalty_due ?? 0),
+      daysLate: st?.days_late ?? 0,
+      bucket: st?.bucket ?? 'normal',
+      createdAt: c.created_at,
+    }
+  })
+
+  // Step 7: Aggregate — เฉพาะ active contracts สำหรับ totalOutstanding + totalPenalty
+  let totalOutstanding = 0
+  let totalPenalty = 0
+  let activeContracts = 0
+  let closedContracts = 0
+  for (const c of contracts) {
+    if (c.status === 'active') {
+      totalOutstanding += c.outstanding
+      totalPenalty += c.penaltyDue
+      activeContracts++
+    } else {
+      closedContracts++
+    }
+  }
+
+  return {
+    customerName,
+    nationalId,
+    phone,
+    phoneAlt1,
+    phoneAlt2,
+    contracts,
+    totalContracts: contracts.length,
+    totalOutstanding,
+    totalPenalty,
+    activeContracts,
+    closedContracts,
+  }
 }
 
 // ---------- Freelancer Performance Dashboard (Wave 1B) ----------
