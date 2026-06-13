@@ -449,7 +449,7 @@ export default function FreelancerWorkspace() {
     <div>
       {/* Header + refresh */}
       <div className="mb-5 flex items-start justify-between gap-3">
-        <PageTitle sub="รายการลูกค้าที่ต้องติดตามตามเกรดที่ได้รับมอบหมาย">
+        <PageTitle sub="รายการลูกค้าที่ต้องติดตามตามเกรดที่ได้รับมอบหมาย" count={loading ? undefined : { shown: filtered.length, total: rows.length }}>
           คิวติดตามหนี้ — ผู้ติดตามหนี้
         </PageTitle>
         <button

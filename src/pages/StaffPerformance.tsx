@@ -247,8 +247,8 @@ export default function StaffPerformance() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <PageTitle sub="ข้อมูล 30 วันล่าสุด">
-        Performance ผู้ติดตามหนี้
+      <PageTitle sub="ข้อมูล 30 วันล่าสุด" count={{ shown: rows.length }}>
+        สรุปภาพรวมการติดตามหนี้
       </PageTitle>
 
       {/* Error */}

@@ -72,7 +72,10 @@ export default function ShopReport() {
 
   return (
     <div>
-      <PageTitle sub="วัดผลแต่ละร้าน — ปริมาณงาน + คุณภาพลูกค้า + ความเคลื่อนไหว (ลูกค้าเสี่ยง = ล่าช้า 31 วันขึ้นไป)">
+      <PageTitle
+        sub="วัดผลแต่ละร้าน — ปริมาณงาน + คุณภาพลูกค้า + ความเคลื่อนไหว (ลูกค้าเสี่ยง = ล่าช้า 31 วันขึ้นไป)"
+        count={loading ? undefined : { shown: c.total, total: rows.length }}
+      >
         รายงานร้านค้า
       </PageTitle>
 

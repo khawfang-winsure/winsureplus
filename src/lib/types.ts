@@ -177,9 +177,11 @@ export interface Contract {
   commissionRateLocked?: number | null // เรตค่าคอมที่ล็อกไว้ (null = ยังไม่ปิดยอด)
   commissionLockedMonth?: string | null // เดือนที่ปิดยอด เช่น '2026-06' (null = ยังไม่ปิด)
   notes?: string
-  // --- flag กันส่งซ้ำ ---
+  // --- flag กันส่งซ้ำ + audit ว่าใครส่ง ---
   summarySentAt?: string | null
+  summarySentBy?: string | null // ชื่อผู้ส่ง (useAuth().name = full_name) snapshot ณ เวลาที่ส่ง
   emailSentAt?: string | null
+  emailSentBy?: string | null   // ชื่อผู้ส่ง (useAuth().name = full_name) snapshot ณ เวลาที่ส่ง
   // --- เกรดปัจจุบัน (คำนวณจาก days_late, เก็บใน DB — เพิ่มใน 0018) ---
   currentGrade?: string | null // 'A'|'B'|'C'|'D'|'E' หรือ null (ปกติ/ไม่ active)
   // --- flag สถานะพิเศษ (Wave 3) ---

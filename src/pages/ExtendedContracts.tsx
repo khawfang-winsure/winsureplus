@@ -117,7 +117,7 @@ export default function ExtendedContracts() {
 
   return (
     <div>
-      <PageTitle>ลูกค้าขยายระยะเวลา</PageTitle>
+      <PageTitle count={{ shown: filtered.length, total: rows.length }}>ลูกค้าขยายระยะเวลา</PageTitle>
 
       {/* การ์ดสรุป */}
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert } from 'lucide-react'
+import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
@@ -165,6 +165,24 @@ export default function ContractDetail() {
           <p className="text-sm text-ink-soft">
             สัญญา {contract.contractNo} · {contract.model} {contract.storage} · {conditionLabel(contract.condition)}
           </p>
+          {(contract.emailSentAt || contract.summarySentAt) && (
+            <div className="mt-1 flex flex-wrap items-center gap-3">
+              {contract.emailSentAt && (
+                <span className="flex items-center gap-1 text-xs text-ink-soft">
+                  <Mail className="h-3 w-3" />
+                  ส่งอีเมลแล้ว {thaiDate(contract.emailSentAt.slice(0, 10))}
+                  {contract.emailSentBy ? ` โดย ${contract.emailSentBy}` : ''}
+                </span>
+              )}
+              {contract.summarySentAt && (
+                <span className="flex items-center gap-1 text-xs text-ink-soft">
+                  <FileCheck className="h-3 w-3" />
+                  สรุปยอดแล้ว {thaiDate(contract.summarySentAt.slice(0, 10))}
+                  {contract.summarySentBy ? ` โดย ${contract.summarySentBy}` : ''}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Badge tone={contract.status === 'active' ? 'green' : 'neutral'}>{statusLabel(contract.status)}</Badge>

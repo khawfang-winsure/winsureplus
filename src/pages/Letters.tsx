@@ -298,7 +298,7 @@ export default function Letters() {
 
   return (
     <div className="space-y-4 pb-20">
-      <PageTitle sub="ส่งจดหมายตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)">ส่งจดหมาย</PageTitle>
+      <PageTitle sub="ส่งจดหมายตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)" count={loading ? undefined : { shown: visibleRows.length, total: rows.length }}>ส่งจดหมาย</PageTitle>
 
       {/* แท็บสเตจ + ตัวนับ */}
       <div className="flex flex-wrap gap-2">

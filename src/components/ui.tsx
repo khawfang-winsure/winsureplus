@@ -8,10 +8,30 @@ import type {
 
 // ===== ชิ้นส่วน UI ที่ใช้ซ้ำทั้งเว็บ =====
 
-export function PageTitle({ children, sub }: { children: ReactNode; sub?: string }) {
+export function PageTitle({
+  children,
+  sub,
+  count,
+}: {
+  children: ReactNode
+  sub?: string
+  count?: { shown: number; total?: number }
+}) {
+  const countText =
+    count == null
+      ? null
+      : count.total == null || count.total === count.shown
+        ? `(${count.shown} รายการ)`
+        : `(แสดง ${count.shown} จาก ${count.total} รายการ)`
+
   return (
     <div className="mb-5">
-      <h2 className="text-xl font-bold text-ink">{children}</h2>
+      <h2 className="text-xl font-bold text-ink">
+        {children}
+        {countText && (
+          <span className="ml-2 text-sm font-normal text-ink-soft">{countText}</span>
+        )}
+      </h2>
       {sub && <p className="mt-1 text-sm text-ink-soft">{sub}</p>}
     </div>
   )

@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Pencil, Search, X } from 'lucide-react'
+import { FileCheck, Mail, Pencil, Search, X } from 'lucide-react'
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import { getAllInstallments, getAllStatuses, getContracts, getShops } from '../lib/db'
-import type { ContractStatus, OverdueBucket } from '../lib/types'
+import type { Contract, ContractStatus, ContractStatusRow, OverdueBucket } from '../lib/types'
 import { useAsync } from '../lib/useAsync'
 
 // ป้ายกลุ่มความล่าช้า (ใช้ในดรอปดาวน์ + badge)
@@ -19,6 +19,22 @@ const BUCKET_LABEL: Record<OverdueBucket, string> = {
 }
 const STATUS_OPTS: ContractStatus[] = ['active', 'closed', 'returned', 'returned_closed', 'online']
 const BUCKET_OPTS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90', '91-120', '120+']
+
+// ป้ายสถานะสุขภาพสัญญา — ใช้ bucket จาก v_contract_status
+function StatusPills({ contract, st }: { contract: Contract; st: ContractStatusRow | undefined }) {
+  if (contract.status !== 'active') {
+    return <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
+  }
+  const bucket = st?.bucket ?? 'normal'
+  const daysLate = st?.daysLate ?? 0
+  if (bucket === '91-120' || bucket === '120+') {
+    return <Badge tone="red">หนี้เสีย</Badge>
+  }
+  if (bucket !== 'normal') {
+    return <Badge tone="amber">ล่าช้า {daysLate} วัน</Badge>
+  }
+  return <Badge tone="green">ผ่อนปกติ</Badge>
+}
 
 export default function AllCustomers() {
   const { data, loading } = useAsync(
@@ -116,7 +132,7 @@ export default function AllCustomers() {
 
   return (
     <div>
-      <PageTitle sub={loading ? '' : `แสดง ${rows.length} จาก ${data.contracts.length} รายการ`}>
+      <PageTitle count={loading ? undefined : { shown: rows.length, total: data.contracts.length }}>
         ลูกค้าทั้งหมด
       </PageTitle>
 
@@ -188,7 +204,6 @@ export default function AllCustomers() {
                 </thead>
                 {rows.map((c, i) => {
                     const st = statusBy.get(c.id)
-                    const late = (st?.daysLate ?? 0) > 0
                     const pr = progressBy.get(c.id) ?? { paid: 0, total: c.termMonths || 0 }
                     const pct = pr.total > 0 ? Math.round((pr.paid / pr.total) * 100) : 0
                     const zebra = i % 2 ? 'bg-white' : 'bg-peach-light/20'
@@ -196,7 +211,27 @@ export default function AllCustomers() {
                       <tbody key={c.id} className="border-b border-peach/60">
                         <tr className={zebra}>
                           <td className="whitespace-nowrap px-3 pt-2.5 align-top">{thaiDate(c.transactionDate)}</td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top font-medium">{c.contractNo}</td>
+                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium">{c.contractNo}</span>
+                              {c.emailSentAt && (
+                                <span
+                                  className="shrink-0 text-ink-soft"
+                                  title={`ส่งอีเมลแล้วเมื่อ ${thaiDate(c.emailSentAt.slice(0, 10))} โดย ${c.emailSentBy ?? 'ไม่ทราบ'}`}
+                                >
+                                  <Mail className="h-3 w-3" />
+                                </span>
+                              )}
+                              {c.summarySentAt && (
+                                <span
+                                  className="shrink-0 text-ink-soft"
+                                  title={`สรุปยอดแล้วเมื่อ ${thaiDate(c.summarySentAt.slice(0, 10))} โดย ${c.summarySentBy ?? 'ไม่ทราบ'}`}
+                                >
+                                  <FileCheck className="h-3 w-3" />
+                                </span>
+                              )}
+                            </div>
+                          </td>
                           <td className="whitespace-nowrap px-3 pt-2.5 align-top">
                             <button
                               onClick={() => navigate(`/contract/${c.id}`)}
@@ -207,14 +242,7 @@ export default function AllCustomers() {
                           </td>
                           <td className="whitespace-nowrap px-3 pt-2.5 align-top">{shopName(c.shopId)}</td>
                           <td className="whitespace-nowrap px-3 pt-2.5 align-top">
-                            <div className="flex flex-col gap-1">
-                              <Badge tone={c.status === 'active' ? 'green' : 'neutral'}>{statusLabel(c.status)}</Badge>
-                              {late && (
-                                <Badge tone={(st?.daysLate ?? 0) >= 60 ? 'red' : 'amber'}>
-                                  ล่าช้า {st?.daysLate} วัน
-                                </Badge>
-                              )}
-                            </div>
+                            <StatusPills contract={c} st={st} />
                           </td>
                           <td className="whitespace-nowrap px-3 pt-2.5 align-top">{c.model} {c.storage}</td>
                           <td className="whitespace-nowrap px-3 pt-2.5 text-right align-top">{baht(c.monthlyPayment)}</td>

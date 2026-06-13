@@ -80,7 +80,9 @@ interface ContractRow {
   commission_locked_month: string | null
   notes: string | null
   summary_sent_at: string | null
+  summary_sent_by: string | null
   email_sent_at: string | null
+  email_sent_by: string | null
   current_grade: string | null
   dnc: boolean | null
   dnc_reason: string | null
@@ -135,7 +137,9 @@ function mapContract(r: ContractRow): Contract {
     commissionLockedMonth: r.commission_locked_month ?? null,
     notes: r.notes ?? undefined,
     summarySentAt: r.summary_sent_at,
+    summarySentBy: r.summary_sent_by,
     emailSentAt: r.email_sent_at,
+    emailSentBy: r.email_sent_by,
     currentGrade: r.current_grade ?? null,
     dnc: r.dnc ?? false,
     dncReason: r.dnc_reason ?? null,
@@ -446,22 +450,32 @@ export async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
   return (data?.id as string) ?? ''
 }
 
-/** ทำเครื่องหมายว่าสรุปยอดแล้ว (กันส่งซ้ำ) — บันทึกลง DB จริง */
-export async function markSummarySent(ids: string[]): Promise<void> {
+/** ทำเครื่องหมายว่าสรุปยอดแล้ว (กันส่งซ้ำ) — บันทึกลง DB จริง
+ *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
+ *                    น้องวิวส่ง name จาก useAuth() ในหน้า WaitingSummary */
+export async function markSummarySent(ids: string[], senderName?: string): Promise<void> {
   if (!supabase || ids.length === 0) return
   const { error } = await supabase
     .from('contracts')
-    .update({ summary_sent_at: new Date().toISOString() })
+    .update({
+      summary_sent_at: new Date().toISOString(),
+      summary_sent_by: senderName ?? null,
+    })
     .in('id', ids)
   if (error) throw error
 }
 
-/** ทำเครื่องหมายว่าส่งอีเมลแล้ว (กันส่งซ้ำ) */
-export async function markEmailSent(id: string): Promise<void> {
+/** ทำเครื่องหมายว่าส่งอีเมลแล้ว (กันส่งซ้ำ)
+ *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
+ *                    น้องวิวส่ง name จาก useAuth() ในหน้า WaitingEmail */
+export async function markEmailSent(id: string, senderName?: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase
     .from('contracts')
-    .update({ email_sent_at: new Date().toISOString() })
+    .update({
+      email_sent_at: new Date().toISOString(),
+      email_sent_by: senderName ?? null,
+    })
     .eq('id', id)
   if (error) throw error
 }

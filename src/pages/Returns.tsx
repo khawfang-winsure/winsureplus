@@ -29,7 +29,7 @@ export default function Returns() {
 
   return (
     <div>
-      <PageTitle sub="ลูกค้าที่คืนเครื่อง — แบ่ง 3 กรณีตามการชำระและการเช็คเครื่อง">ลูกค้าคืนเครื่อง</PageTitle>
+      <PageTitle sub="ลูกค้าที่คืนเครื่อง — แบ่ง 3 กรณีตามการชำระและการเช็คเครื่อง" count={loading ? undefined : { shown: rows.length }}>ลูกค้าคืนเครื่อง</PageTitle>
 
       <div className="mb-5 grid gap-3 md:grid-cols-3">
         {[
