@@ -1471,6 +1471,7 @@ export interface FollowUpEntry {
   contactMethod: FollowUpContactMethod
   followUpResult: FollowUpResult
   nextFollowUpAt: string | null
+  promisedAmount: number | null
   createdAt: string
 }
 
@@ -1483,6 +1484,7 @@ interface FollowUpRow {
   contact_method: FollowUpContactMethod
   follow_up_result: FollowUpResult
   next_follow_up_at: string | null
+  promised_amount: number | null
   created_at: string
 }
 
@@ -1496,6 +1498,7 @@ function mapFollowUp(r: FollowUpRow): FollowUpEntry {
     contactMethod: r.contact_method,
     followUpResult: r.follow_up_result,
     nextFollowUpAt: r.next_follow_up_at,
+    promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     createdAt: r.created_at,
   }
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert } from 'lucide-react'
+import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
@@ -9,6 +9,7 @@ import {
   getPaymentLog,
   getContractExtensions,
   getRateSets,
+  getFollowUps,
   recordPayment,
   adjustPayment,
   cancelPayment,
@@ -20,6 +21,9 @@ import {
   type ExtensionRecord,
   type ExtensionType,
   type ReturnInput,
+  type FollowUpEntry,
+  type FollowUpContactMethod,
+  type FollowUpResult,
 } from '../lib/db'
 import {
   activeRateSets,
@@ -79,6 +83,34 @@ const ACTION_TONE: Record<PaymentLogEntry['action'], 'green' | 'amber' | 'red'> 
   cancel: 'red',
 }
 
+// ===== ป้ายกำกับ FollowUp (ใช้เฉพาะในหน้านี้ — ไม่ import จากไฟล์อื่น) =====
+const FU_METHOD_LABEL: Record<FollowUpContactMethod, string> = {
+  phone: 'โทร',
+  line: 'Line',
+  sms: 'SMS',
+  visit: 'ไปพบ',
+  other: 'อื่นๆ',
+}
+const FU_RESULT_LABEL: Record<FollowUpResult, string> = {
+  contacted: 'ติดต่อสำเร็จ',
+  promised: 'สัญญาจะจ่าย',
+  paid: 'จ่ายแล้ว',
+  refused: 'ปฏิเสธ',
+  no_answer: 'ไม่รับสาย',
+  returned: 'คืนเครื่อง',
+  other: 'อื่นๆ',
+}
+type BadgeTone = 'green' | 'amber' | 'red' | 'neutral'
+const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
+  contacted: 'green',
+  promised: 'green',
+  paid: 'green',
+  refused: 'amber',
+  no_answer: 'neutral',
+  returned: 'red',
+  other: 'neutral',
+}
+
 export default function ContractDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -96,6 +128,8 @@ export default function ContractDetail() {
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Installment | null>(null)
   const [histTarget, setHistTarget] = useState<Installment | null>(null) // โมดัลประวัติของงวดหนึ่ง
+  const [followHistory, setFollowHistory] = useState<FollowUpEntry[]>([])
+  const [followHistoryLoading, setFollowHistoryLoading] = useState(true)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -118,6 +152,14 @@ export default function ContractDetail() {
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    if (!id) return
+    setFollowHistoryLoading(true)
+    getFollowUps(id)
+      .then(setFollowHistory)
+      .finally(() => setFollowHistoryLoading(false))
+  }, [id])
 
   if (loading) {
     return (
@@ -292,6 +334,11 @@ export default function ContractDetail() {
             )}
           </div>
         </Card>
+      )}
+
+      {/* ===== ประวัติการติดตาม (admin + staff เห็น) ===== */}
+      {(role === 'admin' || role === 'staff') && (
+        <FollowHistory entries={followHistory} loading={followHistoryLoading} />
       )}
 
       {/* ตารางงวดผ่อน */}
@@ -492,6 +539,78 @@ export default function ContractDetail() {
         />
       )}
     </div>
+  )
+}
+
+// ===== ประวัติการติดตามทั้งหมดของสัญญา =====
+const MAX_FOLLOW_DISPLAY = 50
+
+function FollowHistory({
+  entries,
+  loading,
+}: {
+  entries: FollowUpEntry[]
+  loading: boolean
+}) {
+  const total = entries.length
+  const displayed = entries.slice(0, MAX_FOLLOW_DISPLAY)
+
+  return (
+    <Card className="mb-4 py-3">
+      <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink">
+        <Phone size={15} /> ประวัติการติดตาม
+        {!loading && (
+          <span className="ml-1 font-normal text-ink-soft">({total} รายการ)</span>
+        )}
+      </p>
+
+      {loading ? (
+        <p className="text-sm text-ink-soft">กำลังโหลด...</p>
+      ) : entries.length === 0 ? (
+        <p className="text-sm text-ink-soft">ยังไม่มีประวัติการติดตาม</p>
+      ) : (
+        <>
+          {total > MAX_FOLLOW_DISPLAY && (
+            <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+              แสดง {MAX_FOLLOW_DISPLAY} รายการล่าสุด จากทั้งหมด {total} รายการ
+            </p>
+          )}
+          <ol className="flex flex-col divide-y divide-peach/60">
+            {displayed.map((e) => (
+              <li key={e.id} className="py-2.5 text-sm first:pt-0 last:pb-0">
+                {/* บรรทัด 1: วันเวลา + ชื่อผู้ติดตาม + วิธีติดต่อ + ผลการติดต่อ */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="whitespace-nowrap text-xs text-ink-soft">
+                    {thaiDateTime(e.createdAt)}
+                  </span>
+                  <span className="font-semibold text-ink">{e.authorName}</span>
+                  <span className="text-xs text-ink-soft">{FU_METHOD_LABEL[e.contactMethod]}</span>
+                  <Badge tone={FU_RESULT_TONE[e.followUpResult]}>
+                    {FU_RESULT_LABEL[e.followUpResult]}
+                  </Badge>
+                </div>
+                {/* บรรทัด 2: บันทึก */}
+                {e.noteText && (
+                  <p className="mt-0.5 text-ink-soft">{e.noteText}</p>
+                )}
+                {/* บรรทัด 3: ยอดสัญญาจะจ่าย (เฉพาะ promised) */}
+                {e.followUpResult === 'promised' && e.promisedAmount != null && (
+                  <p className="mt-0.5 text-xs text-green-700">
+                    สัญญาจะจ่าย {baht(e.promisedAmount)} ฿
+                  </p>
+                )}
+                {/* บรรทัด 4: วันนัดชำระ */}
+                {e.nextFollowUpAt && (
+                  <p className="mt-0.5 text-xs text-ink-soft">
+                    นัดวันที่ {thaiDate(e.nextFollowUpAt.slice(0, 10))}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+    </Card>
   )
 }
 
