@@ -24,9 +24,11 @@ import {
   getEscalateContracts,
   getGradeChangesMonthly,
   getActiveGradedCount,
+  getOverduePromiseContracts,
   type EscalateContract,
 } from '../lib/db'
 import { buildExecDashboard, buildGradeMovement, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult } from '../lib/execDashboard'
+import { detectBottlenecks, type BottleneckAlert } from '../lib/bottleneck'
 import type { ShopGrade } from '../lib/types'
 
 type Tab = 'overview' | Granularity | 'grade'
@@ -134,6 +136,9 @@ export default function ExecDashboard() {
         expectedThisMonth={d.expectedThisMonth}
         isExec={isExec}
       />
+
+      {/* ===== Workflow Bottleneck Alert ===== */}
+      <BottleneckWidget navigate={navigate} isExec={isExec} />
 
       {/* แท็บเลือกมุมมอง: ภาพรวม / รายวัน / สัปดาห์ / เดือน */}
       <div className="flex flex-wrap gap-2">
@@ -584,6 +589,142 @@ function RiskTable({ title, rows }: { title: string; rows: RiskGroup[] }) {
             ))}
           </tbody>
         </table>
+      )}
+    </Card>
+  )
+}
+
+// ---------- Bottleneck Alert widget — เคสค้างใน Device Pipeline + ผิดนัดจ่าย ----------
+function BottleneckWidget({ navigate, isExec }: { navigate: (to: string) => void; isExec: boolean }) {
+  const [alerts, setAlerts] = useState<BottleneckAlert[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError(null)
+
+    Promise.all([getReturns(), getOverduePromiseContracts()])
+      .then(([returns, overduePromises]) => {
+        if (!active) return
+        const deviceReturns = returns
+          .filter((r) => r.deviceStatus != null && r.deviceStatus !== 'shipped')
+          .map((r) => ({
+            id: r.id,
+            contractId: r.contractId,
+            contractNo: r.contractNo,
+            customerName: r.customerName,
+            deviceStatus: r.deviceStatus as string,
+            deviceStatusUpdatedAt: r.deviceStatusUpdatedAt ?? null,
+          }))
+
+        const promiseOverdue = overduePromises.map((p) => ({
+          contractId: p.id,
+          contractNo: p.contractCode,
+          customerName: p.customerName,
+          promiseToPayDate: p.promiseToPayDate,
+        }))
+
+        const result = detectBottlenecks({
+          deviceReturns,
+          contractsWithStatus: [], // check #2 ข้าม (ไม่มี bulk lastFollowUpAt จาก db.ts)
+          promiseOverdue,
+          todayISO,
+        })
+        setAlerts(result)
+      })
+      .catch((e: unknown) => {
+        if (active) setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
+      })
+      .finally(() => { if (active) setLoading(false) })
+
+    return () => { active = false }
+  }, [tick])
+
+  const visible = alerts.slice(0, 10)
+  const redCount = alerts.filter((a) => a.severity === 'red').length
+
+  function handleAlertClick(alert: BottleneckAlert) {
+    if (alert.type === 'stuck_device_pipeline') {
+      navigate('/returns')
+    } else if (alert.contractId) {
+      navigate(`/contract/${alert.contractId}`)
+    }
+  }
+
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="font-semibold text-ink">
+            Workflow Bottleneck — เคสที่ต้องเร่งดำเนินการ
+            {!loading && !error && alerts.length > 0 && (
+              <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                {alerts.length} รายการ
+                {redCount > 0 && (
+                  <span className="ml-1 rounded-full bg-red-500 px-1.5 text-white">{redCount} เร่งด่วน</span>
+                )}
+              </span>
+            )}
+          </h3>
+          <p className="mt-0.5 text-xs text-ink-soft">เครื่องคืนค้างสถานะนาน + ลูกค้านัดจ่ายแล้วผิดนัด</p>
+        </div>
+        {!loading && (
+          <button
+            onClick={() => setTick((n) => n + 1)}
+            className="rounded-xl border border-peach px-3 py-1.5 text-xs text-ink-soft hover:bg-peach-light"
+          >
+            รีเฟรช
+          </button>
+        )}
+      </div>
+
+      {loading && <p className="text-sm text-ink-soft">กำลังโหลด...</p>}
+
+      {error && !loading && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-red-600">{error}</p>
+          <button
+            onClick={() => setTick((n) => n + 1)}
+            className="self-start rounded-xl border border-peach px-3 py-1.5 text-sm text-ink-soft hover:bg-peach-light"
+          >
+            ลองใหม่
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && alerts.length === 0 && (
+        <p className="text-sm text-green-600">ไม่มีเคสค้างในขณะนี้</p>
+      )}
+
+      {!loading && !error && visible.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {visible.map((alert, i) => (
+            <li key={`${alert.type}-${alert.contractId ?? ''}-${i}`} className="flex items-start gap-3">
+              <Badge tone={alert.severity === 'red' ? 'red' : 'amber'}>
+                {alert.severity === 'red' ? 'เร่งด่วน' : 'รอดำเนินการ'}
+              </Badge>
+              <div className="min-w-0 flex-1">
+                {isExec ? (
+                  <p className="text-sm text-ink">{alert.message}</p>
+                ) : (
+                  <button
+                    onClick={() => handleAlertClick(alert)}
+                    className="text-left text-sm text-salmon-deep hover:underline"
+                  >
+                    {alert.customerName && `${alert.customerName} · `}{alert.contractNo && `${alert.contractNo} · `}{alert.message}
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {!loading && !error && alerts.length > 10 && (
+        <p className="mt-2 text-xs text-ink-soft">แสดง 10 รายการแรก (ทั้งหมด {alerts.length} รายการ)</p>
       )}
     </Card>
   )

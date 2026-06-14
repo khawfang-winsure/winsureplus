@@ -2958,27 +2958,85 @@ export async function recordPaymentWithPenalty(
 }
 
 // ---------- helper 2: overridePenalty ----------
-// NOTE: action='penalty_override' ไม่มีใน CHECK constraint payment_log.action ('pay'|'edit'|'cancel')
-// ดังนั้น helper นี้ทำแค่ UPDATE installments เท่านั้น — ไม่ log ใน payment_log
+
+export interface PenaltyOverrideHistoryEntry {
+  id: string
+  installmentId: string
+  installmentNo: number | null
+  oldAmount: number | null
+  newAmount: number
+  reason: string | null
+  byName: string | null
+  createdAt: string
+}
 
 /**
  * แก้ค่าปรับของงวดแบบ manual (admin only — RLS คุม)
  * เซ็ต penalty_overridden = true กัน cron daily update reset ค่าที่ override ไว้
+ * พร้อม INSERT audit row ลง penalty_override_history
  */
 export async function overridePenalty(
   installmentId: string,
   newAmount: number,
-  _byName: string, // รับไว้ future compat — ยังไม่ใช้ (ไม่มี audit log สำหรับ action นี้)
+  reason: string,
+  byName: string,
 ): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase
+
+  // Step 1: อ่าน old_amount + contract_id จาก installments
+  const { data: ins, error: readErr } = await supabase
+    .from('installments')
+    .select('penalty_amount, contract_id')
+    .eq('id', installmentId)
+    .single()
+  if (readErr) throw readErr
+
+  // Step 2: UPDATE installments (เดิม)
+  const { error: updErr } = await supabase
     .from('installments')
     .update({
       penalty_amount: newAmount,
       penalty_overridden: true,
     })
     .eq('id', installmentId)
+  if (updErr) throw updErr
+
+  // Step 3: INSERT audit row
+  const { error: histErr } = await supabase
+    .from('penalty_override_history')
+    .insert({
+      installment_id: installmentId,
+      contract_id: ins.contract_id,
+      old_amount: ins.penalty_amount,
+      new_amount: newAmount,
+      reason: reason || null,
+      by_name: byName || null,
+    })
+  if (histErr) throw histErr
+}
+
+/**
+ * ดึงประวัติการแก้ค่าปรับของสัญญา (admin+staff)
+ */
+export async function getPenaltyOverrideHistory(contractId: string): Promise<PenaltyOverrideHistoryEntry[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('penalty_override_history')
+    .select('*, installments(installment_no)')
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+    .range(0, 200)
   if (error) throw error
+  return (data ?? []).map((r) => ({
+    id: r.id as string,
+    installmentId: r.installment_id as string,
+    installmentNo: (r.installments as { installment_no: number } | null)?.installment_no ?? null,
+    oldAmount: r.old_amount as number | null,
+    newAmount: r.new_amount as number,
+    reason: r.reason as string | null,
+    byName: r.by_name as string | null,
+    createdAt: r.created_at as string,
+  }))
 }
 
 // ---------- helper 3: getExtraCharges ----------

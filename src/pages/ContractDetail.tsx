@@ -12,6 +12,7 @@ import {
   getFollowUps,
   recordPaymentWithPenalty,
   overridePenalty,
+  getPenaltyOverrideHistory,
   getExtraCharges,
   insertExtraCharge,
   deleteExtraCharge,
@@ -28,6 +29,7 @@ import {
   type FollowUpEntry,
   type FollowUpContactMethod,
   type FollowUpResult,
+  type PenaltyOverrideHistoryEntry,
 } from '../lib/db'
 import {
   activeRateSets,
@@ -141,17 +143,19 @@ export default function ContractDetail() {
   const [addExtraOpen, setAddExtraOpen] = useState(false)
   const [followHistory, setFollowHistory] = useState<FollowUpEntry[]>([])
   const [followHistoryLoading, setFollowHistoryLoading] = useState(true)
+  const [penaltyOverrideHistory, setPenaltyOverrideHistory] = useState<PenaltyOverrideHistoryEntry[]>([])
 
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec, poh] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
       getContractExtensions(id),
       getRateSets(),
       getExtraCharges(id),
+      getPenaltyOverrideHistory(id),
     ])
     setContract(c)
     setInstallments(ins)
@@ -159,6 +163,7 @@ export default function ContractDetail() {
     setExtensions(ext)
     setRateSets(rs)
     setExtraCharges(ec)
+    setPenaltyOverrideHistory(poh)
     setLoading(false)
   }, [id])
 
@@ -541,6 +546,38 @@ export default function ContractDetail() {
           </p>
         )}
       </div>
+
+      {/* ประวัติการแก้ค่าปรับ (admin+staff) */}
+      {canStaff && penaltyOverrideHistory.length > 0 && (
+        <div className="mt-6">
+          <h3 className="mb-2 flex items-center gap-1.5 font-semibold text-ink">
+            <ShieldAlert size={16} /> ประวัติการแก้ค่าปรับ ({penaltyOverrideHistory.length} ครั้ง)
+          </h3>
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  {['วันที่', 'งวด', 'ค่าปรับเดิม', 'ค่าปรับใหม่', 'เหตุผล', 'โดย'].map((h) => (
+                    <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {penaltyOverrideHistory.map((e, idx) => (
+                  <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(e.createdAt.slice(0, 10))}</td>
+                    <td className="px-3 py-2.5">{e.installmentNo != null ? `งวดที่ ${e.installmentNo}` : '—'}</td>
+                    <td className="px-3 py-2.5">{e.oldAmount != null ? `${baht(e.oldAmount)} ฿` : '—'}</td>
+                    <td className="px-3 py-2.5 font-semibold text-amber-700">{baht(e.newAmount)} ฿</td>
+                    <td className="px-3 py-2.5">{e.reason || '—'}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{e.byName || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ประวัติการชำระของงวดที่ถูกแทนที่ (งวดถูกลบตอนขยายระยะเวลา → ไม่ผูกกับงวดปัจจุบัน) */}
       {orphanLogs.length > 0 && (
@@ -1155,14 +1192,19 @@ function PenaltyOverrideModal({
   onDone: () => void
 }) {
   const [newAmount, setNewAmount] = useState<number>(ins.penaltyAmount)
+  const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   async function save() {
+    if (!reason.trim()) {
+      setErr('กรุณาระบุเหตุผลในการแก้ค่าปรับ')
+      return
+    }
     setBusy(true)
     setErr(null)
     try {
-      await overridePenalty(ins.id, newAmount, userName)
+      await overridePenalty(ins.id, newAmount, reason.trim(), userName)
       onDone()
     } catch (e) {
       setErr(errMsg(e))
@@ -1188,10 +1230,18 @@ function PenaltyOverrideModal({
             onChange={(e) => setNewAmount(Number(e.target.value) || 0)}
           />
         </Field>
+        <Field label="เหตุผล (จำเป็น)">
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="เช่น ลูกค้าตกลงจ่ายบางส่วน, ผิดพลาดจากระบบ..."
+            rows={2}
+          />
+        </Field>
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || newAmount < 0}>
+          <Button onClick={save} disabled={busy || newAmount < 0 || !reason.trim()}>
             {busy ? 'กำลังบันทึก...' : 'บันทึกค่าปรับใหม่'}
           </Button>
         </div>
