@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { Coins, Lock, LockOpen, Plus, Smartphone, Store, Trash2, Trophy, Users } from 'lucide-react'
 import { Badge, Button, Card, Input, Loading, PageTitle } from '../components/ui'
 import { useAuth } from '../lib/auth'
@@ -42,6 +43,7 @@ import type { Contract, DeviceReturnRow, Shop } from '../lib/types'
 export default function Commission() {
   const { role, configured } = useAuth()
   const canEdit = !configured || role === 'admin'
+  if (!canEdit) return <Navigate to="/" replace />
 
   return (
     <div className="space-y-6">

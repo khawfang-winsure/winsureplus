@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Navigate, useParams } from 'react-router-dom'
 import { Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
@@ -50,6 +50,7 @@ export default function Settings() {
   const canEdit = !configured || role === 'admin'
   const isAdmin = canEdit
   const { cat: catParam } = useParams<{ cat: CategoryKey }>()
+  if (catParam === 'users' && !isAdmin) return <Navigate to="/settings/shops" replace />
 
   // กรองเฉพาะหมวดที่ user ดูได้ (staff ไม่เห็น 'users')
   const visibleCats = CATEGORIES.filter((c) => !c.adminOnly || isAdmin)

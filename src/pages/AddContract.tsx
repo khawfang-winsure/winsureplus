@@ -153,7 +153,7 @@ export default function AddContract() {
   const navigate = useNavigate()
   const { name: myName, role, configured } = useAuth()
   const isAdmin = !configured || role === 'admin'
-  if (!isAdmin) return <Navigate to="/" replace />
+  if (isEdit && !isAdmin) return <Navigate to="/" replace />
 
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(

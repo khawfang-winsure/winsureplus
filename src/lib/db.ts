@@ -614,7 +614,12 @@ export interface InstallmentLite {
   paidAmount: number
 }
 
-/** ดึงงวดทั้งหมด (ทุกสัญญา) — ใช้ตรวจประวัติล่าช้า (ค่าคอม) + มูลค่าชำระ/คงค้าง (dashboard) */
+/**
+ * ดึงงวดทั้งหมด (ทุกสัญญา) — ใช้ตรวจประวัติล่าช้า (ค่าคอม) + มูลค่าชำระ/คงค้าง (dashboard)
+ * @deprecated for bulk — ใช้ getContractAggregates() แทนเมื่อต้องการยอดรวมต่อสัญญา
+ *             ฟังก์ชันนี้ปลอดภัยเฉพาะ single-contract context หรือกรณีต้องการ raw rows จริงๆ
+ *             ที่ 2,400+ สัญญา × 12 งวด = 28,800+ แถว — เกิน PAGE_CAP 4,999 แล้ว
+ */
 export async function getAllInstallments(): Promise<InstallmentLite[]> {
   if (!supabase) return []
   const { data, error } = await supabase
@@ -630,6 +635,167 @@ export async function getAllInstallments(): Promise<InstallmentLite[]> {
     amount: Number(r.amount ?? 0),
     paidAmount: Number(r.paid_amount ?? 0),
   }))
+}
+
+// ---------- aggregate views (Fix B — รองรับ 2,400+ สัญญา) ----------
+
+/** ยอดรวมต่อสัญญา 1 แถว — คืนจาก view v_contract_aggregates */
+export interface ContractAggregate {
+  contractId: string
+  totalInstallments: number
+  paidCount: number
+  overdueCount: number
+  totalPaid: number
+  totalOutstanding: number
+  totalPenalty: number
+  lastPaidAt: string | null
+  nextDueDate: string | null
+}
+
+interface ContractAggregateRow {
+  contract_id: string
+  total_installments: number | null
+  paid_count: number | null
+  overdue_count: number | null
+  total_paid: number | null
+  total_outstanding: number | null
+  total_penalty: number | null
+  last_paid_at: string | null
+  next_due_date: string | null
+}
+
+function mapContractAggregate(r: ContractAggregateRow): ContractAggregate {
+  return {
+    contractId: r.contract_id,
+    totalInstallments: Number(r.total_installments ?? 0),
+    paidCount: Number(r.paid_count ?? 0),
+    overdueCount: Number(r.overdue_count ?? 0),
+    totalPaid: Number(r.total_paid ?? 0),
+    totalOutstanding: Number(r.total_outstanding ?? 0),
+    totalPenalty: Number(r.total_penalty ?? 0),
+    lastPaidAt: r.last_paid_at ?? null,
+    nextDueDate: r.next_due_date ?? null,
+  }
+}
+
+/**
+ * ดึงยอดรวมต่อสัญญาจาก v_contract_aggregates (1 query แทนการ scan raw installments)
+ * คืน Map<contractId, ContractAggregate> สำหรับ dashboard/ค่าคอม/outstanding
+ * รองรับ 2,400+ สัญญาโดยไม่ติด PAGE_CAP (aggregate ฝั่ง DB แล้ว)
+ */
+export async function getContractAggregates(): Promise<Map<string, ContractAggregate>> {
+  if (!supabase) return new Map()
+  const { data, error } = await supabase
+    .from('v_contract_aggregates')
+    .select('*')
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  const map = new Map<string, ContractAggregate>()
+  for (const r of (data ?? []) as ContractAggregateRow[]) {
+    map.set(r.contract_id, mapContractAggregate(r))
+  }
+  return map
+}
+
+/** ยอดรับชำระต่อสัญญา — คืนจาก view v_payment_summary */
+export interface PaymentSummary {
+  contractId: string
+  payCount: number
+  totalPay: number
+  lastPayAt: string | null
+}
+
+interface PaymentSummaryRow {
+  contract_id: string
+  pay_count: number | null
+  total_pay: number | null
+  last_pay_at: string | null
+}
+
+function mapPaymentSummary(r: PaymentSummaryRow): PaymentSummary {
+  return {
+    contractId: r.contract_id,
+    payCount: Number(r.pay_count ?? 0),
+    totalPay: Number(r.total_pay ?? 0),
+    lastPayAt: r.last_pay_at ?? null,
+  }
+}
+
+/**
+ * ดึงยอดรับชำระต่อสัญญาจาก v_payment_summary (1 query แทน scan payment_log ทั้งหมด)
+ * คืน Map<contractId, PaymentSummary> สำหรับ cashflow forecast / กราฟเก็บเงิน
+ * รองรับ payment_log หลายหมื่นแถวโดยไม่ติด PAGE_CAP
+ */
+export async function getPaymentSummaries(): Promise<Map<string, PaymentSummary>> {
+  if (!supabase) return new Map()
+  const { data, error } = await supabase
+    .from('v_payment_summary')
+    .select('*')
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  const map = new Map<string, PaymentSummary>()
+  for (const r of (data ?? []) as PaymentSummaryRow[]) {
+    map.set(r.contract_id, mapPaymentSummary(r))
+  }
+  return map
+}
+
+/** ที่อยู่ปัจจุบันต่อสัญญา — คืนจาก view v_contract_current_address */
+export interface CurrentAddress {
+  contractId: string
+  houseNo: string | null
+  moo: string | null
+  soi: string | null
+  road: string | null
+  subdistrict: string | null
+  district: string | null
+  province: string | null
+  postalCode: string | null
+}
+
+interface CurrentAddressRow {
+  contract_id: string
+  house_no: string | null
+  moo: string | null
+  soi: string | null
+  road: string | null
+  subdistrict: string | null
+  district: string | null
+  province: string | null
+  postal_code: string | null
+}
+
+function mapCurrentAddress(r: CurrentAddressRow): CurrentAddress {
+  return {
+    contractId: r.contract_id,
+    houseNo: r.house_no,
+    moo: r.moo,
+    soi: r.soi,
+    road: r.road,
+    subdistrict: r.subdistrict,
+    district: r.district,
+    province: r.province,
+    postalCode: r.postal_code,
+  }
+}
+
+/**
+ * ดึงที่อยู่ปัจจุบันของทุกสัญญาจาก v_contract_current_address (1 query ไม่ซ้ำ)
+ * คืน Map<contractId, CurrentAddress> สำหรับหน้าส่งจดหมาย
+ * แทน getAllAddresses() ที่ดึง kind ทั้งหมดแล้ว filter ฝั่ง client
+ */
+export async function getCurrentAddresses(): Promise<Map<string, CurrentAddress>> {
+  if (!supabase) return new Map()
+  const { data, error } = await supabase
+    .from('v_contract_current_address')
+    .select('*')
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  const map = new Map<string, CurrentAddress>()
+  for (const r of (data ?? []) as CurrentAddressRow[]) {
+    map.set(r.contract_id, mapCurrentAddress(r))
+  }
+  return map
 }
 
 /** บันทึกชำระ (เพิ่มยอดสะสม — จ่ายบางส่วนได้ งวดจะปิดเมื่อยอดสะสม >= ค่างวด) */
@@ -716,7 +882,11 @@ export interface PaymentLite {
   createdAt: string
 }
 
-/** ดึง payment_log ทั้งหมด (เฉพาะ field ที่ใช้รวมยอดรับชำระรายเดือน) */
+/**
+ * ดึง payment_log ทั้งหมด (เฉพาะ field ที่ใช้รวมยอดรับชำระรายเดือน)
+ * @deprecated for bulk — ใช้ getPaymentSummaries() แทนสำหรับ cashflow/กราฟ dashboard
+ *             ที่ 2,400+ สัญญาสะสมหลายหมื่นแถว — เกิน PAGE_CAP 4,999 แล้ว
+ */
 export async function getAllPayments(): Promise<PaymentLite[]> {
   if (!supabase) return []
   const { data, error } = await supabase.from('payment_log').select('action, amount, created_at').range(0, PAGE_CAP)
@@ -1347,7 +1517,12 @@ export async function getContractAddresses(contractId: string): Promise<Contract
   return out
 }
 
-/** ที่อยู่ทุกสัญญา (สำหรับหน้าส่งจดหมาย) → { contractId: { current, id_card, ... } } */
+/**
+ * ที่อยู่ทุกสัญญา (สำหรับหน้าส่งจดหมาย) → { contractId: { current, id_card, ... } }
+ * @deprecated for bulk — ใช้ getCurrentAddresses() แทนสำหรับที่อยู่ปัจจุบันในหน้า bulk
+ *             ที่ 2,400+ สัญญา × 3 ที่อยู่ = 7,200+ แถว — เกิน PAGE_CAP 4,999 แล้ว
+ *             ยังใช้ได้สำหรับ single-contract context (ดูที่อยู่ครบทุก kind)
+ */
 export async function getAllAddresses(): Promise<Record<string, ContractAddresses>> {
   if (!supabase) return {}
   const { data, error } = await supabase.from('customer_addresses').select('*').range(0, PAGE_CAP)
@@ -2105,16 +2280,38 @@ export async function getCustomerAggregate(referenceContractId: string): Promise
 
   // Step 2: ดึง contract ทุกอันของลูกค้า (รวม closed/returned ด้วย)
   // ขับด้วย contracts ไม่ใช่ v_contract_status เพราะ view อาจไม่มีแถวสำหรับ closed contracts
+  //
+  // Fix D: ถ้าไม่มี national_id และไม่มี phone → ไม่ match ด้วยชื่อเดี่ยว เพราะชื่อซ้ำ merge ผิด
+  // Pete ต้องเพิ่มข้อมูล national_id หรือ phone ย้อนหลังก่อนใช้ Customer 360 ได้ถูกต้อง
+  if (!nationalId && !phone) {
+    console.warn(
+      `[getCustomerAggregate] contract ${referenceContractId}: ไม่มี national_id และ phone — ` +
+      'ไม่สามารถระบุลูกค้าเดี่ยวได้ คืน empty aggregate เพื่อกันชื่อซ้ำโดนรวมผิด'
+    )
+    return {
+      customerName,
+      nationalId,
+      phone,
+      phoneAlt1,
+      phoneAlt2,
+      contracts: [],
+      totalContracts: 0,
+      totalOutstanding: 0,
+      totalPenalty: 0,
+      activeContracts: 0,
+      closedContracts: 0,
+    }
+  }
+
   let contractQuery = supabase
     .from('contracts')
     .select('id, contract_no, shop_id, model, storage, status, monthly_payment, term_months, created_at')
 
   if (nationalId) {
     contractQuery = contractQuery.eq('national_id', nationalId)
-  } else if (phone) {
-    contractQuery = contractQuery.eq('customer_name', customerName).eq('phone', phone)
   } else {
-    contractQuery = contractQuery.eq('customer_name', customerName)
+    // phone ต้องมีถึงจะถึงบรรทัดนี้ (guard ข้างบนกัน !nationalId && !phone แล้ว)
+    contractQuery = contractQuery.eq('customer_name', customerName).eq('phone', phone!)
   }
 
   contractQuery = contractQuery.order('created_at', { ascending: false })
@@ -2889,14 +3086,21 @@ export async function getOverduePromiseContracts(): Promise<OverduePromiseContra
 // ============================================================================
 
 // ---------- helper 1: recordPaymentWithPenalty ----------
-// WARNING: ไม่ atomic — INSERT payment_log + UPDATE installments สองขั้นตอน
-// ถ้า network ตายหลัง INSERT แต่ก่อน UPDATE installment จะไม่ถูก update
-// trigger clear_promise_on_pay (0029) จะยังทำงานเพราะ fire AFTER INSERT ON payment_log
-// หากต้องการ atomic ในอนาคต → ต้องเพิ่ม RPC record_payment_with_penalty ใหม่ใน migration
+// Fix C (migration 0040): เปลี่ยนเป็น atomic RPC — INSERT payment_log + UPDATE installments
+// อยู่ใน plpgsql transaction เดียวกัน ถ้า network ตายกลางทางจะ rollback อัตโนมัติ
+//
+// Trigger ที่ยังทำงานผ่าน RPC:
+//   - set_payment_log_actor  (BEFORE INSERT ON payment_log) — ประทับ acted_by + by_name
+//   - trg_clear_promise_on_pay (AFTER INSERT ON payment_log) — ล้าง promise เมื่อ action='pay'
 
 /**
  * บันทึกชำระงวด พร้อมแยก penalty_paid_amount (Wave 2B — migration 0034)
  * ใช้สำหรับ payment modal ที่มีช่อง "ค่าปรับ" แยกออกมา
+ *
+ * Semantic ที่รักษาไว้:
+ *   - payment_log.amount = principal + penalty (ยอดรับจริง)
+ *   - installments.paid_amount สะสมเฉพาะ principal (outstanding formula ถูกต้อง)
+ *   - ปิดงวดเมื่อ principal สะสม >= ค่างวด (จ่ายบางส่วน = งวดยังเปิด)
  *
  * @param installmentId  uuid ของงวดที่ชำระ
  * @param principal      ยอดค่างวด (ไม่รวมค่าปรับ)
@@ -2910,52 +3114,14 @@ export async function recordPaymentWithPenalty(
   byName: string,
 ): Promise<void> {
   if (!supabase) return
-
-  // total = ยอดรับจริง (ใช้ใน payment_log.amount ให้ตรงกับเงินที่รับมา)
-  // installment.paid_amount สะสมเฉพาะ principal เท่านั้น
-  // เพื่อให้ outstanding = sum(amount - paid_amount) ถูกต้องตลอด
-  // (ตรงกับ record_payment RPC ใน 0011 ที่ p_amount = principal only)
-  const total = principal + penalty
-
-  // Step 1: ดึง installment เพื่อรู้ contract_id + paid_amount ปัจจุบัน
-  const { data: inst, error: instErr } = await supabase
-    .from('installments')
-    .select('id, contract_id, amount, paid_amount')
-    .eq('id', installmentId)
-    .single()
-  if (instErr) throw instErr
-
-  const prevPaid = Number((inst as { paid_amount: number | null }).paid_amount ?? 0)
-  // paid_amount สะสมเฉพาะ principal (ไม่รวม penalty) — สอดคล้องกับ outstanding formula
-  const newPrincipalTotal = prevPaid + principal
-  const installmentAmount = Number((inst as { amount: number }).amount)
-  const contractId: string = (inst as { contract_id: string }).contract_id
-
-  // Step 2: INSERT payment_log — amount = total (เงินจริงที่รับ), penalty_paid_amount = penalty split
-  // trigger clear_promise_on_pay (0029) fires AFTER INSERT ON payment_log → action='pay' → ล้าง promise
-  const { error: logErr } = await supabase.from('payment_log').insert({
-    installment_id: installmentId,
-    contract_id: contractId,
-    action: 'pay',
-    amount: total,                  // ยอดรับจริง (principal + penalty)
-    paid_amount_after: newPrincipalTotal, // สะท้อน principal สะสม ตรงกับ installment.paid_amount
-    penalty_paid_amount: penalty,
-    by_name: byName,
+  const { error } = await supabase.rpc('record_payment_with_penalty', {
+    p_installment_id:      installmentId,
+    p_paid_amount:         principal,
+    p_paid_at:             new Date().toISOString(),
+    p_by_name:             byName,
+    p_penalty_paid_amount: penalty,
   })
-  if (logErr) throw logErr
-
-  // Step 3: UPDATE installments — paid_amount สะสม principal เท่านั้น
-  const fullyPaid = newPrincipalTotal >= installmentAmount && installmentAmount > 0
-  const { error: updErr } = await supabase
-    .from('installments')
-    .update({
-      paid_amount: newPrincipalTotal,
-      ...(fullyPaid
-        ? { paid_at: new Date().toISOString(), status: 'paid', paid_by_name: byName }
-        : { paid_at: null, paid_by_name: null }),
-    })
-    .eq('id', installmentId)
-  if (updErr) throw updErr
+  if (error) throw error
 }
 
 // ---------- helper 2: overridePenalty ----------
