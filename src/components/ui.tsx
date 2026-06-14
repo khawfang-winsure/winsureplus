@@ -65,7 +65,7 @@ export function Field({
 }
 
 const inputCls =
-  'w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40'
+  'w-full rounded-xl border border-peach bg-surface px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40'
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={`${inputCls} ${props.className ?? ''}`} />
@@ -89,7 +89,7 @@ export function Button({
   const styles =
     variant === 'primary'
       ? 'bg-salmon-deep text-white hover:brightness-105 shadow'
-      : 'bg-white text-ink border border-peach hover:bg-peach-light/50'
+      : 'bg-surface text-ink border border-peach hover:bg-peach-light/50'
   return (
     <button {...props} className={`${base} ${styles} ${props.className ?? ''}`}>
       {children}
@@ -127,7 +127,7 @@ export function Modal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+        className="w-full max-w-md rounded-2xl bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="mb-4 text-lg font-bold text-ink">{title}</h3>

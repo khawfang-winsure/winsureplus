@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 
+/* Dark mode: class-based (.dark on <html>) — ต้องอยู่ก่อน @theme */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ===== ธีมแบรนด์ WIN SURE PLUS — โทนใหม่: ส้ม (แบรนด์) + ขาว + เทา =====
    หมายเหตุ: เก็บ "ชื่อสีเดิม" ไว้ (cream/peach/salmon/ink) แต่รีแมปค่าเป็นโทนใหม่
    ทุกหน้าเรียกชื่อเดิม → เปลี่ยนที่นี่ที่เดียว ทั้งเว็บเปลี่ยนตาม */
@@ -21,7 +24,35 @@
   --color-ink: #3a2f1f;         /* น้ำตาลเข้มอมอุ่น — อ่านชัด เข้ากับครีม */
   --color-ink-soft: #8a7355;    /* น้ำตาลอุ่นกลาง — ข้อความรอง */
 
+  /* Surface token — ขาวใน light / เทาเข้มใน dark (ใช้แทน bg-white ใน primitives) */
+  --color-surface: #ffffff;
+
   --font-sans: 'Noto Sans Thai', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ===== Dark mode token overrides =====
+   เฉพาะ CSS custom properties ที่นี่ — ไม่ใช้ @theme (เพราะ @theme = canonical :root เท่านั้น)
+   ทุก utility ที่อ้าง var(--color-*) จะได้ค่าใหม่อัตโนมัติเมื่อ <html class="dark"> */
+.dark {
+  /* พื้นหลัง — เทาเข้มอมอุ่น (ยังมีกลิ่นส้มเล็กน้อย ไม่เย็นชา) */
+  --color-cream: #1c1713;       /* พื้นเว็บ dark */
+  --color-cream-deep: #252018;  /* การ์ด/แผง dark — เข้มกว่าพื้นนิดเดียว (ยังตัดกัน) */
+
+  /* เส้นขอบ + hover */
+  --color-peach: #3a3020;       /* border dark */
+  --color-peach-light: #2e2619; /* hover bg dark */
+  --color-peach-soft: #3a2f1f;  /* badge bg dark */
+
+  /* แบรนด์ส้ม — คงไว้ (อ่านชัดบนพื้นเข้ม) */
+  --color-salmon: #fb923c;
+  --color-salmon-deep: #f97316;
+
+  /* ตัวอักษร — พลิกจากเข้มเป็นอ่อน */
+  --color-ink: #f5ede0;         /* หลัก — ครีมอ่อน */
+  --color-ink-soft: #b8a080;    /* รอง — น้ำตาลอ่อน */
+
+  /* Surface — เทาเข้มแทนขาว */
+  --color-surface: #2e2619;
 }
 
 html,

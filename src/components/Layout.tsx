@@ -5,6 +5,7 @@ import Logo from './Logo'
 import Sidebar from './Sidebar'
 import NotificationBell from './NotificationBell'
 import QuickSearch from './QuickSearch'
+import ThemeToggle from './ThemeToggle'
 import { Badge, Loading } from './ui'
 import { useAuth } from '../lib/auth'
 
@@ -50,7 +51,7 @@ export default function Layout() {
               onClick={() => setMobileNavOpen(true)}
               aria-label="เปิดเมนู"
               title="เปิดเมนู"
-              className="inline-flex items-center justify-center rounded-xl border border-peach bg-white p-2 text-ink transition hover:bg-peach-light/50 md:hidden"
+              className="inline-flex items-center justify-center rounded-xl border border-peach bg-surface p-2 text-ink transition hover:bg-peach-light/50 md:hidden"
             >
               <Menu size={20} />
             </button>
@@ -66,7 +67,7 @@ export default function Layout() {
                   type="button"
                   onClick={openQuickSearch}
                   title="ค้นหาด่วน (Ctrl+K / ⌘K)"
-                  className="hidden items-center gap-2 rounded-xl border border-peach bg-white px-3 py-2 text-sm text-ink-soft transition hover:bg-peach-light/50 sm:inline-flex"
+                  className="hidden items-center gap-2 rounded-xl border border-peach bg-surface px-3 py-2 text-sm text-ink-soft transition hover:bg-peach-light/50 sm:inline-flex"
                 >
                   <Search size={15} />
                   <span>ค้นหา...</span>
@@ -75,6 +76,7 @@ export default function Layout() {
                   </kbd>
                 </button>
               )}
+              <ThemeToggle />
               <NotificationBell />
               <div className="text-right">
                 <p className="hidden text-sm font-medium text-ink sm:block">{email}</p>
@@ -87,7 +89,7 @@ export default function Layout() {
               <button
                 onClick={() => signOut()}
                 title="ออกจากระบบ"
-                className="inline-flex items-center gap-1.5 rounded-xl border border-peach bg-white px-2.5 py-2 text-sm text-ink transition hover:bg-peach-light/50 md:px-3"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-peach bg-surface px-2.5 py-2 text-sm text-ink transition hover:bg-peach-light/50 md:px-3"
               >
                 <LogOut size={16} />
                 <span className="hidden sm:inline">ออก</span>
