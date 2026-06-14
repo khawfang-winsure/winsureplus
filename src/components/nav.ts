@@ -13,6 +13,7 @@ import {
   Phone,
   PieChart,
   Receipt,
+  ScrollText,
   Send,
   Settings,
   Truck,
@@ -65,6 +66,7 @@ export const NAV: NavItem[] = [
   { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
   { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
   { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', icon: TrendingUp },
+  { to: '/audit-log', label: 'ประวัติการใช้งาน', icon: ScrollText },
   { to: '/commission', label: 'ค่าคอมมิชชั่น', icon: Coins, adminOnly: true },
   {
     label: 'ตั้งค่า',

@@ -30,6 +30,7 @@ const FreelancerWorkspace = lazy(() => import('./pages/FreelancerWorkspace'))
 const StaffPerformance = lazy(() => import('./pages/StaffPerformance'))
 const DevicePipeline = lazy(() => import('./pages/DevicePipeline'))
 const CustomerDetail = lazy(() => import('./pages/CustomerDetail'))
+const AuditLog = lazy(() => import('./pages/AuditLog'))
 
 export default function App() {
   return (
@@ -89,6 +90,7 @@ function Gate() {
           <Route path="/shop-report" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
           <Route path="/shop/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />
           <Route path="/staff-performance" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <StaffPerformance /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/audit-log" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <AuditLog /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/commission" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <Commission /> : <Navigate to="/" replace />} />
           <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
           <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />

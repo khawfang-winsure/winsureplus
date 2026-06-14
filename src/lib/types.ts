@@ -220,6 +220,29 @@ export type GradeMonthlyChange = {
   cnt: number
 }
 
+// ---------- Audit Timeline ----------
+
+export type AuditEventType =
+  | 'payment'       // pay / edit / cancel จาก payment_log
+  | 'grade_change'  // เปลี่ยนเกรดอัตโนมัติ จาก contract_grade_history
+  | 'email_sent'    // ส่งอีเมล (contracts.email_sent_at)
+  | 'summary_sent'  // ส่งสรุปยอด (contracts.summary_sent_at)
+  | 'follow_up'     // บันทึกการติดตาม จาก follow_ups
+  | 'extension'     // ขยายระยะเวลา จาก contract_extensions
+  | 'device_status' // เปลี่ยนสถานะเครื่อง จาก device_returns
+
+export type AuditEvent = {
+  id: string             // unique: prefixed ตาม eventType เพื่อกัน React key ชน (เช่น email:uuid)
+  eventType: AuditEventType
+  contractId: string | null
+  contractNo: string | null
+  customerName: string | null
+  actor: string          // ชื่อผู้ทำ หรือ 'ระบบ' ถ้าเป็น auto trigger
+  action: string         // ข้อความไทยอ่านง่าย เช่น "ยืนยันชำระ 5,000 ฿"
+  details: string | null // บริบทเพิ่มเติม เช่น "เกรด A → B", เหตุผลยกเลิก
+  at: string             // ISO timestamp (ใช้ sort + display)
+}
+
 // ---------- Overdue Promise Contracts (badge ที่ /queue) ----------
 
 /** สัญญาที่ผิดนัดจ่าย (promise_to_pay_date < today AND status=active) */
