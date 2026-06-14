@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
 import { Button, Card, Field, Input, Loading, PageTitle, Select } from '../components/ui'
 import { calcSummary } from '../lib/calc'
@@ -151,7 +151,9 @@ export default function AddContract() {
   const { id } = useParams()
   const isEdit = Boolean(id)
   const navigate = useNavigate()
-  const { name: myName } = useAuth()
+  const { name: myName, role, configured } = useAuth()
+  const isAdmin = !configured || role === 'admin'
+  if (!isAdmin) return <Navigate to="/" replace />
 
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(

@@ -9,6 +9,7 @@ import type {
   ContractStatus,
   ContractStatusRow,
   DeviceReturnRow,
+  ExtraCharge,
   GradeChangeType,
   GradeMonthlyChange,
   Installment,
@@ -2830,4 +2831,339 @@ export async function getOverduePromiseContracts(): Promise<OverduePromiseContra
       (new Date(today).getTime() - new Date(r.promise_to_pay_date).getTime()) / 86400000,
     ),
   }))
+}
+
+// ============================================================================
+// Wave 2B helpers — penalty split, extra charges, device defect notes, sale history
+// ============================================================================
+
+// ---------- helper 1: recordPaymentWithPenalty ----------
+// WARNING: ไม่ atomic — INSERT payment_log + UPDATE installments สองขั้นตอน
+// ถ้า network ตายหลัง INSERT แต่ก่อน UPDATE installment จะไม่ถูก update
+// trigger clear_promise_on_pay (0029) จะยังทำงานเพราะ fire AFTER INSERT ON payment_log
+// หากต้องการ atomic ในอนาคต → ต้องเพิ่ม RPC record_payment_with_penalty ใหม่ใน migration
+
+/**
+ * บันทึกชำระงวด พร้อมแยก penalty_paid_amount (Wave 2B — migration 0034)
+ * ใช้สำหรับ payment modal ที่มีช่อง "ค่าปรับ" แยกออกมา
+ *
+ * @param installmentId  uuid ของงวดที่ชำระ
+ * @param principal      ยอดค่างวด (ไม่รวมค่าปรับ)
+ * @param penalty        ยอดค่าปรับที่ชำระ
+ * @param byName         ชื่อผู้ทำรายการ (useAuth().name)
+ */
+export async function recordPaymentWithPenalty(
+  installmentId: string,
+  principal: number,
+  penalty: number,
+  byName: string,
+): Promise<void> {
+  if (!supabase) return
+
+  // total = ยอดรับจริง (ใช้ใน payment_log.amount ให้ตรงกับเงินที่รับมา)
+  // installment.paid_amount สะสมเฉพาะ principal เท่านั้น
+  // เพื่อให้ outstanding = sum(amount - paid_amount) ถูกต้องตลอด
+  // (ตรงกับ record_payment RPC ใน 0011 ที่ p_amount = principal only)
+  const total = principal + penalty
+
+  // Step 1: ดึง installment เพื่อรู้ contract_id + paid_amount ปัจจุบัน
+  const { data: inst, error: instErr } = await supabase
+    .from('installments')
+    .select('id, contract_id, amount, paid_amount')
+    .eq('id', installmentId)
+    .single()
+  if (instErr) throw instErr
+
+  const prevPaid = Number((inst as { paid_amount: number | null }).paid_amount ?? 0)
+  // paid_amount สะสมเฉพาะ principal (ไม่รวม penalty) — สอดคล้องกับ outstanding formula
+  const newPrincipalTotal = prevPaid + principal
+  const installmentAmount = Number((inst as { amount: number }).amount)
+  const contractId: string = (inst as { contract_id: string }).contract_id
+
+  // Step 2: INSERT payment_log — amount = total (เงินจริงที่รับ), penalty_paid_amount = penalty split
+  // trigger clear_promise_on_pay (0029) fires AFTER INSERT ON payment_log → action='pay' → ล้าง promise
+  const { error: logErr } = await supabase.from('payment_log').insert({
+    installment_id: installmentId,
+    contract_id: contractId,
+    action: 'pay',
+    amount: total,                  // ยอดรับจริง (principal + penalty)
+    paid_amount_after: newPrincipalTotal, // สะท้อน principal สะสม ตรงกับ installment.paid_amount
+    penalty_paid_amount: penalty,
+    by_name: byName,
+  })
+  if (logErr) throw logErr
+
+  // Step 3: UPDATE installments — paid_amount สะสม principal เท่านั้น
+  const fullyPaid = newPrincipalTotal >= installmentAmount && installmentAmount > 0
+  const { error: updErr } = await supabase
+    .from('installments')
+    .update({
+      paid_amount: newPrincipalTotal,
+      ...(fullyPaid
+        ? { paid_at: new Date().toISOString(), status: 'paid', paid_by_name: byName }
+        : { paid_at: null, paid_by_name: null }),
+    })
+    .eq('id', installmentId)
+  if (updErr) throw updErr
+}
+
+// ---------- helper 2: overridePenalty ----------
+// NOTE: action='penalty_override' ไม่มีใน CHECK constraint payment_log.action ('pay'|'edit'|'cancel')
+// ดังนั้น helper นี้ทำแค่ UPDATE installments เท่านั้น — ไม่ log ใน payment_log
+
+/**
+ * แก้ค่าปรับของงวดแบบ manual (admin only — RLS คุม)
+ * เซ็ต penalty_overridden = true กัน cron daily update reset ค่าที่ override ไว้
+ */
+export async function overridePenalty(
+  installmentId: string,
+  newAmount: number,
+  _byName: string, // รับไว้ future compat — ยังไม่ใช้ (ไม่มี audit log สำหรับ action นี้)
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('installments')
+    .update({
+      penalty_amount: newAmount,
+      penalty_overridden: true,
+    })
+    .eq('id', installmentId)
+  if (error) throw error
+}
+
+// ---------- helper 3: getExtraCharges ----------
+
+interface ExtraChargeRow {
+  id: string
+  contract_id: string
+  amount: number
+  reason: string
+  created_at: string
+  created_by: string | null
+}
+
+function mapExtraCharge(r: ExtraChargeRow): ExtraCharge {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    amount: Number(r.amount),
+    reason: r.reason,
+    createdAt: r.created_at,
+    createdBy: r.created_by ?? null,
+  }
+}
+
+/** ค่าใช้จ่ายเพิ่มเติมของสัญญาหนึ่ง (ใหม่ → เก่า) */
+export async function getExtraCharges(contractId: string): Promise<ExtraCharge[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('extra_charges')
+    .select('id, contract_id, amount, reason, created_at, created_by')
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as ExtraChargeRow[]).map(mapExtraCharge)
+}
+
+// ---------- helper 4: insertExtraCharge ----------
+
+/**
+ * เพิ่มค่าใช้จ่ายพิเศษ (admin + staff ตาม RLS migration 0032)
+ * @param byName ชื่อผู้บันทึก (useAuth().name) — เก็บเป็น text snapshot
+ * @returns id ของแถวที่สร้าง
+ */
+export async function insertExtraCharge(
+  contractId: string,
+  amount: number,
+  reason: string,
+  byName: string,
+): Promise<string> {
+  if (!supabase) return ''
+  const { data, error } = await supabase
+    .from('extra_charges')
+    .insert({
+      contract_id: contractId,
+      amount,
+      reason,
+      created_by: byName,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return (data as { id: string }).id
+}
+
+// ---------- helper 5: deleteExtraCharge ----------
+
+/** ลบค่าใช้จ่ายพิเศษ (admin only ตาม RLS migration 0032) */
+export async function deleteExtraCharge(id: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('extra_charges').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ---------- helper 6: updateDefectNotes ----------
+
+/** บันทึก/แก้ข้อความข้อบกพร่องของเครื่องคืน (migration 0033 — device_defect_notes text) */
+export async function updateDefectNotes(returnId: string, notes: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('device_returns')
+    .update({ device_defect_notes: notes || null })
+    .eq('id', returnId)
+  if (error) throw error
+}
+
+// ---------- helper 7: getSaleHistoryRaw ----------
+
+/**
+ * ข้อมูล raw สำหรับ sale history (เครื่องที่ขายแล้ว: device_status IN ('shipped','transferred'))
+ * Return type ตั้งชื่อว่า SaleHistoryInput เพื่อรอ reconcile กับ src/lib/saleHistory.ts ที่แบมจะเขียน
+ *
+ * NOTE commissionPaid = 0 เสมอ — ไม่มีตาราง commission_disbursements ใน DB
+ * commission คำนวณจาก commission.ts (แบม pure function) ไม่ใช่จาก DB column
+ *
+ * NOTE downPayment = device_price * down_percent / 100 (คำนวณจาก 2 columns, ไม่มี down_payment column)
+ * ถ้าแบมต้องการสูตรอื่น → แก้ที่ saleHistory.ts ได้โดยไม่ต้องแตะ helper นี้
+ *
+ * NOTE ถ้า saleHistory.ts ของแบมมี type SaleHistoryInput ที่ต่างจากนี้ → ครีมต้อง reconcile field names
+ */
+export interface SaleHistoryInput {
+  contractId: string
+  contractNo: string
+  customerName: string
+  shopId: string
+  shopName: string
+  deviceModel: string         // model + storage รวม เช่น "iPhone 15 Pro 256GB"
+  deviceListPrice: number     // finance_amount (ยอดจัดไฟแนนซ์)
+  commissionPaid: number      // 0 เสมอ — ไม่มี disbursement table (ดู NOTE ด้านบน)
+  downPayment: number         // device_price * down_percent / 100
+  customerPaidPrincipal: number  // sum(amount - coalesce(penalty_paid_amount,0)) จาก payment_log action='pay'
+  resalePrice: number | null  // device_returns.sale_price
+  returnedAt: string | null   // device_returns.transferred_at ?? shipped_at (วันที่ขาย/โอน)
+}
+
+interface SaleHistoryReturnRow {
+  id: string
+  contract_id: string
+  device_status: string | null
+  sale_price: number | null
+  transferred_at: string | null
+  shipped_at: string | null
+}
+
+interface SaleHistoryContractRow {
+  id: string
+  contract_no: string
+  customer_name: string
+  shop_id: string
+  model: string | null
+  storage: string | null
+  finance_amount: number | null
+  device_price: number
+  down_percent: number
+}
+
+interface SaleHistoryShopRow {
+  id: string
+  name: string
+}
+
+/**
+ * ดึงข้อมูล raw ของเครื่องที่ขายแล้ว สำหรับคำนวณ sale history (Wave 3 UI)
+ * ดึงเฉพาะ device_status IN ('shipped', 'transferred') — ขายเสร็จแล้ว
+ */
+export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
+  if (!supabase) return []
+
+  // Step 1: device_returns ที่ขายแล้ว
+  const { data: returnData, error: returnErr } = await supabase
+    .from('device_returns')
+    .select('id, contract_id, device_status, sale_price, transferred_at, shipped_at')
+    .in('device_status', ['shipped', 'transferred'])
+    .order('shipped_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (returnErr) throw returnErr
+
+  const returns = (returnData ?? []) as SaleHistoryReturnRow[]
+  if (returns.length === 0) return []
+
+  const contractIds = [...new Set(returns.map((r) => r.contract_id))]
+
+  // Step 2: contracts ที่เกี่ยวข้อง
+  const { data: contractData, error: contractErr } = await supabase
+    .from('contracts')
+    .select('id, contract_no, customer_name, shop_id, model, storage, finance_amount, device_price, down_percent')
+    .in('id', contractIds)
+  if (contractErr) throw contractErr
+
+  const contractMap = new Map(
+    ((contractData ?? []) as SaleHistoryContractRow[]).map((c) => [c.id, c]),
+  )
+
+  // Step 3: shop names
+  const shopIds = [
+    ...new Set(
+      ((contractData ?? []) as SaleHistoryContractRow[])
+        .map((c) => c.shop_id)
+        .filter((id): id is string => id != null),
+    ),
+  ]
+  const shopNameMap = new Map<string, string>()
+  if (shopIds.length > 0) {
+    const { data: shopData, error: shopErr } = await supabase
+      .from('shops_basic')
+      .select('id, name')
+      .in('id', shopIds)
+    if (shopErr) throw shopErr
+    for (const s of (shopData ?? []) as SaleHistoryShopRow[]) {
+      shopNameMap.set(s.id, s.name)
+    }
+  }
+
+  // Step 4: payment_log — sum principal paid per contract
+  // principal = amount - coalesce(penalty_paid_amount, 0) (migration 0034)
+  // รวมเฉพาะ action='pay'
+  const { data: payData, error: payErr } = await supabase
+    .from('payment_log')
+    .select('contract_id, amount, penalty_paid_amount')
+    .in('contract_id', contractIds)
+    .eq('action', 'pay')
+    .range(0, PAGE_CAP)
+  if (payErr) throw payErr
+
+  // Client-side aggregate: sum(amount - coalesce(penalty_paid_amount,0)) per contract_id
+  const principalMap = new Map<string, number>()
+  for (const row of (payData ?? []) as {
+    contract_id: string
+    amount: number | null
+    penalty_paid_amount: number | null
+  }[]) {
+    const prev = principalMap.get(row.contract_id) ?? 0
+    const principal = Number(row.amount ?? 0) - Number(row.penalty_paid_amount ?? 0)
+    principalMap.set(row.contract_id, prev + Math.max(0, principal))
+  }
+
+  // Step 5: assemble
+  return returns.map((ret): SaleHistoryInput => {
+    const c = contractMap.get(ret.contract_id)
+    const devicePrice = Number(c?.device_price ?? 0)
+    const downPercent = Number(c?.down_percent ?? 0)
+    const modelParts = [c?.model, c?.storage].filter(Boolean)
+    return {
+      contractId: ret.contract_id,
+      contractNo: c?.contract_no ?? '-',
+      customerName: c?.customer_name ?? '-',
+      shopId: c?.shop_id ?? '',
+      shopName: c?.shop_id ? (shopNameMap.get(c.shop_id) ?? '-') : '-',
+      deviceModel: modelParts.join(' '),
+      deviceListPrice: Number(c?.finance_amount ?? 0),
+      commissionPaid: 0, // ไม่มีตาราง disbursement — แบมคำนวณจาก commission.ts
+      downPayment: Math.round((devicePrice * downPercent) / 100),
+      customerPaidPrincipal: principalMap.get(ret.contract_id) ?? 0,
+      resalePrice: ret.sale_price == null ? null : Number(ret.sale_price),
+      returnedAt: ret.transferred_at ?? ret.shipped_at ?? null,
+    }
+  })
 }

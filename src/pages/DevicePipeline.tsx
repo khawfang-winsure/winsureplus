@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Package } from 'lucide-react'
-import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
+import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getReturns, updateReturnWorkflow } from '../lib/db'
+import { getReturns, updateDefectNotes, updateReturnWorkflow } from '../lib/db'
 import type { DeviceReturnRow } from '../lib/types'
 import {
   DEVICE_STATUS_LABEL,
@@ -63,6 +63,43 @@ function applyFilter(
   if (filter === 'all') return rows
   if (filter === 'active') return rows.filter((r) => resolveStatus(r) !== 'shipped')
   return rows.filter((r) => resolveStatus(r) === filter)
+}
+
+// ===== Late-fill tracking cell (pending_check + ไม่มี tracking_number) =====
+function TrackingCell({ row, onSaved }: { row: DeviceReturnRow; onSaved: () => Promise<void> }) {
+  const { name } = useAuth()
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  async function save() {
+    if (!value.trim()) return
+    setBusy(true)
+    try {
+      await updateReturnWorkflow(row.id, { trackingNumber: value.trim(), updatedBy: name ?? undefined })
+      setSaved(true)
+      await onSaved()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (saved) return <span className="text-ink-soft text-xs">บันทึกแล้ว</span>
+
+  return (
+    <div className="flex items-center gap-1">
+      <Input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="ใส่เลขพัสดุ"
+        className="w-36 text-xs"
+      />
+      <Button variant="ghost" onClick={save} disabled={busy || !value.trim()}>
+        {busy ? '...' : 'บันทึก'}
+      </Button>
+    </div>
+  )
 }
 
 // ===== หน้าหลัก =====
@@ -134,6 +171,7 @@ export default function DevicePipeline() {
               {filtered.map((r) => {
                 const status = resolveStatus(r)
                 const nexts = nextStatuses(status)
+                const showLateFill = !r.trackingNumber && status === 'pending_check'
                 return (
                   <tr
                     key={r.id}
@@ -150,7 +188,13 @@ export default function DevicePipeline() {
                       </Badge>
                     </td>
                     <td className="py-3 pr-4 text-ink">
-                      {r.trackingNumber ?? <span className="text-ink-soft">-</span>}
+                      {showLateFill ? (
+                        <TrackingCell row={r} onSaved={load} />
+                      ) : r.trackingNumber ? (
+                        r.trackingNumber
+                      ) : (
+                        <span className="text-ink-soft">-</span>
+                      )}
                     </td>
                     <td className="py-3 pr-4 text-ink">
                       {r.salePrice != null
@@ -209,18 +253,16 @@ function StatusModal({
   const nexts = nextStatuses(currentStatus)
 
   const [targetStatus, setTargetStatus] = useState<DeviceStatus>(nexts[0] ?? currentStatus)
-  const [tracking, setTracking] = useState(row.trackingNumber ?? '')
   const [salePrice, setSalePrice] = useState(row.salePrice != null ? String(row.salePrice) : '')
+  const [defectNotes, setDefectNotes] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // แสดงเลขพัสดุเมื่อ: เปลี่ยน pending_check→checked หรือยังไม่มี tracking_number
-  const showTracking =
-    (currentStatus === 'pending_check' && targetStatus === 'checked') ||
-    !row.trackingNumber
-
   // แสดงราคาขายเมื่อ: เปลี่ยน pending_sale→priced
   const showSalePrice = currentStatus === 'pending_sale' && targetStatus === 'priced'
+
+  // แสดงตำหนิเครื่องเมื่อ: เปลี่ยนสถานะเป็น 'checked'
+  const showDefectNotes = targetStatus === 'checked'
 
   if (nexts.length === 0) {
     return (
@@ -243,10 +285,13 @@ function StatusModal({
     try {
       await updateReturnWorkflow(row.id, {
         deviceStatus: targetStatus,
-        trackingNumber: showTracking && tracking ? tracking : undefined,
         salePrice: showSalePrice && salePrice ? Number(salePrice) : undefined,
         updatedBy: name ?? undefined,
       })
+      // บันทึกตำหนิแยก (updateDefectNotes ใช้ column เดียวกันตลอด)
+      if (showDefectNotes && defectNotes.trim()) {
+        await updateDefectNotes(row.id, defectNotes.trim())
+      }
       await onDone()
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด กรุณาลองใหม่')
@@ -285,14 +330,14 @@ function StatusModal({
           </Select>
         </Field>
 
-        {/* เลขพัสดุ */}
-        {showTracking && (
-          <Field label="เลขพัสดุ">
-            <Input
-              type="text"
-              value={tracking}
-              onChange={(e) => setTracking(e.target.value)}
-              placeholder="เช่น EF123456789TH"
+        {/* ตำหนิตัวเครื่อง (เมื่อเปลี่ยนสถานะเป็น checked) */}
+        {showDefectNotes && (
+          <Field label="ตำหนิตัวเครื่อง (ถ้ามี)">
+            <Textarea
+              value={defectNotes}
+              onChange={(e) => setDefectNotes(e.target.value)}
+              placeholder="เช่น รอยขีดข่วนขอบซ้าย, หน้าจอมีรอยจาง..."
+              rows={3}
             />
           </Field>
         )}

@@ -208,6 +208,17 @@ export interface Contract {
   promisedAmount?: number | null   // ยอดที่สัญญาไว้ (บาท)
 }
 
+// ---------- Extra Charges (migration 0032) ----------
+
+export interface ExtraCharge {
+  id: string
+  contractId: string
+  amount: number
+  reason: string
+  createdAt: string
+  createdBy: string | null // denormalized name snapshot (text col)
+}
+
 // ---------- Grade Mobility (migration 0030) ----------
 
 /** ประเภทการเปลี่ยนแปลงเกรดรายเดือน จาก view v_grade_monthly_changes */

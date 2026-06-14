@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone } from 'lucide-react'
-import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
+import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle } from 'lucide-react'
+import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
   getContract,
@@ -10,7 +10,11 @@ import {
   getContractExtensions,
   getRateSets,
   getFollowUps,
-  recordPayment,
+  recordPaymentWithPenalty,
+  overridePenalty,
+  getExtraCharges,
+  insertExtraCharge,
+  deleteExtraCharge,
   adjustPayment,
   cancelPayment,
   restructureContract,
@@ -32,9 +36,10 @@ import {
   type RateSet,
 } from '../lib/rates'
 import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
+import { sumExtraCharges, totalOutstanding as calcTotalOutstanding } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
-import type { Contract, Installment } from '../lib/types'
+import type { Contract, ExtraCharge, Installment } from '../lib/types'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   due_day: 'เปลี่ยนวันที่ชำระ',
@@ -114,12 +119,16 @@ const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
 export default function ContractDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { role } = useAuth()
+  const { role, name: userName } = useAuth()
+  const isAdmin = role === 'admin'
+  const canStaff = role === 'admin' || role === 'staff'
+
   const [contract, setContract] = useState<Contract | null>(null)
   const [installments, setInstallments] = useState<Installment[]>([])
   const [log, setLog] = useState<PaymentLogEntry[]>([])
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
   const [rateSets, setRateSets] = useState<RateSet[]>([])
+  const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
@@ -128,24 +137,28 @@ export default function ContractDetail() {
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Installment | null>(null)
   const [histTarget, setHistTarget] = useState<Installment | null>(null) // โมดัลประวัติของงวดหนึ่ง
+  const [penaltyOverrideTarget, setPenaltyOverrideTarget] = useState<Installment | null>(null)
+  const [addExtraOpen, setAddExtraOpen] = useState(false)
   const [followHistory, setFollowHistory] = useState<FollowUpEntry[]>([])
   const [followHistoryLoading, setFollowHistoryLoading] = useState(true)
 
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
       getContractExtensions(id),
       getRateSets(),
+      getExtraCharges(id),
     ])
     setContract(c)
     setInstallments(ins)
     setLog(lg)
     setExtensions(ext)
     setRateSets(rs)
+    setExtraCharges(ec)
     setLoading(false)
   }, [id])
 
@@ -181,6 +194,9 @@ export default function ContractDetail() {
 
   const paidCount = installments.filter((i) => i.paidAt).length
   const penaltyDue = installments.filter((i) => !i.paidAt).reduce((s, i) => s + i.penaltyAmount, 0)
+  const extraChargesSum = sumExtraCharges(extraCharges)
+  const principalRemaining = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
+  const totalOutstandingAmt = calcTotalOutstanding(penaltyDue, extraChargesSum, principalRemaining)
 
   // จัดกลุ่มประวัติการชำระตามงวด + แยกรายการที่งวดถูกลบไปแล้ว (installmentId หลุดเป็น null หลังขยายเวลา)
   const liveInsIds = new Set(installments.map((i) => i.id))
@@ -226,10 +242,13 @@ export default function ContractDetail() {
         </div>
         <div className="flex items-center gap-2">
           <Badge tone={contract.status === 'active' ? 'green' : 'neutral'}>{statusLabel(contract.status)}</Badge>
-          <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
-            <Pencil size={15} /> แก้ไข
-          </Button>
-          {contract.status === 'active' && (
+          {/* #5 — ซ่อน แก้ไขสัญญา / ขยายระยะเวลา / คืนเครื่อง สำหรับ non-admin */}
+          {isAdmin && (
+            <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
+              <Pencil size={15} /> แก้ไข
+            </Button>
+          )}
+          {isAdmin && contract.status === 'active' && (
             <>
               {canExtend ? (
                 <Button variant="ghost" onClick={() => setExtendOpen(true)}>
@@ -248,13 +267,14 @@ export default function ContractDetail() {
         </div>
       </div>
 
-      {/* สรุป */}
-      <div className="mb-4 grid gap-3 sm:grid-cols-4">
+      {/* สรุป — เพิ่ม ยอดค้างรวม */}
+      <div className="mb-4 grid gap-3 sm:grid-cols-5">
         {[
           { l: 'ค่าเช่า/เดือน', v: `${baht(contract.monthlyPayment)} ฿` },
           { l: 'งวดที่ชำระแล้ว', v: `${paidCount}/${contract.termMonths}` },
           { l: 'ชำระทุกวันที่', v: String(contract.dueDay) },
           { l: 'ค่าปรับค้าง', v: `${baht(penaltyDue)} ฿` },
+          { l: 'ยอดค้างรวม', v: `${baht(totalOutstandingAmt)} ฿` },
         ].map((x) => (
           <Card key={x.l} className="py-3">
             <p className="text-xs text-ink-soft">{x.l}</p>
@@ -304,7 +324,7 @@ export default function ContractDetail() {
       </Card>
 
       {/* ===== สถานะพิเศษ (admin + staff เห็น; freelancer ซ่อน) ===== */}
-      {(role === 'admin' || role === 'staff') && (
+      {canStaff && (
         <Card className="mb-4 py-3">
           <div className="flex items-center justify-between gap-2">
             <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
@@ -335,7 +355,7 @@ export default function ContractDetail() {
       )}
 
       {/* ===== ประวัติการติดตาม (admin + staff เห็น) ===== */}
-      {(role === 'admin' || role === 'staff') && (
+      {canStaff && (
         <FollowHistory entries={followHistory} loading={followHistoryLoading} />
       )}
 
@@ -374,7 +394,26 @@ export default function ContractDetail() {
                         '-'
                       )}
                     </td>
-                    <td className="px-3 py-2.5">{i.penaltyAmount > 0 ? `${baht(i.penaltyAmount)} (${i.penaltyDays}ว.)` : '-'}</td>
+                    {/* #3 — ค่าปรับ: admin คลิกได้เพื่อ override, staff เห็น display only */}
+                    <td className="px-3 py-2.5">
+                      {i.penaltyAmount > 0 ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          {isAdmin ? (
+                            <button
+                              onClick={() => setPenaltyOverrideTarget(i)}
+                              className="rounded px-1 py-0.5 text-left hover:bg-amber-50 hover:text-amber-700"
+                              title="คลิกเพื่อแก้ไขค่าปรับ (admin)"
+                            >
+                              {baht(i.penaltyAmount)} ({i.penaltyDays}ว.)
+                            </button>
+                          ) : (
+                            <span>{baht(i.penaltyAmount)} ({i.penaltyDays}ว.)</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-ink-soft">-</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2.5">
                       {partial ? (
                         <Badge tone="amber">ชำระบางส่วน</Badge>
@@ -389,6 +428,7 @@ export default function ContractDetail() {
                         ins={i}
                         hasLog={logByIns.has(i.id)}
                         logCount={logByIns.get(i.id)?.length ?? 0}
+                        canStaff={canStaff}
                         onPay={() => setPayTarget({ ins: i, mode: 'pay' })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
                         onCancel={() => setCancelTarget(i)}
@@ -402,6 +442,65 @@ export default function ContractDetail() {
           </table>
         </div>
       )}
+
+      {/* #4 — ค่าใช้จ่ายอื่นๆ */}
+      <div className="mt-6">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 className="font-semibold text-ink">ค่าใช้จ่ายอื่นๆ</h3>
+          {/* admin+staff เพิ่มได้ */}
+          {canStaff && (
+            <Button variant="ghost" onClick={() => setAddExtraOpen(true)}>
+              <Plus size={14} /> เพิ่มค่าใช้จ่าย
+            </Button>
+          )}
+        </div>
+        {extraCharges.length === 0 ? (
+          <p className="rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink-soft">
+            ยังไม่มีค่าใช้จ่ายอื่นๆ
+          </p>
+        ) : (
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+            <table className="w-full min-w-[540px] text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  {['วันที่', 'เหตุผล', 'ยอด', 'ผู้บันทึก', ''].map((h, i) => (
+                    <th key={h || i} className="px-3 py-2.5 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {extraCharges.map((ec, idx) => (
+                  <tr key={ec.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(ec.createdAt.slice(0, 10))}</td>
+                    <td className="px-3 py-2.5">{ec.reason}</td>
+                    <td className="px-3 py-2.5 font-semibold text-red-600">{baht(ec.amount)} ฿</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{ec.createdBy || '—'}</td>
+                    <td className="px-3 py-2.5">
+                      {/* admin เท่านั้นที่ลบได้ */}
+                      {isAdmin && (
+                        <button
+                          onClick={async () => {
+                            await deleteExtraCharge(ec.id)
+                            await load()
+                          }}
+                          className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                        >
+                          ลบ
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {extraCharges.length > 0 && (
+          <p className="mt-2 text-right text-sm text-ink-soft">
+            รวมค่าใช้จ่ายอื่นๆ <b className="text-ink">{baht(extraChargesSum)} ฿</b>
+          </p>
+        )}
+      </div>
 
       {/* ประวัติการชำระของงวดที่ถูกแทนที่ (งวดถูกลบตอนขยายระยะเวลา → ไม่ผูกกับงวดปัจจุบัน) */}
       {orphanLogs.length > 0 && (
@@ -495,6 +594,7 @@ export default function ContractDetail() {
         <PaymentModal
           ins={payTarget.ins}
           mode={payTarget.mode}
+          userName={userName ?? ''}
           onClose={() => setPayTarget(null)}
           onDone={async () => {
             setPayTarget(null)
@@ -532,6 +632,32 @@ export default function ContractDetail() {
           onClose={() => setFlagsOpen(false)}
           onDone={async () => {
             setFlagsOpen(false)
+            await load()
+          }}
+        />
+      )}
+
+      {/* #3 — Penalty override modal (admin only) */}
+      {penaltyOverrideTarget && (
+        <PenaltyOverrideModal
+          ins={penaltyOverrideTarget}
+          userName={userName ?? ''}
+          onClose={() => setPenaltyOverrideTarget(null)}
+          onDone={async () => {
+            setPenaltyOverrideTarget(null)
+            await load()
+          }}
+        />
+      )}
+
+      {/* #4 — เพิ่มค่าใช้จ่ายอื่นๆ (admin+staff) */}
+      {addExtraOpen && id && (
+        <AddExtraChargeModal
+          contractId={id}
+          userName={userName ?? ''}
+          onClose={() => setAddExtraOpen(false)}
+          onDone={async () => {
+            setAddExtraOpen(false)
             await load()
           }}
         />
@@ -635,6 +761,7 @@ function RowActions({
   ins,
   hasLog,
   logCount,
+  canStaff,
   onPay,
   onEdit,
   onCancel,
@@ -643,6 +770,7 @@ function RowActions({
   ins: Installment
   hasLog: boolean
   logCount: number
+  canStaff: boolean
   onPay: () => void
   onEdit: () => void
   onCancel: () => void
@@ -688,8 +816,8 @@ function RowActions({
 
   return (
     <div className="relative flex flex-wrap items-center gap-1.5">
-      {/* รับชำระ — primary, โชว์เสมอถ้างวดยังไม่ปิด */}
-      {!ins.paidAt && (
+      {/* รับชำระ — primary, โชว์เฉพาะ admin+staff ถ้างวดยังไม่ปิด (#5) */}
+      {canStaff && !ins.paidAt && (
         <button
           onClick={onPay}
           className="rounded-lg bg-salmon-deep px-3 py-1 text-xs font-semibold text-white hover:brightness-105"
@@ -796,20 +924,29 @@ function PaymentHistoryModal({
   )
 }
 
+/**
+ * #2 — PaymentModal: เพิ่ม field ค่าปรับ + breakdown
+ * โหมด 'pay': ใช้ recordPaymentWithPenalty (principal + penalty แยก) — ไม่รับ note
+ * โหมด 'edit': ใช้ adjustPayment เดิม (แก้ยอดสะสม — penalty ไม่เกี่ยว, รับ note ได้)
+ */
 function PaymentModal({
   ins,
   mode,
+  userName,
   onClose,
   onDone,
 }: {
   ins: Installment
   mode: 'pay' | 'edit'
+  userName: string
   onClose: () => void
   onDone: () => void
 }) {
   const remaining = Math.max(0, ins.amount - ins.paidAmount)
   // โหมดรับชำระ: ตั้งค่าเริ่มต้น = ยอดค้างที่เหลือ / โหมดแก้ไข: = ยอดสะสมปัจจุบัน
   const [amount, setAmount] = useState<number>(mode === 'pay' ? remaining : ins.paidAmount)
+  // ค่าปรับ default = penalty_amount ของงวด (ถ้างวดยังไม่ปิด), 0 ถ้าแก้ไขยอด
+  const [penaltyPaid, setPenaltyPaid] = useState<number>(mode === 'pay' ? ins.penaltyAmount : 0)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -818,8 +955,12 @@ function PaymentModal({
     setBusy(true)
     setErr(null)
     try {
-      if (mode === 'pay') await recordPayment(ins.id, amount, note || undefined)
-      else await adjustPayment(ins.id, amount, note || undefined)
+      if (mode === 'pay') {
+        // recordPaymentWithPenalty — แยก principal + penalty
+        await recordPaymentWithPenalty(ins.id, amount, penaltyPaid, userName)
+      } else {
+        await adjustPayment(ins.id, amount, note || undefined)
+      }
       onDone()
     } catch (e) {
       setErr(errMsg(e))
@@ -829,6 +970,7 @@ function PaymentModal({
 
   const previewTotal = mode === 'pay' ? ins.paidAmount + amount : amount
   const willClose = previewTotal >= ins.amount
+  const grandTotal = amount + (mode === 'pay' ? penaltyPaid : 0)
 
   return (
     <Modal title={mode === 'pay' ? `รับชำระ — งวดที่ ${ins.installmentNo}` : `แก้ไขยอด — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
@@ -857,15 +999,57 @@ function PaymentModal({
           />
         </Field>
 
-        <Field label="หมายเหตุ (ถ้ามี)">
-          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น โอนผ่านธนาคาร / แก้ไขจากกรอกผิด" />
-        </Field>
+        {/* #2 — ค่าปรับ: แสดงเฉพาะโหมด 'pay' */}
+        {mode === 'pay' && (
+          <Field label={`ค่าปรับที่จ่ายครั้งนี้ (บาท) — ค่าปรับคงค้าง ${baht(ins.penaltyAmount)} ฿`}>
+            <Input
+              type="number"
+              value={penaltyPaid || ''}
+              onChange={(e) => setPenaltyPaid(Number(e.target.value) || 0)}
+            />
+          </Field>
+        )}
+
+        {/* Breakdown: ค่างวด + ค่าปรับ → รวม */}
+        {mode === 'pay' && (
+          <div className="rounded-xl border border-peach bg-white px-3 py-2.5 text-sm">
+            <p className="mb-1.5 font-semibold text-ink">รายละเอียดการรับเงิน</p>
+            <div className="flex flex-col gap-1 text-ink-soft">
+              <div className="flex justify-between">
+                <span>ค่างวดที่รับครั้งนี้</span>
+                <span className="font-semibold text-ink">{baht(amount)} ฿</span>
+              </div>
+              <div className="flex justify-between">
+                <span>ค่าปรับที่รับครั้งนี้</span>
+                <span className="font-semibold text-ink">{baht(penaltyPaid)} ฿</span>
+              </div>
+              <div className="mt-1 flex justify-between border-t border-peach pt-1 font-semibold">
+                <span className="text-ink">รวมรับทั้งหมด</span>
+                <span className="text-ink">{baht(grandTotal)} ฿</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mode === 'pay' && ins.penaltyAmount > 0 && (
+          <p className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            หมายเหตุ: ค่าปรับที่รับครั้งนี้บันทึกแยกจากค่างวด — ยอดค้างงวดคำนวณจากค่างวดเท่านั้น
+          </p>
+        )}
 
         <p className={`rounded-lg px-3 py-2 text-sm ${willClose ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
           {willClose
-            ? `ยอดสะสมจะเป็น ${baht(previewTotal)} ฿ → ปิดงวดนี้ (ชำระครบ)`
-            : `ยอดสะสมจะเป็น ${baht(previewTotal)} ฿ → ค้างอีก ${baht(Math.max(0, ins.amount - previewTotal))} ฿ (งวดยังเปิด)`}
+            ? `ยอดสะสมค่างวดจะเป็น ${baht(previewTotal)} ฿ → ปิดงวดนี้ (ชำระครบ)`
+            : `ยอดสะสมค่างวดจะเป็น ${baht(previewTotal)} ฿ → ค้างอีก ${baht(Math.max(0, ins.amount - previewTotal))} ฿ (งวดยังเปิด)`}
         </p>
+
+        {/* Note: แสดงเฉพาะโหมด edit เท่านั้น (recordPaymentWithPenalty ไม่รับ note) */}
+        {mode === 'edit' && (
+          <Field label="หมายเหตุ (ถ้ามี)">
+            <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น โอนผ่านธนาคาร / แก้ไขจากกรอกผิด" />
+          </Field>
+        )}
 
         {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -899,7 +1083,7 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
     <Modal title={`ยกเลิกการชำระ — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-          จะล้างยอดชำระทั้งหมดของงวดนี้ ({baht(ins.paidAmount)} ฿) แล้วคืนเป็น “ค้างชำระ” — บันทึกลงประวัติด้วย
+          จะล้างยอดชำระทั้งหมดของงวดนี้ ({baht(ins.paidAmount)} ฿) แล้วคืนเป็น "ค้างชำระ" — บันทึกลงประวัติด้วย
         </p>
         <Field label="เหตุผลที่ยกเลิก (แนะนำให้ระบุ)">
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น กดรับชำระผิดเคส" />
@@ -908,6 +1092,135 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ปิด</Button>
           <Button onClick={save} disabled={busy}>{busy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิก'}</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * #3 — PenaltyOverrideModal (admin only)
+ * แก้ค่าปรับของงวดที่เลือก + ตั้ง penalty_overridden=true กัน cron reset
+ * หมายเหตุ: badge "Override" ต้องรอน้องชีสเพิ่ม penaltyOverridden ใน Installment type + getInstallments mapping
+ */
+function PenaltyOverrideModal({
+  ins,
+  userName,
+  onClose,
+  onDone,
+}: {
+  ins: Installment
+  userName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [newAmount, setNewAmount] = useState<number>(ins.penaltyAmount)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await overridePenalty(ins.id, newAmount, userName)
+      onDone()
+    } catch (e) {
+      setErr(errMsg(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={`แก้ไขค่าปรับ — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="rounded-xl bg-peach-light/40 px-3 py-2.5 text-sm">
+          <p className="text-ink-soft">ค่าปรับปัจจุบัน</p>
+          <p className="font-semibold text-ink">{baht(ins.penaltyAmount)} ฿ ({ins.penaltyDays} วัน)</p>
+        </div>
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          การแก้ไขค่าปรับจะล็อกค่านี้ไว้ — ระบบอัตโนมัติจะไม่คำนวณค่าปรับซ้ำสำหรับงวดนี้อีก
+        </p>
+        <Field label="ค่าปรับใหม่ (บาท)">
+          <Input
+            type="number"
+            autoFocus
+            value={newAmount || ''}
+            onChange={(e) => setNewAmount(Number(e.target.value) || 0)}
+          />
+        </Field>
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy || newAmount < 0}>
+            {busy ? 'กำลังบันทึก...' : 'บันทึกค่าปรับใหม่'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * #4 — AddExtraChargeModal (admin+staff)
+ * เพิ่มค่าใช้จ่ายพิเศษ: amount + reason
+ */
+function AddExtraChargeModal({
+  contractId,
+  userName,
+  onClose,
+  onDone,
+}: {
+  contractId: string
+  userName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [amount, setAmount] = useState<number>(0)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function save() {
+    if (!reason.trim() || amount <= 0) {
+      setErr('กรุณาระบุยอดเงินและเหตุผล')
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      await insertExtraCharge(contractId, amount, reason.trim(), userName)
+      onDone()
+    } catch (e) {
+      setErr(errMsg(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="เพิ่มค่าใช้จ่ายอื่นๆ" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="ยอดเงิน (บาท)">
+          <Input
+            type="number"
+            autoFocus
+            value={amount || ''}
+            onChange={(e) => setAmount(Number(e.target.value) || 0)}
+          />
+        </Field>
+        <Field label="เหตุผล / รายละเอียด">
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="เช่น ค่าธรรมเนียมทวงหนี้ / ค่าส่งจดหมายลงทะเบียน"
+            rows={2}
+          />
+        </Field>
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy || amount <= 0 || !reason.trim()}>
+            {busy ? 'กำลังบันทึก...' : 'เพิ่มค่าใช้จ่าย'}
+          </Button>
         </div>
       </div>
     </Modal>
@@ -941,6 +1254,10 @@ function ExtendModal({
   const penaltyDue = installments.filter((i) => !i.paidAt).reduce((s, i) => s + i.penaltyAmount, 0)
   // เงินต้นแท้ตอนทำสัญญา (สูตรเดียวกับ DB generated column after_down)
   const afterDown = calcSummary(contract.devicePrice, contract.downPercent, contract.commissionPercent, contract.docFee).afterDown
+
+  // #6 — ประวัติการชำระ: งวดที่จ่ายแล้ว (เรียงตาม installmentNo)
+  const paidInstallments = installments.filter((i) => i.paidAt).sort((a, b) => a.installmentNo - b.installmentNo)
+  const totalPaidAmount = paidInstallments.reduce((s, i) => s + i.paidAmount, 0)
 
   // ประเภทที่ยังขยายได้ตามสิทธิ์ที่เหลือ (กฎ: ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const allowed = allowedExtTypes(extensions)
@@ -1007,7 +1324,8 @@ function ExtendModal({
 
   // breakdown สำหรับ months/both
   const oldInterest = outstanding - (calc?.principalRemaining ?? outstanding)
-  const totalOutstanding = outstanding + penaltyDue
+  // ยอดค้างรวมใน ExtendModal: outstanding + penaltyDue (ไม่รวม extraCharges ที่ไม่ fetch ในนี้)
+  const totalOutstandingLocal = outstanding + penaltyDue
 
   const canSubmit = newDueDay >= 1 && newDueDay <= 31 && activeTerm > 0 && activeFinance >= 0
 
@@ -1050,6 +1368,29 @@ function ExtendModal({
         {!alreadyPaidOff && missingPrincipal && (
           <div className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
             สัญญาเก่าไม่มีข้อมูลเงินต้นแท้ ไม่สามารถขยายด้วยสูตรใหม่ — ติดต่อแอดมิน
+          </div>
+        )}
+
+        {/* #6 — ประวัติการชำระ */}
+        {paidInstallments.length > 0 && (
+          <div className="rounded-xl border border-peach bg-white p-3">
+            <p className="mb-2 text-sm font-semibold text-ink">
+              ประวัติการชำระ — จ่ายมาแล้ว {paidInstallments.length} งวด · รวม {baht(totalPaidAmount)} ฿
+            </p>
+            <ol className="flex max-h-48 flex-col gap-1 overflow-y-auto text-xs text-ink-soft">
+              {paidInstallments.map((i) => (
+                <li key={i.id} className="flex items-center gap-2">
+                  <span className="shrink-0 font-semibold text-green-600">งวด {i.installmentNo} ✓</span>
+                  <span>{baht(i.paidAmount)} ฿</span>
+                  {i.paidAt && (
+                    <span className="text-ink-soft">(จ่ายเมื่อ {thaiDate(i.paidAt.slice(0, 10))})</span>
+                  )}
+                </li>
+              ))}
+            </ol>
+            <p className="mt-2 border-t border-peach pt-2 text-xs">
+              เงินต้นคงค้าง: <b className="text-ink">{baht(calc?.principalRemaining ?? outstanding)} ฿</b>
+            </p>
           </div>
         )}
 
@@ -1126,7 +1467,7 @@ function ExtendModal({
               )}
               <div className="mt-1 flex justify-between border-t border-peach pt-1 font-semibold">
                 <span className="text-ink">รวมทั้งสิ้น</span>
-                <span className="text-ink">{baht(totalOutstanding)} ฿</span>
+                <span className="text-ink">{baht(totalOutstandingLocal)} ฿</span>
               </div>
             </div>
             <div className="mt-3 rounded-lg bg-peach-light/60 px-3 py-2 text-sm">
@@ -1146,6 +1487,7 @@ function ExtendModal({
           />
         </Field>
 
+        {/* #6 — Preview งวดใหม่ (ขยับมาอยู่หลัง input วันชำระ) */}
         <div className="rounded-xl border border-peach bg-white px-3 py-2.5 text-sm">
           <p className="font-semibold text-ink">สรุปงวดใหม่</p>
           <p className="text-ink-soft">
@@ -1176,6 +1518,11 @@ function ExtendModal({
   )
 }
 
+/**
+ * ReturnModal: บันทึกการคืนเครื่อง
+ * หมายเหตุ: เลขพัสดุ (tracking_number) รอน้องชีสเพิ่ม ReturnInput.trackingNumber + submitReturn
+ * → ยังไม่แสดง field นี้ในโมดัลนี้ กรอกได้ภายหลังที่หน้าไพพ์ไลน์เครื่อง
+ */
 function ReturnModal({
   contractId,
   onClose,
@@ -1221,6 +1568,8 @@ function ReturnModal({
             <option value="3">3 — ชำระครบ+ค่าซ่อม(ถ้ามี)แล้ว → ปิดสัญญา</option>
           </Select>
         </Field>
+
+        {/* เลขพัสดุ: กรอกได้ที่หน้าไพพ์ไลน์เครื่องภายหลัง (รอน้องชีสเพิ่ม ReturnInput.trackingNumber) */}
 
         <label className="flex items-center gap-2 text-sm text-ink">
           <input
