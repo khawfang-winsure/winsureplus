@@ -28,16 +28,18 @@ import {
   type EscalateContract,
 } from '../lib/db'
 import { buildExecDashboard, buildGradeMovement, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult } from '../lib/execDashboard'
+import { buildCashflowForecast, type CashflowForecastInput, type CashflowForecastResult } from '../lib/cashflowForecast'
 import { detectBottlenecks, type BottleneckAlert } from '../lib/bottleneck'
 import type { ShopGrade } from '../lib/types'
 
-type Tab = 'overview' | Granularity | 'grade'
+type Tab = 'overview' | Granularity | 'grade' | 'forecast'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'ภาพรวมทั้งหมด' },
   { key: 'day', label: 'รายวัน' },
   { key: 'week', label: 'รายสัปดาห์' },
   { key: 'month', label: 'รายเดือน' },
   { key: 'grade', label: 'การขยับเกรด' },
+  { key: 'forecast', label: 'พยากรณ์' },
 ]
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
@@ -112,6 +114,24 @@ export default function ExecDashboard() {
     return buildGradeMovement(rows, count, todayISO)
   }, null)
 
+  const { data: forecastInputData, loading: forecastLoading, error: forecastError } = useAsync<{ upcomingInstallments: CashflowForecastInput['upcomingInstallments'] } | null>(async () => {
+    const [installments, statuses] = await Promise.all([getAllInstallments(), getAllStatuses()])
+    // สร้าง lookup: contractId → { contractStatus, grade }
+    const statusMap = new Map(statuses.map((s) => [s.contractId, { contractStatus: s.status, grade: s.grade }]))
+    const upcomingInstallments = installments.map((inst) => {
+      const info = statusMap.get(inst.contractId)
+      return {
+        contractId: inst.contractId,
+        dueDate: inst.dueDate,
+        amount: inst.amount,
+        status: inst.paidAt != null ? 'paid' as const : 'pending' as const,
+        contractStatus: info?.contractStatus ?? 'closed',
+        currentGrade: info?.grade ?? null,
+      }
+    })
+    return { upcomingInstallments }
+  }, null)
+
   if (loading || !data) {
     return (
       <div>
@@ -166,6 +186,19 @@ export default function ExecDashboard() {
         gradeLoading ? <Loading />
         : gradeError ? <p className="text-sm text-red-500 p-4">โหลดข้อมูลไม่ได้: {String(gradeError)}</p>
         : gradeMovement ? <GradeMovementView data={gradeMovement} />
+        : <Loading />
+      )}
+
+      {tab === 'forecast' && (
+        forecastLoading ? <Loading />
+        : forecastError ? <p className="text-sm text-red-500 p-4">โหลดข้อมูลไม่ได้: {String(forecastError)}</p>
+        : forecastInputData ? <ForecastView
+            result={buildCashflowForecast({
+              upcomingInstallments: forecastInputData.upcomingInstallments,
+              pastMonthlyOutflows: d.cashflowMonth.slice(-3).map((r) => r.expense),
+              todayISO,
+            })}
+          />
         : <Loading />
       )}
 
@@ -727,6 +760,93 @@ function BottleneckWidget({ navigate, isExec }: { navigate: (to: string) => void
         <p className="mt-2 text-xs text-ink-soft">แสดง 10 รายการแรก (ทั้งหมด {alerts.length} รายการ)</p>
       )}
     </Card>
+  )
+}
+
+// ---------- พยากรณ์กระแสเงินสด 3 เดือนข้างหน้า ----------
+function ForecastView({ result }: { result: CashflowForecastResult }) {
+  const { months, totalExpectedInflow, totalExpectedOutflow, totalNet, assumptions } = result
+
+  if (months.length === 0) {
+    return (
+      <Card>
+        <h3 className="mb-2 font-semibold text-ink">พยากรณ์ 3 เดือนข้างหน้า</h3>
+        <p className="text-sm text-ink-soft">ไม่มีงวดที่ครบกำหนดในอนาคต</p>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* สรุปรวม */}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi label="เงินเข้าคาดหวัง (รวม 3 เดือน)" value={`฿${money(totalExpectedInflow)}`} tone="text-green-600" />
+        <Kpi label="เงินออกคาดหวัง (รวม 3 เดือน)" value={`฿${money(totalExpectedOutflow)}`} tone="text-amber-600" />
+        <Kpi label="สุทธิคาดหวัง (รวม 3 เดือน)" value={`฿${money(totalNet)}`} tone={totalNet >= 0 ? 'text-green-600' : 'text-red-600'} />
+      </div>
+
+      {/* ตารางรายเดือน */}
+      <Card>
+        <h3 className="mb-3 font-semibold text-ink">พยากรณ์ 3 เดือนข้างหน้า (จากค่างวดในอนาคต × ความน่าจะเป็นตามเกรด)</h3>
+        <div className="scrollbar-thin overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-ink-soft">
+                <th className="py-2 font-semibold">เดือน</th>
+                <th className="py-2 text-right font-semibold">งวดที่ครบ</th>
+                <th className="py-2 text-right font-semibold">คาดว่าจ่าย</th>
+                <th className="py-2 text-right font-semibold">เงินเข้าคาดหวัง</th>
+                <th className="py-2 text-right font-semibold">เงินออกคาดหวัง</th>
+                <th className="py-2 text-right font-semibold">สุทธิ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {months.map((m) => (
+                <tr key={m.monthLabel} className="border-b border-peach/50 last:border-0">
+                  <td className="py-2 font-medium text-ink">{m.monthLabel}</td>
+                  <td className="py-2 text-right text-ink-soft">{m.installmentCount}</td>
+                  <td className="py-2 text-right text-ink-soft">{m.expectedPaidCount}</td>
+                  <td className="py-2 text-right text-green-600">฿{money(m.expectedInflow)}</td>
+                  <td className="py-2 text-right text-amber-600">฿{money(m.expectedOutflow)}</td>
+                  <td className={`py-2 text-right font-semibold ${m.net >= 0 ? 'text-ink' : 'text-red-600'}`}>
+                    {m.net >= 0 ? '+' : ''}฿{money(m.net)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-peach">
+                <td className="py-2 font-semibold text-ink" colSpan={3}>รวม 3 เดือน</td>
+                <td className="py-2 text-right font-semibold text-green-600">฿{money(totalExpectedInflow)}</td>
+                <td className="py-2 text-right font-semibold text-amber-600">฿{money(totalExpectedOutflow)}</td>
+                <td className={`py-2 text-right font-bold ${totalNet >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {totalNet >= 0 ? '+' : ''}฿{money(totalNet)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {/* กล่องสมมติฐาน */}
+        <div className="mt-4 rounded-xl border border-peach bg-peach-light/40 p-3 text-xs text-ink-soft">
+          <p className="mb-1 font-semibold text-ink">หมายเหตุ (สมมติฐานที่ใช้คำนวณ)</p>
+          <p>
+            · อัตราจ่ายตรงตามเกรดค้าง:{' '}
+            {Object.entries(assumptions.payRateByGrade)
+              .map(([g, r]) => `${g}=${Math.round(r * 100)}%`)
+              .join(' · ')}
+          </p>
+          <p>· ลูกค้าที่จ่ายตรงกำหนด (ยังไม่มีเกรดค้าง) ใช้อัตราอนุรักษ์นิยม 50% ตัวเลขจริงอาจสูงกว่านี้</p>
+          <p>
+            · เงินออกเฉลี่ย:{' '}
+            {assumptions.avgMonthlyOutflow > 0
+              ? `฿${money(assumptions.avgMonthlyOutflow)}/เดือน (จากเงินโอนให้ร้านย้อนหลัง 3 เดือน)`
+              : 'ไม่มีข้อมูลเงินออกย้อนหลัง (แสดง 0)'}
+          </p>
+          <p>· ตัวเลขนี้เป็นการประมาณการเท่านั้น ไม่ใช่การรับประกันการชำระ</p>
+        </div>
+      </Card>
+    </div>
   )
 }
 
