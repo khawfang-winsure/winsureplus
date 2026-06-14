@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Package } from 'lucide-react'
+import { Package, Pencil } from 'lucide-react'
 import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getReturns, updateDefectNotes, updateReturnWorkflow } from '../lib/db'
+import { getReturns, updateDefectNotes, updateReturnWorkflow, updateSalePrice } from '../lib/db'
 import type { DeviceReturnRow } from '../lib/types'
 import {
   DEVICE_STATUS_LABEL,
@@ -102,12 +102,79 @@ function TrackingCell({ row, onSaved }: { row: DeviceReturnRow; onSaved: () => P
   )
 }
 
+// ===== Modal แก้ราคาขาย (admin — status=priced) =====
+function EditSalePriceModal({
+  row,
+  onClose,
+  onDone,
+}: {
+  row: DeviceReturnRow
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const [price, setPrice] = useState(row.salePrice != null ? String(row.salePrice) : '')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function save() {
+    const parsed = Number(price)
+    if (!price || isNaN(parsed) || parsed < 0) {
+      setErr('กรุณาระบุราคาขายที่ถูกต้อง')
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      await updateSalePrice(row.id, parsed)
+      await onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด กรุณาลองใหม่')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={`แก้ราคาขาย — ${row.customerName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">สัญญา {row.contractNo}</p>
+        {row.pricedAt && (
+          <p className="text-xs text-ink-soft">อัปเดตล่าสุด: {fmtDatetime(row.pricedAt)}</p>
+        )}
+        <Field label="ราคาขาย (บาท)" required>
+          <Input
+            type="number"
+            min={0}
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="ระบุราคาขายเครื่อง"
+            autoFocus
+          />
+        </Field>
+        {err && (
+          <p className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{err}</p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy || !price}>
+            <Pencil size={14} />
+            {busy ? 'กำลังบันทึก...' : 'บันทึกราคา'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ===== หน้าหลัก =====
 export default function DevicePipeline() {
+  const { role, configured } = useAuth()
+  const isAdmin = !configured || role === 'admin'
+
   const [rows, setRows] = useState<DeviceReturnRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<DeviceStatus | 'all' | 'active'>('active')
   const [selected, setSelected] = useState<DeviceReturnRow | null>(null)
+  const [editPriceTarget, setEditPriceTarget] = useState<DeviceReturnRow | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -197,9 +264,23 @@ export default function DevicePipeline() {
                       )}
                     </td>
                     <td className="py-3 pr-4 text-ink">
-                      {r.salePrice != null
-                        ? `${baht(r.salePrice)} ฿`
-                        : <span className="text-ink-soft">-</span>}
+                      {status === 'priced' && isAdmin ? (
+                        <div className="flex items-center gap-1.5">
+                          <span>{r.salePrice != null ? `${baht(r.salePrice)} ฿` : <span className="text-ink-soft">-</span>}</span>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setEditPriceTarget(r)}
+                            aria-label="แก้ไขราคาขาย"
+                          >
+                            <Pencil size={13} />
+                            แก้ราคา
+                          </Button>
+                        </div>
+                      ) : r.salePrice != null ? (
+                        `${baht(r.salePrice)} ฿`
+                      ) : (
+                        <span className="text-ink-soft">-</span>
+                      )}
                     </td>
                     <td className="py-3 pr-4 text-ink-soft">
                       {fmtDatetime(r.deviceStatusUpdatedAt)}
@@ -230,6 +311,17 @@ export default function DevicePipeline() {
           onClose={() => setSelected(null)}
           onDone={async () => {
             setSelected(null)
+            await load()
+          }}
+        />
+      )}
+
+      {editPriceTarget && (
+        <EditSalePriceModal
+          row={editPriceTarget}
+          onClose={() => setEditPriceTarget(null)}
+          onDone={async () => {
+            setEditPriceTarget(null)
             await load()
           }}
         />

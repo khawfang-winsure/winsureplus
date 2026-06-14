@@ -101,6 +101,12 @@ export interface DeviceReturnRow {
   deviceStatusUpdatedAt?: string | null
   deviceStatusBy?: string | null
   deviceModel?: string | null
+  // --- Attribution + Repair cost (0035) ---
+  attributedFreelancerId?: string | null
+  attributedAt?: string | null
+  repairCost?: number
+  defectNotes?: string | null
+  attributedFreelancerName?: string | null
 }
 
 export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'

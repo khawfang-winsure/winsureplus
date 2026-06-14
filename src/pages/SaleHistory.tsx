@@ -2,10 +2,15 @@ import { useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getSaleHistoryRaw, type SaleHistoryInput as RawInput } from '../lib/db'
+import { getSaleHistoryRaw, getReturns, type SaleHistoryInput as RawInput } from '../lib/db'
 import { buildSaleHistory, type SaleHistoryRow } from '../lib/saleHistory'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
+
+// ⚠️ FLAG ครีม: ค่าคอมฟรีแลนซ์ 5% ของราคาขาย — ยังไม่ผ่าน commission.ts
+// และยังไม่ได้หัก repair_cost (repairCost อยู่ใน DeviceReturnRow.repairCost)
+// ให้ยืนยันสูตรกับแบมก่อนที่จะ ship หน้านี้ใน production
+const FREELANCER_COMMISSION_RATE = 0.05
 
 // ===== ปรับ raw output ของ db → แบบที่ buildSaleHistory ต้องการ =====
 function adaptRaw(raw: RawInput): Parameters<typeof buildSaleHistory>[0][number] {
@@ -82,6 +87,21 @@ export default function SaleHistory() {
     [],
   )
 
+  // attribution: load device_returns to join freelancer name by contractId
+  // Multiple returns per contract possible (caseNo 1|2|3) — last iterated wins; acceptable for display
+  const { data: returnRows } = useAsync(
+    () => getReturns(),
+    [],
+  )
+
+  const attributionMap = useMemo<Map<string, string | null>>(() => {
+    const m = new Map<string, string | null>()
+    for (const r of returnRows) {
+      m.set(r.contractId, r.attributedFreelancerName ?? null)
+    }
+    return m
+  }, [returnRows])
+
   const rows: SaleHistoryRow[] = useMemo(
     () => buildSaleHistory(rawRows.map(adaptRaw)),
     [rawRows],
@@ -152,37 +172,53 @@ export default function SaleHistory() {
                   <th className="py-2 pr-4 font-medium text-right">เงินดาวน์</th>
                   <th className="py-2 pr-4 font-medium text-right">ลูกค้าผ่อน</th>
                   <th className="py-2 pr-4 font-medium text-right">ขายได้</th>
+                  <th className="py-2 pr-4 font-medium">ผู้ติดตาม (ฟรีแลนซ์)</th>
+                  <th className="py-2 pr-4 font-medium text-right">ค่าคอมฟรีแลนซ์</th>
                   <th className="py-2 font-medium text-right">กำไร/ขาดทุน</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => (
-                  <tr
-                    key={r.contractId}
-                    className="border-b border-peach/50 hover:bg-peach-light/30"
-                  >
-                    <td className="py-3 pr-4 text-ink-soft">
-                      {r.returnedAt ? thaiDate(r.returnedAt.slice(0, 10)) : '-'}
-                    </td>
-                    <td className="py-3 pr-4">
-                      <p className="font-medium text-ink">{r.customerName}</p>
-                      <p className="text-xs text-ink-soft">{r.contractNo}</p>
-                    </td>
-                    <td className="py-3 pr-4 text-ink">{r.shopName}</td>
-                    <td className="py-3 pr-4 text-right text-ink">{baht(r.deviceListPrice)} ฿</td>
-                    <td className="py-3 pr-4 text-right text-ink">
-                      {r.commissionPaid > 0 ? `${baht(r.commissionPaid)} ฿` : <span className="text-ink-soft">-</span>}
-                    </td>
-                    <td className="py-3 pr-4 text-right text-ink">{baht(r.downPayment)} ฿</td>
-                    <td className="py-3 pr-4 text-right text-ink">{baht(r.customerPaidPrincipal)} ฿</td>
-                    <td className="py-3 pr-4 text-right text-ink">
-                      {r.resalePrice > 0 ? `${baht(r.resalePrice)} ฿` : <span className="text-ink-soft">-</span>}
-                    </td>
-                    <td className="py-3 text-right">
-                      <ProfitBadge value={r.profitLoss} />
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((r) => {
+                  const freelancerName = attributionMap.get(r.contractId) ?? null
+                  const freelancerCommission = r.resalePrice > 0
+                    ? Math.round(r.resalePrice * FREELANCER_COMMISSION_RATE)
+                    : 0
+                  return (
+                    <tr
+                      key={r.contractId}
+                      className="border-b border-peach/50 hover:bg-peach-light/30"
+                    >
+                      <td className="py-3 pr-4 text-ink-soft">
+                        {r.returnedAt ? thaiDate(r.returnedAt.slice(0, 10)) : '-'}
+                      </td>
+                      <td className="py-3 pr-4">
+                        <p className="font-medium text-ink">{r.customerName}</p>
+                        <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                      </td>
+                      <td className="py-3 pr-4 text-ink">{r.shopName}</td>
+                      <td className="py-3 pr-4 text-right text-ink">{baht(r.deviceListPrice)} ฿</td>
+                      <td className="py-3 pr-4 text-right text-ink">
+                        {r.commissionPaid > 0 ? `${baht(r.commissionPaid)} ฿` : <span className="text-ink-soft">-</span>}
+                      </td>
+                      <td className="py-3 pr-4 text-right text-ink">{baht(r.downPayment)} ฿</td>
+                      <td className="py-3 pr-4 text-right text-ink">{baht(r.customerPaidPrincipal)} ฿</td>
+                      <td className="py-3 pr-4 text-right text-ink">
+                        {r.resalePrice > 0 ? `${baht(r.resalePrice)} ฿` : <span className="text-ink-soft">-</span>}
+                      </td>
+                      <td className="py-3 pr-4 text-ink">
+                        {freelancerName ?? <span className="text-ink-soft">—</span>}
+                      </td>
+                      <td className="py-3 pr-4 text-right text-ink">
+                        {freelancerName && freelancerCommission > 0
+                          ? `${baht(freelancerCommission)} ฿`
+                          : <span className="text-ink-soft">—</span>}
+                      </td>
+                      <td className="py-3 text-right">
+                        <ProfitBadge value={r.profitLoss} />
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

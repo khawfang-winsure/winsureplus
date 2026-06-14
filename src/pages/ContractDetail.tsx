@@ -36,7 +36,7 @@ import {
   type RateSet,
 } from '../lib/rates'
 import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
-import { sumExtraCharges, totalOutstanding as calcTotalOutstanding } from '../lib/outstandingExtras'
+import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment } from '../lib/types'
@@ -197,6 +197,11 @@ export default function ContractDetail() {
   const extraChargesSum = sumExtraCharges(extraCharges)
   const principalRemaining = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
   const totalOutstandingAmt = calcTotalOutstanding(penaltyDue, extraChargesSum, principalRemaining)
+  // ยอดคงค้างหลังคืนเครื่อง (แสดงแทน totalOutstanding เมื่อ status='returned')
+  const returnedOutstanding: OutstandingAfterReturnResult | null =
+    contract.status === 'returned'
+      ? outstandingAfterReturn(installments, extraCharges)
+      : null
 
   // จัดกลุ่มประวัติการชำระตามงวด + แยกรายการที่งวดถูกลบไปแล้ว (installmentId หลุดเป็น null หลังขยายเวลา)
   const liveInsIds = new Set(installments.map((i) => i.id))
@@ -242,13 +247,14 @@ export default function ContractDetail() {
         </div>
         <div className="flex items-center gap-2">
           <Badge tone={contract.status === 'active' ? 'green' : 'neutral'}>{statusLabel(contract.status)}</Badge>
-          {/* #5 — ซ่อน แก้ไขสัญญา / ขยายระยะเวลา / คืนเครื่อง สำหรับ non-admin */}
+          {/* แก้ไขสัญญา — admin only */}
           {isAdmin && (
             <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
               <Pencil size={15} /> แก้ไข
             </Button>
           )}
-          {isAdmin && contract.status === 'active' && (
+          {/* ขยายระยะเวลา + คืนเครื่อง — admin และ staff */}
+          {canStaff && contract.status === 'active' && (
             <>
               {canExtend ? (
                 <Button variant="ghost" onClick={() => setExtendOpen(true)}>
@@ -267,14 +273,17 @@ export default function ContractDetail() {
         </div>
       </div>
 
-      {/* สรุป — เพิ่ม ยอดค้างรวม */}
-      <div className="mb-4 grid gap-3 sm:grid-cols-5">
+      {/* สรุป — เมื่อคืนเครื่องแล้วให้ซ่อน "ยอดค้างรวม" (เงินต้นเต็ม) เพราะมี breakdown หลังคืนด้านล่างแทน */}
+      <div className={`mb-4 grid gap-3 ${returnedOutstanding !== null ? 'sm:grid-cols-4' : 'sm:grid-cols-5'}`}>
         {[
           { l: 'ค่าเช่า/เดือน', v: `${baht(contract.monthlyPayment)} ฿` },
           { l: 'งวดที่ชำระแล้ว', v: `${paidCount}/${contract.termMonths}` },
           { l: 'ชำระทุกวันที่', v: String(contract.dueDay) },
           { l: 'ค่าปรับค้าง', v: `${baht(penaltyDue)} ฿` },
-          { l: 'ยอดค้างรวม', v: `${baht(totalOutstandingAmt)} ฿` },
+          // ซ่อน "ยอดค้างรวม" เมื่อ returned — breakdown ที่ถูกต้องอยู่ด้านล่าง
+          ...(returnedOutstanding === null
+            ? [{ l: 'ยอดค้างรวม', v: `${baht(totalOutstandingAmt)} ฿` }]
+            : []),
         ].map((x) => (
           <Card key={x.l} className="py-3">
             <p className="text-xs text-ink-soft">{x.l}</p>
@@ -282,6 +291,37 @@ export default function ContractDetail() {
           </Card>
         ))}
       </div>
+
+      {/* ยอดคงค้างหลังคืนเครื่อง — แสดงเฉพาะ status='returned' */}
+      {returnedOutstanding !== null && (
+        <Card className="mb-4 border-amber-200 bg-amber-50 py-3">
+          <p className="mb-2 text-sm font-semibold text-amber-800">ยอดคงค้างหลังคืนเครื่อง</p>
+          <div className="grid gap-2 text-sm sm:grid-cols-4">
+            <div>
+              <p className="text-xs text-ink-soft">
+                ค่างวด{returnedOutstanding.details ? ` (งวด ${returnedOutstanding.details.installmentNo})` : ''}
+              </p>
+              <p className="font-semibold text-ink">{baht(returnedOutstanding.installmentAmount)} ฿</p>
+            </div>
+            <div>
+              <p className="text-xs text-ink-soft">ค่าปรับ</p>
+              <p className="font-semibold text-ink">{baht(returnedOutstanding.penaltyAmount)} ฿</p>
+            </div>
+            <div>
+              <p className="text-xs text-ink-soft">ค่าซ่อม</p>
+              <p className="font-semibold text-ink">{baht(returnedOutstanding.repairCost)} ฿</p>
+            </div>
+            <div>
+              <p className="text-xs text-ink-soft">ค่าใช้จ่ายอื่น</p>
+              <p className="font-semibold text-ink">{baht(returnedOutstanding.otherExtras)} ฿</p>
+            </div>
+          </div>
+          <div className="mt-2 border-t border-amber-200 pt-2">
+            <p className="text-xs text-ink-soft">ยอดรวมที่ต้องชำระ</p>
+            <p className="text-xl font-bold text-amber-700">{baht(returnedOutstanding.total)} ฿</p>
+          </div>
+        </Card>
+      )}
 
       {/* ข้อมูลการบันทึก */}
       <Card className="mb-4 py-3">

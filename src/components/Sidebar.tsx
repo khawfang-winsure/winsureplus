@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { NAV } from './nav'
 import { useAuth } from '../lib/auth'
 
@@ -24,6 +25,13 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const isFreelancer = configured && role === 'freelancer'
   const isExecutive = configured && role === 'executive'
 
+  // state สำหรับ expand/collapse ของแต่ละ group (key = label)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  function toggleGroup(label: string) {
+    setExpanded((prev) => ({ ...prev, [label]: !prev[label] }))
+  }
+
   // executive เห็นเฉพาะ executiveVisible; freelancer เห็นเฉพาะ freelancerOnly; admin/staff ตามปกติ
   const items = NAV.filter((item) => {
     if (isExecutive) return item.executiveVisible === true
@@ -43,36 +51,46 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
             const visibleChildren = item.children.filter((c) => !c.adminOnly || isAdmin)
             if (visibleChildren.length === 0) return null
             const groupActive = visibleChildren.some((c) => pathname === c.to)
+            // auto-expand ถ้า current route อยู่ใน sub; ไม่งั้นใช้ manual toggle
+            const isOpen = groupActive || !!expanded[item.label]
             return (
               <div key={item.label} className="flex flex-col gap-1">
-                <div
-                  title="วางเมาส์เพื่อขยายเมนูย่อย"
-                  className={`${itemBase} cursor-default ${
+                <button
+                  type="button"
+                  aria-expanded={isOpen}
+                  onClick={() => toggleGroup(item.label)}
+                  className={`${itemBase} w-full cursor-pointer ${
                     groupActive ? 'text-salmon-deep' : 'text-ink'
-                  }`}
+                  } hover:bg-peach-light hover:text-ink`}
                 >
                   <item.icon size={20} className="shrink-0 text-salmon-deep" />
                   <span className={labelCls}>{item.label}</span>
-                </div>
-                {/* เมนูย่อย: ซ่อนตอนแถบหุบ โผล่ตอน hover */}
-                <div className="ml-5 flex flex-col gap-1 border-l border-peach pl-3 md:hidden md:group-hover:flex">
-                  {visibleChildren.map((child) => (
-                    <NavLink
-                      key={child.to}
-                      to={child.to}
-                      className={({ isActive }) =>
-                        `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-                          isActive
-                            ? 'bg-salmon-deep text-white shadow-sm'
-                            : 'text-ink-soft hover:bg-peach-light hover:text-ink'
-                        }`
-                      }
-                    >
-                      <ChevronRight size={14} className="shrink-0" />
-                      <span className="whitespace-nowrap">{child.label}</span>
-                    </NavLink>
-                  ))}
-                </div>
+                  {/* chevron: ซ่อนตอนแถบหุบ โผล่ตอน hover */}
+                  <span className="ml-auto md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100">
+                    {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </span>
+                </button>
+                {/* เมนูย่อย: โชว์เมื่อ isOpen, แต่ยังคง md:hidden md:group-hover:flex เพื่อให้แถบหุบกันไม่โชว์บน rail */}
+                {isOpen && (
+                  <div className="ml-5 flex flex-col gap-1 border-l border-peach pl-3 md:hidden md:group-hover:flex">
+                    {visibleChildren.map((child) => (
+                      <NavLink
+                        key={child.to}
+                        to={child.to}
+                        className={({ isActive }) =>
+                          `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
+                            isActive
+                              ? 'bg-salmon-deep text-white shadow-sm'
+                              : 'text-ink-soft hover:bg-peach-light hover:text-ink'
+                          }`
+                        }
+                      >
+                        <ChevronRight size={14} className="shrink-0" />
+                        <span className="whitespace-nowrap">{child.label}</span>
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           }

@@ -5,7 +5,6 @@ import Logo from './Logo'
 import Sidebar from './Sidebar'
 import NotificationBell from './NotificationBell'
 import QuickSearch from './QuickSearch'
-import ThemeToggle from './ThemeToggle'
 import { Badge, Loading } from './ui'
 import { useAuth } from '../lib/auth'
 
@@ -76,7 +75,6 @@ export default function Layout() {
                   </kbd>
                 </button>
               )}
-              <ThemeToggle />
               <NotificationBell />
               <div className="text-right">
                 <p className="hidden text-sm font-medium text-ink sm:block">{email}</p>

@@ -934,13 +934,20 @@ interface ReturnRow {
   shipped_at: string | null
   device_status_updated_at: string | null
   device_status_by: string | null
+  // Device defect notes (0033)
+  device_defect_notes: string | null
+  // Attribution + repair cost (0035)
+  attributed_freelancer_id: string | null
+  attributed_at: string | null
+  repair_cost: number | null
+  attributed_freelancer: { full_name: string } | null
 }
 
 export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' }): Promise<DeviceReturnRow[]> {
   if (!supabase) return []
   let query = supabase
     .from('device_returns')
-    .select('*, contracts(contract_no, customer_name, model, storage)')
+    .select('*, contracts(contract_no, customer_name, model, storage), attributed_freelancer:profiles!attributed_freelancer_id(full_name)')
     .order('created_at', { ascending: false })
   if (filter?.deviceStatus && filter.deviceStatus !== 'all') {
     query = query.eq('device_status', filter.deviceStatus)
@@ -969,6 +976,13 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
     deviceStatusUpdatedAt: r.device_status_updated_at,
     deviceStatusBy: r.device_status_by,
     deviceModel: [r.contracts?.model, r.contracts?.storage].filter(Boolean).join(' ') || null,
+    // Defect notes (0033)
+    defectNotes: r.device_defect_notes,
+    // Attribution + repair cost (0035)
+    attributedFreelancerId: r.attributed_freelancer_id,
+    attributedAt: r.attributed_at,
+    repairCost: r.repair_cost == null ? 0 : Number(r.repair_cost),
+    attributedFreelancerName: r.attributed_freelancer?.full_name ?? null,
   }))
 }
 
@@ -3015,7 +3029,31 @@ export async function updateDefectNotes(returnId: string, notes: string): Promis
   if (error) throw error
 }
 
-// ---------- helper 7: getSaleHistoryRaw ----------
+// ---------- helper 7a: updateSalePrice (admin แก้ราคาขายเครื่อง — item 7) ----------
+
+/** admin แก้ราคาขายเครื่องคืน (sale_price + priced_at) — migration 0027 columns */
+export async function updateSalePrice(returnId: string, newPrice: number): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('device_returns')
+    .update({ sale_price: newPrice, priced_at: new Date().toISOString() })
+    .eq('id', returnId)
+  if (error) throw error
+}
+
+// ---------- helper 7b: updateRepairCost (ค่าซ่อม เพื่อคำนวณ commission สุทธิ — item 8) ----------
+
+/** บันทึก/แก้ค่าซ่อมเครื่อง (repair_cost) — migration 0035; ใช้คำนวณ commission สุทธิ */
+export async function updateRepairCost(returnId: string, repairCost: number): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('device_returns')
+    .update({ repair_cost: repairCost })
+    .eq('id', returnId)
+  if (error) throw error
+}
+
+// ---------- helper 8: getSaleHistoryRaw ----------
 
 /**
  * ข้อมูล raw สำหรับ sale history (เครื่องที่ขายแล้ว: device_status IN ('shipped','transferred'))
