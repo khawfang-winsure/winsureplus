@@ -7,6 +7,7 @@ import {
   Coins,
   Gauge,
   FilePlus2,
+  FileText,
   History,
   LayoutDashboard,
   Mail,
@@ -69,6 +70,7 @@ export const NAV: NavItem[] = [
   { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
   { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', icon: TrendingUp },
   { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: ScrollText },
+  { to: '/weekly-report', label: 'รายงานประจำสัปดาห์', icon: FileText },
   { to: '/commission', label: 'ค่าคอมมิชชั่น', icon: Coins, adminOnly: true },
   {
     label: 'ตั้งค่า',
