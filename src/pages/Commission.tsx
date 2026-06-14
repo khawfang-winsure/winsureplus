@@ -7,8 +7,10 @@ import {
   getAllShops,
   getCommissionTiers,
   getContracts,
+  getDeviceReturnCountsByFreelancerThisMonth,
   getDeviceReturnTiers,
   getEmployees,
+  getFreelancerPerformance,
   getRecruitBonuses,
   getRecruitTiers,
   getReturns,
@@ -23,11 +25,9 @@ import {
 import {
   buildCommissionReport,
   CLAWBACK_LABEL,
-  deviceReturnCommission,
-  deviceReturnTierLabel,
+  deviceReturnCommissionMonthly,
   lockUpdatesFor,
   periodKeyOf,
-  rateForDevicePrice,
   recruitTierLabel,
   tierLabel,
   type CommissionTier,
@@ -720,53 +720,61 @@ function RecruitBonusEditor({ canEdit }: { canEdit: boolean }) {
   )
 }
 
-// ---------- ตั้งเรตค่าคอมคืนเครื่อง (ขั้นบันไดตามราคาขาย) ----------
+// ---------- ตั้งเรตค่าคอมคืนเครื่อง (ขั้นบันไดตามจำนวนเครื่องที่คืน รายเดือน) ----------
+
 function validateDeviceTiers(tiers: DeviceReturnTier[]): string | null {
   if (tiers.length === 0) return 'ต้องมีอย่างน้อย 1 ขั้น'
+  const seen = new Set<number>()
   for (let i = 0; i < tiers.length; i++) {
     const t = tiers[i]
-    if (t.percent < 0 || t.percent > 100) return `ขั้น ${i + 1}: % ค่าคอมต้องอยู่ระหว่าง 0–100`
-    if (t.min < 0) return `ขั้น ${i + 1}: ราคาตั้งต้นต้องไม่ติดลบ`
-    if (t.max !== null && t.max < t.min) return `ขั้น ${i + 1}: ราคาสูงสุดต้องไม่น้อยกว่าราคาต่ำสุด`
-    if (i < tiers.length - 1) {
-      if (t.max === null) return `ขั้น ${i + 1}: ขั้นกลางต้องระบุราคาสูงสุด`
-      if (tiers[i + 1].min !== t.max + 1)
-        return `ขั้นต้องต่อกัน ไม่เว้นช่วง/ไม่ซ้อน (ขั้น ${i + 1} จบที่ ${t.max.toLocaleString()} → ขั้น ${i + 2} ต้องเริ่มที่ ${(t.max + 1).toLocaleString()})`
-    } else {
-      if (t.max !== null) return 'ขั้นสุดท้ายต้องตั้งเป็น "ไม่จำกัด" (เว้นช่อง ถึง ว่าง)'
-    }
+    if (t.minDevices < 0) return `ขั้น ${i + 1}: จำนวนเครื่องขั้นต่ำต้องไม่ติดลบ`
+    if (t.bahtPerDevice < 0) return `ขั้น ${i + 1}: บาท/เครื่องต้องไม่ติดลบ`
+    if (seen.has(t.minDevices)) return `ขั้น ${i + 1}: จำนวนเครื่องขั้นต่ำซ้ำกับขั้นอื่น (${t.minDevices})`
+    seen.add(t.minDevices)
   }
   return null
 }
+
+/** ป้ายขั้นตาม DeviceReturnTier แบบใหม่ */
+function deviceTierBadgeLabel(t: DeviceReturnTier): string {
+  return `≥ ${t.minDevices} เครื่อง → ${t.bahtPerDevice.toLocaleString()} ฿/เครื่อง`
+}
+
+// PREVIEW_COUNTS: 3 ตัวอย่างคงที่แสดงผลลัพธ์
+const PREVIEW_COUNTS = [5, 15, 25]
 
 function DeviceReturnTierEditor({ canEdit }: { canEdit: boolean }) {
   const [tiers, setTiers] = useState<DeviceReturnTier[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  const [preview, setPreview] = useState<number>(0)
+
+  // section: ค่าคอมเดือนนี้ต่อฟรีแลนซ์
+  const [countMap, setCountMap] = useState<Map<string, number>>(new Map())
+  const [freelancers, setFreelancers] = useState<{ authorId: string; fullName: string }[]>([])
+  const [loadingTable, setLoadingTable] = useState(true)
 
   useEffect(() => {
     getDeviceReturnTiers()
       .then(setTiers)
       .finally(() => setLoading(false))
+
+    Promise.all([
+      getDeviceReturnCountsByFreelancerThisMonth(),
+      getFreelancerPerformance(),
+    ])
+      .then(([counts, perf]) => {
+        setCountMap(counts)
+        setFreelancers(perf.map((p) => ({ authorId: p.authorId, fullName: p.fullName })))
+      })
+      .finally(() => setLoadingTable(false))
   }, [])
 
   const setRow = (i: number, patch: Partial<DeviceReturnTier>) =>
     setTiers((prev) => prev.map((t, idx) => (idx === i ? { ...t, ...patch } : t)))
 
-  const addTier = () => {
-    const last = tiers[tiers.length - 1]
-    if (!last) {
-      setTiers([{ min: 0, max: null, percent: 5 }])
-      return
-    }
-    // ขั้นก่อนหน้าต้องมี max — ตั้งให้อัตโนมัติถ้า null
-    const prevMax = last.max ?? last.min + 5000
-    const newLast: DeviceReturnTier = { ...last, max: prevMax }
-    const newTier: DeviceReturnTier = { min: prevMax + 1, max: null, percent: last.percent }
-    setTiers([...tiers.slice(0, -1), newLast, newTier])
-  }
+  const addTier = () =>
+    setTiers((prev) => [...prev, { minDevices: 0, bahtPerDevice: 0 }])
 
   const removeTier = (i: number) => setTiers((prev) => prev.filter((_, idx) => idx !== i))
 
@@ -788,11 +796,13 @@ function DeviceReturnTierEditor({ canEdit }: { canEdit: boolean }) {
     }
   }
 
-  const previewPercent = rateForDevicePrice(preview, tiers)
-  const previewCommission = deviceReturnCommission(preview, tiers)
-  const previewTierIdx = tiers.findIndex((t) => preview >= t.min && (t.max == null || preview <= t.max))
-
   if (loading) return <Loading />
+
+  // ยอดรวมค่าคอมคืนเครื่องทุกฟรีแลนซ์
+  const totalDeviceCommission = freelancers.reduce((sum, f) => {
+    const count = countMap.get(f.authorId) ?? 0
+    return sum + deviceReturnCommissionMonthly(count, tiers).totalBaht
+  }, 0)
 
   return (
     <Card>
@@ -802,50 +812,37 @@ function DeviceReturnTierEditor({ canEdit }: { canEdit: boolean }) {
       </div>
       <p className="mb-4 text-sm text-ink-soft">
         ฟรีแลนซ์ที่ตามจนลูกค้าคืนเครื่องสำเร็จ ได้ค่าคอม{' '}
-        <span className="font-semibold text-ink">% ของราคาขาย</span>{' '}
-        ตามช่วงราคาที่ขายได้จริง
+        <span className="font-semibold text-ink">บาท/เครื่อง</span>{' '}
+        ตามขั้นบันไดจำนวนเครื่องที่คืนรายเดือน (retroactive — นับทุก status)
       </p>
 
+      {/* ตารางตั้งค่าขั้นบันได */}
       <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
-        <table className="w-full min-w-[560px] text-sm">
+        <table className="w-full min-w-[480px] text-sm">
           <thead>
             <tr className="bg-peach-light text-left text-ink">
-              <th className="px-3 py-2.5 font-semibold">ขั้น</th>
-              <th className="px-3 py-2.5 font-semibold">จาก (฿)</th>
-              <th className="px-3 py-2.5 font-semibold">ถึง (฿)</th>
-              <th className="px-3 py-2.5 font-semibold">% ค่าคอม</th>
+              <th className="px-3 py-2.5 font-semibold">จำนวนเครื่องขั้นต่ำ (≥)</th>
+              <th className="px-3 py-2.5 font-semibold">บาท/เครื่อง</th>
               <th className="px-3 py-2.5"></th>
             </tr>
           </thead>
           <tbody>
             {tiers.map((t, i) => (
               <tr key={i} className={i % 2 ? 'bg-white' : 'bg-peach-light/20'}>
-                <td className="px-3 py-2 text-center text-ink-soft">{i + 1}</td>
                 <td className="px-3 py-2">
                   <Input
                     type="number"
-                    value={String(t.min)}
+                    value={String(t.minDevices)}
                     disabled={!canEdit}
-                    onChange={(e) => setRow(i, { min: Number(e.target.value) || 0 })}
+                    onChange={(e) => setRow(i, { minDevices: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
                   />
                 </td>
                 <td className="px-3 py-2">
                   <Input
                     type="number"
-                    value={t.max == null ? '' : String(t.max)}
-                    placeholder="ไม่จำกัด"
+                    value={String(t.bahtPerDevice)}
                     disabled={!canEdit}
-                    onChange={(e) =>
-                      setRow(i, { max: e.target.value === '' ? null : Number(e.target.value) || 0 })
-                    }
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  <Input
-                    type="number"
-                    value={String(t.percent)}
-                    disabled={!canEdit}
-                    onChange={(e) => setRow(i, { percent: Number(e.target.value) || 0 })}
+                    onChange={(e) => setRow(i, { bahtPerDevice: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
                   />
                 </td>
                 <td className="px-3 py-2 text-right">
@@ -866,49 +863,41 @@ function DeviceReturnTierEditor({ canEdit }: { canEdit: boolean }) {
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {tiers.map((t, i) => (
-          <Badge key={i} tone="neutral">
-            {deviceReturnTierLabel(t)} = {t.percent}%
-          </Badge>
-        ))}
+        {tiers
+          .slice()
+          .sort((a, b) => a.minDevices - b.minDevices)
+          .map((t, i) => (
+            <Badge key={i} tone="neutral">
+              {deviceTierBadgeLabel(t)}
+            </Badge>
+          ))}
       </div>
 
-      {/* ทดลองคำนวณ */}
+      {/* ลองคำนวณ 3 ตัวอย่าง */}
       <div className="mt-4 rounded-xl border border-peach bg-peach-light/30 px-4 py-3">
-        <p className="mb-2 text-sm font-semibold text-ink">ทดลองคำนวณ</p>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-ink-soft">ราคาขาย</label>
-            <Input
-              type="number"
-              value={String(preview)}
-              onChange={(e) => setPreview(Number(e.target.value) || 0)}
-              placeholder="0"
-            />
-            <span className="text-sm text-ink-soft">฿</span>
-          </div>
-          {preview > 0 && tiers.length > 0 && (
-            <p className="text-sm text-ink">
-              {previewTierIdx >= 0 ? (
-                <>
-                  เข้าขั้น {previewTierIdx + 1} →{' '}
-                  <span className="font-semibold">
-                    {preview.toLocaleString('th-TH')} × {previewPercent}% ={' '}
-                    {previewCommission.toLocaleString('th-TH')} ฿
-                  </span>
-                </>
-              ) : (
-                <span className="text-ink-soft">ราคานี้ไม่ตรงขั้นใด</span>
-              )}
-            </p>
-          )}
+        <p className="mb-2 text-sm font-semibold text-ink">ลองคำนวณ</p>
+        <div className="space-y-1 text-sm text-ink">
+          {PREVIEW_COUNTS.map((count) => {
+            const res = deviceReturnCommissionMonthly(count, tiers)
+            return (
+              <div key={count}>
+                <span className="text-ink-soft">{count} เครื่อง →</span>{' '}
+                <span className="font-semibold">฿{baht(res.totalBaht)}</span>{' '}
+                <span className="text-xs text-ink-soft">
+                  ({res.bahtPerDevice > 0
+                    ? `${res.bahtPerDevice.toLocaleString()} บาท/เครื่อง`
+                    : 'ยังไม่ถึง tier'})
+                </span>
+              </div>
+            )
+          })}
         </div>
       </div>
 
       {canEdit && (
         <div className="mt-4 flex items-center gap-3">
           <Button variant="ghost" onClick={addTier}>
-            <Plus size={15} /> เพิ่มขั้น
+            <Plus size={15} /> เพิ่ม tier
           </Button>
           <Button onClick={save} disabled={busy}>
             {busy ? 'กำลังบันทึก...' : 'บันทึกค่าคอมคืนเครื่อง'}
@@ -916,6 +905,63 @@ function DeviceReturnTierEditor({ canEdit }: { canEdit: boolean }) {
           {msg && <span className="text-sm text-ink-soft">{msg}</span>}
         </div>
       )}
+
+      {/* ===== ค่าคอมคืนเครื่อง (เดือนนี้) ต่อฟรีแลนซ์ ===== */}
+      <div className="mt-8">
+        <div className="mb-3 flex items-center gap-2">
+          <Smartphone size={16} className="text-amber-600" />
+          <h4 className="font-semibold text-ink">ค่าคอมคืนเครื่อง (เดือนนี้)</h4>
+        </div>
+
+        {loadingTable ? (
+          <Loading />
+        ) : freelancers.length === 0 ? (
+          <p className="rounded-xl bg-peach-light/40 px-4 py-4 text-center text-sm text-ink-soft">
+            ยังไม่มีฟรีแลนซ์ในระบบ
+          </p>
+        ) : (
+          <>
+            <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+              <table className="w-full min-w-[560px] text-sm">
+                <thead>
+                  <tr className="bg-peach-light text-left text-ink">
+                    <th className="px-3 py-2.5 font-semibold">ชื่อฟรีแลนซ์</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">เครื่องที่คืน</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">tier ที่ถึง</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">บาท/เครื่อง</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">รวม</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {freelancers.map((f, i) => {
+                    const count = countMap.get(f.authorId) ?? 0
+                    const res = deviceReturnCommissionMonthly(count, tiers)
+                    return (
+                      <tr key={f.authorId} className={i % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                        <td className="px-3 py-2.5 font-medium text-ink">{f.fullName}</td>
+                        <td className="px-3 py-2.5 text-right">{count}</td>
+                        <td className="px-3 py-2.5 text-right text-ink-soft">
+                          {res.tier ? `≥ ${res.tier.minDevices}` : '—'}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">{res.bahtPerDevice.toLocaleString()}</td>
+                        <td className="px-3 py-2.5 text-right font-semibold text-ink">
+                          {res.totalBaht > 0 ? `฿${baht(res.totalBaht)}` : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-peach bg-peach-light/30 font-semibold text-ink">
+                    <td className="px-3 py-2.5" colSpan={4}>รวมทั้งหมด</td>
+                    <td className="px-3 py-2.5 text-right">฿{baht(totalDeviceCommission)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
     </Card>
   )
 }

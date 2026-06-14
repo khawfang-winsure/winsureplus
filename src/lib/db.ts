@@ -25,7 +25,7 @@ import {
   DEFAULT_TIERS,
   DEFAULT_RECRUIT_BONUS,
   DEFAULT_RECRUIT_TIERS,
-  DEFAULT_DEVICE_RETURN_TIERS,
+  DEFAULT_DEVICE_RETURN_TIERS_V2,
   type CommissionTier,
   type RecruitBonusRule,
   type RecruitTier,
@@ -458,22 +458,22 @@ export async function saveRecruitBonuses(rules: RecruitBonusRule[]): Promise<voi
   if (error) throw error
 }
 
-const DEVICE_RETURN_TIERS_KEY = 'device_return_commission_tiers'
+const DEVICE_RETURN_TIERS_KEY = 'device_return_tiers_v2'
 
 export async function getDeviceReturnTiers(): Promise<DeviceReturnTier[]> {
-  if (!supabase) return DEFAULT_DEVICE_RETURN_TIERS
+  if (!supabase) return DEFAULT_DEVICE_RETURN_TIERS_V2
   const { data, error } = await supabase
     .from('app_settings')
     .select('value')
     .eq('key', DEVICE_RETURN_TIERS_KEY)
     .maybeSingle()
   if (error) throw error
-  if (!data?.value) return DEFAULT_DEVICE_RETURN_TIERS
+  if (!data?.value) return DEFAULT_DEVICE_RETURN_TIERS_V2
   try {
     const t = JSON.parse(data.value as string)
-    return Array.isArray(t) && t.length ? (t as DeviceReturnTier[]) : DEFAULT_DEVICE_RETURN_TIERS
+    return Array.isArray(t) && t.length ? (t as DeviceReturnTier[]) : DEFAULT_DEVICE_RETURN_TIERS_V2
   } catch {
-    return DEFAULT_DEVICE_RETURN_TIERS
+    return DEFAULT_DEVICE_RETURN_TIERS_V2
   }
 }
 
@@ -485,7 +485,7 @@ export async function saveDeviceReturnTiers(tiers: DeviceReturnTier[]): Promise<
       {
         key: DEVICE_RETURN_TIERS_KEY,
         value: JSON.stringify(tiers),
-        description: 'ขั้นบันไดค่าคอมฟรีแลนซ์คืนเครื่อง (% ตามราคาขาย)',
+        description: 'ขั้นบรรไดค่าคอมฟรีแลนซ์คืนเครื่อง (บาท/เครื่อง retroactive รายเดือน นับทุก status)',
       },
       { onConflict: 'key' },
     )
@@ -3374,4 +3374,47 @@ export async function deletePrivateNote(noteId: string): Promise<void> {
     .delete()
     .eq('id', noteId)
   if (error) throw error
+}
+
+// ===== ค่าคอมคืนเครื่อง v2 — นับจำนวนเครื่อง (บาท/เครื่อง ตามขั้นบรรได) =====
+
+/** นับจำนวนเครื่องที่ฟรีแลนซ์คืนสำเร็จในเดือนปัจจุบัน
+ *  Pete sign-off: นับทุก device_status (ไม่กรอง) */
+export async function getDeviceReturnCountThisMonth(freelancerId: string): Promise<number> {
+  if (!supabase) return 0
+  const now = new Date()
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+  const firstOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString()
+  const { count, error } = await supabase
+    .from('device_returns')
+    .select('*', { count: 'exact', head: true })
+    .eq('attributed_freelancer_id', freelancerId)
+    .gte('attributed_at', firstOfMonth)
+    .lt('attributed_at', firstOfNextMonth)
+  if (error) throw error
+  return count ?? 0
+}
+
+/** per-freelancer aggregate สำหรับ Commission report + StaffPerformance
+ *  คืน Map<freelancerId, count> ของเดือนปัจจุบัน (1 query, group ฝั่ง client)
+ *  Pete sign-off: นับทุก device_status (ไม่กรอง) */
+export async function getDeviceReturnCountsByFreelancerThisMonth(): Promise<Map<string, number>> {
+  if (!supabase) return new Map()
+  const now = new Date()
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+  const firstOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString()
+  const { data, error } = await supabase
+    .from('device_returns')
+    .select('attributed_freelancer_id')
+    .not('attributed_freelancer_id', 'is', null)
+    .gte('attributed_at', firstOfMonth)
+    .lt('attributed_at', firstOfNextMonth)
+    .range(0, 4999) // PAGE_CAP
+  if (error) throw error
+  const map = new Map<string, number>()
+  for (const row of data ?? []) {
+    const id = row.attributed_freelancer_id as string
+    map.set(id, (map.get(id) ?? 0) + 1)
+  }
+  return map
 }

@@ -450,33 +450,52 @@ export function lockUpdatesFor(report: EmployeeCommission[]): { contractId: stri
   return out
 }
 
-// ===== ค่าคอมคืนเครื่อง (tier-based ตามราคาขาย) =====
-// คิดจากราคาที่ขายได้จริง (salePrice) ×เปอร์เซ็นต์ตามช่วงราคา
-// เรตเป็น % (ไม่ใช่บาท/เคส) — แตกต่างจาก CommissionTier ด้านบน
+// ===== ค่าคอมคืนเครื่องฟรีแลนซ์ (tier-based บาท/เครื่อง × ขั้นบันไดตามจำนวนเครื่องที่คืน รายเดือน) =====
+// model ใหม่: นับจำนวนเครื่องที่คืนในเดือนนั้น → หา tier (minDevices) → ได้ bahtPerDevice × จำนวน
+// retroactive (นับทุก status, ทุกเครื่องที่คืนในเดือน)
 
 export interface DeviceReturnTier {
-  min: number;       // ราคาขายตั้งแต่ (฿) — รวม
-  max: number | null; // ถึง (฿); null = ไม่จำกัด (ขั้นสุดท้าย)
-  percent: number;   // % ค่าคอม
+  minDevices: number   // จำนวนเครื่องขั้นต่ำ (integer ≥ 0)
+  bahtPerDevice: number // บาท/เครื่อง (integer ≥ 0)
 }
 
 export const DEFAULT_DEVICE_RETURN_TIERS: DeviceReturnTier[] = [
-  { min: 0,     max: 5000,  percent: 5 },
-  { min: 5001,  max: 10000, percent: 7 },
-  { min: 10001, max: null,  percent: 10 },
-];
+  { minDevices: 0,  bahtPerDevice: 0   },
+  { minDevices: 10, bahtPerDevice: 100 },
+  { minDevices: 20, bahtPerDevice: 200 },
+]
 
-export function deviceReturnTierLabel(t: DeviceReturnTier): string {
-  const minStr = t.min.toLocaleString('th-TH');
-  if (t.max == null) return `${minStr} ฿ขึ้นไป`;
-  return `${minStr}–${t.max.toLocaleString('th-TH')} ฿`;
+/** alias ที่ db.ts ใช้ — ชื่อเดียวกับ DEFAULT_DEVICE_RETURN_TIERS */
+export const DEFAULT_DEVICE_RETURN_TIERS_V2 = DEFAULT_DEVICE_RETURN_TIERS
+
+export interface DeviceReturnCommissionResult {
+  tier: DeviceReturnTier | null
+  bahtPerDevice: number
+  totalBaht: number
+  deviceCount: number
 }
 
-export function rateForDevicePrice(salePrice: number, tiers: DeviceReturnTier[]): number {
-  const t = tiers.find((t) => salePrice >= t.min && (t.max == null || salePrice <= t.max));
-  return t ? t.percent : 0;
-}
-
-export function deviceReturnCommission(salePrice: number, tiers: DeviceReturnTier[]): number {
-  return Math.round((salePrice * rateForDevicePrice(salePrice, tiers)) / 100);
+/**
+ * คำนวณค่าคอมคืนเครื่องฟรีแลนซ์รายเดือน
+ * หา tier ที่ minDevices ≤ devicesReturnedThisMonth — เลือก minDevices สูงสุด (ยกขั้นทั้งก้อน)
+ */
+export function deviceReturnCommissionMonthly(
+  devicesReturnedThisMonth: number,
+  tiers: DeviceReturnTier[],
+): DeviceReturnCommissionResult {
+  let bestTier: DeviceReturnTier | null = null
+  for (const t of tiers) {
+    if (t.minDevices <= devicesReturnedThisMonth) {
+      if (!bestTier || t.minDevices > bestTier.minDevices) {
+        bestTier = t
+      }
+    }
+  }
+  const bahtPerDevice = bestTier?.bahtPerDevice ?? 0
+  return {
+    tier: bestTier,
+    bahtPerDevice,
+    totalBaht: bahtPerDevice * devicesReturnedThisMonth,
+    deviceCount: devicesReturnedThisMonth,
+  }
 }

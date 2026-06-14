@@ -3,6 +3,8 @@ import { useFilter } from '../lib/useFilter'
 import { ChevronRight, Download, X } from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
+  getDeviceReturnCountsByFreelancerThisMonth,
+  getDeviceReturnTiers,
   getFreelancerPerformance,
   type FreelancerPerformanceRow,
 } from '../lib/db'
@@ -10,6 +12,7 @@ import {
   computePerformanceKPIs,
   type PerformanceInput,
 } from '../lib/freelancerPerformance'
+import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
 
 // ===== ตัวช่วย =====
 
@@ -290,6 +293,22 @@ export default function StaffPerformance() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [daysWindow, setDaysWindow] = useFilter<7 | 30 | 90>('staff-performance.daysWindow', 30)
 
+  // ค่าคอมคืนเครื่อง: โหลด 1 ครั้ง (ไม่ขึ้นกับ daysWindow — เป็นยอดเดือนนี้เสมอ)
+  const [deviceCountMap, setDeviceCountMap] = useState<Map<string, number>>(new Map())
+  const [deviceTiers, setDeviceTiers] = useState<DeviceReturnTier[]>([])
+
+  useEffect(() => {
+    Promise.all([
+      getDeviceReturnCountsByFreelancerThisMonth(),
+      getDeviceReturnTiers(),
+    ]).then(([counts, tiers]) => {
+      setDeviceCountMap(counts)
+      setDeviceTiers(tiers)
+    }).catch(() => {
+      // silent — ค่าคอมคืนเครื่องไม่กระทบ KPI หลัก
+    })
+  }, [])
+
   useEffect(() => {
     if (!loading) setRefreshing(true)
     getFreelancerPerformance(daysWindow)
@@ -398,12 +417,15 @@ export default function StaffPerformance() {
                   <th className="px-4 py-3 text-right font-semibold text-ink">Resolution</th>
                   <th className="px-4 py-3 text-right font-semibold text-ink">Escalation</th>
                   <th className="px-4 py-3 text-right font-semibold text-ink">Last Active</th>
+                  <th className="px-4 py-3 text-right font-semibold text-ink">คืนเครื่อง (เดือนนี้)</th>
                   <th className="w-10 px-4 py-3" />
                 </tr>
               </thead>
               {rows.map((row) => {
                 const kpi = computePerformanceKPIs(toInput(row))
                 const isSelected = selectedId === row.authorId
+                const deviceCount = deviceCountMap.get(row.authorId) ?? 0
+                const deviceComm = deviceReturnCommissionMonthly(deviceCount, deviceTiers)
                 return (
                   <tbody key={row.authorId}>
                     <tr
@@ -455,6 +477,15 @@ export default function StaffPerformance() {
                       <td className="px-4 py-3 text-right text-xs text-ink-soft">
                         {fmtDatetime(row.lastActivityAt)}
                       </td>
+                      {/* ค่าคอมคืนเครื่อง */}
+                      <td className="px-4 py-3 text-right">
+                        <div className="text-sm font-medium text-ink">
+                          {deviceComm.totalBaht > 0
+                            ? `฿${deviceComm.totalBaht.toLocaleString('th-TH')}`
+                            : '—'}
+                        </div>
+                        <div className="text-xs text-ink-soft">{deviceCount} เครื่อง</div>
+                      </td>
                       {/* Drill-down toggle */}
                       <td className="px-4 py-3 text-right">
                         <ChevronRight
@@ -465,7 +496,7 @@ export default function StaffPerformance() {
                     {/* Drill-down row */}
                     {isSelected && selectedRow && (
                       <tr>
-                        <td colSpan={9} className="px-4 pb-4">
+                        <td colSpan={10} className="px-4 pb-4">
                           <DrillDownPanel
                             row={selectedRow}
                             onClose={() => setSelectedId(null)}
