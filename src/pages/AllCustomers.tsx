@@ -217,7 +217,7 @@ export default function AllCustomers() {
                               {c.emailSentAt && (
                                 <span
                                   className="shrink-0 text-ink-soft"
-                                  title={`ส่งอีเมลแล้วเมื่อ ${thaiDate(c.emailSentAt.slice(0, 10))} โดย ${c.emailSentBy ?? 'ไม่ทราบ'}`}
+                                  title={`ส่งอีเมลแล้ว · ${thaiDate(c.emailSentAt.slice(0, 10))} · โดย ${c.emailSentBy ?? 'ไม่ทราบ'}`}
                                 >
                                   <Mail className="h-3 w-3" />
                                 </span>
@@ -225,7 +225,7 @@ export default function AllCustomers() {
                               {c.summarySentAt && (
                                 <span
                                   className="shrink-0 text-ink-soft"
-                                  title={`สรุปยอดแล้วเมื่อ ${thaiDate(c.summarySentAt.slice(0, 10))} โดย ${c.summarySentBy ?? 'ไม่ทราบ'}`}
+                                  title={`สรุปยอดแล้ว · ${thaiDate(c.summarySentAt.slice(0, 10))} · โดย ${c.summarySentBy ?? 'ไม่ทราบ'}`}
                                 >
                                   <FileCheck className="h-3 w-3" />
                                 </span>

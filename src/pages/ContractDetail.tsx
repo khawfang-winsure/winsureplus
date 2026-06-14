@@ -212,15 +212,13 @@ export default function ContractDetail() {
               {contract.emailSentAt && (
                 <span className="flex items-center gap-1 text-xs text-ink-soft">
                   <Mail className="h-3 w-3" />
-                  ส่งอีเมลแล้ว {thaiDate(contract.emailSentAt.slice(0, 10))}
-                  {contract.emailSentBy ? ` โดย ${contract.emailSentBy}` : ''}
+                  {`ส่งอีเมลแล้ว · ${thaiDate(contract.emailSentAt.slice(0, 10))} · โดย ${contract.emailSentBy ?? 'ไม่ทราบ'}`}
                 </span>
               )}
               {contract.summarySentAt && (
                 <span className="flex items-center gap-1 text-xs text-ink-soft">
                   <FileCheck className="h-3 w-3" />
-                  สรุปยอดแล้ว {thaiDate(contract.summarySentAt.slice(0, 10))}
-                  {contract.summarySentBy ? ` โดย ${contract.summarySentBy}` : ''}
+                  {`สรุปยอดแล้ว · ${thaiDate(contract.summarySentAt.slice(0, 10))} · โดย ${contract.summarySentBy ?? 'ไม่ทราบ'}`}
                 </span>
               )}
             </div>
