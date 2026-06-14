@@ -6,7 +6,6 @@ import {
   CalendarRange,
   FilePlus2,
   Gauge,
-  History,
   LayoutDashboard,
   Mail,
   PackageOpen,
@@ -69,13 +68,13 @@ export const NAV: NavItem[] = [
   // เครื่อง
   { to: '/device-pipeline', label: 'ติดตามเครื่อง', icon: Truck },
   { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
-  { to: '/sale-history', label: 'ประวัติการขายเครื่อง', icon: History, adminOnly: true },
 
   // รายงาน (collapsible)
   {
     label: 'รายงาน',
     icon: BarChart3,
     children: [
+      { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
       { to: '/shop-report', label: 'รายงานร้านค้า' },
       { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้' },
       { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน' },
