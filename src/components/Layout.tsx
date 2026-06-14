@@ -1,9 +1,10 @@
+import { Suspense } from 'react'
 import { Outlet } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
 import Logo from './Logo'
 import Sidebar from './Sidebar'
 import NotificationBell from './NotificationBell'
-import { Badge } from './ui'
+import { Badge, Loading } from './ui'
 import { useAuth } from '../lib/auth'
 
 // โครงหน้าหลัก: กรอบครีม + หัวโลโก้ + เมนูซ้าย + เนื้อหาขวา (การ์ดขาว)
@@ -43,7 +44,9 @@ export default function Layout() {
         <div className="flex flex-col gap-5 md:flex-row">
           <Sidebar />
           <main className="min-h-[70vh] min-w-0 flex-1 rounded-2xl border border-peach bg-cream-deep p-6 shadow-sm">
-            <Outlet />
+            <Suspense fallback={<Loading />}>
+              <Outlet />
+            </Suspense>
           </main>
         </div>
       </div>
