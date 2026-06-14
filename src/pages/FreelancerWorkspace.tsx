@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { AlarmClock, Search } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht } from '../lib/format'
 import {
   addFollowUp,
   getFreelancerQueue,
   getMyAssignedGrades,
+  getOverduePromiseContracts,
   getPublicHolidays,
   type ContractGrade,
   type FollowUpResult,
   type FreelancerQueueRow,
 } from '../lib/db'
+import type { OverduePromiseContract } from '../lib/types'
 import { useAuth } from '../lib/auth'
 import { isContactWindowOpen } from '../lib/contactHours'
 import {
@@ -320,6 +322,10 @@ export default function FreelancerWorkspace() {
   const [showBulkConfirm, setShowBulkConfirm] = useState(false)
   const [bulkResult, setBulkResult] = useState<{ success: number; failedNos: string[] } | null>(null)
 
+  // overdue promise state
+  const [overdue, setOverdue] = useState<OverduePromiseContract[]>([])
+  const [overdueFilter, setOverdueFilter] = useState(false)
+
   // section expand states (localStorage-backed)
   const [sectionOpen, setSectionOpen] = useState<Record<PriorityTier, boolean>>(() => {
     const load = (tier: PriorityTier): boolean => {
@@ -358,6 +364,14 @@ export default function FreelancerWorkspace() {
   useEffect(() => {
     getPublicHolidays().then(setPublicHolidays)
   }, [])
+
+  // โหลด overdue promise contracts ครั้งเดียวตอน mount
+  useEffect(() => {
+    getOverduePromiseContracts().then(setOverdue).catch(() => setOverdue([]))
+  }, [])
+
+  // เก็บ overdue raw (ทั้งหมดที่ DB คืน — รวมถึงที่ไม่อยู่ในคิว)
+  const overdueIdsAll = useMemo(() => new Set(overdue.map((o) => o.id)), [overdue])
 
   // โหลดเกรดที่ได้รับมอบหมาย
   const loadGrades = useCallback(async () => {
@@ -403,8 +417,8 @@ export default function FreelancerWorkspace() {
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [rows])
 
-  // กรองตามร้าน + search term (universal — ใช้ก่อน split todayRows/pendingRows)
-  const filtered = useMemo(() => {
+  // rows หลัง shop filter + search (ก่อนแตะ overdue) — ใช้เป็น base สำหรับ intersection
+  const rowsBeforeOverdueFilter = useMemo(() => {
     let result = shopFilter ? rows.filter((r) => r.shopId === shopFilter) : rows
     const q = searchTerm.trim().toLowerCase()
     if (q) {
@@ -420,6 +434,34 @@ export default function FreelancerWorkspace() {
     }
     return result
   }, [rows, shopFilter, searchTerm])
+
+  // contractId ที่อยู่ในคิวจริง (หลัง shop+search, ก่อน overdue filter)
+  const rowsInQueueIds = useMemo(
+    () => new Set(rowsBeforeOverdueFilter.map((r) => r.contractId)),
+    [rowsBeforeOverdueFilter],
+  )
+
+  // intersect: เฉพาะ overdue ที่อยู่ในคิวจริง (ตรงกับ role/scope/late-installment ของ getFreelancerQueue)
+  const activeOverdueIds = useMemo(() => {
+    const s = new Set<string>()
+    overdueIdsAll.forEach((id) => { if (rowsInQueueIds.has(id)) s.add(id) })
+    return s
+  }, [overdueIdsAll, rowsInQueueIds])
+
+  // ยอดรวม promise เฉพาะ overdue ที่อยู่ใน scope จริง
+  const totalPromised = useMemo(
+    () => overdue.filter((o) => activeOverdueIds.has(o.id)).reduce((s, o) => s + (o.promisedAmount ?? 0), 0),
+    [overdue, activeOverdueIds],
+  )
+
+  // กรองตามร้าน + search term + overdue filter (universal — ใช้ก่อน split todayRows/pendingRows)
+  const filtered = useMemo(() => {
+    // overdueFilter ใช้ทั้ง 2 tabs — freelancer อาจอยากดูเฉพาะคนที่ผิดนัดทั้งใน "ที่ต้องโทร" และ "ติดต่อแล้ววันนี้"
+    if (overdueFilter) {
+      return rowsBeforeOverdueFilter.filter((r) => activeOverdueIds.has(r.contractId))
+    }
+    return rowsBeforeOverdueFilter
+  }, [rowsBeforeOverdueFilter, overdueFilter, activeOverdueIds])
 
   // แบ่ง 2 กลุ่ม: contacted today (Tab 2) vs ยังไม่ (Tab 1)
   const todayRows = useMemo(() => filtered.filter((r) => r.contactedToday), [filtered])
@@ -624,6 +666,34 @@ export default function FreelancerWorkspace() {
         />
       ) : (
         <>
+          {/* === Overdue promise badge === */}
+          {activeOverdueIds.size > 0 && (
+            <div className="mb-4 flex items-center gap-2">
+              <button
+                onClick={() => setOverdueFilter((v) => !v)}
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+                  overdueFilter
+                    ? 'border-red-700 bg-red-600 text-white'
+                    : 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100'
+                }`}
+              >
+                <AlarmClock size={16} />
+                ผิดนัด: {activeOverdueIds.size} รายการ
+                {totalPromised > 0 && (
+                  <span>· รวม {baht(totalPromised)} ฿</span>
+                )}
+              </button>
+              {overdueFilter && (
+                <button
+                  onClick={() => setOverdueFilter(false)}
+                  className="rounded-full border border-peach bg-white px-2.5 py-1 text-xs text-ink-soft transition hover:bg-peach-light"
+                >
+                  ✕ ยกเลิกตัวกรอง
+                </button>
+              )}
+            </div>
+          )}
+
           {/* === Tab bar === */}
           <div className="mb-4 flex gap-2">
             <button

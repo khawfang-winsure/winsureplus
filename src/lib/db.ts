@@ -13,6 +13,7 @@ import type {
   NotificationItem,
   Option,
   OverdueBucket,
+  OverduePromiseContract,
   Shop,
 } from './types'
 import * as mock from './mockData'
@@ -2454,4 +2455,43 @@ export async function getActiveGradedCount(): Promise<number> {
     .not('current_grade', 'is', null)
   if (error) throw error
   return count ?? 0
+}
+
+// ---------- Overdue Promise Contracts (migration 0029 + 0020) ----------
+
+interface OverduePromiseRow {
+  id: string
+  contract_no: string
+  customer_name: string
+  promise_to_pay_date: string
+  promised_amount: number | null
+  status: string
+}
+
+/**
+ * ดึงสัญญาที่ผิดนัดจ่าย (promise_to_pay_date < today AND status=active)
+ * RLS กรอง scope อัตโนมัติ: freelancer เห็นเฉพาะ in-grade, admin/staff/executive เห็นทุกสัญญา
+ * trigger clear_promise_on_pay (0029) ล้าง promise_to_pay_date เมื่อชำระแล้ว → ไม่ต้อง join payment_log
+ */
+export async function getOverduePromiseContracts(): Promise<OverduePromiseContract[]> {
+  if (!supabase) return []
+  const today = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('id, contract_no, customer_name, promise_to_pay_date, promised_amount, status')
+    .lt('promise_to_pay_date', today)
+    .not('promise_to_pay_date', 'is', null)
+    .eq('status', 'active')
+    .order('promise_to_pay_date', { ascending: true })
+  if (error) throw error
+  return ((data ?? []) as OverduePromiseRow[]).map((r) => ({
+    id: r.id,
+    contractCode: r.contract_no,
+    customerName: r.customer_name ?? '',
+    promiseToPayDate: r.promise_to_pay_date,
+    promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
+    daysPastPromise: Math.floor(
+      (new Date(today).getTime() - new Date(r.promise_to_pay_date).getTime()) / 86400000,
+    ),
+  }))
 }

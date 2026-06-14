@@ -219,3 +219,15 @@ export type GradeMonthlyChange = {
   changeType: GradeChangeType
   cnt: number
 }
+
+// ---------- Overdue Promise Contracts (badge ที่ /queue) ----------
+
+/** สัญญาที่ผิดนัดจ่าย (promise_to_pay_date < today AND status=active) */
+export type OverduePromiseContract = {
+  id: string
+  contractCode: string      // contracts.contract_no
+  customerName: string
+  promiseToPayDate: string  // 'YYYY-MM-DD'
+  promisedAmount: number | null
+  daysPastPromise: number   // today - promise_to_pay_date (วันที่เลยนัดมาแล้ว)
+}
