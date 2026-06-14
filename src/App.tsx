@@ -75,7 +75,7 @@ function Gate() {
           {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue; executive ไป /exec */}
           <Route index element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Dashboard />} />
           <Route path="/exec" element={(isAdmin || isExecutive) ? <ExecDashboard /> : <Navigate to="/" replace />} />
-          <Route path="/add" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <AddContract /> : <Navigate to="/" replace />} />
+          <Route path="/add" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <AddContract /> : <Navigate to="/" replace />} />
           <Route path="/edit/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <AddContract /> : <Navigate to="/" replace />} />
           <Route path="/sale-history" element={isAdmin ? <SaleHistory /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/waiting-email" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingEmail />} />

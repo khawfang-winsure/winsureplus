@@ -4,10 +4,8 @@ import {
   BarChart3,
   CalendarClock,
   CalendarRange,
-  Coins,
-  Gauge,
   FilePlus2,
-  FileText,
+  Gauge,
   History,
   LayoutDashboard,
   Mail,
@@ -15,11 +13,9 @@ import {
   Phone,
   PieChart,
   Receipt,
-  ScrollText,
   Send,
   Settings,
   Truck,
-  TrendingUp,
   Users,
   type LucideIcon,
 } from 'lucide-react'
@@ -41,14 +37,15 @@ export interface NavItem {
 }
 
 export const NAV: NavItem[] = [
+  // กลุ่ม freelancer — แยกออกมา ไม่อยู่ในกลุ่มหลัก
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
+
+  // วันนี้ต้องทำ
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
-  { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2, adminOnly: true },
+  { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
-  { to: '/customers', label: 'ลูกค้าทั้งหมด', icon: Users },
-  { to: '/customer-overview', label: 'ภาพรวมลูกค้า', icon: PieChart },
   { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', icon: CalendarClock },
   {
     label: 'ลูกค้าล่าช้า-หนี้เสีย',
@@ -62,16 +59,32 @@ export const NAV: NavItem[] = [
       { to: '/overdue/120+', label: 'ล่าช้า 120 วันขึ้นไป' },
     ],
   },
-  { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
-  { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
-  { to: '/device-pipeline', label: 'ติดตามเครื่อง', icon: Truck },
-  { to: '/sale-history', label: 'ประวัติการขายเครื่อง', icon: History, adminOnly: true },
+
+  // จัดการลูกค้า
+  { to: '/customers', label: 'ลูกค้าทั้งหมด', icon: Users },
   { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
-  { to: '/shop-report', label: 'รายงานร้านค้า', icon: BarChart3 },
-  { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', icon: TrendingUp },
-  { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: ScrollText },
-  { to: '/weekly-report', label: 'รายงานประจำสัปดาห์', icon: FileText },
-  { to: '/commission', label: 'ค่าคอมมิชชั่น', icon: Coins, adminOnly: true },
+  { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
+  { to: '/customer-overview', label: 'ภาพรวมลูกค้า', icon: PieChart },
+
+  // เครื่อง
+  { to: '/device-pipeline', label: 'ติดตามเครื่อง', icon: Truck },
+  { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
+  { to: '/sale-history', label: 'ประวัติการขายเครื่อง', icon: History, adminOnly: true },
+
+  // รายงาน (collapsible)
+  {
+    label: 'รายงาน',
+    icon: BarChart3,
+    children: [
+      { to: '/shop-report', label: 'รายงานร้านค้า' },
+      { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้' },
+      { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน' },
+      { to: '/weekly-report', label: 'รายงานประจำสัปดาห์' },
+      { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true },
+    ],
+  },
+
+  // ตั้งค่า (collapsible)
   {
     label: 'ตั้งค่า',
     icon: Settings,
