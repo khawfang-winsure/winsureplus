@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ChevronRight, X } from 'lucide-react'
-import { Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
+import { ChevronRight, Download, X } from 'lucide-react'
+import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
   getFreelancerPerformance,
   type FreelancerPerformanceRow,
@@ -109,6 +109,69 @@ function computeTeamSummary(rows: FreelancerPerformanceRow[]): TeamSummary {
     avgPromiseKeepRate: pkCount > 0 ? Math.round((pkSum / pkCount) * 10) / 10 : null,
     avgEscalationRate:  esCount > 0 ? Math.round((esSum / esCount) * 10) / 10 : null,
   }
+}
+
+// ===== CSV Export =====
+
+/** escape CSV cell: wrap in quotes if contains comma, quote, or newline */
+function escCell(v: string | number | null | undefined): string {
+  if (v === null || v === undefined) return ''
+  const s = String(v)
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
+
+function generateCSV(rows: FreelancerPerformanceRow[]): string {
+  const headers = [
+    'ชื่อ',
+    'เกรดที่ดูแล',
+    'จำนวนสัญญาที่ติดต่อ',
+    'อัตราโทรติดต่อสำเร็จ (%)',
+    'จำนวน Promise',
+    'Keep Rate (%)',
+    'อัตราการแก้ไข (%)',
+    'จำนวน Escalate',
+    'กิจกรรมล่าสุด',
+  ]
+
+  const csvRows: string[] = [headers.map(escCell).join(',')]
+  for (const r of rows) {
+    const kpi = computePerformanceKPIs(toInput(r))
+    csvRows.push(
+      [
+        escCell(r.fullName),
+        escCell(gradeStr(r.assignedGrades)),
+        escCell(r.uniqueContracts),
+        escCell(kpi.contactRate !== null ? kpi.contactRate.toFixed(1) : 'N/A'),
+        escCell(r.promiseCount),
+        escCell(kpi.promiseKeepRate !== null ? kpi.promiseKeepRate.toFixed(1) : 'N/A'),
+        escCell(kpi.resolutionRate !== null ? kpi.resolutionRate.toFixed(1) : 'N/A'),
+        escCell(r.escalateContracts),
+        escCell(
+          r.lastActivityAt
+            ? new Date(r.lastActivityAt).toLocaleDateString('th-TH')
+            : '-',
+        ),
+      ].join(','),
+    )
+  }
+
+  // '﻿' = UTF-8 BOM — ensures Excel reads Thai characters correctly
+  return '﻿' + csvRows.join('\r\n')
+}
+
+function downloadCSV(content: string, filename: string): void {
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 
 // ===== DrillDown Panel =====
@@ -259,16 +322,30 @@ export default function StaffPerformance() {
         <PageTitle sub={`ข้อมูล ${daysWindow} วันล่าสุด`} count={{ shown: rows.length }}>
           สรุปภาพรวมการติดตามหนี้
         </PageTitle>
-        <select
-          value={daysWindow}
-          onChange={(e) => setDaysWindow(Number(e.target.value) as 7 | 30 | 90)}
-          disabled={refreshing}
-          className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink outline-none transition focus:border-salmon-deep disabled:opacity-50"
-        >
-          <option value={7}>7 วันล่าสุด</option>
-          <option value={30}>30 วันล่าสุด</option>
-          <option value={90}>90 วันล่าสุด</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={daysWindow}
+            onChange={(e) => setDaysWindow(Number(e.target.value) as 7 | 30 | 90)}
+            disabled={refreshing}
+            className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink outline-none transition focus:border-salmon-deep disabled:opacity-50"
+          >
+            <option value={7}>7 วันล่าสุด</option>
+            <option value={30}>30 วันล่าสุด</option>
+            <option value={90}>90 วันล่าสุด</option>
+          </select>
+          <Button
+            variant="ghost"
+            disabled={rows.length === 0 || refreshing}
+            onClick={() => {
+              const today = new Date().toISOString().slice(0, 10)
+              const filename = `performance_${daysWindow}days_${today}.csv`
+              downloadCSV(generateCSV(rows), filename)
+            }}
+          >
+            <Download className="h-4 w-4" />
+            Export Excel
+          </Button>
+        </div>
       </div>
 
       {/* Error */}
