@@ -44,6 +44,10 @@ export interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = { docFee: 100, penaltyPerDay: 100, penaltyMaxDays: 7 }
 
+/** PostgREST default cap = 1000 rows (index 0-999). ขยายเป็น 5000 rows เพื่อรองรับการเติบโต 1+ ปี
+ *  ใช้ .range(0, PAGE_CAP) บน query ที่ return list (ไม่ใช่ .single() / .maybeSingle() / count) */
+const PAGE_CAP = 4999
+
 // ---------- ตัวแปลงแถวฐานข้อมูล (snake_case) -> ชนิดข้อมูลในเว็บ (camelCase) ----------
 interface ContractRow {
   id: string
@@ -215,6 +219,7 @@ export async function getShops(): Promise<Shop[]> {
     .select('*')
     .eq('active', true)
     .order('code')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((s) => ({
     id: s.id,
@@ -238,7 +243,7 @@ export async function getShops(): Promise<Shop[]> {
 /** ร้านค้าทุกสถานะ (รวมที่ปิดแล้ว) — สำหรับหน้าตั้งค่า */
 export async function getAllShops(): Promise<Shop[]> {
   if (!supabase) return mock.shops
-  const { data, error } = await supabase.from('shops').select('*').order('code')
+  const { data, error } = await supabase.from('shops').select('*').order('code').range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((s) => ({
     id: s.id,
@@ -267,6 +272,7 @@ export async function getOptions(kind: OptionKind): Promise<Option[]> {
     .eq('kind', kind)
     .eq('active', true)
     .order('sort_order')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((o) => ({
     id: o.id,
@@ -282,6 +288,7 @@ export async function getContracts(): Promise<Contract[]> {
     .from('contracts')
     .select('*')
     .order('transaction_date', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as ContractRow[]).map(mapContract)
 }
@@ -495,7 +502,7 @@ export async function getContract(id: string): Promise<Contract | null> {
 /** ดึงเลขที่สัญญาทั้งหมดของร้านหนึ่ง — ใช้รันเลขถัดไปอัตโนมัติ */
 export async function getShopContractNos(shopId: string): Promise<string[]> {
   if (!supabase) return mock.contracts.filter((c) => c.shopId === shopId).map((c) => c.contractNo)
-  const { data, error } = await supabase.from('contracts').select('contract_no').eq('shop_id', shopId)
+  const { data, error } = await supabase.from('contracts').select('contract_no').eq('shop_id', shopId).range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((r) => r.contract_no as string)
 }
@@ -552,6 +559,7 @@ export async function getInstallments(contractId: string): Promise<Installment[]
     .select('*')
     .eq('contract_id', contractId)
     .order('installment_no')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as InstallmentRow[]).map(mapInstallment)
 }
@@ -572,6 +580,7 @@ export async function getAllInstallments(): Promise<InstallmentLite[]> {
   const { data, error } = await supabase
     .from('installments')
     .select('contract_id, installment_no, due_date, paid_at, amount, paid_amount')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((r) => ({
     contractId: r.contract_id as string,
@@ -646,6 +655,7 @@ export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry
     .select('id, installment_id, action, amount, paid_amount_after, note, by_name, created_at')
     .eq('contract_id', contractId)
     .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as PaymentLogRow[]).map((r) => ({
     id: r.id,
@@ -669,7 +679,7 @@ export interface PaymentLite {
 /** ดึง payment_log ทั้งหมด (เฉพาะ field ที่ใช้รวมยอดรับชำระรายเดือน) */
 export async function getAllPayments(): Promise<PaymentLite[]> {
   if (!supabase) return []
-  const { data, error } = await supabase.from('payment_log').select('action, amount, created_at')
+  const { data, error } = await supabase.from('payment_log').select('action, amount, created_at').range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((r) => ({
     action: r.action as 'pay' | 'edit' | 'cancel',
@@ -778,6 +788,7 @@ export async function getContractExtensions(contractId: string): Promise<Extensi
     .select(EXT_SELECT)
     .eq('contract_id', contractId)
     .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as ExtensionRow[]).map(mapExtension)
 }
@@ -789,6 +800,7 @@ export async function getAllExtensions(): Promise<ExtensionRecord[]> {
     .from('contract_extensions')
     .select(`${EXT_SELECT}, contracts ( contract_no, customer_name )`)
     .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as ExtensionRow[]).map(mapExtension)
 }
@@ -833,6 +845,7 @@ export async function getOverdueByBucket(bucket: OverdueBucket): Promise<Contrac
     .select('*')
     .eq('bucket', bucket)
     .order('days_late', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as StatusRow[]).map(mapStatus)
 }
@@ -840,7 +853,7 @@ export async function getOverdueByBucket(bucket: OverdueBucket): Promise<Contrac
 /** สถานะของทุกสัญญา (สำหรับหน้าภาพรวม) */
 export async function getAllStatuses(): Promise<ContractStatusRow[]> {
   if (!supabase) return []
-  const { data, error } = await supabase.from('v_contract_status').select('*')
+  const { data, error } = await supabase.from('v_contract_status').select('*').range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as StatusRow[]).map(mapStatus)
 }
@@ -859,6 +872,7 @@ export async function getDueSoon(): Promise<ContractStatusRow[]> {
     .gte('next_due', iso(today))
     .lte('next_due', iso(in7))
     .order('next_due')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as StatusRow[]).map(mapStatus)
 }
@@ -928,6 +942,7 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
   if (filter?.deviceStatus && filter.deviceStatus !== 'all') {
     query = query.eq('device_status', filter.deviceStatus)
   }
+  query = query.range(0, PAGE_CAP)
   const { data, error } = await query
   if (error) throw error
   return ((data ?? []) as ReturnRow[]).map((r) => ({
@@ -1060,7 +1075,7 @@ export interface Employee {
 /** รายชื่อพนักงานทั้งหมด (แอดมินอ่านได้ตาม RLS) — ใช้เมนูเลือกผู้หาร้าน + แสดงชื่อในรายงาน */
 export async function getEmployees(): Promise<Employee[]> {
   if (!supabase) return [{ id: 'mock-admin', fullName: 'ผู้ดูแลระบบ (ทดลอง)' }]
-  const { data, error } = await supabase.from('profiles').select('id, full_name').order('full_name')
+  const { data, error } = await supabase.from('profiles').select('id, full_name').order('full_name').range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((p) => ({
     id: p.id as string,
@@ -1206,6 +1221,7 @@ export async function getAllOptions(kind: OptionKind): Promise<Option[]> {
     .select('*')
     .eq('kind', kind)
     .order('sort_order')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((o) => ({
     id: o.id,
@@ -1280,7 +1296,7 @@ export async function getContractAddresses(contractId: string): Promise<Contract
 /** ที่อยู่ทุกสัญญา (สำหรับหน้าส่งจดหมาย) → { contractId: { current, id_card, ... } } */
 export async function getAllAddresses(): Promise<Record<string, ContractAddresses>> {
   if (!supabase) return {}
-  const { data, error } = await supabase.from('customer_addresses').select('*')
+  const { data, error } = await supabase.from('customer_addresses').select('*').range(0, PAGE_CAP)
   if (error) throw error
   const out: Record<string, ContractAddresses> = {}
   for (const r of (data ?? []) as AddressRow[]) {
@@ -1332,7 +1348,7 @@ function mapLetter(r: LetterRow): LetterRecord {
 /** จดหมายทั้งหมด (ทุกสัญญา) — สำหรับหน้าส่งจดหมาย */
 export async function getAllLetters(): Promise<LetterRecord[]> {
   if (!supabase) return []
-  const { data, error } = await supabase.from('collection_letters').select('*').order('printed_at')
+  const { data, error } = await supabase.from('collection_letters').select('*').order('printed_at').range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as LetterRow[]).map(mapLetter)
 }
@@ -1344,6 +1360,7 @@ export async function getContractLetters(contractId: string): Promise<LetterReco
     .select('*')
     .eq('contract_id', contractId)
     .order('printed_at')
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as LetterRow[]).map(mapLetter)
 }
@@ -1539,6 +1556,7 @@ export async function getFollowUps(contractId: string): Promise<FollowUpEntry[]>
     .select('*')
     .eq('contract_id', contractId)
     .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as FollowUpRow[]).map(mapFollowUp)
 }
@@ -1555,6 +1573,7 @@ export async function getMyAssignedGrades(): Promise<ContractGrade[]> {
     .select('grade')
     .eq('freelancer_id', user.id)
     .is('ended_at', null)
+    .range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((r) => r.grade as ContractGrade)
 }
@@ -1631,6 +1650,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     .neq('bucket', 'normal')
     .in('grade', grades)
     .order('days_late', { ascending: false })
+    .range(0, PAGE_CAP)
   if (statusError) throw statusError
 
   const statusRows = (statusData ?? []) as QueueStatusRow[]
@@ -1644,6 +1664,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       'id, phone, phone_alt1, phone_alt2, model, storage, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount',
     )
     .in('id', ids)
+    .range(0, PAGE_CAP)
   if (contractError) throw contractError
 
   const contractMap = new Map(
@@ -1652,13 +1673,13 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
 
   // Query 4: installments ที่ยังไม่ปิด (paid_at IS NULL) เพื่อคำนวณ principalDue per contract
   // principalDue = sum(amount - coalesce(paid_amount, 0)) ของงวดยังไม่ปิด
-  // NOTE: ถ้า queue ขนาดใหญ่ query นี้อาจถึง PostgREST row-cap (1000) → aggregate view เป็น fix ที่แท้จริง
-  //   ตอนนี้ queue จำกัดด้วย RLS grade-scope → จำนวนงวดควรอยู่ในช่วงปลอดภัย
+  // NOTE: ถ้า queue ขนาดใหญ่ query นี้อาจถึง PostgREST row-cap → .range(0, PAGE_CAP) ขยายเป็น 5000 rows
   const { data: instData, error: instErr } = await supabase
     .from('installments')
     .select('contract_id, amount, paid_amount')
     .in('contract_id', ids)
     .is('paid_at', null)
+    .range(0, PAGE_CAP)
   if (instErr) throw instErr
 
   // Client-side reduce: principalDue per contract_id
@@ -1688,6 +1709,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     .in('contract_id', ids)
     .gte('created_at', since)
     .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
   if (fuErr) throw fuErr
 
   // Client-side reduce: สร้าง aggregate map per contract_id
@@ -1872,6 +1894,7 @@ export async function getEscalateContracts(): Promise<EscalateContract[]> {
     .select('contract_id, total_attempts, successful_attempts')
     .gte('total_attempts', 10)
     .eq('successful_attempts', 0)
+    .range(0, PAGE_CAP)
   if (statsError) throw statsError
 
   const escalateIds = ((statsData ?? []) as {
@@ -2247,6 +2270,7 @@ export async function getFreelancerPerformance(days: number = 30): Promise<Freel
     .select('id, full_name')
     .eq('role', 'freelancer')
     .eq('active', true)
+    .range(0, PAGE_CAP)
   if (profileErr) throw profileErr
 
   const freelancers = (profileData ?? []) as FreelancerProfileRow[]
@@ -2261,6 +2285,7 @@ export async function getFreelancerPerformance(days: number = 30): Promise<Freel
     .select('freelancer_id, grade')
     .in('freelancer_id', freelancerIds)
     .is('ended_at', null)
+    .range(0, PAGE_CAP)
   if (fgaErr) throw fgaErr
 
   // build grade map: freelancer_id → string[]
@@ -2435,6 +2460,7 @@ export async function getGradeChangesMonthly(monthsBack = 12): Promise<GradeMont
     .select('month_bkt, change_type, cnt')
     .gte('month_bkt', since.toISOString())
     .order('month_bkt', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as GradeMonthlyChangeRow[]).map((r) => ({
     monthBkt: r.month_bkt.slice(0, 10), // truncate to YYYY-MM-DD
@@ -2483,6 +2509,7 @@ export async function getOverduePromiseContracts(): Promise<OverduePromiseContra
     .not('promise_to_pay_date', 'is', null)
     .eq('status', 'active')
     .order('promise_to_pay_date', { ascending: true })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as OverduePromiseRow[]).map((r) => ({
     id: r.id,
