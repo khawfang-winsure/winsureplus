@@ -1046,8 +1046,21 @@ function PaymentModal({
   }
 
   const previewTotal = mode === 'pay' ? ins.paidAmount + amount : amount
-  const willClose = previewTotal >= ins.amount
   const grandTotal = amount + (mode === 'pay' ? penaltyPaid : 0)
+
+  // 3-state สำหรับโหมด 'pay': partial / full / over
+  const payState: 'partial' | 'full' | 'over' =
+    previewTotal > ins.amount ? 'over' : previewTotal === ins.amount ? 'full' : 'partial'
+
+  // dynamic label ปุ่มบันทึก (โหมด pay)
+  const payLabel =
+    amount === 0
+      ? 'บันทึกการรับชำระ'
+      : payState === 'over'
+      ? 'บันทึกเกินค่างวด'
+      : payState === 'partial'
+      ? 'บันทึกทยอยชำระ'
+      : 'บันทึกการรับชำระ'
 
   return (
     <Modal title={mode === 'pay' ? `รับชำระ — งวดที่ ${ins.installmentNo}` : `แก้ไขยอด — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
@@ -1075,6 +1088,11 @@ function PaymentModal({
             onChange={(e) => setAmount(Number(e.target.value) || 0)}
           />
         </Field>
+        {mode === 'pay' && (
+          <p className="text-xs text-ink-soft -mt-1">
+            💡 ใส่จำนวนน้อยกว่าค่างวดได้ (ทยอยชำระ) ระบบจะบันทึกยอดสะสมและเก็บงวดเปิดไว้
+          </p>
+        )}
 
         {/* #2 — ค่าปรับ: แสดงเฉพาะโหมด 'pay' */}
         {mode === 'pay' && (
@@ -1115,11 +1133,22 @@ function PaymentModal({
           </p>
         )}
 
-        <p className={`rounded-lg px-3 py-2 text-sm ${willClose ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
-          {willClose
-            ? `ยอดสะสมค่างวดจะเป็น ${baht(previewTotal)} ฿ → ปิดงวดนี้ (ชำระครบ)`
-            : `ยอดสะสมค่างวดจะเป็น ${baht(previewTotal)} ฿ → ค้างอีก ${baht(Math.max(0, ins.amount - previewTotal))} ฿ (งวดยังเปิด)`}
-        </p>
+        {mode === 'pay' && (
+          <p className={`rounded-lg px-3 py-2 text-sm ${payState === 'full' ? 'bg-green-50 text-green-700' : payState === 'over' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
+            {payState === 'full'
+              ? `✅ ครบจำนวน — ยอดสะสม ${baht(previewTotal)} ฿ → งวดจะถูกปิด`
+              : payState === 'over'
+              ? `⚠️ เกินค่างวด — ยอดสะสม ${baht(previewTotal)} ฿ (เกิน ${baht(previewTotal - ins.amount)} ฿) กรุณาตรวจสอบ`
+              : `⚠️ ทยอยชำระ — ยอดสะสม ${baht(previewTotal)} ฿ → เหลือค้าง ${baht(ins.amount - previewTotal)} ฿ (งวดยังเปิด)`}
+          </p>
+        )}
+        {mode === 'edit' && (
+          <p className={`rounded-lg px-3 py-2 text-sm ${previewTotal >= ins.amount ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+            {previewTotal >= ins.amount
+              ? `ยอดสะสมค่างวดจะเป็น ${baht(previewTotal)} ฿ → ปิดงวดนี้ (ชำระครบ)`
+              : `ยอดสะสมค่างวดจะเป็น ${baht(previewTotal)} ฿ → ค้างอีก ${baht(Math.max(0, ins.amount - previewTotal))} ฿ (งวดยังเปิด)`}
+          </p>
+        )}
 
         {/* Note: แสดงเฉพาะโหมด edit เท่านั้น (recordPaymentWithPenalty ไม่รับ note) */}
         {mode === 'edit' && (
@@ -1132,7 +1161,7 @@ function PaymentModal({
 
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || amount < 0}>{busy ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+          <Button onClick={save} disabled={busy || amount < 0}>{busy ? 'กำลังบันทึก...' : mode === 'pay' ? payLabel : 'บันทึก'}</Button>
         </div>
       </div>
     </Modal>
