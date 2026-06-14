@@ -1,6 +1,6 @@
 // ===== ตัวคำนวณ Dashboard ผู้บริหาร (ฟังก์ชันบริสุทธิ์ — แยกจาก UI/DB เพื่อทดสอบง่าย) =====
 // รวมข้อมูลจากหลายแหล่ง (สัญญา/สถานะ/งวด/ร้าน/การชำระ/ขยายเวลา/คืนเครื่อง) เป็นตัวเลขสรุป
-import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, ShopReportRow } from './types'
+import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, ShopReportRow, GradeMonthlyChange } from './types'
 import type { InstallmentLite, PaymentLite, ExtensionRecord } from './db'
 import { ageRange } from './format'
 import { buildShopReport, topShopsByCases } from './report'
@@ -686,4 +686,135 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     cashflowMonth,
     briefing,
   }
+}
+
+// ===== Grade Movement (Roll / Cure rate รายเดือน) =====
+// TH_MON ใช้จากที่ประกาศด้านบน (บรรทัด 120) — ไม่ประกาศซ้ำ
+
+/** 'YYYY-MM-DD' → 'YYYY-MM' (ใช้ภายใน buildGradeMovement เท่านั้น — ต่างจาก monthKey เดิมที่ return 'YYYY-M' 0-based) */
+function ymKey(isoDate: string): string {
+  return isoDate.slice(0, 7)
+}
+
+/** 'YYYY-MM' → 'พ.ค. 26' (CE 2-digit — ตรงกับ convention ที่ใช้ใน buildExecDashboard) */
+function ymLabel(monthYYYYMM: string): string {
+  const [y, m] = monthYYYYMM.split('-').map(Number)
+  return TH_MON[m - 1] + ' ' + String(y).slice(2)
+}
+
+export interface GradeMovementMonth {
+  monthLabel: string      // เช่น 'พ.ค. 26'
+  roll: number            // จำนวนสัญญาที่ grade แย่ลง (roll into worse bucket)
+  cure: number            // จำนวนสัญญาที่ grade ดีขึ้น (cure)
+  net: number             // cure − roll (บวก = ดีขึ้น)
+  newCount: number        // สัญญาใหม่ที่เข้า graded pool เดือนนั้น
+  exit: number            // สัญญาที่ออกจาก graded pool (ปิด/คืน)
+  isBackfillSpike: boolean // true = เดือนที่ข้อมูลน่าจะเป็น backfill (new พุ่งสูง roll=cure=exit=0)
+}
+
+export interface GradeMovementSummary {
+  roll: number
+  cure: number
+  net: number
+  rollRateApprox: number | null  // null ถ้า activeGradedCount = 0
+  cureRateApprox: number | null
+  approxNote: string
+}
+
+export interface GradeMovementResult {
+  months: GradeMovementMonth[]          // เรียง ASC (เก่า→ใหม่) สูงสุด 12 เดือนล่าสุด (รวม backfill spike)
+  currentMonth: GradeMovementSummary
+  emptyState: boolean                    // true เมื่อทุกเดือนมี roll=0 && cure=0
+  backfillMonthLabel: string | null      // label เดือนที่ตรวจพบ backfill spike (null = ไม่มี)
+}
+
+/**
+ * สรุปการเคลื่อนไหวเกรดรายเดือน (Roll/Cure rate) จากข้อมูล v_grade_monthly_changes
+ *
+ * @param rows       ผลลัพธ์จาก getGradeChangesMonthly() — GradeMonthlyChange[] (monthBkt='YYYY-MM-DD')
+ * @param activeGradedCount  จำนวนสัญญา active ที่มีเกรด ณ ปัจจุบัน (ใช้เป็นตัวหาร rate)
+ * @param todayISO   วันที่วันนี้ 'YYYY-MM-DD'
+ */
+export function buildGradeMovement(
+  rows: GradeMonthlyChange[],
+  activeGradedCount: number,
+  todayISO: string,
+): GradeMovementResult {
+  // ── 1. Aggregate rows → Map<monthYYYYMM, counts> ──────────────────────────────
+  type MonthAgg = { roll: number; cure: number; newCount: number; exit: number }
+  const agg = new Map<string, MonthAgg>()
+
+  for (const r of rows) {
+    const mk = ymKey(r.monthBkt)
+    if (!agg.has(mk)) agg.set(mk, { roll: 0, cure: 0, newCount: 0, exit: 0 })
+    const entry = agg.get(mk)!
+    if (r.changeType === 'roll')  entry.roll      += r.cnt
+    else if (r.changeType === 'cure') entry.cure   += r.cnt
+    else if (r.changeType === 'new')  entry.newCount += r.cnt
+    else if (r.changeType === 'exit') entry.exit   += r.cnt
+    // 'same' — ไม่นับใน output fields
+  }
+
+  if (agg.size === 0) {
+    return {
+      months: [],
+      currentMonth: { roll: 0, cure: 0, net: 0, rollRateApprox: null, cureRateApprox: null, approxNote: '' },
+      emptyState: true,
+      backfillMonthLabel: null,
+    }
+  }
+
+  // ── 2. หา earliest month key → ตรวจ backfill spike ─────────────────────────
+  const sortedKeys = [...agg.keys()].sort() // ASC
+  const earliestKey = sortedKeys[0]
+  const earliestAgg = agg.get(earliestKey)!
+  const isBackfill =
+    earliestAgg.newCount > 0 &&
+    earliestAgg.roll === 0 &&
+    earliestAgg.cure === 0 &&
+    earliestAgg.exit === 0
+
+  const backfillMonthLabel = isBackfill ? ymLabel(earliestKey) : null
+
+  // ── 3. Build months[] — เรียง ASC, slice(-12) ────────────────────────────────
+  const curMonthKey = ymKey(todayISO)
+
+  const months: GradeMovementMonth[] = sortedKeys.map((mk) => {
+    const a = agg.get(mk)!
+    const backfillFlag = isBackfill && mk === earliestKey
+    return {
+      monthLabel: ymLabel(mk),
+      roll: a.roll,
+      cure: a.cure,
+      net: a.cure - a.roll,
+      newCount: a.newCount,
+      exit: a.exit,
+      isBackfillSpike: backfillFlag,
+    }
+  }).slice(-12)
+
+  // ── 4. currentMonth summary ──────────────────────────────────────────────────
+  const curAgg = agg.get(curMonthKey) ?? { roll: 0, cure: 0, newCount: 0, exit: 0 }
+  const rollRateApprox =
+    activeGradedCount > 0 ? (curAgg.roll / activeGradedCount) * 100 : null
+  const cureRateApprox =
+    activeGradedCount > 0 ? (curAgg.cure / activeGradedCount) * 100 : null
+  const approxNote =
+    activeGradedCount > 0
+      ? 'คิดจากสัญญา active ที่มีเกรด ' + activeGradedCount + ' รายการ'
+      : 'ไม่มีสัญญา active ที่มีเกรด'
+
+  const currentMonth: GradeMovementSummary = {
+    roll: curAgg.roll,
+    cure: curAgg.cure,
+    net: curAgg.cure - curAgg.roll,
+    rollRateApprox,
+    cureRateApprox,
+    approxNote,
+  }
+
+  // ── 5. emptyState ────────────────────────────────────────────────────────────
+  const emptyState = months.every((m) => m.roll === 0 && m.cure === 0)
+
+  return { months, currentMonth, emptyState, backfillMonthLabel }
 }

@@ -7,6 +7,8 @@ import type {
   ContractStatus,
   ContractStatusRow,
   DeviceReturnRow,
+  GradeChangeType,
+  GradeMonthlyChange,
   Installment,
   NotificationItem,
   Option,
@@ -2406,4 +2408,50 @@ export async function getFreelancerPerformance(days: number = 30): Promise<Freel
       byGrade: agg?.byGrade ?? [],
     }
   })
+}
+
+// ---------- Grade Mobility (migration 0030) ----------
+
+interface GradeMonthlyChangeRow {
+  month_bkt: string
+  change_type: GradeChangeType
+  cnt: number
+}
+
+/**
+ * ดึงข้อมูลการเปลี่ยนแปลงเกรดรายเดือน จาก view v_grade_monthly_changes
+ * security_invoker=on — admin/staff/executive เห็น, freelancer เห็น 0 rows (RLS contracts)
+ * @param monthsBack จำนวนเดือนย้อนหลัง (default 12)
+ */
+export async function getGradeChangesMonthly(monthsBack = 12): Promise<GradeMonthlyChange[]> {
+  if (!supabase) return []
+  const since = new Date()
+  since.setMonth(since.getMonth() - monthsBack)
+  since.setDate(1)
+  since.setHours(0, 0, 0, 0)
+  const { data, error } = await supabase
+    .from('v_grade_monthly_changes')
+    .select('month_bkt, change_type, cnt')
+    .gte('month_bkt', since.toISOString())
+    .order('month_bkt', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as GradeMonthlyChangeRow[]).map((r) => ({
+    monthBkt: r.month_bkt.slice(0, 10), // truncate to YYYY-MM-DD
+    changeType: r.change_type,
+    cnt: Number(r.cnt),
+  }))
+}
+
+/**
+ * นับ contracts ที่ status='active' และมี current_grade (ใช้เป็น denominator ของ Roll/Cure Rate %)
+ */
+export async function getActiveGradedCount(): Promise<number> {
+  if (!supabase) return 0
+  const { count, error } = await supabase
+    .from('contracts')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'active')
+    .not('current_grade', 'is', null)
+  if (error) throw error
+  return count ?? 0
 }

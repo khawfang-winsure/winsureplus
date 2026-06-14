@@ -4,6 +4,7 @@ import { Loading, PageTitle, Card, Badge } from '../components/ui'
 import { Donut } from '../components/Donut'
 import { LineChart } from '../components/LineChart'
 import MorningBriefing from '../components/MorningBriefing'
+import GradeMovementView from '../components/GradeMovementView'
 import { baht } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import {
@@ -19,20 +20,23 @@ import {
   getRecruitBonuses,
   getEmployees,
   getEscalateContracts,
+  getGradeChangesMonthly,
+  getActiveGradedCount,
   type EscalateContract,
 } from '../lib/db'
-import { buildExecDashboard, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity } from '../lib/execDashboard'
+import { buildExecDashboard, buildGradeMovement, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult } from '../lib/execDashboard'
 import type { ShopGrade } from '../lib/types'
 
-type Tab = 'overview' | Granularity
+type Tab = 'overview' | Granularity | 'grade'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'ภาพรวมทั้งหมด' },
   { key: 'day', label: 'รายวัน' },
   { key: 'week', label: 'รายสัปดาห์' },
   { key: 'month', label: 'รายเดือน' },
+  { key: 'grade', label: 'การขยับเกรด' },
 ]
 
-const todayISO = new Date().toISOString().slice(0, 10)
+const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
 
 /** ย่อจำนวนเงินก้อนใหญ่: 2,400,000 → 2.40M, 12,300 → 12.3K */
 function money(n: number): string {
@@ -82,6 +86,11 @@ export default function ExecDashboard() {
     })
   }, null)
 
+  const { data: gradeMovement, loading: gradeLoading, error: gradeError } = useAsync<GradeMovementResult | null>(async () => {
+    const [rows, count] = await Promise.all([getGradeChangesMonthly(), getActiveGradedCount()])
+    return buildGradeMovement(rows, count, todayISO)
+  }, null)
+
   if (loading || !data) {
     return (
       <div>
@@ -121,11 +130,18 @@ export default function ExecDashboard() {
         ))}
       </div>
 
-      {tab !== 'overview' && (
+      {(tab === 'day' || tab === 'week' || tab === 'month') && (
         <CashflowView
           gran={tab}
           rows={tab === 'day' ? d.cashflowDay : tab === 'week' ? d.cashflowWeek : d.cashflowMonth}
         />
+      )}
+
+      {tab === 'grade' && (
+        gradeLoading ? <Loading />
+        : gradeError ? <p className="text-sm text-red-500 p-4">โหลดข้อมูลไม่ได้: {String(gradeError)}</p>
+        : gradeMovement ? <GradeMovementView data={gradeMovement} />
+        : <Loading />
       )}
 
       {tab === 'overview' && (

@@ -207,3 +207,15 @@ export interface Contract {
   promiseToPayDate?: string | null // วันนัดชำระ ISO yyyy-mm-dd (sync จาก trigger)
   promisedAmount?: number | null   // ยอดที่สัญญาไว้ (บาท)
 }
+
+// ---------- Grade Mobility (migration 0030) ----------
+
+/** ประเภทการเปลี่ยนแปลงเกรดรายเดือน จาก view v_grade_monthly_changes */
+export type GradeChangeType = 'roll' | 'cure' | 'new' | 'exit' | 'same'
+
+/** แถวจาก view v_grade_monthly_changes (Roll/Cure rate รายเดือน) */
+export type GradeMonthlyChange = {
+  monthBkt: string       // ISO 'YYYY-MM-DD' (month start — truncate ของ month_bkt)
+  changeType: GradeChangeType
+  cnt: number
+}
