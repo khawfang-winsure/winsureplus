@@ -1,9 +1,70 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { User, Phone, CreditCard, ChevronRight } from 'lucide-react'
+import { User, Phone, CreditCard, ChevronRight, History, MessageCircle } from 'lucide-react'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, maskNationalId, statusLabel } from '../lib/format'
-import { getCustomerAggregate, type CustomerAggregate, type CustomerContractItem } from '../lib/db'
+import {
+  getCustomerAggregate,
+  getPaymentLog,
+  getFollowUps,
+  type CustomerAggregate,
+  type CustomerContractItem,
+  type PaymentLogEntry,
+  type FollowUpEntry,
+  type FollowUpResult,
+} from '../lib/db'
+
+// ---------- helpers ----------
+
+/** เวลาไทยแบบสั้น (วัน/เดือน/ปี เวลา) — mirror ContractDetail.tsx เพื่อให้ปีเป็น ค.ศ. */
+function thaiDateTime(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return `${dd}/${mm}/${d.getFullYear()} ${time}`
+}
+
+const ACTION_LABEL: Record<PaymentLogEntry['action'], string> = {
+  pay: 'ยืนยันชำระ',
+  edit: 'แก้ไขยอด',
+  cancel: 'ยกเลิก',
+}
+type BadgeTone = 'green' | 'amber' | 'red' | 'neutral'
+const ACTION_TONE: Record<PaymentLogEntry['action'], BadgeTone> = {
+  pay: 'green',
+  edit: 'amber',
+  cancel: 'red',
+}
+
+const FU_RESULT_LABEL: Record<FollowUpResult, string> = {
+  contacted: 'ติดต่อสำเร็จ',
+  no_answer: 'ไม่รับสาย',
+  promised: 'สัญญาจะจ่าย',
+  refused: 'ปฏิเสธ',
+  paid: 'จ่ายแล้ว',
+  returned: 'คืนเครื่อง',
+  other: 'อื่นๆ',
+}
+const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
+  contacted: 'green',
+  no_answer: 'neutral',
+  promised: 'green',
+  refused: 'red',
+  paid: 'green',
+  returned: 'amber',
+  other: 'neutral',
+}
+
+// ── flattened types สำหรับ Customer 360 ──────────────────────────────────────
+interface FlatPayment extends PaymentLogEntry {
+  contractId: string
+  contractNo: string
+}
+interface FlatFollowUp extends FollowUpEntry {
+  contractNo: string
+}
 
 // ป้ายสถานะที่ใช้ bucket inline จาก CustomerContractItem (ไม่ใช่ ContractStatusRow)
 function ContractStatusPill({ item }: { item: CustomerContractItem }) {
@@ -64,6 +125,11 @@ export default function CustomerDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // ── Customer 360: ประวัติการชำระ + ประวัติการติดตาม ────────────────────────
+  const [recentPayments, setRecentPayments] = useState<FlatPayment[]>([])
+  const [recentFollowUps, setRecentFollowUps] = useState<FlatFollowUp[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
   useEffect(() => {
     if (!id) {
       navigate('/customers', { replace: true })
@@ -74,7 +140,47 @@ export default function CustomerDetail() {
     setError(null)
     getCustomerAggregate(id)
       .then((result) => {
-        if (active) setAgg(result)
+        if (!active) return
+        setAgg(result)
+
+        // เมื่อได้ contracts แล้ว ดึงประวัติแบบขนาน (Approach A: per-contract)
+        if (!result || result.contracts.length === 0) return
+        const contractList = result.contracts
+        const contractNoMap = new Map(contractList.map((c) => [c.contractId, c.contractNo]))
+
+        setHistoryLoading(true)
+        Promise.all([
+          Promise.all(contractList.map((c) => getPaymentLog(c.contractId)
+            .then((entries) => entries.map((e): FlatPayment => ({
+              ...e,
+              contractId: c.contractId,
+              contractNo: contractNoMap.get(c.contractId) ?? c.contractId,
+            })))
+          )),
+          Promise.all(contractList.map((c) => getFollowUps(c.contractId)
+            .then((entries) => entries.map((e): FlatFollowUp => ({
+              ...e,
+              contractNo: contractNoMap.get(c.contractId) ?? c.contractId,
+            })))
+          )),
+        ])
+          .then(([payArrays, fuArrays]) => {
+            if (!active) return
+            const pays = payArrays.flat().sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )
+            const fus = fuArrays.flat().sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )
+            setRecentPayments(pays.slice(0, 10))
+            setRecentFollowUps(fus.slice(0, 10))
+          })
+          .catch(() => {
+            // ไม่ block UI หลัก — sections ว่างเงียบๆ แทน
+          })
+          .finally(() => {
+            if (active) setHistoryLoading(false)
+          })
       })
       .catch((e: unknown) => {
         if (active) setError(e instanceof Error ? e.message : String(e))
@@ -179,6 +285,109 @@ export default function CustomerDetail() {
           </div>
         )}
       </div>
+
+      {/* ── Customer 360: ประวัติการชำระล่าสุด ──────────────────────────────── */}
+      {(historyLoading || recentPayments.length > 0) && (
+        <Card>
+          <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-ink">
+            <History size={15} />
+            ประวัติการชำระล่าสุด
+            {recentPayments.length > 0 && (
+              <span className="ml-1 text-xs font-normal text-ink-soft">
+                (แสดง {recentPayments.length} รายการล่าสุด)
+              </span>
+            )}
+          </h3>
+          {historyLoading ? (
+            <p className="text-sm text-ink-soft">กำลังโหลด…</p>
+          ) : (
+            <ul className="divide-y divide-peach">
+              {recentPayments.map((p) => (
+                <li key={p.id} className="py-2.5 text-sm first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                      <Badge tone={ACTION_TONE[p.action]}>{ACTION_LABEL[p.action]}</Badge>
+                      {p.action !== 'cancel' && (
+                        <span className="font-semibold text-ink tabular-nums">
+                          {baht(p.amount)} ฿
+                        </span>
+                      )}
+                      {p.byName && (
+                        <span className="text-xs text-ink-soft">โดย {p.byName}</span>
+                      )}
+                    </span>
+                    <span className="text-xs text-ink-soft tabular-nums">
+                      {thaiDateTime(p.createdAt)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-soft">
+                    <Link
+                      to={`/contract/${p.contractId}`}
+                      className="font-medium text-salmon-deep hover:underline"
+                    >
+                      {p.contractNo}
+                    </Link>
+                    {p.note && <span>· {p.note}</span>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
+      {/* ── Customer 360: ประวัติการติดตามล่าสุด ──────────────────────────────── */}
+      {(historyLoading || recentFollowUps.length > 0) && (
+        <Card>
+          <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-ink">
+            <MessageCircle size={15} />
+            ประวัติการติดตามล่าสุด
+            {recentFollowUps.length > 0 && (
+              <span className="ml-1 text-xs font-normal text-ink-soft">
+                (แสดง {recentFollowUps.length} รายการล่าสุด)
+              </span>
+            )}
+          </h3>
+          {historyLoading ? (
+            <p className="text-sm text-ink-soft">กำลังโหลด…</p>
+          ) : (
+            <ul className="divide-y divide-peach">
+              {recentFollowUps.map((f) => (
+                <li key={f.id} className="py-2.5 text-sm first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                      <Badge tone={FU_RESULT_TONE[f.followUpResult]}>
+                        {FU_RESULT_LABEL[f.followUpResult]}
+                      </Badge>
+                      <span className="font-semibold text-ink">{f.authorName}</span>
+                    </span>
+                    <span className="text-xs text-ink-soft tabular-nums">
+                      {thaiDateTime(f.createdAt)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                    <Link
+                      to={`/contract/${f.contractId}`}
+                      className="font-medium text-salmon-deep hover:underline"
+                    >
+                      {f.contractNo}
+                    </Link>
+                    {f.noteText && <span>· {f.noteText}</span>}
+                    {f.followUpResult === 'promised' && f.promisedAmount != null && (
+                      <span className="text-green-700">
+                        · สัญญาจะจ่าย {baht(f.promisedAmount)} ฿
+                      </span>
+                    )}
+                    {f.nextFollowUpAt && (
+                      <span>· นัดติดตาม {thaiDateTime(f.nextFollowUpAt)}</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
     </div>
   )
 }
