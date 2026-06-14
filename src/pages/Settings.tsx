@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
@@ -49,13 +49,11 @@ export default function Settings() {
   const { role, configured } = useAuth()
   const canEdit = !configured || role === 'admin'
   const isAdmin = canEdit
-  const navigate = useNavigate()
   const { cat: catParam } = useParams<{ cat: CategoryKey }>()
 
   // กรองเฉพาะหมวดที่ user ดูได้ (staff ไม่เห็น 'users')
   const visibleCats = CATEGORIES.filter((c) => !c.adminOnly || isAdmin)
   const cat: CategoryKey = visibleCats.some((c) => c.key === catParam) ? (catParam as CategoryKey) : 'shops'
-  const setCat = (next: CategoryKey) => navigate(`/settings/${next}`)
 
   const [data, setData] = useState(emptyData)
   const [loading, setLoading] = useState(true)
@@ -210,27 +208,6 @@ export default function Settings() {
         <Loading />
       ) : (
         <>
-          {/* ===== ปุ่มเลือกหมวด (สลับได้จากที่นี่หรือ sidebar submenu) ===== */}
-          <div className="mb-5 flex flex-wrap gap-2">
-            {visibleCats.map((c) => {
-              const active = cat === c.key
-              return (
-                <button
-                  key={c.key}
-                  onClick={() => setCat(c.key)}
-                  className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
-                    active
-                      ? 'border-salmon-deep bg-salmon-deep text-white shadow-sm'
-                      : 'border-peach bg-cream-deep text-ink hover:bg-peach-light'
-                  }`}
-                >
-                  <c.icon size={17} className={active ? 'text-white' : 'text-salmon-deep'} />
-                  {c.label}
-                </button>
-              )
-            })}
-          </div>
-
           {/* ===== เนื้อหาตามหมวดที่เลือก ===== */}
           <div className="flex flex-col gap-4">
             {cat === 'shops' && renderShops()}
