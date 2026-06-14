@@ -271,3 +271,16 @@ export type OverduePromiseContract = {
   promisedAmount: number | null
   daysPastPromise: number   // today - promise_to_pay_date (วันที่เลยนัดมาแล้ว)
 }
+
+// ---------- Private Notes per contract (migration 0037) ----------
+
+/** โน้ตส่วนตัวของพนักงานคนนึงต่อสัญญาคนนึง — RLS คุม: อ่านได้เฉพาะเจ้าของ + admin */
+export interface PrivateNote {
+  id: string
+  contractId: string
+  userId: string
+  authorName?: string  // join profiles.full_name (admin view เท่านั้น)
+  content: string
+  createdAt: string
+  updatedAt: string
+}

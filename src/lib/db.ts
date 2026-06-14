@@ -17,6 +17,7 @@ import type {
   Option,
   OverdueBucket,
   OverduePromiseContract,
+  PrivateNote,
   Shop,
 } from './types'
 import * as mock from './mockData'
@@ -3298,4 +3299,79 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
       returnedAt: ret.transferred_at ?? ret.shipped_at ?? null,
     }
   })
+}
+
+// ===== โน้ตส่วนตัวต่อสัญญา (migration 0037) =====
+
+interface NoteRow {
+  id: string
+  contract_id: string
+  user_id: string
+  content: string
+  created_at: string
+  updated_at: string
+  profiles: { full_name: string } | null
+}
+
+function mapNote(r: NoteRow): PrivateNote {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    userId: r.user_id,
+    authorName: r.profiles?.full_name,
+    content: r.content,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+/** ดึงโน้ตของ user ที่ login อยู่ สำหรับสัญญาที่ระบุ — คืน null ถ้ายังไม่มี */
+export async function getMyPrivateNote(contractId: string): Promise<PrivateNote | null> {
+  if (!supabase) return null
+  const userId = (await supabase.auth.getUser()).data.user?.id
+  if (!userId) return null
+  const { data, error } = await supabase
+    .from('contract_private_notes')
+    .select('*, profiles!user_id(full_name)')
+    .eq('contract_id', contractId)
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return data ? mapNote(data as NoteRow) : null
+}
+
+/** ดึงโน้ตทั้งหมดของสัญญา (admin เท่านั้น — RLS คืน 0 rows สำหรับ non-admin) */
+export async function getAllPrivateNotes(contractId: string): Promise<PrivateNote[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_private_notes')
+    .select('*, profiles!user_id(full_name)')
+    .eq('contract_id', contractId)
+    .order('updated_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as NoteRow[]).map(mapNote)
+}
+
+/** บันทึกหรืออัปเดตโน้ตของ user ที่ login อยู่ (upsert on conflict contract_id, user_id) */
+export async function savePrivateNote(contractId: string, content: string): Promise<void> {
+  if (!supabase) return
+  const userId = (await supabase.auth.getUser()).data.user?.id
+  if (!userId) throw new Error('not signed in')
+  const { error } = await supabase
+    .from('contract_private_notes')
+    .upsert(
+      { contract_id: contractId, user_id: userId, content, updated_at: new Date().toISOString() },
+      { onConflict: 'contract_id,user_id' },
+    )
+  if (error) throw error
+}
+
+/** ลบโน้ตตาม id — RLS คุม: ตัวเอง + admin */
+export async function deletePrivateNote(noteId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('contract_private_notes')
+    .delete()
+    .eq('id', noteId)
+  if (error) throw error
 }

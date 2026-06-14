@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
+import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
 import {
   getContract,
@@ -21,6 +22,10 @@ import {
   restructureContract,
   submitReturn,
   setContractFlags,
+  getMyPrivateNote,
+  getAllPrivateNotes,
+  savePrivateNote,
+  deletePrivateNote,
   type ContractFlagPatch,
   type PaymentLogEntry,
   type ExtensionRecord,
@@ -41,7 +46,7 @@ import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
-import type { Contract, ExtraCharge, Installment } from '../lib/types'
+import type { Contract, ExtraCharge, Installment, PrivateNote } from '../lib/types'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   due_day: 'เปลี่ยนวันที่ชำระ',
@@ -145,6 +150,21 @@ export default function ContractDetail() {
   const [followHistoryLoading, setFollowHistoryLoading] = useState(true)
   const [penaltyOverrideHistory, setPenaltyOverrideHistory] = useState<PenaltyOverrideHistoryEntry[]>([])
 
+  // ===== Private Notes =====
+  const [myNote, setMyNote] = useState<PrivateNote | null>(null)
+  const [allNotes, setAllNotes] = useState<PrivateNote[]>([])
+  const [noteDraft, setNoteDraft] = useState('')
+  const [noteSaving, setNoteSaving] = useState(false)
+  const [noteErr, setNoteErr] = useState<string | null>(null)
+  const [noteSaved, setNoteSaved] = useState(false) // subtle save indicator
+  const [noteDeleteTarget, setNoteDeleteTarget] = useState<PrivateNote | null>(null) // confirm delete modal
+  const [noteAdminTab, setNoteAdminTab] = useState<'mine' | 'all'>('mine') // admin tab
+
+  // Soft-undo state สำหรับ deleteExtraCharge (Sub-task A)
+  const [undoKey, setUndoKey] = useState(0)
+  type UndoState = { label: string; onUndo: () => Promise<void> } | null
+  const [undoState, setUndoState] = useState<UndoState>(null)
+
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
@@ -178,6 +198,22 @@ export default function ContractDetail() {
       .then(setFollowHistory)
       .finally(() => setFollowHistoryLoading(false))
   }, [id])
+
+  const reloadNotes = useCallback(async () => {
+    if (!id) return
+    const mine = await getMyPrivateNote(id)
+    setMyNote(mine)
+    if (isAdmin) {
+      const all = await getAllPrivateNotes(id)
+      setAllNotes(all)
+    }
+  }, [id, isAdmin])
+
+  // โหลดโน้ตครั้งแรก
+  useEffect(() => { reloadNotes() }, [reloadNotes])
+
+  // sync draft เมื่อ myNote โหลดมาแล้ว (หลัง async)
+  useEffect(() => { setNoteDraft(myNote?.content ?? '') }, [myNote])
 
   if (loading) {
     return (
@@ -224,6 +260,35 @@ export default function ContractDetail() {
 
   // สิทธิ์ขยายที่ยังเหลือ (ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const canExtend = allowedExtTypes(extensions).length > 0
+
+  async function handleSaveNote() {
+    if (!id) return
+    setNoteSaving(true)
+    setNoteErr(null)
+    setNoteSaved(false)
+    try {
+      await savePrivateNote(id, noteDraft.trim())
+      await reloadNotes()
+      setNoteSaved(true)
+    } catch (e) {
+      setNoteErr(errMsg(e))
+    } finally {
+      setNoteSaving(false)
+    }
+  }
+
+  async function handleDeleteNote(note: PrivateNote) {
+    try {
+      await deletePrivateNote(note.id)
+      await reloadNotes()
+      setNoteDeleteTarget(null)
+      // ถ้าลบโน้ตของตัวเอง → เคลียร์ draft ด้วย
+      if (note.userId === myNote?.userId) setNoteDraft('')
+    } catch (e) {
+      setNoteErr(errMsg(e))
+      setNoteDeleteTarget(null)
+    }
+  }
 
   return (
     <div>
@@ -404,6 +469,105 @@ export default function ContractDetail() {
         <FollowHistory entries={followHistory} loading={followHistoryLoading} />
       )}
 
+      {/* ===== โน้ตส่วนตัว (ทุก role เห็น) ===== */}
+      <Card className="mb-4 py-3">
+        <p className="mb-3 text-sm font-semibold text-ink">โน้ตส่วนตัว</p>
+
+        {/* Admin: 2 tabs */}
+        {isAdmin && (
+          <div className="mb-3 flex gap-1 rounded-xl bg-peach-light/40 p-1">
+            <button
+              onClick={() => setNoteAdminTab('mine')}
+              className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${noteAdminTab === 'mine' ? 'bg-white text-ink shadow-sm' : 'text-ink-soft hover:text-ink'}`}
+            >
+              โน้ตของฉัน
+            </button>
+            <button
+              onClick={() => setNoteAdminTab('all')}
+              className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${noteAdminTab === 'all' ? 'bg-white text-ink shadow-sm' : 'text-ink-soft hover:text-ink'}`}
+            >
+              โน้ตทุกคน (Admin)
+              {allNotes.length > 0 && (
+                <span className="ml-1 rounded-full bg-salmon-deep/20 px-1.5 py-0.5 text-xs text-salmon-deep">
+                  {allNotes.length}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Tab: โน้ตของฉัน (แสดงทุก role, หรือ admin tab='mine') */}
+        {(!isAdmin || noteAdminTab === 'mine') && (
+          <div className="flex flex-col gap-2">
+            <div className="relative">
+              <Textarea
+                value={noteDraft}
+                onChange={(e) => {
+                  setNoteDraft(e.target.value.slice(0, 2000))
+                  setNoteSaved(false)
+                }}
+                placeholder="ยังไม่มีโน้ต — เริ่มเขียนได้เลย"
+                rows={4}
+                maxLength={2000}
+              />
+              <span className="absolute bottom-2 right-3 text-xs text-ink-soft">
+                {noteDraft.length} / 2000
+              </span>
+            </div>
+            <p className="text-xs text-ink-soft">โน้ตนี้เห็นเฉพาะคุณและแอดมิน</p>
+            {noteErr && <p className="text-sm text-red-600">{noteErr}</p>}
+            {noteSaved && (
+              <p className="text-xs text-green-700">บันทึกแล้ว</p>
+            )}
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleSaveNote}
+                disabled={noteSaving || noteDraft.trim() === (myNote?.content ?? '').trim()}
+              >
+                {noteSaving ? 'กำลังบันทึก...' : 'บันทึกโน้ต'}
+              </Button>
+              {myNote && (
+                <Button
+                  variant="ghost"
+                  onClick={() => setNoteDeleteTarget(myNote)}
+                >
+                  ลบโน้ต
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab: โน้ตทุกคน (admin เท่านั้น) */}
+        {isAdmin && noteAdminTab === 'all' && (
+          <div>
+            {allNotes.length === 0 ? (
+              <p className="text-sm text-ink-soft">ยังไม่มีโน้ตจากพนักงานคนใด</p>
+            ) : (
+              <ol className="flex flex-col divide-y divide-peach/60">
+                {allNotes.map((n) => (
+                  <li key={n.id} className="py-3 text-sm first:pt-0 last:pb-0">
+                    <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-ink">{n.authorName ?? 'ไม่ทราบชื่อ'}</span>
+                      <span className="text-xs text-ink-soft">{thaiDateTime(n.updatedAt)}</span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-ink">{n.content}</p>
+                    <div className="mt-1.5">
+                      <button
+                        onClick={() => setNoteDeleteTarget(n)}
+                        className="rounded px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
+                      >
+                        ลบ
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+      </Card>
+
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>
       {installments.length === 0 ? (
@@ -521,12 +685,27 @@ export default function ContractDetail() {
                     <td className="px-3 py-2.5 font-semibold text-red-600">{baht(ec.amount)} ฿</td>
                     <td className="px-3 py-2.5 text-ink-soft">{ec.createdBy || '—'}</td>
                     <td className="px-3 py-2.5">
-                      {/* admin เท่านั้นที่ลบได้ */}
+                      {/* admin เท่านั้นที่ลบได้ — ใช้ soft-undo 5 วินาที */}
                       {isAdmin && (
                         <button
                           onClick={async () => {
-                            await deleteExtraCharge(ec.id)
+                            const snapshot = { ...ec }
+                            await deleteExtraCharge(snapshot.id)
                             await load()
+                            setUndoState({
+                              label: `ลบ "${snapshot.reason}" แล้ว`,
+                              onUndo: async () => {
+                                await insertExtraCharge(
+                                  snapshot.contractId,
+                                  snapshot.amount,
+                                  snapshot.reason,
+                                  snapshot.createdBy ?? '',
+                                )
+                                await load()
+                                setUndoState(null)
+                              },
+                            })
+                            setUndoKey((k) => k + 1)
                           }}
                           className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50"
                         >
@@ -737,6 +916,31 @@ export default function ContractDetail() {
             setAddExtraOpen(false)
             await load()
           }}
+        />
+      )}
+
+      {/* Confirm ลบโน้ตส่วนตัว */}
+      {noteDeleteTarget && (
+        <Modal title="ยืนยันลบโน้ต" onClose={() => setNoteDeleteTarget(null)}>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink">
+              ต้องการลบโน้ตของ <b>{noteDeleteTarget.authorName ?? 'คนนี้'}</b> ใช่หรือไม่? ไม่สามารถกู้คืนได้
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setNoteDeleteTarget(null)}>ยกเลิก</Button>
+              <Button onClick={() => handleDeleteNote(noteDeleteTarget)}>ยืนยันลบ</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Soft-undo toast (Sub-task A) */}
+      {undoState && (
+        <UndoToast
+          key={undoKey}
+          label={undoState.label}
+          onUndo={undoState.onUndo}
+          onExpire={() => setUndoState(null)}
         />
       )}
     </div>
@@ -956,6 +1160,66 @@ function RowActions({
   )
 }
 
+/**
+ * MobileModal — Modal ที่ responsive สำหรับ PaymentModal และ ExtendModal
+ * Mobile (< md): full-screen, sticky footer แยก scroll body
+ * Desktop (md+): centered card เหมือน Modal ใน ui.tsx แต่ wider (max-w-lg)
+ */
+function MobileModal({
+  title,
+  onClose,
+  footer,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  footer: ReactNode
+  children: ReactNode
+}) {
+  // ปิดเมื่อกด Esc
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 md:items-center md:p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex w-full flex-col bg-surface shadow-xl max-h-[100dvh] md:max-h-[calc(100dvh-2rem)] md:max-w-lg md:rounded-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-peach px-5 py-4">
+          <h3 className="text-lg font-bold text-ink">{title}</h3>
+          <button
+            onClick={onClose}
+            aria-label="ปิด"
+            className="rounded-lg p-1 text-ink-soft hover:bg-peach-light/40"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {children}
+        </div>
+
+        {/* Sticky footer */}
+        <div className="border-t border-peach px-5 py-4">
+          {footer}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** ประวัติการชำระของงวดเดียว (เปิดจากปุ่ม "ประวัติ" ในแถวงวด) */
 function PaymentHistoryModal({
   ins,
@@ -1062,8 +1326,24 @@ function PaymentModal({
       ? 'บันทึกทยอยชำระ'
       : 'บันทึกการรับชำระ'
 
+  const numericInputCls =
+    'w-full rounded-xl border border-peach bg-surface px-3.5 py-3 text-lg text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40'
+
+  const payFooter = (
+    <div className="flex justify-end gap-2">
+      <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+      <Button onClick={save} disabled={busy || amount < 0}>
+        {busy ? 'กำลังบันทึก...' : mode === 'pay' ? payLabel : 'บันทึก'}
+      </Button>
+    </div>
+  )
+
   return (
-    <Modal title={mode === 'pay' ? `รับชำระ — งวดที่ ${ins.installmentNo}` : `แก้ไขยอด — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
+    <MobileModal
+      title={mode === 'pay' ? `รับชำระ — งวดที่ ${ins.installmentNo}` : `แก้ไขยอด — งวดที่ ${ins.installmentNo}`}
+      onClose={onClose}
+      footer={payFooter}
+    >
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-3 gap-2 rounded-xl bg-peach-light/40 p-3 text-sm">
           <div>
@@ -1081,26 +1361,32 @@ function PaymentModal({
         </div>
 
         <Field label={mode === 'pay' ? 'จำนวนเงินที่รับชำระครั้งนี้ (บาท)' : 'ยอดที่ชำระสะสมใหม่ (บาท)'}>
-          <Input
-            type="number"
+          <input
+            type="text"
+            inputMode="decimal"
+            pattern="[0-9]*"
             autoFocus
+            className={numericInputCls}
             value={amount || ''}
-            onChange={(e) => setAmount(Number(e.target.value) || 0)}
+            onChange={(e) => setAmount(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
           />
         </Field>
         {mode === 'pay' && (
           <p className="text-xs text-ink-soft -mt-1">
-            💡 ใส่จำนวนน้อยกว่าค่างวดได้ (ทยอยชำระ) ระบบจะบันทึกยอดสะสมและเก็บงวดเปิดไว้
+            ใส่จำนวนน้อยกว่าค่างวดได้ (ทยอยชำระ) ระบบจะบันทึกยอดสะสมและเก็บงวดเปิดไว้
           </p>
         )}
 
-        {/* #2 — ค่าปรับ: แสดงเฉพาะโหมด 'pay' */}
+        {/* ค่าปรับ: แสดงเฉพาะโหมด 'pay' */}
         {mode === 'pay' && (
           <Field label={`ค่าปรับที่จ่ายครั้งนี้ (บาท) — ค่าปรับคงค้าง ${baht(ins.penaltyAmount)} ฿`}>
-            <Input
-              type="number"
+            <input
+              type="text"
+              inputMode="decimal"
+              pattern="[0-9]*"
+              className={numericInputCls}
               value={penaltyPaid || ''}
-              onChange={(e) => setPenaltyPaid(Number(e.target.value) || 0)}
+              onChange={(e) => setPenaltyPaid(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
             />
           </Field>
         )}
@@ -1136,10 +1422,10 @@ function PaymentModal({
         {mode === 'pay' && (
           <p className={`rounded-lg px-3 py-2 text-sm ${payState === 'full' ? 'bg-green-50 text-green-700' : payState === 'over' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
             {payState === 'full'
-              ? `✅ ครบจำนวน — ยอดสะสม ${baht(previewTotal)} ฿ → งวดจะถูกปิด`
+              ? `ครบจำนวน — ยอดสะสม ${baht(previewTotal)} ฿ → งวดจะถูกปิด`
               : payState === 'over'
-              ? `⚠️ เกินค่างวด — ยอดสะสม ${baht(previewTotal)} ฿ (เกิน ${baht(previewTotal - ins.amount)} ฿) กรุณาตรวจสอบ`
-              : `⚠️ ทยอยชำระ — ยอดสะสม ${baht(previewTotal)} ฿ → เหลือค้าง ${baht(ins.amount - previewTotal)} ฿ (งวดยังเปิด)`}
+              ? `เกินค่างวด — ยอดสะสม ${baht(previewTotal)} ฿ (เกิน ${baht(previewTotal - ins.amount)} ฿) กรุณาตรวจสอบ`
+              : `ทยอยชำระ — ยอดสะสม ${baht(previewTotal)} ฿ → เหลือค้าง ${baht(ins.amount - previewTotal)} ฿ (งวดยังเปิด)`}
           </p>
         )}
         {mode === 'edit' && (
@@ -1150,7 +1436,7 @@ function PaymentModal({
           </p>
         )}
 
-        {/* Note: แสดงเฉพาะโหมด edit เท่านั้น (recordPaymentWithPenalty ไม่รับ note) */}
+        {/* Note: แสดงเฉพาะโหมด edit เท่านั้น */}
         {mode === 'edit' && (
           <Field label="หมายเหตุ (ถ้ามี)">
             <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น โอนผ่านธนาคาร / แก้ไขจากกรอกผิด" />
@@ -1158,13 +1444,8 @@ function PaymentModal({
         )}
 
         {err && <p className="text-sm text-red-600">{err}</p>}
-
-        <div className="mt-1 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || amount < 0}>{busy ? 'กำลังบันทึก...' : mode === 'pay' ? payLabel : 'บันทึก'}</Button>
-        </div>
       </div>
-    </Modal>
+    </MobileModal>
   )
 }
 
@@ -1472,8 +1753,17 @@ function ExtendModal({
   // Guard: สัญญาผ่อนหมดแล้ว
   const alreadyPaidOff = unpaidCount === 0
 
+  const extFooter = (
+    <div className="flex justify-end gap-2">
+      <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+      <Button onClick={save} disabled={busy || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)}>
+        {busy ? 'กำลังบันทึก...' : 'ยืนยันขยายระยะเวลา'}
+      </Button>
+    </div>
+  )
+
   return (
-    <Modal title="ขยายระยะเวลา" onClose={onClose}>
+    <MobileModal title="ขยายระยะเวลา" onClose={onClose} footer={extFooter}>
       <div className="flex flex-col gap-3">
 
         {/* Guard: สัญญาผ่อนหมดแล้ว */}
@@ -1625,15 +1915,8 @@ function ExtendModal({
         </Field>
 
         {err && <p className="text-sm text-red-600">{err}</p>}
-
-        <div className="mt-1 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)}>
-            {busy ? 'กำลังบันทึก...' : 'ยืนยันขยายระยะเวลา'}
-          </Button>
-        </div>
       </div>
-    </Modal>
+    </MobileModal>
   )
 }
 
