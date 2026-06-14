@@ -751,56 +751,148 @@ export default function FreelancerWorkspace() {
                           onToggle={() => toggleSection(tier)}
                         />
                         {open && (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
-                              <thead>
-                                <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
-                                  <th className="px-3 py-3 text-center">
-                                    {/* per-section select-all */}
-                                    {(() => {
-                                      const selectableIds = group
-                                        .filter((sr) => sr.actionableNow)
-                                        .map((sr) => sr.row.contractId)
-                                      const allSelected =
-                                        selectableIds.length > 0 &&
-                                        selectableIds.every((id) => selectedIds.has(id))
-                                      return (
-                                        <input
-                                          type="checkbox"
-                                          checked={allSelected}
-                                          disabled={selectableIds.length === 0}
-                                          onChange={() => toggleSelectTier(group)}
-                                          title="เลือกทั้งหมดในส่วนนี้"
-                                          className="h-4 w-4 cursor-pointer accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-40"
-                                        />
-                                      )
-                                    })()}
-                                  </th>
-                                  <th className="px-4 py-3">ลูกค้า</th>
-                                  <th className="px-4 py-3">ร้าน</th>
-                                  <th className="px-4 py-3 text-center">เกรด</th>
-                                  <th className="px-4 py-3 text-center">คะแนน</th>
-                                  <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
-                                  <th className="px-4 py-3 text-right">งวด</th>
-                                  <th className="px-4 py-3 text-right">ค่างวด / ค่าปรับ</th>
-                                  <th className="px-4 py-3 text-right">เงินต้นค้าง</th>
-                                  <th className="px-4 py-3" />
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {group.map((sr) => (
-                                  <QueueRow
-                                    key={sr.row.contractId}
-                                    sr={sr}
-                                    outsideHours={outsideHours}
-                                    onSelect={setSelectedContract}
-                                    selected={selectedIds.has(sr.row.contractId)}
-                                    onToggleSelect={toggleSelectId}
-                                  />
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
+                          <>
+                            {/* ===== Desktop table (≥ md) ===== */}
+                            <div className="hidden overflow-x-auto md:block">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
+                                    <th className="px-3 py-3 text-center">
+                                      {/* per-section select-all */}
+                                      {(() => {
+                                        const selectableIds = group
+                                          .filter((sr) => sr.actionableNow)
+                                          .map((sr) => sr.row.contractId)
+                                        const allSelected =
+                                          selectableIds.length > 0 &&
+                                          selectableIds.every((id) => selectedIds.has(id))
+                                        return (
+                                          <input
+                                            type="checkbox"
+                                            checked={allSelected}
+                                            disabled={selectableIds.length === 0}
+                                            onChange={() => toggleSelectTier(group)}
+                                            title="เลือกทั้งหมดในส่วนนี้"
+                                            className="h-4 w-4 cursor-pointer accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-40"
+                                          />
+                                        )
+                                      })()}
+                                    </th>
+                                    <th className="px-4 py-3">ลูกค้า</th>
+                                    <th className="px-4 py-3">ร้าน</th>
+                                    <th className="px-4 py-3 text-center">เกรด</th>
+                                    <th className="px-4 py-3 text-center">คะแนน</th>
+                                    <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                                    <th className="px-4 py-3 text-right">งวด</th>
+                                    <th className="px-4 py-3 text-right">ค่างวด / ค่าปรับ</th>
+                                    <th className="px-4 py-3 text-right">เงินต้นค้าง</th>
+                                    <th className="px-4 py-3" />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {group.map((sr) => (
+                                    <QueueRow
+                                      key={sr.row.contractId}
+                                      sr={sr}
+                                      outsideHours={outsideHours}
+                                      onSelect={setSelectedContract}
+                                      selected={selectedIds.has(sr.row.contractId)}
+                                      onToggleSelect={toggleSelectId}
+                                    />
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            {/* ===== Mobile card stack (< md) ===== */}
+                            <div className="flex flex-col divide-y divide-peach/60 md:hidden">
+                              {group.map((sr) => {
+                                const r = sr.row
+                                const isBlocked = r.dnc || r.lawyerEngaged
+                                const disableButton = outsideHours || !sr.actionableNow
+                                const todayPart = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+                                const promiseOverdue = r.promiseToPayDate !== null && r.promiseToPayDate < todayPart
+                                const [, pMonth, pDay] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
+                                let tooltip = ''
+                                if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
+                                else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+                                return (
+                                  <div
+                                    key={r.contractId}
+                                    className={`p-4 ${selectedIds.has(r.contractId) ? 'bg-peach-light/40' : ''}`}
+                                  >
+                                    {/* บรรทัด 1: checkbox + ชื่อ + tier badge */}
+                                    <div className="mb-1 flex items-start gap-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedIds.has(r.contractId)}
+                                        disabled={!sr.actionableNow}
+                                        onChange={() => toggleSelectId(r.contractId)}
+                                        className="mt-0.5 h-4 w-4 cursor-pointer accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-40"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        {/* status flags */}
+                                        {(r.dnc || r.lawyerEngaged || r.disputed) && (
+                                          <div className="mb-1 flex flex-wrap gap-1">
+                                            {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ</Badge>}
+                                            {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ ทนายความ</Badge>}
+                                            {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
+                                          </div>
+                                        )}
+                                        <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
+                                          {r.customerName}
+                                        </p>
+                                        <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                                        {r.deviceModel && <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>}
+                                        {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+                                        {(r.phoneAlt1 || r.phoneAlt2) && (
+                                          <p className="text-xs text-ink-soft">
+                                            📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}
+                                          </p>
+                                        )}
+                                        {r.lastResult !== null && r.lastContactedAt !== null && (
+                                          <p className="mt-0.5 text-xs text-ink-soft">
+                                            🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
+                                          </p>
+                                        )}
+                                        {r.promiseToPayDate !== null && pDay !== null && pMonth !== null && (
+                                          <span className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${promiseOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                                            📅 สัญญาจะจ่าย {pDay}/{pMonth}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {/* tier + score */}
+                                      <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
+                                        {TIER_EMOJI[sr.tier]} {sr.score}
+                                      </span>
+                                    </div>
+                                    {/* บรรทัด 2: ตัวเลข */}
+                                    <div className="mb-3 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
+                                      <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
+                                      <span>ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></span>
+                                      {r.installmentsTotal > 0 && <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
+                                      <span>ค่างวด {baht(r.monthlyPayment)} ฿</span>
+                                      {r.outstanding > 0 && <span className="font-semibold text-red-600">ค่าปรับ {baht(r.outstanding)} ฿</span>}
+                                      {r.principalDue > 0 && <span className="font-semibold text-red-600">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
+                                    </div>
+                                    {/* ปุ่มบันทึก */}
+                                    <button
+                                      disabled={disableButton}
+                                      onClick={() => !disableButton && setSelectedContract(r)}
+                                      title={tooltip || undefined}
+                                      className={`w-full rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                                        disableButton
+                                          ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
+                                          : 'border-peach bg-white text-ink hover:bg-peach-light/50'
+                                      }`}
+                                    >
+                                      บันทึกติดตาม
+                                    </button>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </>
                         )}
                       </div>
                     )
@@ -826,49 +918,76 @@ export default function FreelancerWorkspace() {
                   />
                 )
               ) : (
-                <div className="overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
-                        <th className="px-4 py-3">ลูกค้า / สัญญา</th>
-                        <th className="px-4 py-3 text-center">เกรด</th>
-                        <th className="px-4 py-3">ผลล่าสุด</th>
-                        <th className="px-4 py-3">เวลา</th>
-                        <th className="px-4 py-3">โดย</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {todayRows.map((r) => (
-                        <tr
-                          key={r.contractId}
-                          className="border-b border-peach last:border-0 hover:bg-peach-light/20"
-                        >
-                          <td className="px-4 py-3">
-                            <p className="font-medium text-ink">{r.customerName}</p>
-                            <p className="text-xs text-ink-soft">{r.contractNo}</p>
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-                          </td>
-                          <td className="px-4 py-3 text-ink-soft">
-                            {r.lastResult !== null ? RESULT_LABEL[r.lastResult] : '-'}
-                          </td>
-                          <td className="px-4 py-3 text-ink-soft">
-                            {r.lastContactedAt !== null
-                              ? relativeContactTime(r.lastContactedAt)
-                              : '-'}
-                          </td>
-                          <td className="px-4 py-3 text-ink-soft">
-                            {r.lastContactedByName ?? '-'}
-                          </td>
+                <>
+                  {/* ===== Desktop table (≥ md) ===== */}
+                  <div className="hidden overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm md:block">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
+                          <th className="px-4 py-3">ลูกค้า / สัญญา</th>
+                          <th className="px-4 py-3 text-center">เกรด</th>
+                          <th className="px-4 py-3">ผลล่าสุด</th>
+                          <th className="px-4 py-3">เวลา</th>
+                          <th className="px-4 py-3">โดย</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <p className="px-4 py-2 text-xs text-ink-soft">
-                    แสดง {todayRows.length} รายการที่ติดต่อวันนี้
-                  </p>
-                </div>
+                      </thead>
+                      <tbody>
+                        {todayRows.map((r) => (
+                          <tr
+                            key={r.contractId}
+                            className="border-b border-peach last:border-0 hover:bg-peach-light/20"
+                          >
+                            <td className="px-4 py-3">
+                              <p className="font-medium text-ink">{r.customerName}</p>
+                              <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                            </td>
+                            <td className="px-4 py-3 text-ink-soft">
+                              {r.lastResult !== null ? RESULT_LABEL[r.lastResult] : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-ink-soft">
+                              {r.lastContactedAt !== null
+                                ? relativeContactTime(r.lastContactedAt)
+                                : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-ink-soft">
+                              {r.lastContactedByName ?? '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="px-4 py-2 text-xs text-ink-soft">
+                      แสดง {todayRows.length} รายการที่ติดต่อวันนี้
+                    </p>
+                  </div>
+
+                  {/* ===== Mobile card stack (< md) ===== */}
+                  <div className="flex flex-col gap-3 md:hidden">
+                    {todayRows.map((r) => (
+                      <div
+                        key={r.contractId}
+                        className="rounded-2xl border border-peach bg-white p-4 shadow-sm"
+                      >
+                        <div className="mb-1 flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-ink">{r.customerName}</p>
+                            <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                          </div>
+                          <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-ink-soft">
+                          <span>ผล: <span className="text-ink">{r.lastResult !== null ? RESULT_LABEL[r.lastResult] : '-'}</span></span>
+                          <span>เวลา: {r.lastContactedAt !== null ? relativeContactTime(r.lastContactedAt) : '-'}</span>
+                          <span>โดย: {r.lastContactedByName ?? '-'}</span>
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-xs text-ink-soft">แสดง {todayRows.length} รายการที่ติดต่อวันนี้</p>
+                  </div>
+                </>
               )}
             </>
           )}

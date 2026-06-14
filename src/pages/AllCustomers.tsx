@@ -193,16 +193,18 @@ export default function AllCustomers() {
               ไม่พบรายการที่ตรงกับเงื่อนไข
             </p>
           ) : (
-            <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
-              <table className="w-full min-w-[980px] border-collapse text-sm">
-                <thead>
-                  <tr className="bg-peach-light text-left text-ink">
-                    {['วันที่', 'เลขที่สัญญา', 'ชื่อลูกค้า', 'ร้านค้า', 'สถานะ', 'รุ่น', 'ค่างวด', 'ความคืบหน้า', ''].map((h, i) => (
-                      <th key={h || i} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                {rows.map((c, i) => {
+            <>
+              {/* ===== Desktop table (≥ md) ===== */}
+              <div className="scrollbar-thin hidden overflow-x-auto rounded-2xl border border-peach md:block">
+                <table className="w-full min-w-[980px] border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-peach-light text-left text-ink">
+                      {['วันที่', 'เลขที่สัญญา', 'ชื่อลูกค้า', 'ร้านค้า', 'สถานะ', 'รุ่น', 'ค่างวด', 'ความคืบหน้า', ''].map((h, i) => (
+                        <th key={h || i} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  {rows.map((c, i) => {
                     const st = statusBy.get(c.id)
                     const pr = progressBy.get(c.id) ?? { paid: 0, total: c.termMonths || 0 }
                     const pct = pr.total > 0 ? Math.round((pr.paid / pr.total) * 100) : 0
@@ -282,8 +284,86 @@ export default function AllCustomers() {
                       </tbody>
                     )
                   })}
-              </table>
-            </div>
+                </table>
+              </div>
+
+              {/* ===== Mobile card stack (< md) ===== */}
+              <div className="flex flex-col gap-3 md:hidden">
+                {rows.map((c) => {
+                  const st = statusBy.get(c.id)
+                  const pr = progressBy.get(c.id) ?? { paid: 0, total: c.termMonths || 0 }
+                  const pct = pr.total > 0 ? Math.round((pr.paid / pr.total) * 100) : 0
+                  return (
+                    <div
+                      key={c.id}
+                      className="rounded-2xl border border-peach bg-white p-4 shadow-sm"
+                    >
+                      {/* บรรทัด 1: ชื่อลูกค้า + สถานะ */}
+                      <div className="mb-1 flex items-start justify-between gap-2">
+                        <button
+                          onClick={() => navigate(`/contract/${c.id}`)}
+                          className="text-left font-semibold text-salmon-deep hover:underline"
+                        >
+                          {c.customerName}
+                        </button>
+                        <StatusPills contract={c} st={st} />
+                      </div>
+                      {/* บรรทัด 2: เลขสัญญา + icon อีเมล/สรุป */}
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-ink-soft">
+                        <span className="font-medium text-ink">{c.contractNo}</span>
+                        {c.emailSentAt && (
+                          <span title={`ส่งอีเมลแล้ว · ${thaiDate(c.emailSentAt.slice(0, 10))}`}>
+                            <Mail className="h-3 w-3" />
+                          </span>
+                        )}
+                        {c.summarySentAt && (
+                          <span title={`สรุปยอดแล้ว · ${thaiDate(c.summarySentAt.slice(0, 10))}`}>
+                            <FileCheck className="h-3 w-3" />
+                          </span>
+                        )}
+                        <span className="ml-auto">{thaiDate(c.transactionDate)}</span>
+                      </div>
+                      {/* รุ่น + ร้าน */}
+                      <p className="mb-1 text-xs text-ink-soft">
+                        {c.model} {c.storage} · {shopName(c.shopId)}
+                      </p>
+                      {/* ความคืบหน้า + ค่างวด */}
+                      <div className="mb-3 flex items-center gap-3">
+                        <span className="text-sm font-semibold text-ink">{baht(c.monthlyPayment)} ฿</span>
+                        <span className="text-xs text-ink-soft">งวด {pr.paid}/{pr.total}</span>
+                        <span className="flex-1">
+                          <span className="block h-1.5 overflow-hidden rounded-full bg-peach-light">
+                            <span className="block h-full rounded-full bg-salmon-deep" style={{ width: `${pct}%` }} />
+                          </span>
+                        </span>
+                      </div>
+                      {/* IMEI / SN / INV / บัตร */}
+                      <p className="mb-3 text-xs text-ink-soft">
+                        บัตร: {maskNationalId(c.nationalId)}
+                        {c.imei ? ` · IMEI: ${c.imei}` : ''}
+                        {c.sn ? ` · SN: ${c.sn}` : ''}
+                        {c.invNo ? ` · INV: ${c.invNo}` : ''}
+                      </p>
+                      {/* ปุ่ม */}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => navigate(`/edit/${c.id}`)}
+                          className="inline-flex flex-1 items-center justify-center gap-1 rounded-xl border border-peach px-3 py-2 text-xs text-ink-soft hover:bg-peach-light"
+                        >
+                          <Pencil size={13} /> แก้ไข
+                        </button>
+                        <Link
+                          to={`/customer/${c.id}`}
+                          className="inline-flex flex-1 items-center justify-center gap-1 rounded-xl border border-peach px-3 py-2 text-xs text-salmon-deep hover:bg-peach-light"
+                        >
+                          <User size={13} /> ดูทุกสัญญา
+                        </Link>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
           )}
         </>
       )}
