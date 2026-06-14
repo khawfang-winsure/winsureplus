@@ -5,6 +5,7 @@ import { Donut } from '../components/Donut'
 import { LineChart } from '../components/LineChart'
 import MorningBriefing from '../components/MorningBriefing'
 import GradeMovementView from '../components/GradeMovementView'
+import { EscalateSummaryCard } from '../components/EscalateSummaryCard'
 import { baht } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
@@ -331,8 +332,8 @@ export default function ExecDashboard() {
         <RiskTable title="หนี้เสียตามรุ่นเครื่อง" rows={d.riskByModel} />
       </div>
 
-      {/* ===== แถว 8: ESCALATE — ลูกค้าที่ต้องแอดมินตรวจสอบ (ซ่อนจาก executive) ===== */}
-      {!isExec && <EscalateWidget navigate={navigate} />}
+      {/* ===== แถว 8: ESCALATE — admin/staff เห็นรายละเอียด, exec เห็นเฉพาะสรุป aggregate ===== */}
+      {isExec ? <EscalateSummaryCard /> : <EscalateWidget navigate={navigate} />}
       </>
       )}
     </div>
