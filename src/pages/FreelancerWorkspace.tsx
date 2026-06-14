@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useFilter } from '../lib/useFilter'
 import { AlarmClock, Search } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht } from '../lib/format'
@@ -312,11 +313,11 @@ export default function FreelancerWorkspace() {
   const [selectedGrades, setSelectedGrades] = useState<ContractGrade[]>([])
   const [rows, setRows] = useState<FreelancerQueueRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [shopFilter, setShopFilter] = useState<string>('')
+  const [shopFilter, setShopFilter] = useFilter<string>('queue.shop', '')
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
   const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
-  const [activeTab, setActiveTab] = useState<'todo' | 'done'>('todo')
+  const [activeTab, setActiveTab] = useFilter<'todo' | 'done'>('queue.tab', 'todo')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkSubmitting, setBulkSubmitting] = useState(false)
   const [showBulkConfirm, setShowBulkConfirm] = useState(false)
@@ -457,7 +458,8 @@ export default function FreelancerWorkspace() {
   // กรองตามร้าน + search term + overdue filter (universal — ใช้ก่อน split todayRows/pendingRows)
   const filtered = useMemo(() => {
     // overdueFilter ใช้ทั้ง 2 tabs — freelancer อาจอยากดูเฉพาะคนที่ผิดนัดทั้งใน "ที่ต้องโทร" และ "ติดต่อแล้ววันนี้"
-    if (overdueFilter) {
+    // guard: ถ้าไม่มี overdue ในคิวเลย ข้ามตัวกรองเพื่อป้องกัน empty list โดยไม่มีปุ่มล้าง
+    if (overdueFilter && activeOverdueIds.size > 0) {
       return rowsBeforeOverdueFilter.filter((r) => activeOverdueIds.has(r.contractId))
     }
     return rowsBeforeOverdueFilter

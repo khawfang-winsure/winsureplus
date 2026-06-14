@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useFilter } from '../lib/useFilter'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { FileCheck, Mail, Pencil, Search, User, X } from 'lucide-react'
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
@@ -54,14 +55,14 @@ export default function AllCustomers() {
   const [searchParams] = useSearchParams()
 
   const [query, setQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useFilter('customers.status', '')
   const [bucketFilter, setBucketFilter] = useState<OverdueBucket | 'overdue' | ''>(() => {
     const p = searchParams.get('bucket')
     if (p === 'overdue') return 'overdue'
     if (p && (BUCKET_OPTS as string[]).includes(p)) return p as OverdueBucket
     return ''
   })
-  const [shopFilter, setShopFilter] = useState('')
+  const [shopFilter, setShopFilter] = useFilter('customers.shop', '')
   const [modelFilter, setModelFilter] = useState('')
 
   // ----- ดัชนีช่วยค้นหา -----

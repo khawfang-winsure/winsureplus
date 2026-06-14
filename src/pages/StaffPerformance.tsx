@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useFilter } from '../lib/useFilter'
 import { ChevronRight, Download, X } from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
@@ -287,7 +288,7 @@ export default function StaffPerformance() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [daysWindow, setDaysWindow] = useState<7 | 30 | 90>(30)
+  const [daysWindow, setDaysWindow] = useFilter<7 | 30 | 90>('staff-performance.daysWindow', 30)
 
   useEffect(() => {
     if (!loading) setRefreshing(true)

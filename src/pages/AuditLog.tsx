@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useFilter } from '../lib/useFilter'
 import {
   CalendarPlus,
   CreditCard,
@@ -130,10 +131,10 @@ export default function AuditLog() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // filter state
-  const [daysBack, setDaysBack] = useState<DaysBack>(30)
-  const [filterType, setFilterType] = useState<AuditEventType | 'all'>('all')
-  const [filterActor, setFilterActor] = useState<string>('all')
+  // filter state — persisted ผ่าน localStorage
+  const [daysBack, setDaysBack] = useFilter<DaysBack>('audit-log.daysBack', 30)
+  const [filterType, setFilterType] = useFilter<AuditEventType | 'all'>('audit-log.filterType', 'all')
+  const [filterActor, setFilterActor] = useFilter<string>('audit-log.filterActor', 'all')
 
   // fetch ใหม่เมื่อ daysBack เปลี่ยน หรือกด refresh (tick)
   const [tick, setTick] = useState(0)
