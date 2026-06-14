@@ -449,3 +449,34 @@ export function lockUpdatesFor(report: EmployeeCommission[]): { contractId: stri
   }
   return out
 }
+
+// ===== ค่าคอมคืนเครื่อง (tier-based ตามราคาขาย) =====
+// คิดจากราคาที่ขายได้จริง (salePrice) ×เปอร์เซ็นต์ตามช่วงราคา
+// เรตเป็น % (ไม่ใช่บาท/เคส) — แตกต่างจาก CommissionTier ด้านบน
+
+export interface DeviceReturnTier {
+  min: number;       // ราคาขายตั้งแต่ (฿) — รวม
+  max: number | null; // ถึง (฿); null = ไม่จำกัด (ขั้นสุดท้าย)
+  percent: number;   // % ค่าคอม
+}
+
+export const DEFAULT_DEVICE_RETURN_TIERS: DeviceReturnTier[] = [
+  { min: 0,     max: 5000,  percent: 5 },
+  { min: 5001,  max: 10000, percent: 7 },
+  { min: 10001, max: null,  percent: 10 },
+];
+
+export function deviceReturnTierLabel(t: DeviceReturnTier): string {
+  const minStr = t.min.toLocaleString('th-TH');
+  if (t.max == null) return `${minStr} ฿ขึ้นไป`;
+  return `${minStr}–${t.max.toLocaleString('th-TH')} ฿`;
+}
+
+export function rateForDevicePrice(salePrice: number, tiers: DeviceReturnTier[]): number {
+  const t = tiers.find((t) => salePrice >= t.min && (t.max == null || salePrice <= t.max));
+  return t ? t.percent : 0;
+}
+
+export function deviceReturnCommission(salePrice: number, tiers: DeviceReturnTier[]): number {
+  return Math.round((salePrice * rateForDevicePrice(salePrice, tiers)) / 100);
+}

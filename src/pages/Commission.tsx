@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Coins, Lock, LockOpen, Plus, Store, Trash2, Trophy, Users } from 'lucide-react'
+import { Coins, Lock, LockOpen, Plus, Smartphone, Store, Trash2, Trophy, Users } from 'lucide-react'
 import { Badge, Button, Card, Input, Loading, PageTitle } from '../components/ui'
 import { useAuth } from '../lib/auth'
 import {
@@ -7,12 +7,14 @@ import {
   getAllShops,
   getCommissionTiers,
   getContracts,
+  getDeviceReturnTiers,
   getEmployees,
   getRecruitBonuses,
   getRecruitTiers,
   getReturns,
   lockCommissionMonth,
   saveCommissionTiers,
+  saveDeviceReturnTiers,
   saveRecruitBonuses,
   saveRecruitTiers,
   unlockCommissionMonth,
@@ -21,11 +23,15 @@ import {
 import {
   buildCommissionReport,
   CLAWBACK_LABEL,
+  deviceReturnCommission,
+  deviceReturnTierLabel,
   lockUpdatesFor,
   periodKeyOf,
+  rateForDevicePrice,
   recruitTierLabel,
   tierLabel,
   type CommissionTier,
+  type DeviceReturnTier,
   type EmployeeCommission,
   type RecruitBonusRule,
   type RecruitTier,
@@ -48,6 +54,7 @@ export default function Commission() {
       <TierEditor canEdit={canEdit} />
       <RecruitTierEditor canEdit={canEdit} />
       <RecruitBonusEditor canEdit={canEdit} />
+      <DeviceReturnTierEditor canEdit={canEdit} />
     </div>
   )
 }
@@ -705,6 +712,206 @@ function RecruitBonusEditor({ canEdit }: { canEdit: boolean }) {
           </Button>
           <Button onClick={save} disabled={busy}>
             {busy ? 'กำลังบันทึก...' : 'บันทึกโบนัสร้าน'}
+          </Button>
+          {msg && <span className="text-sm text-ink-soft">{msg}</span>}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ---------- ตั้งเรตค่าคอมคืนเครื่อง (ขั้นบันไดตามราคาขาย) ----------
+function validateDeviceTiers(tiers: DeviceReturnTier[]): string | null {
+  if (tiers.length === 0) return 'ต้องมีอย่างน้อย 1 ขั้น'
+  for (let i = 0; i < tiers.length; i++) {
+    const t = tiers[i]
+    if (t.percent < 0 || t.percent > 100) return `ขั้น ${i + 1}: % ค่าคอมต้องอยู่ระหว่าง 0–100`
+    if (t.min < 0) return `ขั้น ${i + 1}: ราคาตั้งต้นต้องไม่ติดลบ`
+    if (t.max !== null && t.max < t.min) return `ขั้น ${i + 1}: ราคาสูงสุดต้องไม่น้อยกว่าราคาต่ำสุด`
+    if (i < tiers.length - 1) {
+      if (t.max === null) return `ขั้น ${i + 1}: ขั้นกลางต้องระบุราคาสูงสุด`
+      if (tiers[i + 1].min !== t.max + 1)
+        return `ขั้นต้องต่อกัน ไม่เว้นช่วง/ไม่ซ้อน (ขั้น ${i + 1} จบที่ ${t.max.toLocaleString()} → ขั้น ${i + 2} ต้องเริ่มที่ ${(t.max + 1).toLocaleString()})`
+    } else {
+      if (t.max !== null) return 'ขั้นสุดท้ายต้องตั้งเป็น "ไม่จำกัด" (เว้นช่อง ถึง ว่าง)'
+    }
+  }
+  return null
+}
+
+function DeviceReturnTierEditor({ canEdit }: { canEdit: boolean }) {
+  const [tiers, setTiers] = useState<DeviceReturnTier[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [preview, setPreview] = useState<number>(0)
+
+  useEffect(() => {
+    getDeviceReturnTiers()
+      .then(setTiers)
+      .finally(() => setLoading(false))
+  }, [])
+
+  const setRow = (i: number, patch: Partial<DeviceReturnTier>) =>
+    setTiers((prev) => prev.map((t, idx) => (idx === i ? { ...t, ...patch } : t)))
+
+  const addTier = () => {
+    const last = tiers[tiers.length - 1]
+    if (!last) {
+      setTiers([{ min: 0, max: null, percent: 5 }])
+      return
+    }
+    // ขั้นก่อนหน้าต้องมี max — ตั้งให้อัตโนมัติถ้า null
+    const prevMax = last.max ?? last.min + 5000
+    const newLast: DeviceReturnTier = { ...last, max: prevMax }
+    const newTier: DeviceReturnTier = { min: prevMax + 1, max: null, percent: last.percent }
+    setTiers([...tiers.slice(0, -1), newLast, newTier])
+  }
+
+  const removeTier = (i: number) => setTiers((prev) => prev.filter((_, idx) => idx !== i))
+
+  async function save() {
+    const err = validateDeviceTiers(tiers)
+    if (err) {
+      setMsg(err)
+      return
+    }
+    setBusy(true)
+    setMsg(null)
+    try {
+      await saveDeviceReturnTiers(tiers)
+      setMsg('บันทึกแล้ว ✅')
+    } catch (e) {
+      setMsg('บันทึกไม่สำเร็จ: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const previewPercent = rateForDevicePrice(preview, tiers)
+  const previewCommission = deviceReturnCommission(preview, tiers)
+  const previewTierIdx = tiers.findIndex((t) => preview >= t.min && (t.max == null || preview <= t.max))
+
+  if (loading) return <Loading />
+
+  return (
+    <Card>
+      <div className="mb-1 flex items-center gap-2">
+        <Smartphone size={18} className="text-salmon-deep" />
+        <h3 className="font-semibold text-ink">ค่าคอมคืนเครื่องฟรีแลนซ์ (ขั้นบันได)</h3>
+      </div>
+      <p className="mb-4 text-sm text-ink-soft">
+        ฟรีแลนซ์ที่ตามจนลูกค้าคืนเครื่องสำเร็จ ได้ค่าคอม{' '}
+        <span className="font-semibold text-ink">% ของราคาขาย</span>{' '}
+        ตามช่วงราคาที่ขายได้จริง
+      </p>
+
+      <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="bg-peach-light text-left text-ink">
+              <th className="px-3 py-2.5 font-semibold">ขั้น</th>
+              <th className="px-3 py-2.5 font-semibold">จาก (฿)</th>
+              <th className="px-3 py-2.5 font-semibold">ถึง (฿)</th>
+              <th className="px-3 py-2.5 font-semibold">% ค่าคอม</th>
+              <th className="px-3 py-2.5"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {tiers.map((t, i) => (
+              <tr key={i} className={i % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                <td className="px-3 py-2 text-center text-ink-soft">{i + 1}</td>
+                <td className="px-3 py-2">
+                  <Input
+                    type="number"
+                    value={String(t.min)}
+                    disabled={!canEdit}
+                    onChange={(e) => setRow(i, { min: Number(e.target.value) || 0 })}
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <Input
+                    type="number"
+                    value={t.max == null ? '' : String(t.max)}
+                    placeholder="ไม่จำกัด"
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      setRow(i, { max: e.target.value === '' ? null : Number(e.target.value) || 0 })
+                    }
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <Input
+                    type="number"
+                    value={String(t.percent)}
+                    disabled={!canEdit}
+                    onChange={(e) => setRow(i, { percent: Number(e.target.value) || 0 })}
+                  />
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {canEdit && (
+                    <button
+                      onClick={() => removeTier(i)}
+                      className="rounded-lg p-1.5 text-ink-soft hover:bg-peach-light hover:text-red-600"
+                      title="ลบขั้นนี้"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {tiers.map((t, i) => (
+          <Badge key={i} tone="neutral">
+            {deviceReturnTierLabel(t)} = {t.percent}%
+          </Badge>
+        ))}
+      </div>
+
+      {/* ทดลองคำนวณ */}
+      <div className="mt-4 rounded-xl border border-peach bg-peach-light/30 px-4 py-3">
+        <p className="mb-2 text-sm font-semibold text-ink">ทดลองคำนวณ</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-ink-soft">ราคาขาย</label>
+            <Input
+              type="number"
+              value={String(preview)}
+              onChange={(e) => setPreview(Number(e.target.value) || 0)}
+              placeholder="0"
+            />
+            <span className="text-sm text-ink-soft">฿</span>
+          </div>
+          {preview > 0 && tiers.length > 0 && (
+            <p className="text-sm text-ink">
+              {previewTierIdx >= 0 ? (
+                <>
+                  เข้าขั้น {previewTierIdx + 1} →{' '}
+                  <span className="font-semibold">
+                    {preview.toLocaleString('th-TH')} × {previewPercent}% ={' '}
+                    {previewCommission.toLocaleString('th-TH')} ฿
+                  </span>
+                </>
+              ) : (
+                <span className="text-ink-soft">ราคานี้ไม่ตรงขั้นใด</span>
+              )}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {canEdit && (
+        <div className="mt-4 flex items-center gap-3">
+          <Button variant="ghost" onClick={addTier}>
+            <Plus size={15} /> เพิ่มขั้น
+          </Button>
+          <Button onClick={save} disabled={busy}>
+            {busy ? 'กำลังบันทึก...' : 'บันทึกค่าคอมคืนเครื่อง'}
           </Button>
           {msg && <span className="text-sm text-ink-soft">{msg}</span>}
         </div>

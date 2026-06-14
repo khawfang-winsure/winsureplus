@@ -24,9 +24,11 @@ import {
   DEFAULT_TIERS,
   DEFAULT_RECRUIT_BONUS,
   DEFAULT_RECRUIT_TIERS,
+  DEFAULT_DEVICE_RETURN_TIERS,
   type CommissionTier,
   type RecruitBonusRule,
   type RecruitTier,
+  type DeviceReturnTier,
 } from './commission'
 import { DEFAULT_RATE_SETS, type RateSet } from './rates'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
@@ -452,6 +454,40 @@ export async function saveRecruitBonuses(rules: RecruitBonusRule[]): Promise<voi
     { key: RECRUIT_BONUS_KEY, value: JSON.stringify(rules), description: 'โบนัสร้านส่งเคสครบเป้าในกรอบเวลา' },
     { onConflict: 'key' },
   )
+  if (error) throw error
+}
+
+const DEVICE_RETURN_TIERS_KEY = 'device_return_commission_tiers'
+
+export async function getDeviceReturnTiers(): Promise<DeviceReturnTier[]> {
+  if (!supabase) return DEFAULT_DEVICE_RETURN_TIERS
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', DEVICE_RETURN_TIERS_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return DEFAULT_DEVICE_RETURN_TIERS
+  try {
+    const t = JSON.parse(data.value as string)
+    return Array.isArray(t) && t.length ? (t as DeviceReturnTier[]) : DEFAULT_DEVICE_RETURN_TIERS
+  } catch {
+    return DEFAULT_DEVICE_RETURN_TIERS
+  }
+}
+
+export async function saveDeviceReturnTiers(tiers: DeviceReturnTier[]): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert(
+      {
+        key: DEVICE_RETURN_TIERS_KEY,
+        value: JSON.stringify(tiers),
+        description: 'ขั้นบันไดค่าคอมฟรีแลนซ์คืนเครื่อง (% ตามราคาขาย)',
+      },
+      { onConflict: 'key' },
+    )
   if (error) throw error
 }
 
