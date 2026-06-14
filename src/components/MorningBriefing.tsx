@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Card, Badge, Modal } from './ui'
 import { baht } from '../lib/format'
-import type { Briefing } from '../lib/execDashboard'
+import type { Briefing, BriefingAlert } from '../lib/execDashboard'
 
 interface MorningBriefingProps {
   data: Briefing
@@ -10,6 +10,20 @@ interface MorningBriefingProps {
   newCases: number
   collectedThisMonth: number
   expectedThisMonth: number
+  isExec?: boolean
+}
+
+function alertText(a: BriefingAlert, isExec: boolean): string {
+  switch (a.type) {
+    case 'npl_high':
+      return 'หนี้เสียเกิน 20% ของพอร์ต — ต้องดูเร่งด่วน'
+    case 'early_default':
+      return `ลูกค้าไม่จ่ายงวดแรก ${a.count} ราย เดือนนี้`
+    case 'high_risky_shop': {
+      const shopLabel = isExec ? `ร้าน ${String.fromCharCode(65 + a.shopIndex)}` : `ร้าน ${a.shopName}`
+      return `${shopLabel} หนี้เสียสูง (${a.riskyRate}%) — ควรหยุดรับเคสชั่วคราว`
+    }
+  }
 }
 
 function fmt(n: number): string {
@@ -58,6 +72,7 @@ export default function MorningBriefing({
   newCases,
   collectedThisMonth,
   expectedThisMonth,
+  isExec = false,
 }: MorningBriefingProps) {
   const [showComModal, setShowComModal] = useState(false)
 
@@ -75,9 +90,13 @@ export default function MorningBriefing({
   }
 
   // Commission top-earner sub text
-  const comSub =
+  const topEarnerDisplayName =
     commissionLiabilityThisMonth.topEarner !== null
-      ? `top: ${commissionLiabilityThisMonth.topEarner.name} ฿${baht(commissionLiabilityThisMonth.topEarner.amount)}`
+      ? (isExec ? 'พนักงาน A' : commissionLiabilityThisMonth.topEarner.name)
+      : null
+  const comSub =
+    topEarnerDisplayName !== null
+      ? `top: ${topEarnerDisplayName} ฿${baht(commissionLiabilityThisMonth.topEarner!.amount)}`
       : 'ยังไม่มีค่าคอมเดือนนี้'
 
   // Commission top5 max for bar width
@@ -122,7 +141,7 @@ export default function MorningBriefing({
         <div className="mt-4 flex flex-wrap gap-2" role="list" aria-label="สัญญาณเตือน">
           {alerts.map((a, i) => (
             <span key={i} role="listitem">
-              <Badge tone={a.level === 'red' ? 'red' : 'amber'}>{a.text}</Badge>
+              <Badge tone={a.level === 'red' ? 'red' : 'amber'}>{alertText(a, isExec)}</Badge>
             </span>
           ))}
         </div>
@@ -138,7 +157,7 @@ export default function MorningBriefing({
               {commissionLiabilityThisMonth.top5.map((s, i) => (
                 <div key={i}>
                   <div className="mb-1 flex items-center justify-between text-sm">
-                    <span className="font-medium text-ink">{s.name}</span>
+                    <span className="font-medium text-ink">{isExec ? `พนักงาน ${String.fromCharCode(65 + i)}` : s.name}</span>
                     <span className="text-ink-soft">฿{baht(s.amount)}</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-peach-light">

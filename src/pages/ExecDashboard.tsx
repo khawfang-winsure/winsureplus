@@ -7,6 +7,7 @@ import MorningBriefing from '../components/MorningBriefing'
 import GradeMovementView from '../components/GradeMovementView'
 import { baht } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
+import { useAuth } from '../lib/auth'
 import {
   getContracts,
   getAllStatuses,
@@ -45,6 +46,19 @@ function money(n: number): string {
   return baht(n)
 }
 
+/** แปลง index → ตัวอักษร A, B, C … Z, AA, AB ฯลฯ */
+function maskLabel(index: number): string {
+  if (index < 26) return String.fromCharCode(65 + index)
+  return String.fromCharCode(65 + Math.floor(index / 26) - 1) + String.fromCharCode(65 + (index % 26))
+}
+
+/** ถ้า mask=true คืน "ร้าน A" / "พนักงาน A" ตาม kind; ไม่งั้น return ชื่อจริง */
+function maskName(realName: string, index: number, mask: boolean, kind: 'shop' | 'staff' = 'shop'): string {
+  if (!mask) return realName
+  const prefix = kind === 'staff' ? 'พนักงาน ' : 'ร้าน '
+  return prefix + maskLabel(index)
+}
+
 const GRADE_COLOR: Record<ShopGrade, string> = {
   A: '#16a34a',
   B: '#65a30d',
@@ -55,6 +69,10 @@ const GRADE_COLOR: Record<ShopGrade, string> = {
 
 export default function ExecDashboard() {
   const navigate = useNavigate()
+  const { role } = useAuth()
+  // fail-safe: ถ้า role ยัง loading/unknown (null) → mask ชื่อจริง (กัน name leak ระหว่าง refetch)
+  const showRealNames = role === 'admin' || role === 'staff'
+  const isExec = !showRealNames
   const [tab, setTab] = useState<Tab>('overview')
   const { data, loading } = useAsync<ExecDashboard | null>(async () => {
     const [contracts, statuses, installments, shops, payments, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees] = await Promise.all([
@@ -113,6 +131,7 @@ export default function ExecDashboard() {
         newCases={d.newContractsThisMonth}
         collectedThisMonth={d.receivedThisMonth}
         expectedThisMonth={d.expectedThisMonth}
+        isExec={isExec}
       />
 
       {/* แท็บเลือกมุมมอง: ภาพรวม / รายวัน / สัปดาห์ / เดือน */}
@@ -162,7 +181,7 @@ export default function ExecDashboard() {
 
       {/* ===== ผลงานพนักงานรายเดือน ===== */}
       {d.briefing.staffCases.length > 0 && (
-        <StaffCaseTable rows={d.briefing.staffCases} />
+        <StaffCaseTable rows={d.briefing.staffCases} isExec={isExec} />
       )}
 
       {/* ===== แถว 1: KPI หัวใจ ===== */}
@@ -243,11 +262,15 @@ export default function ExecDashboard() {
             <p className="text-sm text-ink-soft">—</p>
           ) : (
             <ul className="flex flex-col gap-2">
-              {d.topShops.map((s) => (
+              {d.topShops.map((s, i) => (
                 <li key={s.shopId} className="flex items-center justify-between gap-2 text-sm">
-                  <button onClick={() => navigate(`/shop/${s.shopId}`)} className="truncate text-left text-salmon-deep hover:underline">
-                    {s.name || s.code}
-                  </button>
+                  {isExec ? (
+                    <span className="truncate text-ink">{maskName(s.name || s.code, i, true)}</span>
+                  ) : (
+                    <button onClick={() => navigate(`/shop/${s.shopId}`)} className="truncate text-left text-salmon-deep hover:underline">
+                      {s.name || s.code}
+                    </button>
+                  )}
                   <span className="flex items-center gap-2">
                     <Badge tone={s.grade === 'A' || s.grade === 'B' ? 'green' : s.grade === 'C' ? 'amber' : 'red'}>{s.grade}</Badge>
                     <b className="text-ink">{s.contracts} เคส</b>
@@ -259,11 +282,11 @@ export default function ExecDashboard() {
         </Card>
         <Card>
           <h3 className="mb-3 font-semibold text-ink">ร้านพอร์ตเสี่ยง (ส่งเยอะแต่หนี้เสียสูง)</h3>
-          <ShopMini rows={d.riskyShops} navigate={navigate} metric="risky" />
+          <ShopMini rows={d.riskyShops} navigate={navigate} metric="risky" mask={isExec} />
         </Card>
         <Card>
           <h3 className="mb-3 font-semibold text-ink">ร้านเงียบ &gt; 30 วัน</h3>
-          <ShopMini rows={d.silentShops} navigate={navigate} metric="silent" />
+          <ShopMini rows={d.silentShops} navigate={navigate} metric="silent" mask={isExec} />
         </Card>
       </div>
 
@@ -308,8 +331,8 @@ export default function ExecDashboard() {
         <RiskTable title="หนี้เสียตามรุ่นเครื่อง" rows={d.riskByModel} />
       </div>
 
-      {/* ===== แถว 8: ESCALATE — ลูกค้าที่ต้องแอดมินตรวจสอบ ===== */}
-      <EscalateWidget navigate={navigate} />
+      {/* ===== แถว 8: ESCALATE — ลูกค้าที่ต้องแอดมินตรวจสอบ (ซ่อนจาก executive) ===== */}
+      {!isExec && <EscalateWidget navigate={navigate} />}
       </>
       )}
     </div>
@@ -462,15 +485,19 @@ function BarList({
   )
 }
 
-function ShopMini({ rows, navigate, metric }: { rows: import('../lib/types').ShopReportRow[]; navigate: (to: string) => void; metric: 'risky' | 'silent' }) {
+function ShopMini({ rows, navigate, metric, mask }: { rows: import('../lib/types').ShopReportRow[]; navigate: (to: string) => void; metric: 'risky' | 'silent'; mask: boolean }) {
   if (rows.length === 0) return <p className="text-sm text-ink-soft">— ไม่มี</p>
   return (
     <ul className="flex flex-col gap-2 text-sm">
-      {rows.map((s) => (
+      {rows.map((s, i) => (
         <li key={s.shopId} className="flex items-center justify-between gap-2">
-          <button onClick={() => navigate(`/shop/${s.shopId}`)} className="truncate text-left text-salmon-deep hover:underline">
-            {s.name || s.code}
-          </button>
+          {mask ? (
+            <span className="truncate text-ink">{maskName(s.name || s.code, i, true)}</span>
+          ) : (
+            <button onClick={() => navigate(`/shop/${s.shopId}`)} className="truncate text-left text-salmon-deep hover:underline">
+              {s.name || s.code}
+            </button>
+          )}
           {metric === 'risky' ? (
             <span className="text-red-600">หนี้เสีย {s.riskyRate.toFixed(0)}% ({s.risky}/{s.contracts})</span>
           ) : (
@@ -482,7 +509,7 @@ function ShopMini({ rows, navigate, metric }: { rows: import('../lib/types').Sho
   )
 }
 
-function StaffCaseTable({ rows }: { rows: import('../lib/execDashboard').BriefingStaffCase[] }) {
+function StaffCaseTable({ rows, isExec }: { rows: import('../lib/execDashboard').BriefingStaffCase[]; isExec: boolean }) {
   const [showAll, setShowAll] = useState(false)
   const CAP = 8
   const visible = showAll ? rows : rows.slice(0, CAP)
@@ -502,13 +529,14 @@ function StaffCaseTable({ rows }: { rows: import('../lib/execDashboard').Briefin
             </tr>
           </thead>
           <tbody>
-            {visible.map((s) => {
+            {visible.map((s, i) => {
               const momColor = s.momDelta > 0 ? 'text-green-600' : s.momDelta < 0 ? 'text-red-600' : 'text-ink-soft'
               const momSign = s.momDelta > 0 ? '+' : ''
               const nplTone: 'green' | 'amber' | 'red' = s.nplRate >= 20 ? 'red' : s.nplRate >= 10 ? 'amber' : 'green'
+              const displayName = maskName(s.name, i, isExec, 'staff')
               return (
                 <tr key={s.name} className="border-b border-peach/50 last:border-0">
-                  <td className="py-2 text-ink">{s.name}</td>
+                  <td className="py-2 text-ink">{displayName}</td>
                   <td className="py-2 text-right text-ink">{s.casesThisMonth}</td>
                   <td className="py-2 text-right text-ink-soft">{s.casesLastMonth}</td>
                   <td className={`py-2 text-right font-medium ${momColor}`}>{momSign}{s.momDelta}</td>

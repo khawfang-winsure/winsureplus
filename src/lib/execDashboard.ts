@@ -37,10 +37,10 @@ export interface BriefingCommissionLiability {
   top5: Array<{ name: string; amount: number }>
 }
 
-export interface BriefingAlert {
-  level: 'red' | 'amber'
-  text: string
-}
+export type BriefingAlert =
+  | { level: 'red'; type: 'npl_high' }
+  | { level: 'red'; type: 'early_default'; count: number }
+  | { level: 'amber'; type: 'high_risky_shop'; shopName: string; riskyRate: number; shopIndex: number }
 
 export interface BriefingStaffCase {
   name: string
@@ -351,18 +351,21 @@ function buildBriefing(
   // ─── alerts (สร้างเรียงตามลำดับ: red ก่อน, cap 3 ทั้งหมด) ───
   const alerts: BriefingAlert[] = []
   if (nplRate >= 20) {
-    alerts.push({ level: 'red', text: 'หนี้เสียเกิน 20% ของพอร์ต — ต้องดูเร่งด่วน' })
+    alerts.push({ level: 'red', type: 'npl_high' })
   }
   if (earlyDefault.count >= 3) {
-    alerts.push({ level: 'red', text: `ลูกค้าไม่จ่ายงวดแรก ${earlyDefault.count} ราย เดือนนี้` })
+    alerts.push({ level: 'red', type: 'early_default', count: earlyDefault.count })
   }
-  for (const shop of riskyShops) {
+  for (let si = 0; si < riskyShops.length; si++) {
     if (alerts.length >= 3) break
+    const shop = riskyShops[si]
     if (shop.riskyRate >= 50) {
-      const rate = Math.round(shop.riskyRate)
       alerts.push({
         level: 'amber',
-        text: `ร้าน ${shop.name} หนี้เสียสูง (${rate}%) — ควรหยุดรับเคสชั่วคราว`,
+        type: 'high_risky_shop',
+        shopName: shop.name,
+        riskyRate: Math.round(shop.riskyRate),
+        shopIndex: si,
       })
     }
   }
