@@ -94,6 +94,8 @@ export const NAV: NavItem[] = [
       { to: '/settings/promo', label: 'ตั้งค่าโปรโมชั่น' },
       { to: '/settings/rates', label: 'ตั้งค่าเรตผ่อน' },
       { to: '/settings/users', label: 'ตั้งค่าสิทธิ์ผู้ใช้', adminOnly: true },
+      { to: '/import', label: 'Import / Export', adminOnly: true },
     ],
   },
 ]
+

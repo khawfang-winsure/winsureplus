@@ -3584,3 +3584,55 @@ export async function getDeviceReturnCountsByFreelancerThisMonth(): Promise<Map<
   }
   return map
 }
+
+// ---------- PJ Import ----------
+import type { PJContract, PJInstallment, ImportResult } from './pjImport'
+
+/**
+ * importPjBatch — ส่ง 1 batch (≤100 contracts) ไปให้ RPC import_pj_batch ใน Supabase
+ *
+ * @param contracts       รายการสัญญาของ batch นี้ (PJContract[])
+ * @param installments    รายการงวดของ batch นี้ (PJInstallment[]) — ทุก row ของ batch
+ * @param batchNo         หมายเลข batch (เริ่มต้น 1) ใส่ใน error message
+ * @param createNewShops  true = สร้างร้านใหม่อัตโนมัติถ้าไม่พบ
+ * @returns               ImportResult สรุปผล batch
+ */
+export async function importPjBatch(
+  contracts: PJContract[],
+  installments: PJInstallment[],
+  batchNo: number,
+  createNewShops: boolean,
+): Promise<ImportResult> {
+  if (!supabase) throw new Error('โหมดตัวอย่าง: ยังไม่เชื่อม Supabase')
+
+  const { data, error } = await supabase.rpc('import_pj_batch', {
+    p_contracts_json:    contracts    as unknown as Record<string, unknown>[],
+    p_installments_json: installments as unknown as Record<string, unknown>[],
+    p_batch_no:          batchNo,
+    p_create_new_shops:  createNewShops,
+  })
+
+  if (error) throw new Error(error.message)
+
+  const raw = data as {
+    batch_no: number
+    imported: number
+    contracts_created: number
+    installments_created: number
+    payments_logged: number
+    errors: Array<{ invoice_no: string; batch?: number; error: string }>
+  }
+
+  return {
+    batchNo:              raw.batch_no,
+    imported:             raw.imported,
+    contractsCreated:     raw.contracts_created,
+    installmentsCreated:  raw.installments_created,
+    paymentsLogged:       raw.payments_logged,
+    errors: (raw.errors ?? []).map((e) => ({
+      invoiceNo: e.invoice_no,
+      batch:     e.batch,
+      error:     e.error,
+    })),
+  }
+}
