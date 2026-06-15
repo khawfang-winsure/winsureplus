@@ -203,6 +203,7 @@ begin
         condition,
         origin,
         imei,
+        color,
         device_price,
         down_percent,
         commission_percent,
@@ -231,6 +232,7 @@ begin
         case when lower(coalesce(v_contract->>'device_condition', '')) like '%ใหม่%' then 'new' else 'used' end,
         'th',                                                 -- origin default
         nullif(trim(coalesce(v_contract->>'imei', '')), ''),
+        nullif(trim(coalesce(v_contract->>'device_color', '')), ''),
         v_device_price,
         v_down_percent,
         0,                                                    -- commission_percent default

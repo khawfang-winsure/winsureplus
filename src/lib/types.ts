@@ -168,6 +168,7 @@ export interface Contract {
   shopId: string
   model: string
   storage: string
+  color?: string
   condition: DeviceCondition
   origin: DeviceOrigin
   devicePrice: number // ราคาตัวเครื่อง

@@ -109,6 +109,7 @@ interface ContractRow {
   disputed_since: string | null
   promise_to_pay_date: string | null
   promised_amount: number | null
+  color: string | null
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -166,6 +167,7 @@ function mapContract(r: ContractRow): Contract {
     disputedSince: r.disputed_since ?? null,
     promiseToPayDate: r.promise_to_pay_date ?? null,
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
+    color: r.color ?? undefined,
   }
 }
 
@@ -205,6 +207,7 @@ function toInsert(c: Omit<Contract, 'id'>) {
     transaction_date: c.transactionDate,
     operator: c.operator || null,
     notes: c.notes || null,
+    color: c.color || null,
   }
 }
 

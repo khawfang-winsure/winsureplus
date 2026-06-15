@@ -48,6 +48,7 @@ interface FormState {
   occupationProof: string
   model: string
   storage: string
+  color: string
   sn: string
   imei: string
   condition: DeviceCondition
@@ -87,6 +88,7 @@ const initial: FormState = {
   occupationProof: '',
   model: '',
   storage: '',
+  color: '',
   sn: '',
   imei: '',
   condition: 'new',
@@ -127,6 +129,7 @@ function fromContract(c: Contract): FormState {
     occupationProof: c.occupationProof ?? '',
     model: c.model,
     storage: c.storage,
+    color: c.color ?? '',
     sn: c.sn,
     imei: c.imei ?? '',
     condition: c.condition,
@@ -302,6 +305,7 @@ export default function AddContract() {
     shopId: f.shopId,
     model: f.model,
     storage: f.storage,
+    color: f.color || undefined,
     condition: f.condition,
     origin: f.origin,
     devicePrice: num(f.devicePrice),
@@ -497,6 +501,13 @@ export default function AddContract() {
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
+              </Field>
+              <Field label="สี">
+                <Input
+                  value={f.color}
+                  onChange={(e) => set('color', e.target.value)}
+                  placeholder="เช่น Black, Blue, Natural Titanium"
+                />
               </Field>
               <Field label="หมายเลข SN">
                 <Input value={f.sn} onChange={(e) => set('sn', e.target.value)} />
