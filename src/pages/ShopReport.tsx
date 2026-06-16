@@ -72,6 +72,21 @@ export default function ShopReport() {
   const summary = useMemo(() => shopReportSummary(rows), [rows])
   const topShops = useMemo(() => topShopsByCases(rows, 10), [rows])
   const maxCases = topShops[0]?.contracts ?? 0
+  const top5Shops = useMemo(
+    () => topShopsByCases(rows, 5).filter((r) => r.contracts > 0),
+    [rows],
+  )
+  const top5Max = top5Shops[0]?.contracts ?? 0
+
+  // ป้ายช่วงวันที่สำหรับการ์ด Top 5 — แปลงเป็น พ.ศ.
+  const rangeChipText = useMemo(() => {
+    if (!range) return 'ทั้งหมด'
+    const fmt = (iso: string) => {
+      const d = new Date(iso)
+      return `${d.getDate()}/${d.getMonth() + 1}/${(d.getFullYear() + 543).toString().slice(-2)}`
+    }
+    return `${fmt(range.start)} – ${fmt(range.end)}`
+  }, [range])
 
   const noDataInRange = range !== null && filteredContracts.length === 0 && data.contracts.length > 0
 
@@ -108,6 +123,71 @@ export default function ShopReport() {
               emptyDataChip={noDataInRange}
             />
           </div>
+
+          {/* ===== Top 5 ร้านค้า — ส่งเคสมากที่สุดในช่วงนี้ ===== */}
+          <Card className="mb-5">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold text-ink">
+                <span aria-hidden="true">🏆 </span>
+                Top 5 ร้านค้า — ส่งเคสมากที่สุดในช่วงนี้
+              </h3>
+              <span className="rounded-full bg-peach-light px-3 py-1 text-xs font-medium text-ink-soft">
+                {rangeChipText}
+              </span>
+            </div>
+            {top5Shops.length === 0 ? (
+              <p className="py-6 text-center text-sm text-ink-soft">
+                ไม่มีร้านค้าที่ส่งเคสในช่วงนี้
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+                {top5Shops.map((r, i) => {
+                  const isFirst = i === 0
+                  const pct = top5Max ? Math.max((r.contracts / top5Max) * 100, 8) : 0
+                  return (
+                    <button
+                      key={r.shopId}
+                      onClick={() => navigate(`/shop/${r.shopId}`)}
+                      title={r.name}
+                      className={`group flex flex-col gap-2 rounded-xl border p-3 text-left transition hover:shadow-md ${
+                        isFirst
+                          ? 'border-amber-300 bg-amber-50'
+                          : 'border-peach bg-cream-deep hover:border-salmon'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                            isFirst
+                              ? 'bg-amber-400 text-white'
+                              : 'bg-zinc-200 text-zinc-700'
+                          }`}
+                        >
+                          #{i + 1}
+                        </span>
+                        <span className="text-xs text-ink-soft">{r.code}</span>
+                      </div>
+                      <p className="truncate text-sm font-medium text-ink group-hover:text-salmon-deep">
+                        {r.name}
+                      </p>
+                      <p className={`text-2xl font-bold ${isFirst ? 'text-amber-600' : 'text-ink'}`}>
+                        {r.contracts}
+                        <span className="ml-1 text-xs font-normal text-ink-soft">เคส</span>
+                      </p>
+                      <span className="h-1.5 w-full overflow-hidden rounded-full bg-peach-light">
+                        <span
+                          className={`block h-full rounded-full ${
+                            isFirst ? 'bg-amber-400' : 'bg-salmon-deep'
+                          }`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </Card>
 
           {/* ===== การ์ดสรุป (dashboard) ===== */}
           <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
