@@ -31,6 +31,15 @@ export interface PJContract {
   addr_card_full: string
   addr_current_full: string
   addr_work_full: string
+  // v8 merged sheet override columns
+  contract_no: string
+  condition: string
+  promotion: string
+  has_promotion: boolean
+  promotion_detail: string
+  occupation_proof: string
+  notes: string
+  operator: string
 }
 
 /** 1 แถวจาก installments.csv */
@@ -244,6 +253,11 @@ export function normalizePJContract(raw: Record<string, string>): PJContract {
 
   const phones = splitPhones(clean['phone'] ?? '')
 
+  // v8 condition column overrides v7 device_condition when present
+  const v8Condition = (clean['condition'] ?? '').trim()
+  const v7DeviceCondition = (clean['device_condition'] ?? '').trim()
+  const condition = v8Condition || v7DeviceCondition
+
   return {
     invoice_no:       (clean['invoice_no'] ?? '').trim(),
     trade_date:       parsePJDate(clean['trade_date'] ?? '') ?? (clean['trade_date'] ?? '').trim(),
@@ -264,7 +278,7 @@ export function normalizePJContract(raw: Record<string, string>): PJContract {
     device_name:      (clean['device_name'] ?? '').trim(),
     device_color:     (clean['device_color'] ?? '').trim(),
     device_storage:   (clean['device_storage'] ?? '').trim(),
-    device_condition: (clean['device_condition'] ?? '').trim(),
+    device_condition: condition,
     imei:             (clean['imei'] ?? '').trim(),
     down_payment:     String(parsePJAmount(clean['down_payment'] ?? '')),
     monthly_payment:  String(parsePJAmount(clean['monthly_payment'] ?? '')),
@@ -274,6 +288,15 @@ export function normalizePJContract(raw: Record<string, string>): PJContract {
     addr_card_full:   (clean['addr_card_full'] ?? '').trim(),
     addr_current_full:(clean['addr_current_full'] ?? '').trim(),
     addr_work_full:   (clean['addr_work_full'] ?? '').trim(),
+    // v8 merged sheet override columns
+    contract_no:      (clean['contract_no'] ?? '').trim(),
+    condition,
+    promotion:        (clean['promotion'] ?? '').trim(),
+    has_promotion:    (clean['has_promotion'] ?? '').trim().toLowerCase() === 'true',
+    promotion_detail: (clean['promotion_detail'] ?? '').trim(),
+    occupation_proof: (clean['occupation_proof'] ?? '').trim(),
+    notes:            (clean['notes'] ?? '').trim(),
+    operator:         (clean['operator'] ?? '').trim(),
   }
 }
 

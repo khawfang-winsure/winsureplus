@@ -473,6 +473,9 @@ function Step2Preview({
                   'shop_name',
                   'device_name',
                   'device_color',
+                  'สภาพ',
+                  'โปรโมชัน',
+                  'หลักฐานอาชีพ',
                   'finance_amount',
                   'term_months',
                   'trade_date',
@@ -492,6 +495,9 @@ function Step2Preview({
                   <td className="py-1.5 pr-4">{c.shop_name || '—'}</td>
                   <td className="py-1.5 pr-4">{c.device_name || '—'}</td>
                   <td className="py-1.5 pr-4">{c.device_color || '—'}</td>
+                  <td className="py-1.5 pr-4">{c.condition || '—'}</td>
+                  <td className="py-1.5 pr-4">{c.promotion || '—'}</td>
+                  <td className="py-1.5 pr-4">{c.occupation_proof || '—'}</td>
                   <td className="py-1.5 pr-4 text-right">{c.finance_amount || '—'}</td>
                   <td className="py-1.5 pr-4 text-right">{c.term_months || '—'}</td>
                   <td className="py-1.5">{c.trade_date || '—'}</td>
