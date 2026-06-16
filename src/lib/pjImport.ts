@@ -8,6 +8,7 @@
 export interface PJContract {
   invoice_no: string
   trade_date: string
+  shop_code: string
   shop_name: string
   customer_name: string
   birth_date: string
@@ -23,6 +24,7 @@ export interface PJContract {
   device_storage: string
   device_condition: string
   imei: string
+  sn: string
   down_payment: string
   monthly_payment: string
   term_months: string
@@ -261,6 +263,7 @@ export function normalizePJContract(raw: Record<string, string>): PJContract {
   return {
     invoice_no:       (clean['invoice_no'] ?? '').trim(),
     trade_date:       parsePJDate(clean['trade_date'] ?? '') ?? (clean['trade_date'] ?? '').trim(),
+    shop_code:        (clean['shop_code'] ?? '').trim(),
     shop_name:        (clean['shop_name'] ?? '').trim(),
     customer_name:    (clean['customer_name'] ?? '').trim(),
     birth_date:       parsePJDate(clean['birth_date'] ?? '') ?? (clean['birth_date'] ?? '').trim(),
@@ -280,6 +283,7 @@ export function normalizePJContract(raw: Record<string, string>): PJContract {
     device_storage:   (clean['device_storage'] ?? '').trim(),
     device_condition: condition,
     imei:             (clean['imei'] ?? '').trim(),
+    sn:               (clean['sn'] ?? '').trim(),
     down_payment:     String(parsePJAmount(clean['down_payment'] ?? '')),
     monthly_payment:  String(parsePJAmount(clean['monthly_payment'] ?? '')),
     term_months:      (clean['term_months'] ?? '').trim(),
