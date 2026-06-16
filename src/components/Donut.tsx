@@ -1,8 +1,16 @@
-// โดนัทวงแหวน SVG ล้วน — แสดงสัดส่วน (เช่น ปกติ/ล่าช้า/หนี้เสีย)
+import { useRef, useState } from 'react'
+
+// โดนัทวงแหวน SVG ล้วน — แสดงสัดส่วน (เช่น ปกติ/ล่าช้า/หนี้เสีย) + tooltip ตอน hover
 export interface DonutSlice {
   label: string
   value: number
   color: string // hex
+}
+
+interface HoverInfo {
+  sliceIndex: number
+  x: number
+  y: number
 }
 
 export function Donut({
@@ -24,13 +32,42 @@ export function Donut({
   const circ = 2 * Math.PI * r
   let offset = 0
 
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [hover, setHover] = useState<HoverInfo | null>(null)
+
+  const updateHover = (i: number, e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setHover({ sliceIndex: i, x: e.clientX - rect.left, y: e.clientY - rect.top })
+  }
+
+  // คำนวณตำแหน่ง tooltip ไม่ให้ล้นขอบขวา
+  const TOOLTIP_W = 160 // ประมาณค่ากว้างพอเหมาะ
+  const containerW = containerRef.current?.clientWidth ?? 0
+  let tipLeft = 0
+  let tipTop = 0
+  if (hover) {
+    tipLeft = hover.x + 12
+    tipTop = hover.y + 12
+    if (containerW > 0 && tipLeft + TOOLTIP_W > containerW) {
+      tipLeft = hover.x - TOOLTIP_W - 12
+      if (tipLeft < 0) tipLeft = 0
+    }
+  }
+
+  const hoveredSlice = hover ? slices[hover.sliceIndex] : null
+  const hoveredPct =
+    hoveredSlice && total > 0 ? Math.round((hoveredSlice.value / total) * 100) : 0
+
   return (
-    <div className="flex items-center gap-4">
+    <div ref={containerRef} className="relative flex items-center gap-4">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
         <circle cx={c} cy={c} r={r} fill="none" stroke="#f3e6d8" strokeWidth={thickness} />
         {total > 0 &&
           slices.map((s, i) => {
             const len = (s.value / total) * circ
+            const isHovered = hover?.sliceIndex === i
+            const anyHover = hover !== null
             const seg = (
               <circle
                 key={i}
@@ -42,6 +79,14 @@ export function Donut({
                 strokeWidth={thickness}
                 strokeDasharray={`${len} ${circ - len}`}
                 strokeDashoffset={-offset}
+                style={{
+                  cursor: 'pointer',
+                  opacity: anyHover ? (isHovered ? 1 : 0.7) : 1,
+                  transition: 'opacity 150ms ease',
+                }}
+                onMouseEnter={(e) => updateHover(i, e)}
+                onMouseMove={(e) => updateHover(i, e)}
+                onMouseLeave={() => setHover(null)}
               />
             )
             offset += len
@@ -66,6 +111,24 @@ export function Donut({
           ))}
         </ul>
       </div>
+
+      {hoveredSlice && (
+        <div
+          className="pointer-events-none absolute z-10 rounded-lg bg-zinc-900 px-3 py-2 text-sm text-white shadow-lg"
+          style={{ left: tipLeft, top: tipTop }}
+        >
+          <div className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: hoveredSlice.color }}
+            />
+            <span className="font-medium">{hoveredSlice.label}</span>
+          </div>
+          <div className="mt-0.5 text-xs text-zinc-200">
+            จำนวน {hoveredSlice.value.toLocaleString('th-TH')} เคส ({hoveredPct}%)
+          </div>
+        </div>
+      )}
     </div>
   )
 }

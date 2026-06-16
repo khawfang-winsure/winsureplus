@@ -17,6 +17,9 @@ export interface ExecInput {
   extensions: ExtensionRecord[]
   returns: DeviceReturnRow[]
   todayISO: string // 'YYYY-MM-DD'
+  // ช่วงวันที่ที่ผู้ใช้เลือก (inclusive). undefined ทั้งคู่ = ใช้ "เดือนนี้" เหมือนเดิม (backward compat)
+  rangeStart?: string // 'YYYY-MM-DD'
+  rangeEnd?: string   // 'YYYY-MM-DD'
   // optional commission config — absent when ExecDashboard.tsx hasn't been wired yet (W2.B task)
   commissionTiers?: CommissionTier[]
   recruitTiers?: RecruitTier[]
@@ -176,15 +179,20 @@ function weekStartOf(d: Date): Date {
   return x
 }
 
-/** สร้างตารางกระแสเงินสดย้อนหลัง count ช่วง (เก่า→ใหม่) ตามความถี่ที่เลือก */
+/**
+ * สร้างตารางกระแสเงินสด (เก่า→ใหม่) ตามความถี่ที่เลือก
+ * - ถ้าไม่ส่ง anchorISO → ใช้ todayISO เป็นจุดสิ้นสุด (พฤติกรรมเดิม)
+ * - ถ้าส่ง anchorISO → ใช้ anchorISO เป็นจุดสิ้นสุด (สำหรับ range ที่ผู้ใช้เลือก)
+ */
 export function buildCashflow(
   contracts: Contract[],
   payments: PaymentLite[],
   granularity: Granularity,
   count: number,
   todayISO: string,
+  anchorISO?: string,
 ): CashflowRow[] {
-  const today = localDate(todayISO)
+  const today = localDate(anchorISO ?? todayISO)
   const rows: CashflowRow[] = []
   const idx = new Map<string, number>()
   for (let k = count - 1; k >= 0; k--) {
@@ -442,6 +450,33 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const prevMonthDate = new Date(curYear, curMonthIndex - 1, 1)
   const prevMonthKey = `${prevMonthDate.getFullYear()}-${prevMonthDate.getMonth()}`
 
+  // ----- คำนวณช่วง effective ที่ใช้ filter flow KPIs -----
+  // ถ้าไม่ส่งทั้งคู่ → fallback = "วันที่ 1 ของเดือน todayISO" ถึง todayISO (backward compat กับ curMonthKey)
+  const monthStartISO = `${curYear}-${String(curMonthIndex + 1).padStart(2, '0')}-01`
+  let effectiveStart: string
+  let effectiveEnd: string
+  const hasRange = input.rangeStart != null && input.rangeEnd != null
+  if (hasRange) {
+    let s = input.rangeStart as string
+    let e = input.rangeEnd as string
+    if (s > e) {
+      console.warn(`[execDashboard] rangeStart (${s}) > rangeEnd (${e}) — swapping`)
+      const tmp = s; s = e; e = tmp
+    }
+    effectiveStart = s
+    effectiveEnd = e
+  } else {
+    effectiveStart = monthStartISO
+    effectiveEnd = todayISO
+  }
+  // ISO เปรียบเทียบเป็น string ได้ตรงๆ (YYYY-MM-DD lexicographic = chronological)
+  // helper: เทียบ ISO timestamp/date ตกในช่วงไหม (ใช้ 10 ตัวแรกของ ISO timestamp เป็นวัน)
+  const inRange = (iso: string): boolean => {
+    if (!iso) return false
+    const day = iso.length >= 10 ? iso.slice(0, 10) : iso
+    return day >= effectiveStart && day <= effectiveEnd
+  }
+
   const statusBy = new Map(statuses.map((s) => [s.contractId, s]))
   const contractById = new Map(contracts.map((c) => [c.id, c]))
 
@@ -518,15 +553,16 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
       collectedDue += Math.min(ins.paidAmount, ins.amount)
     }
     const remain = Math.max(0, ins.amount - ins.paidAmount)
-    const mk = monthKey(ins.dueDate)
-    if (mk === curMonthKey) expectedThisMonth += remain
-    else if (mk === nextMonthKey) expectedNextMonth += remain
+    // expectedThisMonth = ยอด remain ของงวดที่ dueDate ∈ ช่วง effective (ชื่อ field คงเดิมเพื่อ backward compat)
+    if (inRange(ins.dueDate)) expectedThisMonth += remain
+    // expectedNextMonth ใช้เดือนถัดจาก todayISO ตามเดิม (ไม่ผูก range — UI ไม่ relabel ตัวนี้)
+    if (monthKey(ins.dueDate) === nextMonthKey) expectedNextMonth += remain
   }
   const collectionRate = pct(collectedDue, dueToDate)
 
   let receivedThisMonth = 0
   for (const p of payments) {
-    if (p.action === 'pay' && monthKey(p.createdAt) === curMonthKey) receivedThisMonth += p.amount
+    if (p.action === 'pay' && inRange(p.createdAt)) receivedThisMonth += p.amount
   }
 
   const penaltyTotal = active.reduce((s, c) => s + (statusBy.get(c.id)?.penaltyDue ?? 0), 0)
@@ -560,25 +596,25 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
       earlyDefault.value += outstandingOf(c.id)
     }
   }
-  const extensionsThisMonth = extensions.filter((e) => monthKey(e.createdAt) === curMonthKey).length
+  const extensionsThisMonth = extensions.filter((e) => inRange(e.createdAt)) .length
   let returnsCount = 0
   let returnsValue = 0
   for (const ret of returns) {
-    if (monthKey(ret.createdAt) === curMonthKey) {
+    if (inRange(ret.createdAt)) {
       returnsCount++
       returnsValue += contractById.get(ret.contractId)?.devicePrice ?? 0
     }
   }
-  const newContractsThisMonth = contracts.filter((c) => monthKey(c.transactionDate) === curMonthKey).length
+  const newContractsThisMonth = contracts.filter((c) => inRange(c.transactionDate)).length
 
-  // ร้านใหม่เดือนนี้ = ร้านที่มีเคสแรกในเดือนนี้
+  // ร้านใหม่ในช่วง = ร้านที่มีเคสแรกอยู่ใน effective range
   const firstByShop = new Map<string, string>()
   for (const c of contracts) {
     const cur = firstByShop.get(c.shopId)
     if (!cur || c.transactionDate < cur) firstByShop.set(c.shopId, c.transactionDate)
   }
   let newShopsThisMonth = 0
-  for (const d of firstByShop.values()) if (monthKey(d) === curMonthKey) newShopsThisMonth++
+  for (const d of firstByShop.values()) if (inRange(d)) newShopsThisMonth++
 
   // ----- แนวโน้ม 12 เดือนล่าสุด -----
   const trendKeys: string[] = []
@@ -630,9 +666,27 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const riskByAge = riskBy((c) => ageRange(c.birthYear, curYear))
   const riskByModel = riskBy((c) => c.model || '-')
 
-  const cashflowDay = buildCashflow(contracts, payments, 'day', 14, todayISO)
-  const cashflowWeek = buildCashflow(contracts, payments, 'week', 8, todayISO)
-  const cashflowMonth = buildCashflow(contracts, payments, 'month', 12, todayISO)
+  // ----- กระแสเงินสด: ถ้ามี range → คำนวณ count + anchor จากช่วง, ถ้าไม่มี → default เดิม -----
+  // anchor = effectiveEnd (จุดสิ้นสุดของช่วง), count = จำนวนหน่วยย้อนหลังจาก anchor ถึง effectiveStart
+  // ถ้า day > 366 → cap ไว้ที่ 366 (กัน render เยอะ ตาม spec edge case)
+  let cfDayCount = 14
+  let cfWeekCount = 8
+  let cfMonthCount = 12
+  let cfAnchor: string | undefined = undefined
+  if (hasRange) {
+    cfAnchor = effectiveEnd
+    const startD = localDate(effectiveStart)
+    const endD = localDate(effectiveEnd)
+    const dayDiff = Math.floor((endD.getTime() - startD.getTime()) / 86_400_000)
+    cfDayCount = Math.max(1, Math.min(366, dayDiff + 1))
+    cfWeekCount = Math.max(1, Math.ceil((dayDiff + 1) / 7))
+    const monthDiff =
+      (endD.getFullYear() - startD.getFullYear()) * 12 + (endD.getMonth() - startD.getMonth())
+    cfMonthCount = Math.max(1, monthDiff + 1)
+  }
+  const cashflowDay = buildCashflow(contracts, payments, 'day', cfDayCount, todayISO, cfAnchor)
+  const cashflowWeek = buildCashflow(contracts, payments, 'week', cfWeekCount, todayISO, cfAnchor)
+  const cashflowMonth = buildCashflow(contracts, payments, 'month', cfMonthCount, todayISO, cfAnchor)
 
   const briefing = buildBriefing(
     input,
