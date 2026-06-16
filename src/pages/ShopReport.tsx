@@ -4,6 +4,7 @@ import { Award, Activity, Moon, Store } from 'lucide-react'
 import { Card, Loading, PageTitle } from '../components/ui'
 import { ListPager, ListToolbar } from '../components/ManagedList'
 import { LineChart } from '../components/LineChart'
+import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
 import { baht } from '../lib/format'
 import { getAllStatuses, getContracts, getShops } from '../lib/db'
 import {
@@ -45,6 +46,7 @@ function ActivityBadge({ row }: { row: ShopReportRow }) {
 
 export default function ShopReport() {
   const navigate = useNavigate()
+  const [range, setRange] = useState<DateRange | null>(() => loadStoredRange('shopReport.dateRange'))
   const { data, loading } = useAsync(
     async () => {
       const [shops, contracts, statuses] = await Promise.all([
@@ -52,17 +54,28 @@ export default function ShopReport() {
         getContracts(),
         getAllStatuses(),
       ])
-      return { rows: buildShopReport(shops, contracts, statuses, todayISO), contracts }
+      return { shops, contracts, statuses }
     },
-    { rows: [] as ShopReportRow[], contracts: [] as Contract[] },
+    { shops: [] as Awaited<ReturnType<typeof getShops>>, contracts: [] as Contract[], statuses: [] as Awaited<ReturnType<typeof getAllStatuses>> },
   )
 
-  const rows = data.rows
+  // กรองสัญญาตามช่วงวันที่ (transactionDate) ก่อนนำไปคำนวณรายงาน
+  const filteredContracts = useMemo(() => {
+    if (!range) return data.contracts
+    return data.contracts.filter((c) => c.transactionDate >= range.start && c.transactionDate <= range.end)
+  }, [data.contracts, range])
+
+  const rows = useMemo<ShopReportRow[]>(
+    () => buildShopReport(data.shops, filteredContracts, data.statuses, todayISO),
+    [data.shops, filteredContracts, data.statuses],
+  )
   const summary = useMemo(() => shopReportSummary(rows), [rows])
   const topShops = useMemo(() => topShopsByCases(rows, 10), [rows])
   const maxCases = topShops[0]?.contracts ?? 0
 
-  // ภาพรวมรายเดือน: ร้านใหม่ / ร้านที่ส่งเคส
+  const noDataInRange = range !== null && filteredContracts.length === 0 && data.contracts.length > 0
+
+  // ภาพรวมรายเดือน: ร้านใหม่ / ร้านที่ส่งเคส (ใช้ข้อมูลทั้งหมด ไม่กรองตามช่วง)
   const years = useMemo(() => yearsFromContracts(data.contracts), [data.contracts])
   const [yearSel, setYearSel] = useState<number | null>(null)
   const year = yearSel ?? years[0] ?? new Date().getFullYear()
@@ -86,6 +99,16 @@ export default function ShopReport() {
         <Loading />
       ) : (
         <>
+          {/* ===== ตัวเลือกช่วงวันที่ ===== */}
+          <div className="mb-5">
+            <DateRangePicker
+              storageKey="shopReport.dateRange"
+              value={range}
+              onChange={setRange}
+              emptyDataChip={noDataInRange}
+            />
+          </div>
+
           {/* ===== การ์ดสรุป (dashboard) ===== */}
           <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Card className="flex items-center gap-3 py-4">
