@@ -20,6 +20,9 @@ dist-ssr
 /*.jpeg
 /form-snap.md
 
+# velocity raw log (local-only — สรุปอยู่ใน memory/team-velocity.md)
+velocity/
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json

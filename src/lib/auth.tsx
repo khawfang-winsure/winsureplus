@@ -9,6 +9,7 @@ interface AuthState {
   session: Session | null
   role: Role | null
   email: string | null
+  name: string | null // ชื่อผู้ใช้ที่ล็อกอิน (จาก profiles.full_name)
   signIn: (email: string, password: string) => Promise<{ error?: string }>
   signOut: () => Promise<void>
 }
@@ -19,6 +20,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
   const [role, setRole] = useState<Role | null>(null)
+  const [name, setName] = useState<string | null>(null)
 
   useEffect(() => {
     if (!supabase) {
@@ -31,13 +33,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(data.session)
         return data.session ? getMyProfile() : null
       })
-      .then((p) => setRole(p?.role ?? null))
+      .then((p) => {
+        setRole(p?.role ?? null)
+        setName(p?.fullName ?? null)
+      })
       .finally(() => setReady(true))
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s)
-      if (s) getMyProfile().then((p) => setRole(p?.role ?? null))
-      else setRole(null)
+      if (s)
+        getMyProfile().then((p) => {
+          setRole(p?.role ?? null)
+          setName(p?.fullName ?? null)
+        })
+      else {
+        setRole(null)
+        setName(null)
+      }
     })
     return () => sub.subscription.unsubscribe()
   }, [])
@@ -60,6 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         role,
         email: session?.user.email ?? null,
+        name,
         signIn,
         signOut,
       }}

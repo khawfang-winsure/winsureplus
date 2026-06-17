@@ -5,10 +5,12 @@ import CopyBox from '../components/CopyBox'
 import { thaiDate } from '../lib/format'
 import { buildEmailText } from '../lib/messages'
 import { getContracts, getShops, markEmailSent } from '../lib/db'
+import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
 
 export default function WaitingEmail() {
+  const { name } = useAuth()
   const { data, loading } = useAsync(
     async () => {
       const [contracts, shops] = await Promise.all([getContracts(), getShops()])
@@ -24,14 +26,17 @@ export default function WaitingEmail() {
   const pending = data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id))
 
   async function doMarkSent(c: Contract) {
-    await markEmailSent(c.id)
+    await markEmailSent(c.id, name ?? undefined)
     setSentIds((prev) => new Set([...prev, c.id]))
     setView(null)
   }
 
   return (
     <div>
-      <PageTitle sub="เคสที่ยังไม่ได้ส่งอีเมลให้พาร์ทเนอร์ (กดดูข้อความ → คัดลอกไปส่ง → ทำเครื่องหมายส่งแล้ว)">
+      <PageTitle
+        sub="เคสที่ยังไม่ได้ส่งอีเมลให้พาร์ทเนอร์ (กดดูข้อความ → คัดลอกไปส่ง → ทำเครื่องหมายส่งแล้ว)"
+        count={loading ? undefined : { shown: pending.length }}
+      >
         รอส่งอีเมล
       </PageTitle>
       {loading ? (

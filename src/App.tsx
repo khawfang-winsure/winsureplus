@@ -1,19 +1,39 @@
+import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import Layout from './components/Layout'
+import { Loading } from './components/ui'
 import { AuthProvider, useAuth } from './lib/auth'
-import Dashboard from './pages/Dashboard'
-import AddContract from './pages/AddContract'
-import AllCustomers from './pages/AllCustomers'
-import ContractDetail from './pages/ContractDetail'
-import DueToday from './pages/DueToday'
-import Overdue from './pages/Overdue'
-import Returns from './pages/Returns'
-import ShopReport from './pages/ShopReport'
-import Letters from './pages/Letters'
-import Settings from './pages/Settings'
-import WaitingEmail from './pages/WaitingEmail'
-import WaitingSummary from './pages/WaitingSummary'
+// Login stays eager — it renders outside <Routes> on the unauthenticated path
 import Login from './pages/Login'
+
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const AddContract = lazy(() => import('./pages/AddContract'))
+const AllCustomers = lazy(() => import('./pages/AllCustomers'))
+const CustomerOverview = lazy(() => import('./pages/CustomerOverview'))
+const ContractDetail = lazy(() => import('./pages/ContractDetail'))
+const DueToday = lazy(() => import('./pages/DueToday'))
+const Overdue = lazy(() => import('./pages/Overdue'))
+const Returns = lazy(() => import('./pages/Returns'))
+const ExtendedContracts = lazy(() => import('./pages/ExtendedContracts'))
+const ShopReport = lazy(() => import('./pages/ShopReport'))
+const ShopDetail = lazy(() => import('./pages/ShopDetail'))
+const Commission = lazy(() => import('./pages/Commission'))
+const ExecDashboard = lazy(() => import('./pages/ExecDashboard'))
+const Letters = lazy(() => import('./pages/Letters'))
+const LettersPrint = lazy(() => import('./pages/LettersPrint'))
+const FieldVisitPrint = lazy(() => import('./pages/FieldVisitPrint'))
+const Settings = lazy(() => import('./pages/Settings'))
+const WaitingEmail = lazy(() => import('./pages/WaitingEmail'))
+const WaitingSummary = lazy(() => import('./pages/WaitingSummary'))
+const FreelancerWorkspace = lazy(() => import('./pages/FreelancerWorkspace'))
+const StaffPerformance = lazy(() => import('./pages/StaffPerformance'))
+const DevicePipeline = lazy(() => import('./pages/DevicePipeline'))
+const CustomerDetail = lazy(() => import('./pages/CustomerDetail'))
+const StaffDailyReport = lazy(() => import('./pages/StaffDailyReport'))
+const SaleHistory = lazy(() => import('./pages/SaleHistory'))
+const WeeklyReport = lazy(() => import('./pages/WeeklyReport'))
+const Import = lazy(() => import('./pages/Import'))
 
 export default function App() {
   return (
@@ -24,7 +44,11 @@ export default function App() {
 }
 
 function Gate() {
-  const { ready, configured, session } = useAuth()
+  const { ready, configured, session, role } = useAuth()
+  const isAdmin = !configured || role === 'admin'
+  const isFreelancer = configured && role === 'freelancer'
+  const isExecutive = configured && role === 'executive'
+  const isAdminOrStaff = isAdmin || role === 'staff'
 
   if (!ready) {
     return (
@@ -38,23 +62,48 @@ function Gate() {
   if (configured && !session) return <Login />
 
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route index element={<Dashboard />} />
-        <Route path="/add" element={<AddContract />} />
-        <Route path="/edit/:id" element={<AddContract />} />
-        <Route path="/waiting-email" element={<WaitingEmail />} />
-        <Route path="/waiting-summary" element={<WaitingSummary />} />
-        <Route path="/customers" element={<AllCustomers />} />
-        <Route path="/contract/:id" element={<ContractDetail />} />
-        <Route path="/due" element={<DueToday />} />
-        <Route path="/overdue/:bucket" element={<Overdue />} />
-        <Route path="/letters" element={<Letters />} />
-        <Route path="/returns" element={<Returns />} />
-        <Route path="/shop-report" element={<ShopReport />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<Navigate to="/add" replace />} />
-      </Route>
-    </Routes>
+    <ErrorBoundary>
+      <Suspense fallback={<Loading />}>
+      <Routes>
+        {/* หน้าปริ้น — นอก Layout (ไม่มี sidebar เพื่อปริ้นสะอาด) */}
+        {/* executive ไม่เห็นข้อมูลลูกค้ารายคน → redirect กลับ /exec */}
+        <Route path="/letters/print" element={isExecutive ? <Navigate to="/exec" replace /> : <LettersPrint />} />
+        <Route path="/letters/field" element={isExecutive ? <Navigate to="/exec" replace /> : <FieldVisitPrint />} />
+        <Route element={<Layout />}>
+          {/* ผู้ติดตามหนี้ — เห็นเฉพาะ /queue */}
+          <Route path="/queue" element={isExecutive ? <Navigate to="/exec" replace /> : <FreelancerWorkspace />} />
+
+          {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue; executive ไป /exec */}
+          <Route index element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Dashboard />} />
+          <Route path="/exec" element={(isAdmin || isExecutive) ? <ExecDashboard /> : <Navigate to="/" replace />} />
+          <Route path="/add" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <AddContract /> : <Navigate to="/" replace />} />
+          <Route path="/edit/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <AddContract /> : <Navigate to="/" replace />} />
+          <Route path="/sale-history" element={isAdmin ? <SaleHistory /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/waiting-email" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingEmail />} />
+          <Route path="/waiting-summary" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingSummary />} />
+          <Route path="/customers" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <AllCustomers />} />
+          <Route path="/customer-overview" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <CustomerOverview />} />
+          <Route path="/contract/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ContractDetail />} />
+          <Route path="/customer/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <CustomerDetail />} />
+          <Route path="/due" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <DueToday />} />
+          <Route path="/overdue/:bucket" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Overdue />} />
+          <Route path="/letters" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Letters />} />
+          <Route path="/returns" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Returns />} />
+          <Route path="/device-pipeline" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <DevicePipeline />} />
+          <Route path="/extended" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ExtendedContracts />} />
+          <Route path="/shop-report" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopReport />} />
+          <Route path="/shop/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ShopDetail />} />
+          <Route path="/staff-performance" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <StaffPerformance /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/staff-daily-report" element={isExecutive ? <Navigate to="/exec" replace /> : isAdminOrStaff ? <StaffDailyReport /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/weekly-report" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WeeklyReport />} />
+          <Route path="/commission" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <Commission /> : <Navigate to="/" replace />} />
+          <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
+          <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
+          <Route path="/import" element={isAdmin ? <Import /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="*" element={<Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/add'} replace />} />
+        </Route>
+      </Routes>
+      </Suspense>
+    </ErrorBoundary>
   )
 }

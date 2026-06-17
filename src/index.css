@@ -1,16 +1,28 @@
 @import 'tailwindcss';
 
-/* ===== ธีมแบรนด์ WIN SURE PLUS (โทนสีครีม-พีช ตามภาพตัวอย่าง) ===== */
+/* ===== ธีมแบรนด์ WIN SURE PLUS — โทนใหม่: ส้ม (แบรนด์) + ขาว + เทา =====
+   หมายเหตุ: เก็บ "ชื่อสีเดิม" ไว้ (cream/peach/salmon/ink) แต่รีแมปค่าเป็นโทนใหม่
+   ทุกหน้าเรียกชื่อเดิม → เปลี่ยนที่นี่ที่เดียว ทั้งเว็บเปลี่ยนตาม */
 @theme {
-  --color-cream: #fcf6e8;
-  --color-cream-deep: #f9eed5;
-  --color-peach: #f5c6a5;
-  --color-peach-light: #fbe0cc;
-  --color-peach-soft: #fad9c0;
-  --color-salmon: #efaf8e;
-  --color-salmon-deep: #e89a73;
-  --color-ink: #3b3b6d;
-  --color-ink-soft: #5a5a86;
+  /* พื้นหลัง + พื้นผิว — พื้นส้มอ่อน + การ์ดครีมนวล (อบอุ่น สดใส สบายตา) */
+  --color-cream: #fde2c8;       /* พื้นหน้าเว็บ — ส้มอ่อนๆ */
+  --color-cream-deep: #fffaf2;  /* พื้นผิวการ์ด/แผง — ครีมขาวนวล (ตัดกับพื้นส้ม) */
+
+  /* เส้นขอบ + พื้นครีมกลาง (เดิม: ตระกูลพีช) */
+  --color-peach: #f0dcb8;       /* เส้นขอบ/เส้นแบ่ง — ครีมอุ่น */
+  --color-peach-light: #fbeed6; /* พื้นจางๆ หัวตาราง hover — ครีมอ่อน */
+  --color-peach-soft: #fce3c6;  /* พื้นป้ายสถานะกลาง — พีชอ่อน */
+
+  /* สีแบรนด์ส้ม (เดิม: ตระกูล salmon) — จี๊ดสดใส */
+  --color-salmon: #fb923c;      /* ส้มอ่อน */
+  --color-salmon-deep: #f97316; /* ส้มแบรนด์ — ปุ่มหลัก/เมนู active (สดใส) */
+
+  /* ตัวอักษร */
+  --color-ink: #3a2f1f;         /* น้ำตาลเข้มอมอุ่น — อ่านชัด เข้ากับครีม */
+  --color-ink-soft: #8a7355;    /* น้ำตาลอุ่นกลาง — ข้อความรอง */
+
+  /* Surface token — ขาวบริสุทธิ์ (ใช้แทน bg-white ใน primitives) */
+  --color-surface: #ffffff;
 
   --font-sans: 'Noto Sans Thai', ui-sans-serif, system-ui, sans-serif;
 }

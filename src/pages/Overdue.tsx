@@ -34,7 +34,7 @@ export default function Overdue() {
 
   return (
     <div>
-      <PageTitle sub="กลุ่มนี้คำนวณอัตโนมัติจากจำนวนวันเลยกำหนด (อัปเดตทุกวันโดยระบบ)">{label}</PageTitle>
+      <PageTitle sub="กลุ่มนี้คำนวณอัตโนมัติจากจำนวนวันเลยกำหนด (อัปเดตทุกวันโดยระบบ)" count={loading ? undefined : { shown: rows.length }}>{label}</PageTitle>
       {loading ? (
         <Loading />
       ) : rows.length === 0 ? (

@@ -8,10 +8,30 @@ import type {
 
 // ===== ชิ้นส่วน UI ที่ใช้ซ้ำทั้งเว็บ =====
 
-export function PageTitle({ children, sub }: { children: ReactNode; sub?: string }) {
+export function PageTitle({
+  children,
+  sub,
+  count,
+}: {
+  children: ReactNode
+  sub?: string
+  count?: { shown: number; total?: number }
+}) {
+  const countText =
+    count == null
+      ? null
+      : count.total == null || count.total === count.shown
+        ? `(${count.shown} รายการ)`
+        : `(แสดง ${count.shown} จาก ${count.total} รายการ)`
+
   return (
     <div className="mb-5">
-      <h2 className="text-xl font-bold text-ink">{children}</h2>
+      <h2 className="text-xl font-bold text-ink">
+        {children}
+        {countText && (
+          <span className="ml-2 text-sm font-normal text-ink-soft">{countText}</span>
+        )}
+      </h2>
       {sub && <p className="mt-1 text-sm text-ink-soft">{sub}</p>}
     </div>
   )
@@ -19,7 +39,7 @@ export function PageTitle({ children, sub }: { children: ReactNode; sub?: string
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`rounded-2xl bg-peach-light/60 p-5 ${className}`}>{children}</div>
+    <div className={`rounded-2xl border border-peach bg-cream-deep p-5 shadow-sm ${className}`}>{children}</div>
   )
 }
 
@@ -45,7 +65,7 @@ export function Field({
 }
 
 const inputCls =
-  'w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40'
+  'w-full rounded-xl border border-peach bg-surface px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40'
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={`${inputCls} ${props.className ?? ''}`} />
@@ -69,7 +89,7 @@ export function Button({
   const styles =
     variant === 'primary'
       ? 'bg-salmon-deep text-white hover:brightness-105 shadow'
-      : 'bg-white text-ink border border-peach hover:bg-peach-light/50'
+      : 'bg-surface text-ink border border-peach hover:bg-peach-light/50'
   return (
     <button {...props} className={`${base} ${styles} ${props.className ?? ''}`}>
       {children}
@@ -107,7 +127,7 @@ export function Modal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+        className="w-full max-w-md rounded-2xl bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="mb-4 text-lg font-bold text-ink">{title}</h3>

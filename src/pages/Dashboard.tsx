@@ -37,12 +37,12 @@ export default function Dashboard() {
     (s) => s.status === 'active' && s.nextDue && s.nextDue >= todayISO && s.nextDue <= in7ISO,
   ).length
 
-  const cards: { label: string; value: number; icon: LucideIcon; to: string; tone: string }[] = [
+  const cards: { label: string; value: number; icon: LucideIcon; to: string; tone: string; sub?: string }[] = [
     { label: 'ลูกค้าทั้งหมด', value: total, icon: Users, to: '/customers', tone: 'text-ink' },
-    { label: 'รอสรุปยอด', value: pendingSummary, icon: Receipt, to: '/waiting-summary', tone: 'text-amber-600' },
-    { label: 'รอส่งอีเมล', value: pendingEmail, icon: Mail, to: '/waiting-email', tone: 'text-amber-600' },
+    { label: 'รอสรุปยอด', value: pendingSummary, icon: Receipt, to: '/waiting-summary', tone: 'text-amber-600', sub: 'รวมทุกเคสค้าง' },
+    { label: 'รอส่งอีเมล', value: pendingEmail, icon: Mail, to: '/waiting-email', tone: 'text-amber-600', sub: 'รวมทุกเคสค้าง' },
     { label: 'ถึงกำหนด (7 วัน)', value: dueSoon, icon: CalendarClock, to: '/due', tone: 'text-salmon-deep' },
-    { label: 'ล่าช้า-หนี้เสีย', value: overdue, icon: AlertTriangle, to: '/overdue/1-10', tone: 'text-red-600' },
+    { label: 'ล่าช้า-หนี้เสีย', value: overdue, icon: AlertTriangle, to: '/customers?bucket=overdue', tone: 'text-red-600' },
   ]
 
   return (
@@ -64,6 +64,7 @@ export default function Dashboard() {
               <div>
                 <p className="text-sm text-ink-soft">{c.label}</p>
                 <p className={`text-3xl font-bold ${c.tone}`}>{c.value}</p>
+                {c.sub && <p className="text-xs text-ink-soft">{c.sub}</p>}
               </div>
             </button>
           ))}

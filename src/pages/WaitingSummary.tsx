@@ -6,6 +6,7 @@ import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
 import { buildBulkSummary } from '../lib/messages'
 import { getContracts, getShops, markSummarySent } from '../lib/db'
+import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
 
@@ -14,6 +15,7 @@ const netOf = (c: Contract) =>
   calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
 
 export default function WaitingSummary() {
+  const { name } = useAuth()
   const { data, loading } = useAsync(
     async () => {
       const [contracts, shops] = await Promise.all([getContracts(), getShops()])
@@ -67,7 +69,7 @@ export default function WaitingSummary() {
 
   async function markSent() {
     const ids = [...selected]
-    await markSummarySent(ids) // บันทึกลง DB จริง (กันส่งซ้ำ)
+    await markSummarySent(ids, name ?? undefined) // บันทึกลง DB จริง (กันส่งซ้ำ)
     setLocallySent((prev) => new Set([...prev, ...ids]))
     setSelected(new Set())
     setOutput('')
@@ -86,7 +88,10 @@ export default function WaitingSummary() {
 
   return (
     <div>
-      <PageTitle sub="เลือกเคสที่จะสรุปยอด → ระบบรวมยอดโอนของทุกร้านในวันเดียว (กันส่งซ้ำด้วยการทำเครื่องหมายว่าส่งแล้ว)">
+      <PageTitle
+        sub="เลือกเคสที่จะสรุปยอด → ระบบรวมยอดโอนของทุกร้านในวันเดียว (กันส่งซ้ำด้วยการทำเครื่องหมายว่าส่งแล้ว)"
+        count={{ shown: pending.length }}
+      >
         รอสรุปยอด
       </PageTitle>
 

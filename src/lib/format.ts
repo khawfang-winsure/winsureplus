@@ -42,6 +42,14 @@ const INSTALLMENT_LABEL: Record<string, string> = {
   late: 'ล่าช้า',
 }
 
+/** ปิดเลขบัตรประชาชนบางส่วน เหลือ 4 ตัวท้าย เช่น "1234567890123" -> "xxxxxxxxx0123" (PII ในลิสต์) */
+export function maskNationalId(id: string | undefined): string {
+  if (!id) return '-'
+  const digits = id.replace(/\s/g, '')
+  if (digits.length <= 4) return digits
+  return 'x'.repeat(digits.length - 4) + digits.slice(-4)
+}
+
 export const conditionLabel = (c: string) => CONDITION_LABEL[c] ?? c
 export const originLabel = (o: string) => ORIGIN_LABEL[o] ?? o
 export const statusLabel = (s: string) => STATUS_LABEL[s] ?? s
