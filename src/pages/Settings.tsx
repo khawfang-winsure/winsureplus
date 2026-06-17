@@ -239,6 +239,7 @@ export default function Settings() {
         <OptionModalForm
           value={optModal}
           hasDetail={OPTION_KINDS.find((k) => k.kind === optModal.kind)?.hasDetail}
+          existing={data.options[optModal.kind] ?? []}
           onClose={() => setOptModal(null)}
           onSaved={async () => {
             setOptModal(null)
@@ -380,11 +381,13 @@ function ShopModalForm({
 function OptionModalForm({
   value,
   hasDetail,
+  existing,
   onClose,
   onSaved,
 }: {
   value: OptionInput
   hasDetail?: boolean
+  existing: Option[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -392,9 +395,22 @@ function OptionModalForm({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // เช็คชื่อซ้ำ — ตัดช่องว่างหน้า/หลัง + ไม่สนตัวพิมพ์เล็ก/ใหญ่ (ตอนแก้ไขไม่นับตัวเอง)
+  const norm = (s: string) => s.trim().toLowerCase()
+  const isDuplicate = (label: string) => {
+    const target = norm(label)
+    if (!target) return false
+    return existing.some((o) => o.id !== f.id && norm(o.label) === target)
+  }
+  const dupLive = isDuplicate(f.label)
+
   async function save() {
-    if (!f.label) {
+    if (!f.label.trim()) {
       setErr('กรุณากรอกชื่อ')
+      return
+    }
+    if (isDuplicate(f.label)) {
+      setErr('ชื่อนี้มีอยู่แล้วในรายการ — ไม่ต้องเพิ่มซ้ำ')
       return
     }
     setBusy(true)
@@ -418,10 +434,11 @@ function OptionModalForm({
             <Input value={f.detail ?? ''} onChange={(e) => setF((p) => ({ ...p, detail: e.target.value }))} />
           </Field>
         )}
-        {err && <p className="text-sm text-red-600">{err}</p>}
+        {dupLive && <p className="text-sm text-red-600">ชื่อนี้มีอยู่แล้วในรายการ — ไม่ต้องเพิ่มซ้ำ</p>}
+        {err && !dupLive && <p className="text-sm text-red-600">{err}</p>}
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy}>{busy ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+          <Button onClick={save} disabled={busy || dupLive}>{busy ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
         </div>
       </div>
     </Modal>
