@@ -2690,6 +2690,192 @@ export async function getFreelancerPerformance(days: number = 30): Promise<Freel
   })
 }
 
+// ---------- Collector Scorecard (migration 0046) ----------
+
+/** 1 row ต่อ freelancer ในตาราง scorecard (รวมทุกเกรด + byGrade drill-down) */
+export interface CollectorScorecardRow {
+  authorId: string
+  fullName: string
+  assignedGrades: string[]           // จาก freelancer_grade_assignments (active, ended_at IS NULL)
+  calls: number                      // (b) จำนวนสายโทร phone ในช่วง
+  uniqueContracts: number            // (c) distinct สัญญา — label UI "สัญญาที่ดูแล"
+  totalAttempts: number
+  successfulAttempts: number
+  collectedBaht: number              // (a) last-touch attribution
+  bahtPerCall: number | null         // client: collectedBaht / calls, null ถ้า calls=0
+  contactRate: number | null         // client: successful/total ×100, null ถ้า total=0
+  lastActivityAt: string | null
+  byGrade: Array<{
+    grade: 'A' | 'B' | 'C' | 'D' | 'E'
+    calls: number
+    uniqueContracts: number
+    totalAttempts: number
+    successfulAttempts: number
+    collectedBaht: number
+    bahtPerCall: number | null
+    contactRate: number | null
+  }>
+}
+
+export interface CollectorScorecardResult {
+  rows: CollectorScorecardRow[]
+  uncreditedBaht: number             // จาก get_uncredited_collected — ยอด pay ที่ไม่มีสายนำ
+}
+
+/** 1 row ต่อ (author_id × current_grade) จาก RPC get_collector_scorecard */
+interface ScorecardViewRow {
+  author_id: string
+  current_grade: string | null
+  calls: number
+  unique_contracts: number
+  total_attempts: number
+  successful_attempts: number
+  collected_baht: number | string    // numeric จาก PostgREST → Number(...)
+  last_activity_at: string | null
+}
+
+/** ฿/call — guard หารศูนย์ → null (N/A) */
+function bahtPerCall(collected: number, calls: number): number | null {
+  return calls > 0 ? collected / calls : null
+}
+
+/** contact-rate % — guard หารศูนย์ → null (N/A) */
+function contactRate(successful: number, total: number): number | null {
+  return total > 0 ? (successful / total) * 100 : null
+}
+
+/**
+ * Collector Scorecard — ยอดเก็บ last-touch attribution ต่อ freelancer ตามช่วงวัน [start, end]
+ * ใช้กับหน้า admin + staff (RPC guard ด้วย is_admin()/is_staff() — freelancer เรียกได้ 0 rows)
+ * Freelancer active ทุกคน list เสมอ (คนไม่มี activity = all-zero row)
+ * ครีม: คืน byGrade[] (per-grade drill-down ในช่วงเดียวกัน — ตาม pattern getFreelancerPerformance)
+ * @param start วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param end   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getCollectorScorecard(
+  start: string,
+  end: string,
+): Promise<CollectorScorecardResult> {
+  if (!supabase) return { rows: [], uncreditedBaht: 0 }
+
+  // Step 1: ดึง active freelancer profiles (role='freelancer', active=true) — reuse pattern getFreelancerPerformance
+  const { data: profileData, error: profileErr } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .eq('role', 'freelancer')
+    .eq('active', true)
+    .range(0, PAGE_CAP)
+  if (profileErr) throw profileErr
+
+  const freelancers = (profileData ?? []) as FreelancerProfileRow[]
+  if (freelancers.length === 0) return { rows: [], uncreditedBaht: 0 }
+
+  const freelancerIds = freelancers.map((p) => p.id)
+
+  // Step 2: ดึง grade assignments ที่ active (ended_at IS NULL)
+  const { data: fgaData, error: fgaErr } = await supabase
+    .from('freelancer_grade_assignments')
+    .select('freelancer_id, grade')
+    .in('freelancer_id', freelancerIds)
+    .is('ended_at', null)
+    .range(0, PAGE_CAP)
+  if (fgaErr) throw fgaErr
+
+  const gradeMap = new Map<string, string[]>()
+  for (const row of (fgaData ?? []) as FgaRow[]) {
+    const existing = gradeMap.get(row.freelancer_id) ?? []
+    existing.push(row.grade)
+    gradeMap.set(row.freelancer_id, existing)
+  }
+
+  // Step 3: ดึง scorecard aggregate ผ่าน get_collector_scorecard(p_start, p_end)
+  const { data: scData, error: scErr } = await supabase
+    .rpc('get_collector_scorecard', { p_start: start, p_end: end })
+  if (scErr) throw scErr
+
+  // Step 4: ดึงยอดที่ไม่มีสายนำ (uncredited) ผ่าน get_uncredited_collected(p_start, p_end)
+  const { data: uncData, error: uncErr } = await supabase
+    .rpc('get_uncredited_collected', { p_start: start, p_end: end })
+  if (uncErr) throw uncErr
+  const uncreditedBaht = Number(uncData ?? 0)
+
+  // Client-side merge: aggregate per author_id (sum across grades) + build byGrade array
+  type ByGradeAgg = CollectorScorecardRow['byGrade'][number]
+  type Agg = {
+    calls: number
+    uniqueContracts: number
+    totalAttempts: number
+    successfulAttempts: number
+    collectedBaht: number
+    lastActivityAt: string | null
+    byGrade: ByGradeAgg[]
+  }
+
+  const aggMap = new Map<string, Agg>()
+  for (const row of (scData ?? []) as ScorecardViewRow[]) {
+    const collected = Number(row.collected_baht)
+    const agg = aggMap.get(row.author_id) ?? {
+      calls: 0,
+      uniqueContracts: 0,
+      totalAttempts: 0,
+      successfulAttempts: 0,
+      collectedBaht: 0,
+      lastActivityAt: null,
+      byGrade: [],
+    }
+    agg.calls += row.calls
+    agg.uniqueContracts += row.unique_contracts
+    agg.totalAttempts += row.total_attempts
+    agg.successfulAttempts += row.successful_attempts
+    agg.collectedBaht += collected
+    if (
+      row.last_activity_at != null &&
+      (agg.lastActivityAt == null || row.last_activity_at > agg.lastActivityAt)
+    ) {
+      agg.lastActivityAt = row.last_activity_at
+    }
+    // byGrade: เฉพาะสัญญาที่มีเกรด (null = ไม่มีเกรด → นับใน total เท่านั้น)
+    if (row.current_grade != null) {
+      agg.byGrade.push({
+        grade: row.current_grade as 'A' | 'B' | 'C' | 'D' | 'E',
+        calls: row.calls,
+        uniqueContracts: row.unique_contracts,
+        totalAttempts: row.total_attempts,
+        successfulAttempts: row.successful_attempts,
+        collectedBaht: collected,
+        bahtPerCall: bahtPerCall(collected, row.calls),
+        contactRate: contactRate(row.successful_attempts, row.total_attempts),
+      })
+    }
+    aggMap.set(row.author_id, agg)
+  }
+
+  // รวม freelancer ทุกคน — รวมถึงคนที่ไม่มี activity ในช่วง (all-zero)
+  const rows = freelancers.map((p): CollectorScorecardRow => {
+    const agg = aggMap.get(p.id)
+    const calls = agg?.calls ?? 0
+    const collectedBaht = agg?.collectedBaht ?? 0
+    const totalAttempts = agg?.totalAttempts ?? 0
+    const successfulAttempts = agg?.successfulAttempts ?? 0
+    return {
+      authorId: p.id,
+      fullName: p.full_name ?? '-',
+      assignedGrades: gradeMap.get(p.id) ?? [],
+      calls,
+      uniqueContracts: agg?.uniqueContracts ?? 0,
+      totalAttempts,
+      successfulAttempts,
+      collectedBaht,
+      bahtPerCall: bahtPerCall(collectedBaht, calls),
+      contactRate: contactRate(successfulAttempts, totalAttempts),
+      lastActivityAt: agg?.lastActivityAt ?? null,
+      byGrade: agg?.byGrade ?? [],
+    }
+  })
+
+  return { rows, uncreditedBaht }
+}
+
 // ---------- Grade Mobility (migration 0030) ----------
 
 interface GradeMonthlyChangeRow {

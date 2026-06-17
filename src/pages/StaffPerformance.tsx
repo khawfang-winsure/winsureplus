@@ -1,18 +1,21 @@
-import { useEffect, useState } from 'react'
-import { useFilter } from '../lib/useFilter'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronRight, Download, X } from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
+  DateRangePicker,
+  loadStoredRange,
+  fmtThaiShort,
+  daysBetween,
+  type DateRange,
+} from '../components/DateRangePicker'
+import {
   getDeviceReturnCountsByFreelancerThisMonth,
   getDeviceReturnTiers,
-  getFreelancerPerformance,
-  type FreelancerPerformanceRow,
+  getCollectorScorecard,
+  type CollectorScorecardRow,
 } from '../lib/db'
-import {
-  computePerformanceKPIs,
-  type PerformanceInput,
-} from '../lib/freelancerPerformance'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
+import { baht } from '../lib/format'
 
 // ===== ตัวช่วย =====
 
@@ -34,42 +37,31 @@ function fmtDatetime(iso: string | null): string {
 
 /**
  * แสดง rate เป็น "X.X%" ถ้า value ไม่ใช่ null
- * null (N/A sentinel จาก computePerformanceKPIs) → "N/A"
+ * null (N/A sentinel — total_attempts=0) → "N/A"
  */
 function fmtRate(value: number | null): string {
   if (value === null) return 'N/A'
   return `${value.toFixed(1)}%`
 }
 
-/** tone สำหรับเซลล์ rate (highlight ถ้าต่ำ/สูงเกิน) */
-function rateCls(value: number | null, higherIsBetter: boolean): string {
+/** tone สำหรับเซลล์ contact-rate (สูงดี) */
+function rateCls(value: number | null): string {
   if (value === null) return 'text-ink-soft'
-  if (higherIsBetter) {
-    if (value >= 60) return 'font-semibold text-green-700'
-    if (value < 30) return 'font-semibold text-red-600'
-  } else {
-    // escalation: ต่ำดี
-    if (value <= 5) return 'font-semibold text-green-700'
-    if (value > 20) return 'font-semibold text-red-600'
-  }
+  if (value >= 60) return 'font-semibold text-green-700'
+  if (value < 30) return 'font-semibold text-red-600'
   return 'text-ink'
 }
 
-// ===== แปลง FreelancerPerformanceRow → PerformanceInput =====
-// Wave 2: ใช้ real attribution fields จาก db.ts
-function toInput(row: FreelancerPerformanceRow): PerformanceInput {
-  return {
-    totalAttempts: row.totalAttempts,
-    successfulAttempts: row.successfulAttempts,
-    promiseCount: row.promiseCount,
-    resolutionCount: row.resolutionCount,
-    uniqueContracts: row.uniqueContracts,
-    promiseKeptCount: row.promiseKeptCount,
-    promiseKeptCredit: row.promiseKeptCredit,
-    promisesTotal: row.promisesTotal,
-    escalateContracts: row.escalateContracts,
-    totalAssigned: row.totalAssigned,
-  }
+/** เงิน: "฿1,234" หรือ "—" ถ้า 0 / null */
+function fmtBaht(n: number | null): string {
+  if (n === null || n === 0) return '—'
+  return `฿${baht(n)}`
+}
+
+/** ฿/สาย: "฿123" หรือ "—" ถ้า null (0 สาย) */
+function fmtPerCall(n: number | null): string {
+  if (n === null) return '—'
+  return `฿${baht(n)}`
 }
 
 // ===== Grade badge =====
@@ -82,36 +74,35 @@ const GRADE_TONE: Record<ContractGrade, 'neutral' | 'amber' | 'red'> = {
   E: 'red',
 }
 function gradeStr(grades: string[]): string {
-  return grades.length > 0 ? grades.sort().join(', ') : '-'
+  return grades.length > 0 ? grades.slice().sort().join(', ') : '-'
 }
 
-// ===== Team summary (เฉลี่ยเฉพาะแถวที่มี denom > 0) =====
+// ===== Team summary =====
 interface TeamSummary {
+  totalCollected: number
+  totalCalls: number
+  totalContracts: number
   avgContactRate: number | null
-  avgPromiseRate: number | null
-  avgPromiseKeepRate: number | null
-  avgEscalationRate: number | null
 }
-function computeTeamSummary(rows: FreelancerPerformanceRow[]): TeamSummary {
-  let cSum = 0, cCount = 0
-  let prSum = 0, prCount = 0
-  let pkSum = 0, pkCount = 0
-  let esSum = 0, esCount = 0
+function computeTeamSummary(rows: CollectorScorecardRow[]): TeamSummary {
+  let totalCollected = 0
+  let totalCalls = 0
+  let totalContracts = 0
+  let crSum = 0, crCount = 0
 
   for (const row of rows) {
-    const kpi = computePerformanceKPIs(toInput(row))
-    // null = N/A (denominator=0) → exclude from team average
-    if (kpi.contactRate !== null)    { cSum  += kpi.contactRate;    cCount++ }
-    if (kpi.promiseRate !== null)    { prSum += kpi.promiseRate;    prCount++ }
-    if (kpi.promiseKeepRate !== null){ pkSum += kpi.promiseKeepRate; pkCount++ }
-    if (kpi.escalationRate !== null) { esSum += kpi.escalationRate; esCount++ }
+    totalCollected += row.collectedBaht
+    totalCalls += row.calls
+    totalContracts += row.uniqueContracts
+    // null = N/A (total_attempts=0) → exclude from team average
+    if (row.contactRate !== null) { crSum += row.contactRate; crCount++ }
   }
 
   return {
-    avgContactRate:     cCount  > 0 ? Math.round((cSum  / cCount)  * 10) / 10 : null,
-    avgPromiseRate:     prCount > 0 ? Math.round((prSum / prCount) * 10) / 10 : null,
-    avgPromiseKeepRate: pkCount > 0 ? Math.round((pkSum / pkCount) * 10) / 10 : null,
-    avgEscalationRate:  esCount > 0 ? Math.round((esSum / esCount) * 10) / 10 : null,
+    totalCollected,
+    totalCalls,
+    totalContracts,
+    avgContactRate: crCount > 0 ? Math.round((crSum / crCount) * 10) / 10 : null,
   }
 }
 
@@ -127,32 +118,29 @@ function escCell(v: string | number | null | undefined): string {
   return s
 }
 
-function generateCSV(rows: FreelancerPerformanceRow[]): string {
+function generateCSV(rows: CollectorScorecardRow[]): string {
   const headers = [
     'ชื่อ',
     'เกรดที่ดูแล',
-    'จำนวนสัญญาที่ติดต่อ',
-    'อัตราโทรติดต่อสำเร็จ (%)',
-    'จำนวน Promise',
-    'Keep Rate (%)',
-    'อัตราการแก้ไข (%)',
-    'จำนวน Escalate',
+    'ยอดเก็บจากโทร (฿)',
+    'จำนวนสาย',
+    'สัญญาที่ดูแล',
+    '฿/สาย',
+    'อัตราโทรติด (%)',
     'กิจกรรมล่าสุด',
   ]
 
   const csvRows: string[] = [headers.map(escCell).join(',')]
   for (const r of rows) {
-    const kpi = computePerformanceKPIs(toInput(r))
     csvRows.push(
       [
         escCell(r.fullName),
         escCell(gradeStr(r.assignedGrades)),
+        escCell(Math.round(r.collectedBaht)),
+        escCell(r.calls),
         escCell(r.uniqueContracts),
-        escCell(kpi.contactRate !== null ? kpi.contactRate.toFixed(1) : 'N/A'),
-        escCell(r.promiseCount),
-        escCell(kpi.promiseKeepRate !== null ? kpi.promiseKeepRate.toFixed(1) : 'N/A'),
-        escCell(kpi.resolutionRate !== null ? kpi.resolutionRate.toFixed(1) : 'N/A'),
-        escCell(r.escalateContracts),
+        escCell(r.bahtPerCall !== null ? Math.round(r.bahtPerCall) : 'N/A'),
+        escCell(r.contactRate !== null ? r.contactRate.toFixed(1) : 'N/A'),
         escCell(
           r.lastActivityAt
             ? new Date(r.lastActivityAt).toLocaleDateString('th-TH')
@@ -180,21 +168,18 @@ function downloadCSV(content: string, filename: string): void {
 
 // ===== DrillDown Panel =====
 interface DrillDownProps {
-  row: FreelancerPerformanceRow
+  row: CollectorScorecardRow
   onClose: () => void
-  daysWindow: number
+  rangeLabel: string
 }
 
-function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
-  const inp = toInput(row)
-  const kpi = computePerformanceKPIs(inp)
-
-  const kpiCards: { label: string; value: string; kpiVal: number | null; higherIsBetter: boolean }[] = [
-    { label: 'Contact Rate', value: fmtRate(kpi.contactRate),    kpiVal: kpi.contactRate,    higherIsBetter: true },
-    { label: 'Promise Rate', value: fmtRate(kpi.promiseRate),    kpiVal: kpi.promiseRate,    higherIsBetter: true },
-    { label: 'Promise Keep', value: fmtRate(kpi.promiseKeepRate),kpiVal: kpi.promiseKeepRate,higherIsBetter: true },
-    { label: 'Resolution',   value: fmtRate(kpi.resolutionRate), kpiVal: kpi.resolutionRate, higherIsBetter: true },
-    { label: 'Escalation',   value: fmtRate(kpi.escalationRate), kpiVal: kpi.escalationRate, higherIsBetter: false },
+function DrillDownPanel({ row, onClose, rangeLabel }: DrillDownProps) {
+  const summaryCards: { label: string; value: string; muted: boolean }[] = [
+    { label: '💰 ยอดเก็บจากโทร', value: fmtBaht(row.collectedBaht), muted: row.collectedBaht === 0 },
+    { label: '📞 จำนวนสาย', value: row.calls.toLocaleString('th-TH'), muted: row.calls === 0 },
+    { label: '👥 สัญญาที่ดูแล', value: row.uniqueContracts.toLocaleString('th-TH'), muted: row.uniqueContracts === 0 },
+    { label: '฿/สาย', value: fmtPerCall(row.bahtPerCall), muted: row.bahtPerCall === null },
+    { label: 'อัตราโทรติด', value: fmtRate(row.contactRate), muted: row.contactRate === null },
   ]
 
   return (
@@ -205,7 +190,6 @@ function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
           <h3 className="text-base font-bold text-ink">{row.fullName}</h3>
           <p className="mt-0.5 text-sm text-ink-soft">
             เกรดที่รับ: <span className="font-medium text-ink">{gradeStr(row.assignedGrades)}</span>
-            &nbsp;·&nbsp;อีเมล: <span className="text-ink">-</span>
           </p>
         </div>
         <button
@@ -217,14 +201,14 @@ function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
         </button>
       </div>
 
-      {/* KPI Cards */}
-      <div className="mb-5 grid grid-cols-5 gap-3">
-        {kpiCards.map((k) => (
+      {/* Summary Cards */}
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {summaryCards.map((k) => (
           <div
             key={k.label}
             className="rounded-xl border border-peach bg-white px-3 py-3 text-center"
           >
-            <div className={`text-xl font-bold ${k.kpiVal === null ? 'text-ink-soft' : 'text-ink'}`}>
+            <div className={`text-xl font-bold ${k.muted ? 'text-ink-soft' : 'text-ink'}`}>
               {k.value}
             </div>
             <div className="mt-1 text-xs text-ink-soft">{k.label}</div>
@@ -236,17 +220,17 @@ function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
       {row.byGrade.length > 0 && (
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-            Per-Grade Breakdown
+            แยกตามเกรดสัญญา
           </p>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-peach text-xs text-ink-soft">
                 <th className="pb-1.5 text-left font-medium">เกรด</th>
-                <th className="pb-1.5 text-right font-medium">Contacts</th>
-                <th className="pb-1.5 text-right font-medium">Attempts</th>
-                <th className="pb-1.5 text-right font-medium">สัญญา</th>
-                <th className="pb-1.5 text-right font-medium">Promised</th>
-                <th className="pb-1.5 text-right font-medium">Resolved</th>
+                <th className="pb-1.5 text-right font-medium">ยอดเก็บ (฿)</th>
+                <th className="pb-1.5 text-right font-medium">จำนวนสาย</th>
+                <th className="pb-1.5 text-right font-medium">สัญญาที่ดูแล</th>
+                <th className="pb-1.5 text-right font-medium">฿/สาย</th>
+                <th className="pb-1.5 text-right font-medium">อัตราโทรติด</th>
               </tr>
             </thead>
             <tbody>
@@ -256,15 +240,13 @@ function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
                 .map((g) => (
                   <tr key={g.grade} className="border-b border-peach/40 last:border-0">
                     <td className="py-1.5">
-                      <Badge tone={GRADE_TONE[g.grade as ContractGrade] ?? 'neutral'}>
-                        เกรด {g.grade}
-                      </Badge>
+                      <Badge tone={GRADE_TONE[g.grade] ?? 'neutral'}>เกรด {g.grade}</Badge>
                     </td>
-                    <td className="py-1.5 text-right font-medium">{g.successfulAttempts}</td>
-                    <td className="py-1.5 text-right">{g.totalAttempts}</td>
-                    <td className="py-1.5 text-right">{g.uniqueContracts}</td>
-                    <td className="py-1.5 text-right">{g.promiseCount}</td>
-                    <td className="py-1.5 text-right">{g.resolutionCount}</td>
+                    <td className="py-1.5 text-right font-medium">{fmtBaht(g.collectedBaht)}</td>
+                    <td className="py-1.5 text-right">{g.calls.toLocaleString('th-TH')}</td>
+                    <td className="py-1.5 text-right">{g.uniqueContracts.toLocaleString('th-TH')}</td>
+                    <td className="py-1.5 text-right">{fmtPerCall(g.bahtPerCall)}</td>
+                    <td className={`py-1.5 text-right ${rateCls(g.contactRate)}`}>{fmtRate(g.contactRate)}</td>
                   </tr>
                 ))}
             </tbody>
@@ -272,12 +254,12 @@ function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
         </div>
       )}
       {row.byGrade.length === 0 && (
-        <p className="text-sm text-ink-soft">ยังไม่มีข้อมูล follow-up ใน {daysWindow} วันล่าสุด</p>
+        <p className="text-sm text-ink-soft">ยังไม่มีข้อมูลแยกตามเกรดในช่วง {rangeLabel}</p>
       )}
 
       {/* Last activity */}
       <p className="mt-4 text-xs text-ink-soft">
-        Last activity: {fmtDatetime(row.lastActivityAt)}
+        กิจกรรมล่าสุด: {fmtDatetime(row.lastActivityAt)}
       </p>
     </Card>
   )
@@ -285,15 +267,25 @@ function DrillDownPanel({ row, onClose, daysWindow }: DrillDownProps) {
 
 // ===== Main Page =====
 
+const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+
+/** range === null ("ทั้งหมด") → ขอบเขตจริงสำหรับ RPC (date param รับ null ไม่ได้) */
+function effectiveRange(range: DateRange | null): DateRange {
+  return range ?? { start: '2020-01-01', end: todayISO }
+}
+
 export default function StaffPerformance() {
-  const [rows, setRows] = useState<FreelancerPerformanceRow[]>([])
+  const [rows, setRows] = useState<CollectorScorecardRow[]>([])
+  const [uncreditedBaht, setUncreditedBaht] = useState(0)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [daysWindow, setDaysWindow] = useFilter<7 | 30 | 90>('staff-performance.daysWindow', 30)
+  const [range, setRange] = useState<DateRange | null>(() =>
+    loadStoredRange('staff-performance.dateRange', 'thisMonth'),
+  )
 
-  // ค่าคอมคืนเครื่อง: โหลด 1 ครั้ง (ไม่ขึ้นกับ daysWindow — เป็นยอดเดือนนี้เสมอ)
+  // ค่าคอมคืนเครื่อง: โหลด 1 ครั้ง (ไม่ขึ้นกับช่วงวัน — เป็นยอดเดือนนี้เสมอ)
   const [deviceCountMap, setDeviceCountMap] = useState<Map<string, number>>(new Map())
   const [deviceTiers, setDeviceTiers] = useState<DeviceReturnTier[]>([])
 
@@ -305,15 +297,17 @@ export default function StaffPerformance() {
       setDeviceCountMap(counts)
       setDeviceTiers(tiers)
     }).catch(() => {
-      // silent — ค่าคอมคืนเครื่องไม่กระทบ KPI หลัก
+      // silent — ค่าคอมคืนเครื่องไม่กระทบ scorecard หลัก
     })
   }, [])
 
   useEffect(() => {
     if (!loading) setRefreshing(true)
-    getFreelancerPerformance(daysWindow)
+    const eff = effectiveRange(range)
+    getCollectorScorecard(eff.start, eff.end)
       .then((d) => {
-        setRows(d)
+        setRows(d.rows)
+        setUncreditedBaht(d.uncreditedBaht)
         setSelectedId(null)
         setLoading(false)
         setRefreshing(false)
@@ -324,9 +318,15 @@ export default function StaffPerformance() {
         setRefreshing(false)
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [daysWindow])
+  }, [range])
 
-  const teamSummary = computeTeamSummary(rows)
+  const teamSummary = useMemo(() => computeTeamSummary(rows), [rows])
+  const totalWithUncredited = teamSummary.totalCollected + uncreditedBaht
+
+  const rangeLabel = useMemo(() => {
+    if (!range) return 'ทั้งหมด'
+    return `${fmtThaiShort(range.start)} – ${fmtThaiShort(range.end)} (${daysBetween(range.start, range.end)} วัน)`
+  }, [range])
 
   const selectedRow = rows.find((r) => r.authorId === selectedId) ?? null
 
@@ -334,39 +334,34 @@ export default function StaffPerformance() {
     setSelectedId((prev) => (prev === id ? null : id))
   }
 
-  if (loading) return <Loading label="กำลังโหลดข้อมูล performance..." />
+  if (loading) return <Loading label="กำลังโหลดข้อมูลผลงาน..." />
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div className="flex items-start justify-between">
-        <PageTitle sub={`ข้อมูล ${daysWindow} วันล่าสุด`} count={{ shown: rows.length }}>
-          สรุปภาพรวมการติดตามหนี้
+      <div className="flex items-start justify-between gap-3">
+        <PageTitle sub={`ช่วง ${rangeLabel}`} count={{ shown: rows.length }}>
+          สกอร์การ์ดผู้ติดตามหนี้
         </PageTitle>
-        <div className="flex items-center gap-2">
-          <select
-            value={daysWindow}
-            onChange={(e) => setDaysWindow(Number(e.target.value) as 7 | 30 | 90)}
-            disabled={refreshing}
-            className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink outline-none transition focus:border-salmon-deep disabled:opacity-50"
-          >
-            <option value={7}>7 วันล่าสุด</option>
-            <option value={30}>30 วันล่าสุด</option>
-            <option value={90}>90 วันล่าสุด</option>
-          </select>
-          <Button
-            variant="ghost"
-            disabled={rows.length === 0 || refreshing}
-            onClick={() => {
-              const today = new Date().toISOString().slice(0, 10)
-              const filename = `performance_${daysWindow}days_${today}.csv`
-              downloadCSV(generateCSV(rows), filename)
-            }}
-          >
-            <Download className="h-4 w-4" />
-            Export Excel
-          </Button>
-        </div>
+        <Button
+          variant="ghost"
+          disabled={rows.length === 0 || refreshing}
+          onClick={() => {
+            const filename = `collector_scorecard_${todayISO}.csv`
+            downloadCSV(generateCSV(rows), filename)
+          }}
+        >
+          <Download className="h-4 w-4" />
+          Export Excel
+        </Button>
       </div>
+
+      {/* ตัวเลือกช่วงวันที่ */}
+      <DateRangePicker
+        storageKey="staff-performance.dateRange"
+        defaultPreset="thisMonth"
+        value={range}
+        onChange={setRange}
+      />
 
       {/* Error */}
       {error && (
@@ -377,24 +372,35 @@ export default function StaffPerformance() {
 
       {/* Section 1: Team Summary */}
       <Card>
-        <p className="mb-3 text-sm font-semibold text-ink-soft uppercase tracking-wide">
-          Team Summary
+        <p className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-soft">
+          สรุปทีม (ช่วงที่เลือก)
         </p>
-        <div className="grid grid-cols-4 gap-4">
-          {[
-            { label: 'Contact Rate เฉลี่ย', val: teamSummary.avgContactRate },
-            { label: 'Promise Rate เฉลี่ย', val: teamSummary.avgPromiseRate },
-            { label: 'Promise Keep Rate เฉลี่ย', val: teamSummary.avgPromiseKeepRate },
-            { label: 'Escalation เฉลี่ย', val: teamSummary.avgEscalationRate },
-          ].map((item) => (
-            <div key={item.label} className="rounded-xl border border-peach bg-white px-4 py-3">
-              <div className="text-2xl font-bold text-ink">
-                {item.val !== null ? `${item.val.toFixed(1)}%` : 'N/A'}
-              </div>
-              <div className="mt-1 text-xs text-ink-soft">{item.label}</div>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="rounded-xl border border-peach bg-white px-4 py-3">
+            <div className="text-2xl font-bold text-ink">{fmtBaht(teamSummary.totalCollected)}</div>
+            <div className="mt-1 text-xs text-ink-soft">💰 ยอดเก็บจากการโทร (รวมทีม)</div>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+            <div className="text-2xl font-bold text-amber-700">{fmtBaht(uncreditedBaht)}</div>
+            <div className="mt-1 text-xs text-amber-700/80">ยอดที่ไม่มีสายนำ</div>
+          </div>
+          <div className="rounded-xl border border-peach bg-white px-4 py-3">
+            <div className="text-2xl font-bold text-ink">{teamSummary.totalCalls.toLocaleString('th-TH')}</div>
+            <div className="mt-1 text-xs text-ink-soft">📞 จำนวนสายรวม</div>
+          </div>
+          <div className="rounded-xl border border-peach bg-white px-4 py-3">
+            <div className="text-2xl font-bold text-ink">
+              {teamSummary.avgContactRate !== null ? `${teamSummary.avgContactRate.toFixed(1)}%` : 'N/A'}
             </div>
-          ))}
+            <div className="mt-1 text-xs text-ink-soft">อัตราโทรติดเฉลี่ย</div>
+          </div>
         </div>
+        {/* helper line — reconcile ยอดเงิน */}
+        <p className="mt-3 text-xs leading-relaxed text-ink-soft">
+          “ยอดที่ไม่มีสายนำ” คือเงินที่ลูกค้าจ่ายเข้ามาในช่วงนี้ แต่ไม่มีสายโทรของผู้ติดตามคนไหนนำก่อนจ่ายภายใน 7 วัน
+          จึงไม่ถูกนับให้ใคร — ยอดเก็บรวมทีม {fmtBaht(teamSummary.totalCollected)} + ยอดที่ไม่มีสายนำ{' '}
+          {fmtBaht(uncreditedBaht)} = ยอดที่ลูกค้าจ่ายทั้งหมดในช่วงนี้ {fmtBaht(totalWithUncredited)}
+        </p>
       </Card>
 
       {/* Section 2: Leaderboard */}
@@ -411,18 +417,16 @@ export default function StaffPerformance() {
                 <tr className="border-b border-peach bg-peach-light/40">
                   <th className="px-4 py-3 text-left font-semibold text-ink">ชื่อ</th>
                   <th className="px-4 py-3 text-left font-semibold text-ink">เกรด</th>
-                  <th className="px-4 py-3 text-right font-semibold text-ink">Contact</th>
-                  <th className="px-4 py-3 text-right font-semibold text-ink">Promise</th>
-                  <th className="px-4 py-3 text-right font-semibold text-ink">Keep</th>
-                  <th className="px-4 py-3 text-right font-semibold text-ink">Resolution</th>
-                  <th className="px-4 py-3 text-right font-semibold text-ink">Escalation</th>
-                  <th className="px-4 py-3 text-right font-semibold text-ink">Last Active</th>
+                  <th className="px-4 py-3 text-right font-semibold text-ink">💰 ยอดเก็บจากโทร</th>
+                  <th className="px-4 py-3 text-right font-semibold text-ink">📞 สาย</th>
+                  <th className="px-4 py-3 text-right font-semibold text-ink">👥 สัญญาที่ดูแล</th>
+                  <th className="px-4 py-3 text-right font-semibold text-ink">฿/สาย</th>
+                  <th className="px-4 py-3 text-right font-semibold text-ink">อัตราโทรติด</th>
                   <th className="px-4 py-3 text-right font-semibold text-ink">คืนเครื่อง (เดือนนี้)</th>
                   <th className="w-10 px-4 py-3" />
                 </tr>
               </thead>
               {rows.map((row) => {
-                const kpi = computePerformanceKPIs(toInput(row))
                 const isSelected = selectedId === row.authorId
                 const deviceCount = deviceCountMap.get(row.authorId) ?? 0
                 const deviceComm = deviceReturnCommissionMonthly(deviceCount, deviceTiers)
@@ -441,6 +445,7 @@ export default function StaffPerformance() {
                         <div className="flex flex-wrap gap-1">
                           {row.assignedGrades.length > 0
                             ? row.assignedGrades
+                                .slice()
                                 .sort()
                                 .map((g) => (
                                   <Badge
@@ -453,35 +458,31 @@ export default function StaffPerformance() {
                             : <span className="text-ink-soft">-</span>}
                         </div>
                       </td>
-                      {/* Contact Rate */}
-                      <td className={`px-4 py-3 text-right ${rateCls(kpi.contactRate, true)}`}>
-                        {fmtRate(kpi.contactRate)}
+                      {/* ยอดเก็บจากโทร */}
+                      <td className="px-4 py-3 text-right font-semibold text-ink">
+                        {fmtBaht(row.collectedBaht)}
                       </td>
-                      {/* Promise Rate */}
-                      <td className={`px-4 py-3 text-right ${rateCls(kpi.promiseRate, true)}`}>
-                        {fmtRate(kpi.promiseRate)}
+                      {/* จำนวนสาย */}
+                      <td className="px-4 py-3 text-right text-ink">
+                        {row.calls.toLocaleString('th-TH')}
                       </td>
-                      {/* Promise Keep Rate */}
-                      <td className={`px-4 py-3 text-right ${rateCls(kpi.promiseKeepRate, true)}`}>
-                        {fmtRate(kpi.promiseKeepRate)}
+                      {/* สัญญาที่ดูแล */}
+                      <td className="px-4 py-3 text-right text-ink">
+                        {row.uniqueContracts.toLocaleString('th-TH')}
                       </td>
-                      {/* Resolution Rate */}
-                      <td className={`px-4 py-3 text-right ${rateCls(kpi.resolutionRate, true)}`}>
-                        {fmtRate(kpi.resolutionRate)}
+                      {/* ฿/สาย */}
+                      <td className="px-4 py-3 text-right text-ink">
+                        {fmtPerCall(row.bahtPerCall)}
                       </td>
-                      {/* Escalation Rate */}
-                      <td className={`px-4 py-3 text-right ${rateCls(kpi.escalationRate, false)}`}>
-                        {fmtRate(kpi.escalationRate)}
-                      </td>
-                      {/* Last Active */}
-                      <td className="px-4 py-3 text-right text-xs text-ink-soft">
-                        {fmtDatetime(row.lastActivityAt)}
+                      {/* อัตราโทรติด */}
+                      <td className={`px-4 py-3 text-right ${rateCls(row.contactRate)}`}>
+                        {fmtRate(row.contactRate)}
                       </td>
                       {/* ค่าคอมคืนเครื่อง */}
                       <td className="px-4 py-3 text-right">
                         <div className="text-sm font-medium text-ink">
                           {deviceComm.totalBaht > 0
-                            ? `฿${deviceComm.totalBaht.toLocaleString('th-TH')}`
+                            ? `฿${baht(deviceComm.totalBaht)}`
                             : '—'}
                         </div>
                         <div className="text-xs text-ink-soft">{deviceCount} เครื่อง</div>
@@ -496,11 +497,11 @@ export default function StaffPerformance() {
                     {/* Drill-down row */}
                     {isSelected && selectedRow && (
                       <tr>
-                        <td colSpan={10} className="px-4 pb-4">
+                        <td colSpan={9} className="px-4 pb-4">
                           <DrillDownPanel
                             row={selectedRow}
                             onClose={() => setSelectedId(null)}
-                            daysWindow={daysWindow}
+                            rangeLabel={rangeLabel}
                           />
                         </td>
                       </tr>
