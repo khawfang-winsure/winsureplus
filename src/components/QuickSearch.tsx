@@ -64,13 +64,15 @@ export default function QuickSearch() {
   // role gate: executive และ freelancer ห้ามเข้าถึงข้อมูลสัญญา/ร้านในรูปแบบนี้
   const isAdminOrStaff =
     !configured || role === 'admin' || role === 'staff'
+  // ผลลัพธ์ร้านค้า = ข้อมูลรายงาน (เกรด/ยอด/ความเสี่ยง) เห็นเฉพาะแอดมิน
+  const isAdmin = !configured || role === 'admin'
   if (!isAdminOrStaff) return null
 
-  return <QuickSearchModal navigate={navigate} />
+  return <QuickSearchModal navigate={navigate} isAdmin={isAdmin} />
 }
 
 // แยก logic ออกมาเพื่อให้ hook ไม่ถูก early-return ข้างบน (Rules of Hooks)
-function QuickSearchModal({ navigate }: { navigate: ReturnType<typeof useNavigate> }) {
+function QuickSearchModal({ navigate, isAdmin }: { navigate: ReturnType<typeof useNavigate>; isAdmin: boolean }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
@@ -157,10 +159,11 @@ function QuickSearchModal({ navigate }: { navigate: ReturnType<typeof useNavigat
       return
     }
     const contracts = filterContracts(contractsCache.current, q)
-    const shops = filterShops(shopsCache.current, q)
+    // ร้านค้าเป็นข้อมูลรายงาน — แสดงเฉพาะแอดมิน (staff คลิกแล้วจะเด้งกลับ '/')
+    const shops = isAdmin ? filterShops(shopsCache.current, q) : []
     setResults([...contracts, ...shops])
     setSelectedIndex(0)
-  }, [query, loading])
+  }, [query, loading, isAdmin])
 
   // ---------- keyboard navigation ----------
 

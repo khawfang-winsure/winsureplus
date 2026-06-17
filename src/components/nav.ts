@@ -73,6 +73,7 @@ export const NAV: NavItem[] = [
   {
     label: 'รายงาน',
     icon: BarChart3,
+    adminOnly: true, // ซ่อนทั้งกลุ่มจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
     children: [
       { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
       { to: '/shop-report', label: 'รายงานร้านค้า' },
