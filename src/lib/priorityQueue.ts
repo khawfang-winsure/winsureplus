@@ -232,3 +232,165 @@ export function computePriorityScore(input: PriorityInput, today: Date): Priorit
     suppressReason,
   }
 }
+
+// ===== ฟังก์ชันสำหรับฟีเจอร์ "ศูนย์ประสานงานลูกค้า" (เพิ่ม 2026-06-18) =====
+// ยังไม่ wire เข้า UI — logic ตาม Pete spec รอบหน้า
+
+// ---- Function 1: hasUnseenUpdate — badge "มีอัปเดตใหม่" ----------------------
+
+/**
+ * ตรวจว่า "คนอื่น" บันทึกล่าสุด หลังจากที่ผู้ใช้คนนี้แตะเคสครั้งล่าสุดหรือไม่
+ *
+ * @param myLastTouchAt     - timestamptz ที่ฉันแตะเคสล่าสุด (max ของ queue_case_seen + follow_ups ของตัวเอง)
+ *                            null = ยังไม่เคยแตะเคสนี้เลย
+ * @param latestOtherAuthorAt - timestamptz ที่ "คนอื่น" (author ≠ ฉัน) บันทึกล่าสุด
+ *                              null = ไม่มีคนอื่นบันทึกใดๆ
+ * @returns true = มีอัปเดตที่ฉันยังไม่ได้เห็น → แสดง badge
+ *
+ * ⚠️ WHY EPOCH COMPARE: timestamptz จาก PostgREST อาจมาในรูป "2026-06-18T10:00:00+00:00"
+ * ส่วน client-side อาจเก็บเป็น "2026-06-18T10:00:00Z" — ตัวอักษร '+' (ASCII 43) < 'Z' (ASCII 90)
+ * ทำให้ string compare ตรงๆ บอกว่า "+00:00" มาก่อน "Z" ทั้งที่แทน timestamp เดียวกัน
+ * → badge จะกลับด้านเงียบๆ โดยไม่มี error. วิธีแก้: แปลงเป็น epoch ms ก่อนเทียบเสมอ
+ *
+ * Rules (Pete decision — เด้งกว้าง):
+ *   latestOtherAuthorAt == null → false
+ *   myLastTouchAt == null       → true  (คนอื่นบันทึกอยู่ แต่ฉันยังไม่เคยเปิดเลย)
+ *   latestOtherAuthorAt > myLastTouchAt (epoch) → true
+ *   else → false  (timestamps เท่ากันพอดี = ถือว่าเห็นแล้ว)
+ *
+ * ---- Trace tests ---------------------------------------------------------------
+ * // T1: ฉันยังไม่เคยแตะ + มีคนอื่นบันทึก
+ * // hasUnseenUpdate(null, '2026-06-18T10:00:00+00:00') → true
+ * // (myLastTouchAt=null → คืน true ทันที)
+ *
+ * // T2: คนอื่นบันทึกหลังฉัน
+ * // hasUnseenUpdate('2026-06-18T09:00:00Z', '2026-06-18T11:00:00+00:00') → true
+ * // epoch('11:00+00:00') === epoch('11:00Z') (string ต่างแต่ค่าเดียวกัน)
+ * // epoch('11:00Z') > epoch('09:00Z') → true
+ *
+ * // T3: ฉันแตะหลังคนอื่น
+ * // hasUnseenUpdate('2026-06-18T12:00:00Z', '2026-06-18T10:00:00+00:00') → false
+ * // epoch('12:00Z') > epoch('10:00Z') → ไม่มีของใหม่
+ *
+ * // T4: ไม่มีใครบันทึกเลย
+ * // hasUnseenUpdate(null, null) → false
+ * // (latestOtherAuthorAt=null → คืน false ทันที)
+ */
+export function hasUnseenUpdate(
+  myLastTouchAt: string | null,
+  latestOtherAuthorAt: string | null,
+): boolean {
+  // Rule 1: ไม่มีคนอื่นบันทึกเลย → ไม่มีของใหม่
+  if (latestOtherAuthorAt === null) return false
+
+  // Rule 2: ฉันยังไม่เคยแตะ + มีคนอื่นบันทึก → ถือว่ามีของใหม่
+  if (myLastTouchAt === null) return true
+
+  // Rule 3: เทียบ epoch ms เพื่อหลีกเลี่ยง "+00:00" vs "Z" string compare bug
+  const otherEpoch = new Date(latestOtherAuthorAt).getTime()
+  const myEpoch = new Date(myLastTouchAt).getTime()
+
+  // NaN guard: ถ้า parse ไม่ได้ (timestamp รูปแบบผิด) → ถือว่าไม่มีของใหม่ (safe default)
+  if (isNaN(otherEpoch) || isNaN(myEpoch)) return false
+
+  // strict >: timestamps เท่ากันพอดี = ฉันเห็นแล้ว → false
+  return otherEpoch > myEpoch
+}
+
+// ---- Function 2: sortQueue — เคสนัดจ่ายเด้งขึ้นก่อน (Pete: ภายใน 7 วัน) ----
+
+/**
+ * จัด queue ให้เคสนัดจ่ายลอยขึ้นก่อน แบ่งเป็น 3 กลุ่ม (ไม่ mutate input)
+ *
+ * @param rows  - แถว queue; ต้องมี tier, score, promiseToPayDate ที่ root level
+ *               (ถ้า ScoredRow ยังไม่มี promiseToPayDate ให้ db.ts/caller map ขึ้นมาก่อน)
+ * @param today - วันปัจจุบัน รูป "yyyy-mm-dd" (caller pass — ไม่ new Date() เองในฟังก์ชัน)
+ * @returns สำเนา array ที่จัดเรียงใหม่ตาม 3 กลุ่ม:
+ *   P1 (group 0) — promise overdue: promiseToPayDate < today → เรียง ASC by date (เลยนานสุดก่อน)
+ *   P2 (group 1) — promise ใกล้ถึง ≤ 7 วัน: today ≤ date ≤ today+7 → เรียง ASC by date (ใกล้สุดก่อน)
+ *   P3 (group 2) — ที่เหลือ: date == null หรือ date > today+7 → เรียงตาม tier (HOT→WARM→COLD→ESCALATE) + score DESC
+ *
+ * ⚠️ promiseToPayDate เป็น yyyy-mm-dd plain date (ไม่ใช่ timestamptz)
+ *    → ใช้ lexicographic string compare ได้ถูกต้อง (pattern เดียวกับ computePriorityScore บรรทัด 156)
+ *    ไม่ต้องแปลงเป็น epoch
+ *
+ * ⚠️ Pete decision (7-day window):
+ *    เคสนัดอีก 20 วัน ต้องตกไป P3 (เรียงตามคะแนนปกติ) ไม่ใช่ P2
+ *    window 7 วัน = today+7 วัน inclusive (date === today+7 → P2)
+ *
+ * ---- Trace tests (today สมมติ = '2026-06-18') ----------------------------------
+ * // สมมติ rows:
+ * //   A: { promiseToPayDate:'2026-06-15', tier:'WARM', score:50 }  ← promise เลย 3 วัน
+ * //   B: { promiseToPayDate:'2026-06-20', tier:'COLD', score:25 }  ← นัดอีก 2 วัน (≤7)
+ * //   C: { promiseToPayDate:null,         tier:'HOT',  score:76 }  ← ไม่มี promise
+ * //   D: { promiseToPayDate:'2026-07-08', tier:'WARM', score:55 }  ← นัดอีก 20 วัน (>7)
+ * //
+ * // today+7 = '2026-06-25'
+ * // A: '2026-06-15' < '2026-06-18' → P1
+ * // B: '2026-06-18' ≤ '2026-06-20' ≤ '2026-06-25' → P2
+ * // C: null → P3 (HOT, score=76)
+ * // D: '2026-07-08' > '2026-06-25' → P3 (WARM, score=55)
+ * //
+ * // Expected order: [A, B, C, D]
+ * //   A (P1 overdue '2026-06-15')
+ * //   B (P2 upcoming '2026-06-20')
+ * //   C (P3 HOT > WARM → score 76 > 55 → C ก่อน D)
+ * //   D (P3 WARM, score 55)
+ */
+
+// TIER_ORDER สำหรับ P3 sort (local — ห้าม import จาก page component)
+// HOT=0 (สูงสุด) → ESCALATE=3 (ต่ำสุดในการแสดง แต่ยังอยู่ใต้ HOT/WARM/COLD ใน sort)
+const TIER_ORDER_LOCAL: Record<PriorityTier, number> = {
+  HOT: 0,
+  WARM: 1,
+  COLD: 2,
+  ESCALATE: 3,
+}
+
+export function sortQueue<
+  T extends { tier: PriorityTier; score: number; promiseToPayDate: string | null },
+>(rows: T[], today: string): T[] {
+  // คำนวณ today+7 วัน (yyyy-mm-dd) ผ่าน Date object — reuse pattern ของ withinDays (line 61)
+  const todayPlus7Date = new Date(`${today}T00:00:00`)
+  todayPlus7Date.setDate(todayPlus7Date.getDate() + 7)
+  const todayPlus7 = toLocalDateString(todayPlus7Date)
+
+  // แบ่ง 3 กลุ่ม (ไม่ mutate input — ใช้ filter สร้าง array ใหม่)
+  const p1: T[] = [] // promise overdue: date < today
+  const p2: T[] = [] // promise ≤ 7 วัน: today ≤ date ≤ today+7
+  const p3: T[] = [] // ที่เหลือ: null หรือ date > today+7
+
+  for (const row of rows) {
+    const d = row.promiseToPayDate
+    if (d !== null && d < today) {
+      p1.push(row)
+    } else if (d !== null && d >= today && d <= todayPlus7) {
+      p2.push(row)
+    } else {
+      p3.push(row) // null หรือ d > todayPlus7
+    }
+  }
+
+  // P1: เลยกำหนดนานสุดก่อน (ASC by date — '2026-06-10' < '2026-06-15' → ขึ้นก่อน)
+  p1.sort((a, b) => {
+    const da = a.promiseToPayDate! // guaranteed non-null (อยู่ P1)
+    const db = b.promiseToPayDate!
+    return da < db ? -1 : da > db ? 1 : 0
+  })
+
+  // P2: ใกล้ถึงสุดก่อน (ASC by date — '2026-06-20' < '2026-06-25' → ขึ้นก่อน)
+  p2.sort((a, b) => {
+    const da = a.promiseToPayDate!
+    const db = b.promiseToPayDate!
+    return da < db ? -1 : da > db ? 1 : 0
+  })
+
+  // P3: เรียงตาม tier (HOT→WARM→COLD→ESCALATE) + score DESC ในกลุ่มเดียวกัน
+  p3.sort((a, b) => {
+    const tierDiff = TIER_ORDER_LOCAL[a.tier] - TIER_ORDER_LOCAL[b.tier]
+    if (tierDiff !== 0) return tierDiff
+    return b.score - a.score // score สูงกว่าขึ้นก่อน
+  })
+
+  return [...p1, ...p2, ...p3]
+}

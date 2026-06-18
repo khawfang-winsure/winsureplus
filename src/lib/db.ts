@@ -1713,6 +1713,7 @@ export type FollowUpResult =
   | 'paid'
   | 'returned'
   | 'other'
+  | 'line_pending'  // 0047: ลูกค้า initiate ผ่าน Line (inbound) — ยกเว้นกฎ พ.ร.บ. ทวงหนี้
 
 export interface FollowUpEntry {
   id: string
@@ -1841,6 +1842,10 @@ export interface FreelancerQueueRow {
   lastContactedAt: string | null     // created_at ของรายการล่าสุด (ISO timestamp)
   contactedToday: boolean            // มี follow_up วันนี้ (Bangkok) ที่ result ≠ 'no_answer'
   lastContactedByName: string | null // ชื่อคนโทรล่าสุด สำหรับ team-awareness
+  // --- Wave 3 (0047 Collaboration Hub) ---
+  latestOtherAuthorAt: string | null  // MAX created_at ของ follow_up ที่ author ≠ ตัวเอง (ใน 90-day window)
+  myLastTouchAt: string | null        // MAX(queue_case_seen.last_seen_at, MAX created_at ที่ author = ตัวเอง)
+  latestNote: string | null           // note_text ของ follow_up ล่าสุดสุด (ทุก author, ใน window)
 }
 
 interface QueueStatusRow {
@@ -1874,6 +1879,13 @@ interface QueueContractRow {
 
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
   if (!supabase || grades.length === 0) return []
+
+  // ดึง uid ของผู้ใช้ปัจจุบัน — ใช้ในการแยก my vs other author (Wave 3)
+  const {
+    data: { user: currentUser },
+  } = await supabase.auth.getUser()
+  const myUid = currentUser?.id ?? null
+
   // ดึงจาก v_contract_status (status=active, bucket != normal)
   const { data: statusData, error: statusError } = await supabase
     .from('v_contract_status')
@@ -1903,9 +1915,9 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     ((contractData ?? []) as QueueContractRow[]).map((c) => [c.id, c]),
   )
 
-  // Query 4: installments ที่ยังไม่ปิด (paid_at IS NULL) เพื่อคำนวณ principalDue per contract
+  // Query: installments ที่ยังไม่ปิด (paid_at IS NULL) เพื่อคำนวณ principalDue per contract
   // principalDue = sum(amount - coalesce(paid_amount, 0)) ของงวดยังไม่ปิด
-  // NOTE: ถ้า queue ขนาดใหญ่ query นี้อาจถึง PostgREST row-cap → .range(0, PAGE_CAP) ขยายเป็น 5000 rows
+  // NOTE: ถ้า queue ขนาดใหญ่ query นี้อาจถึง PostgREST row-cap → .range(0, PAGE_CAP)
   const { data: instData, error: instErr } = await supabase
     .from('installments')
     .select('contract_id, amount, paid_amount')
@@ -1926,9 +1938,11 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     principalMap.set(inst.contract_id, prev + Math.max(0, rowDue))
   }
 
-  // Query 3: aggregate follow_ups ย้อนหลัง 90 วัน (single round-trip)
-  // successfulAttempts = result IN ('contacted','promised','paid','returned','other')
-  // (ไม่นับ 'no_answer', 'refused', หรือ null — ตรงกับ v_follow_up_stats_90d ใน 0020)
+  // Query: aggregate follow_ups ย้อนหลัง 90 วัน (single round-trip)
+  // Wave 3: เพิ่ม author_id + note_text เพื่อคำนวณ latestOtherAuthorAt / myLastFollowUpAt / latestNote
+  // successfulAttempts = result IN ('contacted','promised','paid','returned','other','line_pending')
+  // (0047: line_pending นับเป็น "ติดต่อสำเร็จ" — Pete decision)
+  // (ไม่นับ 'no_answer', 'refused', หรือ null)
   const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString()
   // todayBkk: วันที่ปัจจุบันตาม Bangkok timezone (UTC+7) ในรูป yyyy-mm-dd
   const todayBkk = (() => {
@@ -1937,12 +1951,27 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   })()
   const { data: followUpsData, error: fuErr } = await supabase
     .from('follow_ups')
-    .select('contract_id, follow_up_result, created_at, author_name')
+    .select('contract_id, follow_up_result, created_at, author_name, author_id, note_text')
     .in('contract_id', ids)
     .gte('created_at', since)
     .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
   if (fuErr) throw fuErr
+
+  // Query: queue_case_seen ของผู้ใช้ปัจจุบัน (batch — ไม่ N+1)
+  // last_seen_at ใช้ประกอบ myLastTouchAt (max กับ myLastFollowUpAt)
+  const seenMap = new Map<string, string>() // contract_id → last_seen_at (ISO)
+  if (myUid) {
+    const { data: seenData, error: seenErr } = await supabase
+      .from('queue_case_seen')
+      .select('contract_id, last_seen_at')
+      .eq('freelancer_id', myUid)
+      .in('contract_id', ids)
+    if (seenErr) throw seenErr
+    for (const s of (seenData ?? []) as { contract_id: string; last_seen_at: string }[]) {
+      seenMap.set(s.contract_id, s.last_seen_at)
+    }
+  }
 
   // Client-side reduce: สร้าง aggregate map per contract_id
   type FuAgg = {
@@ -1952,6 +1981,10 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     lastContactedAt: string | null
     contactedToday: boolean
     lastContactedByName: string | null
+    // Wave 3 fields
+    latestNote: string | null           // note_text ของแถวแรก (order desc → ล่าสุดอยู่หน้า)
+    latestOtherAuthorAt: string | null  // created_at ของแถวแรกที่ author ≠ myUid
+    myLastFollowUpAt: string | null     // created_at ของแถวแรกที่ author = myUid
   }
   const fuMap = new Map<string, FuAgg>()
   for (const fu of (followUpsData ?? []) as {
@@ -1959,6 +1992,8 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     follow_up_result: FollowUpResult | null
     created_at: string
     author_name: string | null
+    author_id: string | null
+    note_text: string | null
   }[]) {
     const agg = fuMap.get(fu.contract_id) ?? {
       totalAttempts: 0,
@@ -1967,29 +2002,48 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       lastContactedAt: null,
       contactedToday: false,
       lastContactedByName: null,
+      latestNote: null,
+      latestOtherAuthorAt: null,
+      myLastFollowUpAt: null,
     }
     agg.totalAttempts++
-    // successfulAttempts: ตาม priorityQueue.ts line 17 — result ∈ {contacted, promised, paid, returned, other}
+
+    // successfulAttempts: result ∈ {contacted, promised, paid, returned, other, line_pending}
     // ไม่นับ 'no_answer' (ไม่ติดต่อได้) และ 'refused' (ปฏิเสธ) และ null (ไม่ระบุ)
-    // ความแตกต่างจาก contactedToday: contactedToday ใช้ result !== 'no_answer' (PDPA daily-cap semantics)
+    // 0047: line_pending นับเป็น "ติดต่อสำเร็จ" (Pete decision — inbound ลูกค้า initiate)
     if (
       fu.follow_up_result === 'contacted' ||
       fu.follow_up_result === 'promised' ||
       fu.follow_up_result === 'paid' ||
       fu.follow_up_result === 'returned' ||
-      fu.follow_up_result === 'other'
+      fu.follow_up_result === 'other' ||
+      fu.follow_up_result === 'line_pending'
     ) {
       agg.successfulAttempts++
     }
-    // lastResult + lastContactedAt + lastContactedByName: ใช้แถวแรก (order desc → ล่าสุดอยู่หน้า)
+
+    // lastResult + lastContactedAt + lastContactedByName + latestNote:
+    // ใช้แถวแรก (order desc → ล่าสุดอยู่หน้า)
     if (agg.lastResult === null) {
       agg.lastResult = fu.follow_up_result
       agg.lastContactedAt = fu.created_at
       agg.lastContactedByName = fu.author_name
+      agg.latestNote = fu.note_text   // note ของแถวล่าสุดสุด (ทุก author)
     }
+
+    // latestOtherAuthorAt: แถวแรกที่ author ≠ ตัวเอง (order desc → ล่าสุดอยู่หน้า)
+    if (agg.latestOtherAuthorAt === null && fu.author_id !== myUid) {
+      agg.latestOtherAuthorAt = fu.created_at
+    }
+
+    // myLastFollowUpAt: แถวแรกที่ author = ตัวเอง (order desc → ล่าสุดอยู่หน้า)
+    if (agg.myLastFollowUpAt === null && myUid && fu.author_id === myUid) {
+      agg.myLastFollowUpAt = fu.created_at
+    }
+
     // contactedToday: ต้อง shift created_at เป็น Bangkok ก่อนเทียบ (กัน off-by-one)
+    // contactedToday logic เดิม result !== 'no_answer' — ครอบ line_pending อยู่แล้ว (ตั้งใจ)
     if (!agg.contactedToday && fu.follow_up_result !== 'no_answer') {
-      // ตัด timezone offset +07:00 ออก → เหลือ date part ใน Bangkok
       const fuBkkDate = new Date(
         new Date(fu.created_at).getTime() + 7 * 3600 * 1000,
       )
@@ -2011,11 +2065,28 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       lastContactedAt: null,
       contactedToday: false,
       lastContactedByName: null,
+      latestNote: null,
+      latestOtherAuthorAt: null,
+      myLastFollowUpAt: null,
     }
     const termMonths = Number(c?.term_months ?? 0)
     const statusRemaining = r.remaining_installments ?? 0
     const installmentsPaid = Math.max(0, termMonths - statusRemaining)
     const modelParts = [c?.model, c?.storage].filter(Boolean)
+
+    // myLastTouchAt = max(queue_case_seen.last_seen_at, myLastFollowUpAt)
+    // เปรียบเทียบผ่าน Date.getTime() กัน offset-format mismatch (Z vs +00:00)
+    const seenAt = seenMap.get(r.contract_id) ?? null
+    let myLastTouchAt: string | null = null
+    if (seenAt && agg.myLastFollowUpAt) {
+      myLastTouchAt =
+        new Date(seenAt).getTime() >= new Date(agg.myLastFollowUpAt).getTime()
+          ? seenAt
+          : agg.myLastFollowUpAt
+    } else {
+      myLastTouchAt = seenAt ?? agg.myLastFollowUpAt
+    }
+
     return {
       contractId: r.contract_id,
       contractNo: r.contract_no,
@@ -2044,6 +2115,9 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       lastContactedAt: agg.lastContactedAt,
       contactedToday: agg.contactedToday,
       lastContactedByName: agg.lastContactedByName,
+      latestOtherAuthorAt: agg.latestOtherAuthorAt,
+      myLastTouchAt,
+      latestNote: agg.latestNote,
     }
   })
 }
@@ -3824,4 +3898,212 @@ export async function importPjBatch(
       error:     e.error,
     })),
   }
+}
+
+// ============================================================================
+// Collaboration Hub — Wave 3 (0047)
+// ============================================================================
+
+// ---------- markCaseSeen ----------
+
+/**
+ * บันทึกเวลาที่ฟรีแลนซ์เปิด/บันทึกเคสล่าสุด
+ * Upsert queue_case_seen — ไม่ส่ง last_seen_at มาจาก client
+ * DB trigger (0047) set last_seen_at := now() ทุกครั้ง (INSERT + UPDATE path)
+ * → กัน bug เทียบเวลา client Z vs server +00:00
+ */
+export async function markCaseSeen(contractId: string): Promise<void> {
+  if (!supabase) return
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return
+  const { error } = await supabase.from('queue_case_seen').upsert(
+    { freelancer_id: user.id, contract_id: contractId },
+    { onConflict: 'freelancer_id,contract_id' },
+  )
+  if (error) throw error
+}
+
+// ---------- getInboxCases ----------
+
+export interface InboxCase {
+  contractId: string
+  contractNo: string
+  customerName: string
+  phone: string | null
+  shopName: string
+  daysLate: number
+  latestNote: string
+  latestNoteAt: string
+  latestNoteByName: string
+  promiseToPayDate: string | null
+  pinned: boolean
+}
+
+/**
+ * ดึงเคสในกล่องรับงาน (Inbox) ของ admin/staff:
+ * membership = (follow_up ล่าสุดของสัญญา result='line_pending') OR (มี row ใน inbox_pins)
+ * เฉพาะสัญญา status='active', เรียง daysLate DESC
+ *
+ * การดึงข้อมูล:
+ *   Step 1: inbox_pins ทั้งหมด (pinned contracts + metadata)
+ *   Step 2: follow_ups ล่าสุดต่อสัญญา (ทุก active contract) ที่ last_result = 'line_pending'
+ *           — ใช้ v_follow_up_stats_90d.last_result เพื่อลด round-trip
+ *   Step 3: ดึง contract details + status สำหรับ union ของ ids
+ *   Step 4: ดึง note ล่าสุดต่อสัญญา (follow_ups 1 แถวต่อ contract)
+ */
+export async function getInboxCases(): Promise<InboxCase[]> {
+  if (!supabase) return []
+
+  // Step 1: ดึง inbox_pins ทั้งหมด
+  const { data: pinsData, error: pinsErr } = await supabase
+    .from('inbox_pins')
+    .select('contract_id, pinned_by_id, pinned_by_name, pinned_at')
+  if (pinsErr) throw pinsErr
+
+  const pinnedIds = new Set(
+    ((pinsData ?? []) as { contract_id: string }[]).map((p) => p.contract_id),
+  )
+
+  // Step 2: หา contract ที่ last_result = 'line_pending' จาก v_follow_up_stats_90d
+  // last_result = result ของ follow_up ล่าสุด (ไม่ใช่ success-filtered) — ไม่ต้องแก้ view
+  const { data: statsData, error: statsErr } = await supabase
+    .from('v_follow_up_stats_90d')
+    .select('contract_id, last_result')
+    .eq('last_result', 'line_pending')
+    .range(0, PAGE_CAP)
+  if (statsErr) throw statsErr
+
+  const linePendingIds = new Set(
+    ((statsData ?? []) as { contract_id: string }[]).map((r) => r.contract_id),
+  )
+
+  // union: pinned OR line_pending
+  const allIds = Array.from(new Set([...pinnedIds, ...linePendingIds]))
+  if (allIds.length === 0) return []
+
+  // Step 3: ดึง status + details จาก v_contract_status (active เท่านั้น)
+  const { data: statusData, error: statusErr } = await supabase
+    .from('v_contract_status')
+    .select('contract_id, contract_no, customer_name, shop_name, days_late, penalty_due')
+    .eq('status', 'active')
+    .in('contract_id', allIds)
+    .order('days_late', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (statusErr) throw statusErr
+
+  const activeIds = ((statusData ?? []) as { contract_id: string }[]).map(
+    (r) => r.contract_id,
+  )
+  if (activeIds.length === 0) return []
+
+  // Step 4: ดึง phone + promise fields จาก contracts
+  const { data: contractData, error: contractErr } = await supabase
+    .from('contracts')
+    .select('id, phone, promise_to_pay_date')
+    .in('id', activeIds)
+    .range(0, PAGE_CAP)
+  if (contractErr) throw contractErr
+
+  const contractMap = new Map(
+    ((contractData ?? []) as { id: string; phone: string | null; promise_to_pay_date: string | null }[]).map(
+      (c) => [c.id, c],
+    ),
+  )
+
+  // Step 5: ดึง follow_up ล่าสุด 1 แถวต่อ contract (สำหรับ latestNote/latestNoteAt/latestNoteByName)
+  // ใช้ order desc + range — PostgREST ไม่รองรับ DISTINCT ON ดังนั้น client-side dedupe
+  const { data: fuData, error: fuErr } = await supabase
+    .from('follow_ups')
+    .select('contract_id, note_text, created_at, author_name')
+    .in('contract_id', activeIds)
+    .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (fuErr) throw fuErr
+
+  // Client-side dedupe: เก็บเฉพาะแถวแรก (latest) ต่อ contract_id
+  const latestNoteMap = new Map<
+    string,
+    { note_text: string; created_at: string; author_name: string }
+  >()
+  for (const fu of (fuData ?? []) as {
+    contract_id: string
+    note_text: string
+    created_at: string
+    author_name: string
+  }[]) {
+    if (!latestNoteMap.has(fu.contract_id)) {
+      latestNoteMap.set(fu.contract_id, fu)
+    }
+  }
+
+  return ((statusData ?? []) as {
+    contract_id: string
+    contract_no: string
+    customer_name: string
+    shop_name: string | null
+    days_late: number
+    penalty_due: number
+  }[]).map((r): InboxCase => {
+    const c = contractMap.get(r.contract_id)
+    const note = latestNoteMap.get(r.contract_id)
+    return {
+      contractId: r.contract_id,
+      contractNo: r.contract_no,
+      customerName: r.customer_name,
+      phone: c?.phone ?? null,
+      shopName: r.shop_name ?? '-',
+      daysLate: r.days_late,
+      latestNote: note?.note_text ?? '',
+      latestNoteAt: note?.created_at ?? '',
+      latestNoteByName: note?.author_name ?? '',
+      promiseToPayDate: c?.promise_to_pay_date ?? null,
+      pinned: pinnedIds.has(r.contract_id),
+    }
+  })
+}
+
+// ---------- pinToInbox / unpinFromInbox ----------
+
+/**
+ * หยิบเคสเข้ากล่อง inbox (upsert — ถ้า pin ซ้ำ trigger 0047 refresh pinned_at)
+ * pinned_by_name: snapshot จาก profiles ณ เวลา pin
+ */
+export async function pinToInbox(contractId: string): Promise<void> {
+  if (!supabase) return
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return
+
+  // ดึง full_name จาก profiles (snapshot — กัน spoof + ตรงกับ pattern ของ follow_ups)
+  const { data: profileData, error: profileErr } = await supabase
+    .from('profiles')
+    .select('full_name')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (profileErr) throw profileErr
+  const pinnedByName = (profileData as { full_name: string | null } | null)?.full_name ?? ''
+
+  const { error } = await supabase.from('inbox_pins').upsert(
+    {
+      contract_id: contractId,
+      pinned_by_id: user.id,
+      pinned_by_name: pinnedByName,
+      // ไม่ส่ง pinned_at — DB default now() / trigger ใช้ได้
+    },
+    { onConflict: 'contract_id' },
+  )
+  if (error) throw error
+}
+
+/** เอาเคสออกจากกล่อง inbox */
+export async function unpinFromInbox(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('inbox_pins')
+    .delete()
+    .eq('contract_id', contractId)
+  if (error) throw error
 }
