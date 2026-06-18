@@ -4,6 +4,7 @@ import {
   BarChart3,
   CalendarClock,
   CalendarRange,
+  FileBox,
   FilePlus2,
   Gauge,
   Inbox,
@@ -49,6 +50,7 @@ export const NAV: NavItem[] = [
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
+  { to: '/doc-tracking', label: 'รับเอกสาร/กล่อง', icon: FileBox },
   { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', icon: CalendarClock },
   {
     label: 'ลูกค้าล่าช้า-หนี้เสีย',

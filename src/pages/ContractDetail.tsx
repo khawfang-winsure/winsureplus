@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -30,6 +30,8 @@ import {
   unpinFromInbox,
   getInboxCases,
   getShops,
+  markDocsReceived,
+  markBoxReceived,
   type ContractFlagPatch,
   type PaymentLogEntry,
   type ExtensionRecord,
@@ -534,6 +536,87 @@ export default function ContractDetail() {
             {!contract.pendingDocuments && !contract.dnc && !contract.lawyerEngaged && !contract.disputed && (
               <span className="text-xs text-ink-soft">— ไม่มีสถานะพิเศษ</span>
             )}
+          </div>
+        </Card>
+      )}
+
+      {/* ===== รับเอกสารตัวจริง + กล่องเครื่อง (admin + staff; ซ่อนเมื่อ closed/returned_closed) ===== */}
+      {canStaff && contract.status !== 'closed' && contract.status !== 'returned' && (
+        <Card className="mb-4 py-3">
+          <p className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-ink">
+            <FileBox size={15} /> รับเอกสาร/กล่อง (ร้านส่งคืน)
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {/* ===== เอกสารตัวจริง ===== */}
+            <div>
+              <p className="mb-1 text-xs text-ink-soft">เอกสารตัวจริง</p>
+              {contract.originalDocsReceived ? (
+                <p className="flex items-center gap-1 text-sm text-green-700">
+                  <FileCheck size={14} />
+                  {`รับแล้ว · ${contract.originalDocsReceivedAt ? thaiDate(contract.originalDocsReceivedAt.slice(0, 10)) : '—'} · โดย ${contract.originalDocsReceivedBy ?? 'ไม่ทราบ'}`}
+                </p>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Badge tone="amber">รอรับ</Badge>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      void markDocsReceived(contract.id, userName ?? undefined).then(() => {
+                        const now = new Date().toISOString()
+                        setContract((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                originalDocsReceived: true,
+                                originalDocsReceivedAt: now,
+                                originalDocsReceivedBy: userName ?? null,
+                              }
+                            : prev,
+                        )
+                      })
+                    }}
+                  >
+                    ติ๊กรับเอกสาร
+                  </Button>
+                </div>
+              )}
+            </div>
+            {/* ===== กล่องเครื่อง ===== */}
+            <div>
+              <p className="mb-1 text-xs text-ink-soft">กล่องเครื่อง</p>
+              {!contract.hasPhoneBox ? (
+                <p className="text-sm text-ink-soft">ร้านแจ้งว่าไม่มีกล่อง</p>
+              ) : contract.phoneBoxReceived ? (
+                <p className="flex items-center gap-1 text-sm text-green-700">
+                  <FileCheck size={14} />
+                  {`รับแล้ว · ${contract.phoneBoxReceivedAt ? thaiDate(contract.phoneBoxReceivedAt.slice(0, 10)) : '—'} · โดย ${contract.phoneBoxReceivedBy ?? 'ไม่ทราบ'}`}
+                </p>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Badge tone="amber">รอรับ</Badge>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      void markBoxReceived(contract.id, userName ?? undefined).then(() => {
+                        const now = new Date().toISOString()
+                        setContract((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                phoneBoxReceived: true,
+                                phoneBoxReceivedAt: now,
+                                phoneBoxReceivedBy: userName ?? null,
+                              }
+                            : prev,
+                        )
+                      })
+                    }}
+                  >
+                    ติ๊กรับกล่อง
+                  </Button>
+                </div>
+              )}
+            </div>
           </div>
         </Card>
       )}

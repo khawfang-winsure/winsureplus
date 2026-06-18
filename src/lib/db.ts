@@ -111,6 +111,13 @@ interface ContractRow {
   promised_amount: number | null
   color: string | null
   pending_documents: boolean | null
+  original_docs_received: boolean | null
+  original_docs_received_at: string | null
+  original_docs_received_by: string | null
+  has_phone_box: boolean | null
+  phone_box_received: boolean | null
+  phone_box_received_at: string | null
+  phone_box_received_by: string | null
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -170,6 +177,13 @@ function mapContract(r: ContractRow): Contract {
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     color: r.color ?? undefined,
     pendingDocuments: r.pending_documents ?? false,
+    originalDocsReceived: r.original_docs_received ?? false,
+    originalDocsReceivedAt: r.original_docs_received_at ?? null,
+    originalDocsReceivedBy: r.original_docs_received_by ?? null,
+    hasPhoneBox: r.has_phone_box ?? false,
+    phoneBoxReceived: r.phone_box_received ?? false,
+    phoneBoxReceivedAt: r.phone_box_received_at ?? null,
+    phoneBoxReceivedBy: r.phone_box_received_by ?? null,
   }
 }
 
@@ -211,6 +225,8 @@ function toInsert(c: Omit<Contract, 'id'>) {
     notes: c.notes || null,
     color: c.color || null,
     pending_documents: c.pendingDocuments ?? false,
+    original_docs_received: false, // สัญญาใหม่ = ยังไม่ได้รับเอกสาร เสมอ
+    has_phone_box: c.hasPhoneBox ?? false,
   }
 }
 
@@ -545,6 +561,40 @@ export async function markEmailSent(id: string, senderName?: string): Promise<vo
       documents_confirmed_by: senderName ?? null,
     })
     .eq('id', id)
+  if (error) throw error
+}
+
+/** ยืนยันว่ารับเอกสารตัวจริงแล้ว (0050)
+ *  @param contractId id ของสัญญา
+ *  @param receiverName ชื่อผู้รับ (useAuth().name) — optional */
+export async function markDocsReceived(contractId: string, receiverName?: string): Promise<void> {
+  if (!supabase) return
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      original_docs_received: true,
+      original_docs_received_at: now,
+      original_docs_received_by: receiverName ?? null,
+    })
+    .eq('id', contractId)
+  if (error) throw error
+}
+
+/** ยืนยันว่ารับกล่องโทรศัพท์คืนจากร้านแล้ว (0050)
+ *  @param contractId id ของสัญญา
+ *  @param receiverName ชื่อผู้รับ (useAuth().name) — optional */
+export async function markBoxReceived(contractId: string, receiverName?: string): Promise<void> {
+  if (!supabase) return
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      phone_box_received: true,
+      phone_box_received_at: now,
+      phone_box_received_by: receiverName ?? null,
+    })
+    .eq('id', contractId)
   if (error) throw error
 }
 

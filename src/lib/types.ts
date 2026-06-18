@@ -215,6 +215,14 @@ export interface Contract {
   promisedAmount?: number | null   // ยอดที่สัญญาไว้ (บาท)
   // --- Case Online / รอเอกสาร (0049) ---
   pendingDocuments?: boolean // true = รอเอกสาร; suppress สถานะล่าช้าใน view
+  // --- ติดตามเอกสารตัวจริง + กล่องโทรศัพท์ (0050) ---
+  originalDocsReceived?: boolean       // รับเอกสารตัวจริงแล้ว
+  originalDocsReceivedAt?: string | null // timestamp ที่รับ
+  originalDocsReceivedBy?: string | null // ชื่อผู้รับ
+  hasPhoneBox?: boolean                // สัญญานี้มีกล่องโทรศัพท์ส่งคืนหรือเปล่า
+  phoneBoxReceived?: boolean           // รับกล่องโทรศัพท์แล้ว
+  phoneBoxReceivedAt?: string | null   // timestamp ที่รับกล่อง
+  phoneBoxReceivedBy?: string | null   // ชื่อผู้รับกล่อง
 }
 
 // ---------- Extra Charges (migration 0032) ----------
