@@ -69,6 +69,14 @@ export default function WaitingSummary() {
 
   async function markSent() {
     const ids = [...selected]
+    const flagged = pending.filter((c) => ids.includes(c.id) && c.pendingDocuments)
+    if (flagged.length > 0) {
+      const names = flagged.map((c) => c.customerName).join(', ')
+      const ok = window.confirm(
+        `มี ${flagged.length} เคสรอเอกสาร: ${names}\n\nยืนยันว่าเอกสารครบทั้งหมดแล้ว?`,
+      )
+      if (!ok) return
+    }
     await markSummarySent(ids, name ?? undefined) // บันทึกลง DB จริง (กันส่งซ้ำ)
     setLocallySent((prev) => new Set([...prev, ...ids]))
     setSelected(new Set())
@@ -125,7 +133,10 @@ export default function WaitingSummary() {
                   >
                     <input type="checkbox" checked={checked} readOnly className="h-4 w-4 accent-salmon-deep" />
                     <div className="flex-1">
-                      <p className="font-medium text-ink">{c.customerName} — {c.contractNo}</p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="font-medium text-ink">{c.customerName} — {c.contractNo}</p>
+                        {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+                      </div>
                       <p className="text-sm text-ink-soft">
                         {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
                       </p>

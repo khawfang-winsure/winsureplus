@@ -110,6 +110,7 @@ interface ContractRow {
   promise_to_pay_date: string | null
   promised_amount: number | null
   color: string | null
+  pending_documents: boolean | null
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -168,6 +169,7 @@ function mapContract(r: ContractRow): Contract {
     promiseToPayDate: r.promise_to_pay_date ?? null,
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     color: r.color ?? undefined,
+    pendingDocuments: r.pending_documents ?? false,
   }
 }
 
@@ -208,6 +210,7 @@ function toInsert(c: Omit<Contract, 'id'>) {
     operator: c.operator || null,
     notes: c.notes || null,
     color: c.color || null,
+    pending_documents: c.pendingDocuments ?? false,
   }
 }
 
@@ -510,11 +513,16 @@ export async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
  *                    น้องวิวส่ง name จาก useAuth() ในหน้า WaitingSummary */
 export async function markSummarySent(ids: string[], senderName?: string): Promise<void> {
   if (!supabase || ids.length === 0) return
+  const now = new Date().toISOString()
   const { error } = await supabase
     .from('contracts')
     .update({
-      summary_sent_at: new Date().toISOString(),
+      summary_sent_at: now,
       summary_sent_by: senderName ?? null,
+      // auto-clear รอเอกสาร เมื่อยืนยันสรุปยอด (confirm-gate model 0049)
+      pending_documents: false,
+      documents_confirmed_at: now,
+      documents_confirmed_by: senderName ?? null,
     })
     .in('id', ids)
   if (error) throw error
@@ -525,11 +533,16 @@ export async function markSummarySent(ids: string[], senderName?: string): Promi
  *                    น้องวิวส่ง name จาก useAuth() ในหน้า WaitingEmail */
 export async function markEmailSent(id: string, senderName?: string): Promise<void> {
   if (!supabase) return
+  const now = new Date().toISOString()
   const { error } = await supabase
     .from('contracts')
     .update({
-      email_sent_at: new Date().toISOString(),
+      email_sent_at: now,
       email_sent_by: senderName ?? null,
+      // auto-clear รอเอกสาร เมื่อยืนยันส่งเมล (confirm-gate model 0049)
+      pending_documents: false,
+      documents_confirmed_at: now,
+      documents_confirmed_by: senderName ?? null,
     })
     .eq('id', id)
   if (error) throw error
@@ -2133,6 +2146,7 @@ export type ContractFlagPatch = {
   lawyerEngagedAt?: string | null // date ISO
   disputed?: boolean
   disputedSince?: string | null // date ISO
+  pendingDocuments?: boolean // true = รอเอกสาร (Case Online); suppress สถานะล่าช้า
 }
 
 /** ตั้ง/ปลด compliance flags บนสัญญา (admin+staff ผ่าน RLS contracts_write; trigger กัน staff ปลด) */
@@ -2150,6 +2164,7 @@ export async function setContractFlags(
   if (patch.lawyerEngagedAt !== undefined) upd.lawyer_engaged_at = patch.lawyerEngagedAt
   if (patch.disputed !== undefined) upd.disputed = patch.disputed
   if (patch.disputedSince !== undefined) upd.disputed_since = patch.disputedSince
+  if (patch.pendingDocuments !== undefined) upd.pending_documents = patch.pendingDocuments
   if (Object.keys(upd).length === 0) return // ไม่มีอะไรให้อัปเดต
   const { error } = await supabase.from('contracts').update(upd).eq('id', contractId)
   if (error) throw error

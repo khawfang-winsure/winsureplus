@@ -23,6 +23,9 @@ const BUCKET_OPTS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90
 
 // ป้ายสถานะสุขภาพสัญญา — ใช้ bucket จาก v_contract_status
 function StatusPills({ contract, st }: { contract: Contract; st: ContractStatusRow | undefined }) {
+  if (contract.pendingDocuments) {
+    return <Badge tone="amber">รอเอกสาร</Badge>
+  }
   if (contract.status !== 'active') {
     return <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
   }

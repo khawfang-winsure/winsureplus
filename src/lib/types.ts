@@ -213,6 +213,8 @@ export interface Contract {
   // --- promise to pay (Wave 1B — 0020) ---
   promiseToPayDate?: string | null // วันนัดชำระ ISO yyyy-mm-dd (sync จาก trigger)
   promisedAmount?: number | null   // ยอดที่สัญญาไว้ (บาท)
+  // --- Case Online / รอเอกสาร (0049) ---
+  pendingDocuments?: boolean // true = รอเอกสาร; suppress สถานะล่าช้าใน view
 }
 
 // ---------- Extra Charges (migration 0032) ----------

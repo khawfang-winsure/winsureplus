@@ -66,6 +66,7 @@ interface FormState {
   promotionDetail: string
   operator: string
   notes: string
+  pendingDocuments: boolean
 }
 
 type AddrKey = 'current' | 'id_card' | 'work'
@@ -106,6 +107,7 @@ const initial: FormState = {
   promotionDetail: '',
   operator: '',
   notes: '',
+  pendingDocuments: false,
 }
 
 const num = (s: string) => Number(s) || 0
@@ -147,6 +149,7 @@ function fromContract(c: Contract): FormState {
     promotionDetail: c.promotionDetail ?? '',
     operator: c.operator,
     notes: c.notes ?? '',
+    pendingDocuments: c.pendingDocuments ?? false,
   }
 }
 
@@ -323,6 +326,7 @@ export default function AddContract() {
     transactionDate: f.transactionDate,
     operator: f.operator,
     notes: f.notes,
+    pendingDocuments: f.pendingDocuments,
   }
 
   async function handleSave() {
@@ -435,6 +439,20 @@ export default function AddContract() {
                 <Input value={f.invNo} onChange={(e) => set('invNo', e.target.value)} placeholder="INV-..." />
                 {errors.invNo && <p className="mt-1 text-xs text-red-600">{errors.invNo}</p>}
               </Field>
+            </div>
+            <div className="mt-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={f.pendingDocuments}
+                  onChange={(e) => set('pendingDocuments', e.target.checked)}
+                  className="h-4 w-4 accent-amber-500"
+                />
+                <span className="font-medium text-ink">เป็น Case Online (รอเอกสาร)</span>
+              </label>
+              <p className="ml-6 mt-0.5 text-xs text-ink-soft">
+                เคสออนไลน์ที่ยังรอเอกสาร — จะมีแจ้งเตือนก่อนส่งเมล/สรุปยอด
+              </p>
             </div>
           </Card>
 

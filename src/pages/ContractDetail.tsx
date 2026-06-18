@@ -367,6 +367,7 @@ export default function ContractDetail() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={contract.status === 'active' ? 'green' : 'neutral'}>{statusLabel(contract.status)}</Badge>
+          {contract.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
           {/* บันทึกการคุย — admin และ staff */}
           {canStaff && (
             <Button variant="ghost" onClick={() => setFollowUpOpen(true)}>
@@ -518,6 +519,9 @@ export default function ContractDetail() {
             DNC / มีทนายความ / โต้แย้งยอด — แก้ไขโดยผู้ดูแลระบบหรือพนักงาน (ปลดโดย admin เท่านั้น)
           </p>
           <div className="mt-2 flex flex-wrap gap-1.5">
+            {contract.pendingDocuments ? (
+              <Badge tone="amber">รอเอกสาร (Case Online)</Badge>
+            ) : null}
             {contract.dnc ? (
               <Badge tone="red">ห้ามติดต่อ (DNC)</Badge>
             ) : null}
@@ -527,7 +531,7 @@ export default function ContractDetail() {
             {contract.disputed ? (
               <Badge tone="amber">โต้แย้งยอดหนี้</Badge>
             ) : null}
-            {!contract.dnc && !contract.lawyerEngaged && !contract.disputed && (
+            {!contract.pendingDocuments && !contract.dnc && !contract.lawyerEngaged && !contract.disputed && (
               <span className="text-xs text-ink-soft">— ไม่มีสถานะพิเศษ</span>
             )}
           </div>
@@ -2111,6 +2115,7 @@ function ReturnModal({
 
 // ===== ฟอร์มสถานะพิเศษ =====
 interface FlagsFormState {
+  pendingDocuments: boolean
   dnc: boolean
   dncReason: string
   lawyerEngaged: boolean
@@ -2138,6 +2143,7 @@ function FlagsModal({
   onDone: () => void
 }) {
   const [f, setF] = useState<FlagsFormState>(() => ({
+    pendingDocuments: contract.pendingDocuments ?? false,
     dnc: contract.dnc ?? false,
     dncReason: contract.dncReason ?? '',
     lawyerEngaged: contract.lawyerEngaged ?? false,
@@ -2160,6 +2166,7 @@ function FlagsModal({
     setErr(null)
     try {
       const patch: ContractFlagPatch = {
+        pendingDocuments: f.pendingDocuments,
         dnc: f.dnc,
         dncReason: f.dncReason || null,
         lawyerEngaged: f.lawyerEngaged,
@@ -2195,9 +2202,25 @@ function FlagsModal({
       <div className="flex flex-col gap-4">
         {role !== 'admin' && (
           <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            พนักงานสามารถเพิ่มสถานะได้ แต่การปลดสถานะต้องดำเนินการโดยแอดมิน
+            พนักงานสามารถเพิ่มสถานะได้ แต่การปลดสถานะ DNC/ทนาย/โต้แย้งต้องดำเนินการโดยแอดมิน
           </p>
         )}
+
+        {/* รอเอกสาร (Case Online) */}
+        <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <input
+              type="checkbox"
+              checked={f.pendingDocuments}
+              onChange={(e) => toggle('pendingDocuments', e.target.checked)}
+              className="h-4 w-4 accent-amber-500"
+            />
+            รอเอกสาร (Case Online)
+          </label>
+          <p className="mt-1 text-xs text-ink-soft">
+            พนักงานและแอดมินกดปลดเองได้ — เคลียร์อัตโนมัติเมื่อส่งอีเมล/สรุปยอด
+          </p>
+        </div>
 
         {/* DNC */}
         <div className="rounded-xl border border-red-200 bg-red-50/40 p-3">

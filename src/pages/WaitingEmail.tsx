@@ -26,6 +26,12 @@ export default function WaitingEmail() {
   const pending = data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id))
 
   async function doMarkSent(c: Contract) {
+    if (c.pendingDocuments) {
+      const ok = window.confirm(
+        `เอกสารของ ${c.customerName} ครบแล้วใช่ไหม?\n\nยืนยัน = ส่งอีเมล + เคลียร์สถานะรอเอกสาร`,
+      )
+      if (!ok) return
+    }
     await markEmailSent(c.id, name ?? undefined)
     setSentIds((prev) => new Set([...prev, c.id]))
     setView(null)
@@ -52,6 +58,7 @@ export default function WaitingEmail() {
                 <p className="text-sm text-ink-soft">{shopOf(c.shopId)?.name ?? '-'} · {thaiDate(c.transactionDate)}</p>
               </div>
               <div className="flex items-center gap-2">
+                {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
                 <Badge tone="amber">ยังไม่ส่ง</Badge>
                 <Button variant="ghost" onClick={() => setView(c)}>
                   <Mail size={15} /> ดูอีเมล
