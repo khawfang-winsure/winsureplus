@@ -1,17 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { NAV } from './nav'
 import { useAuth } from '../lib/auth'
 
-// เมนูซ้าย: เดสก์ท็อปเป็นแถบไอคอนแคบ (w-16) เอาเมาส์ชี้แล้วกางเป็น w-72 (overlay ไม่ดันเนื้อหา)
-// มือถือ: hamburger ใน topbar → drawer slide จากซ้าย + overlay
-const itemBase =
-  'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors'
-
-// ป้ายชื่อเมนู — ซ่อนตอนแถบหุบ (เดสก์ท็อป) โผล่ตอน hover
-const labelCls =
-  'whitespace-nowrap md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
+// เมนูซ้าย:
+//   touch (iPad/tablet — hover:none pointer:coarse) → ขยายค้างเสมอ w-60 ทุกความกว้าง ทุกแนว
+//   mouse (desktop/laptop — hover:hover)            → rail แคบ w-16 / hover ขยาย w-72 (≥md)
+//   phone (<md)                                     → hamburger drawer (เหมือนเดิม)
 
 interface SidebarProps {
   mobileOpen: boolean
@@ -24,6 +20,34 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const isAdmin = !configured || role === 'admin' // โหมด mock เปิดเต็ม
   const isFreelancer = configured && role === 'freelancer'
   const isExecutive = configured && role === 'executive'
+
+  // ตรวจ pointer: coarse = touch (iPad ทุกรุ่น/ทุกแนว), fine = mouse/trackpad
+  // lazy init ไม่มี flash เพราะ Vite SPA ไม่มี SSR
+  const [isTouch, setIsTouch] = useState(
+    () => window.matchMedia('(hover: none) and (pointer: coarse)').matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(hover: none) and (pointer: coarse)')
+    const onChange = (e: MediaQueryListEvent) => setIsTouch(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  // itemBase, labelCls, chevronCls ขึ้นกับ isTouch — ต้องอยู่ใน component
+  // touch: label โชว์ตลอด, py-3 (~48px touch target)
+  // mouse: label ซ่อนตอน rail โผล่ตอน hover, py-2.5 เดิม
+  const itemBase = isTouch
+    ? 'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors'
+    : 'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors'
+  const labelCls = isTouch
+    ? 'whitespace-nowrap'
+    : 'whitespace-nowrap md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
+  const chevronCls = isTouch
+    ? 'ml-auto'
+    : 'ml-auto md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
+  const submenuCls = isTouch
+    ? 'ml-5 flex flex-col gap-1 border-l border-peach pl-3'
+    : 'ml-5 flex flex-col gap-1 border-l border-peach pl-3 md:hidden md:group-hover:flex'
 
   // state สำหรับ expand/collapse ของแต่ละ group (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -65,14 +89,14 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
                 >
                   <item.icon size={20} className="shrink-0 text-salmon-deep" />
                   <span className={labelCls}>{item.label}</span>
-                  {/* chevron: ซ่อนตอนแถบหุบ โผล่ตอน hover */}
-                  <span className="ml-auto md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100">
+                  {/* chevron: touch=โชว์ตลอด / mouse=ซ่อนตอน rail โผล่ตอน hover */}
+                  <span className={chevronCls}>
                     {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   </span>
                 </button>
-                {/* เมนูย่อย: โชว์เมื่อ isOpen, แต่ยังคง md:hidden md:group-hover:flex เพื่อให้แถบหุบกันไม่โชว์บน rail */}
+                {/* เมนูย่อย: touch=โชว์ตลอดตอน isOpen / mouse=ซ่อนบน rail โผล่ตอน hover */}
                 {isOpen && (
-                  <div className="ml-5 flex flex-col gap-1 border-l border-peach pl-3 md:hidden md:group-hover:flex">
+                  <div className={submenuCls}>
                     {visibleChildren.map((child) => (
                       <NavLink
                         key={child.to}
@@ -141,10 +165,20 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
       </aside>
 
       {/* ===== Desktop sidebar (≥ md) ===== */}
-      {/* ตัวกันที่ (spacer): จองความกว้างแถบไอคอน เพื่อให้ aside ลอย overlay ได้ */}
-      <div className="relative hidden md:block md:w-16 md:shrink-0">
+      {/* sticky+self-start: ล็อกเมนูค้างขณะ content เลื่อน (ทั้ง touch และ mouse) */}
+      {/* touch → spacer w-60 / aside w-60 ขยายค้าง ไม่มี hover-rail */}
+      {/* mouse → spacer w-16 / aside w-16 rail + hover ขยาย w-72 */}
+      <div
+        className={`relative hidden md:sticky md:top-6 md:block md:h-[calc(100vh-3rem)] md:shrink-0 md:self-start ${
+          isTouch ? 'md:w-60' : 'md:w-16'
+        }`}
+      >
         <aside
-          className="group flex w-full flex-col gap-1 rounded-2xl border border-peach bg-cream-deep p-2.5 shadow-sm transition-[width] duration-200 ease-out md:absolute md:inset-y-0 md:left-0 md:z-30 md:w-16 md:overflow-x-hidden md:overflow-y-auto md:hover:w-72 md:hover:p-3 md:hover:shadow-xl"
+          className={`group flex w-full flex-col gap-1 rounded-2xl border border-peach bg-cream-deep shadow-sm md:absolute md:inset-y-0 md:left-0 md:z-30 md:overflow-x-hidden md:overflow-y-auto ${
+            isTouch
+              ? 'p-3 md:w-60'
+              : 'p-2.5 md:w-16 md:transition-[width] md:duration-200 md:ease-out md:hover:w-72 md:hover:p-3 md:hover:shadow-xl'
+          }`}
         >
           {navContent()}
         </aside>

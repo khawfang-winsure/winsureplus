@@ -42,9 +42,10 @@ export const NAV: NavItem[] = [
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
   { to: '/my-performance', label: 'ผลงานของฉัน', icon: TrendingUp, freelancerOnly: true },
 
-  // วันนี้ต้องทำ
+  // เมนูหลัก (ไม่มีหัวข้อกลุ่ม)
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
+  { to: '/inbox', label: 'กล่องรับงาน', icon: Inbox },
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
@@ -61,15 +62,10 @@ export const NAV: NavItem[] = [
       { to: '/overdue/120+', label: 'ล่าช้า 120 วันขึ้นไป' },
     ],
   },
-
-  // จัดการลูกค้า
-  { to: '/inbox', label: 'กล่องรับงาน', icon: Inbox },
   { to: '/customers', label: 'ลูกค้าทั้งหมด', icon: Users },
   { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
-  { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
   { to: '/customer-overview', label: 'ภาพรวมลูกค้า', icon: PieChart },
-
-  // เครื่อง
+  { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
   { to: '/device-pipeline', label: 'ติดตามเครื่อง', icon: Truck },
   { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
 

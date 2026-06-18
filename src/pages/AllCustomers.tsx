@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useFilter } from '../lib/useFilter'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { FileCheck, Mail, Pencil, Search, User, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from 'lucide-react'
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import { getAllInstallments, getAllStatuses, getContracts, getShops } from '../lib/db'
@@ -122,6 +122,16 @@ export default function AllCustomers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.contracts, query, statusFilter, bucketFilter, shopFilter, modelFilter, statusBy])
 
+  // state เปิด/ปิดบรรทัดที่ 2 ต่อแถว (Set ของ contractId ที่ขยาย)
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+  function toggleRow(id: string) {
+    setExpandedRows((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
   const hasFilter = !!(query || statusFilter || bucketFilter || shopFilter || modelFilter)
   const clearAll = () => {
     setQuery('')
@@ -213,8 +223,20 @@ export default function AllCustomers() {
                     return (
                       <tbody key={c.id} className="border-b border-peach/60">
                         <tr className={zebra}>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">{thaiDate(c.transactionDate)}</td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => toggleRow(c.id)}
+                                aria-label={expandedRows.has(c.id) ? 'ย่อรายละเอียด' : 'ขยายรายละเอียด'}
+                                className="shrink-0 rounded p-0.5 text-ink-soft hover:bg-peach-light hover:text-ink"
+                              >
+                                {expandedRows.has(c.id) ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                              </button>
+                              {thaiDate(c.transactionDate)}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
                             <div className="flex items-center gap-1.5">
                               <span className="font-medium">{c.contractNo}</span>
                               {c.emailSentAt && (
@@ -235,7 +257,7 @@ export default function AllCustomers() {
                               )}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
                             <button
                               onClick={() => navigate(`/contract/${c.id}`)}
                               className="font-medium text-salmon-deep hover:underline"
@@ -243,13 +265,13 @@ export default function AllCustomers() {
                               {c.customerName}
                             </button>
                           </td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">{shopName(c.shopId)}</td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">{shopName(c.shopId)}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
                             <StatusPills contract={c} st={st} />
                           </td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">{c.model} {c.storage}</td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 text-right align-top">{baht(c.monthlyPayment)}</td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">{c.model} {c.storage}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(c.monthlyPayment)}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
                             <div className="flex items-center gap-2">
                               <span className="tabular-nums text-ink">{pr.paid}/{pr.total}</span>
                               <span className="h-1.5 w-16 overflow-hidden rounded-full bg-peach-light">
@@ -257,7 +279,7 @@ export default function AllCustomers() {
                               </span>
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-3 pt-2.5 align-top">
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
                             <button
                               onClick={() => navigate(`/edit/${c.id}`)}
                               className="inline-flex items-center gap-1 rounded-lg border border-peach px-2.5 py-1 text-xs text-ink-soft hover:bg-peach-light"
@@ -266,22 +288,24 @@ export default function AllCustomers() {
                             </button>
                           </td>
                         </tr>
-                        <tr className={zebra}>
-                          <td />
-                          <td colSpan={8} className="px-3 pb-2.5 pt-0.5 text-xs text-ink-soft">
-                            <span className="mr-3">บัตร: {maskNationalId(c.nationalId)}</span>
-                            <span className="mr-3">IMEI: {c.imei || '—'}</span>
-                            <span className="mr-3">SN: {c.sn || '—'}</span>
-                            <span className="mr-3">INV: {c.invNo || '—'}</span>
-                            <Link
-                              to={`/customer/${c.id}`}
-                              className="inline-flex items-center gap-1 text-salmon-deep hover:underline"
-                            >
-                              <User size={11} />
-                              ดูทุกสัญญา
-                            </Link>
-                          </td>
-                        </tr>
+                        {expandedRows.has(c.id) && (
+                          <tr className={zebra}>
+                            <td />
+                            <td colSpan={8} className="px-3 pb-2.5 pt-0.5 text-xs text-ink-soft">
+                              <span className="mr-3">บัตร: {maskNationalId(c.nationalId)}</span>
+                              <span className="mr-3">IMEI: {c.imei || '—'}</span>
+                              <span className="mr-3">SN: {c.sn || '—'}</span>
+                              <span className="mr-3">INV: {c.invNo || '—'}</span>
+                              <Link
+                                to={`/customer/${c.id}`}
+                                className="inline-flex items-center gap-1 text-salmon-deep hover:underline"
+                              >
+                                <User size={11} />
+                                ดูทุกสัญญา
+                              </Link>
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     )
                   })}
