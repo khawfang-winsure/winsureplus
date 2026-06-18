@@ -6,6 +6,7 @@ import {
   CalendarRange,
   FilePlus2,
   Gauge,
+  Inbox,
   LayoutDashboard,
   Mail,
   PackageOpen,
@@ -60,6 +61,7 @@ export const NAV: NavItem[] = [
   },
 
   // จัดการลูกค้า
+  { to: '/inbox', label: 'กล่องรับงาน', icon: Inbox },
   { to: '/customers', label: 'ลูกค้าทั้งหมด', icon: Users },
   { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
   { to: '/letters', label: 'ส่งจดหมาย', icon: Send },

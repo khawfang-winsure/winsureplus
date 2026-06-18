@@ -28,6 +28,7 @@ const RESULT_LABEL: Record<FollowUpResult, string> = {
   refused: 'ปฏิเสธ',
   paid: 'ชำระแล้ว',
   returned: 'คืนเครื่อง',
+  line_pending: 'นัดทาง LINE – รอลูกค้า',
   other: 'อื่นๆ',
 }
 
@@ -38,6 +39,7 @@ const RESULT_TONE: Record<FollowUpResult, 'green' | 'amber' | 'red' | 'neutral'>
   refused: 'red',
   paid: 'green',
   returned: 'neutral',
+  line_pending: 'amber',
   other: 'neutral',
 }
 

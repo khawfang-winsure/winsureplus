@@ -34,6 +34,7 @@ const StaffDailyReport = lazy(() => import('./pages/StaffDailyReport'))
 const SaleHistory = lazy(() => import('./pages/SaleHistory'))
 const WeeklyReport = lazy(() => import('./pages/WeeklyReport'))
 const Import = lazy(() => import('./pages/Import'))
+const InboxPage = lazy(() => import('./pages/InboxPage'))
 
 export default function App() {
   return (
@@ -100,6 +101,7 @@ function Gate() {
           <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
           <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
           <Route path="/import" element={isAdmin ? <Import /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/inbox" element={isAdminOrStaff ? <InboxPage /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="*" element={<Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/add'} replace />} />
         </Route>
       </Routes>

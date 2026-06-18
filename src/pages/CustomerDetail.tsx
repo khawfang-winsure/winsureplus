@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { User, Phone, CreditCard, ChevronRight, History, MessageCircle } from 'lucide-react'
-import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
+import { User, Phone, CreditCard, ChevronRight, History, MessageCircle, MessageSquarePlus } from 'lucide-react'
+import { Badge, Button, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, maskNationalId, statusLabel } from '../lib/format'
 import {
   getCustomerAggregate,
@@ -13,6 +13,8 @@ import {
   type FollowUpEntry,
   type FollowUpResult,
 } from '../lib/db'
+import { useAuth } from '../lib/auth'
+import FollowUpModal from '../components/FollowUpModal'
 
 // ---------- helpers ----------
 
@@ -45,6 +47,7 @@ const FU_RESULT_LABEL: Record<FollowUpResult, string> = {
   refused: 'ปฏิเสธ',
   paid: 'จ่ายแล้ว',
   returned: 'คืนเครื่อง',
+  line_pending: 'นัดทาง LINE – รอลูกค้า',
   other: 'อื่นๆ',
 }
 const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
@@ -54,6 +57,7 @@ const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
   refused: 'red',
   paid: 'green',
   returned: 'amber',
+  line_pending: 'amber',
   other: 'neutral',
 }
 
@@ -81,7 +85,15 @@ function ContractStatusPill({ item }: { item: CustomerContractItem }) {
 }
 
 // Card แสดงสัญญา 1 รายการ
-function ContractRow({ item }: { item: CustomerContractItem }) {
+function ContractRow({
+  item,
+  onFollowUp,
+  canFollowUp,
+}: {
+  item: CustomerContractItem
+  onFollowUp: (item: CustomerContractItem) => void
+  canFollowUp: boolean
+}) {
   const progress = `${item.paidInstallments}/${item.termMonths}`
   return (
     <div className="rounded-xl border border-peach bg-white p-4">
@@ -105,13 +117,20 @@ function ContractRow({ item }: { item: CustomerContractItem }) {
             )}
           </div>
         </div>
-        <Link
-          to={`/contract/${item.contractId}`}
-          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-peach px-2.5 py-1.5 text-xs text-ink-soft hover:bg-peach-light"
-        >
-          ดูรายละเอียด
-          <ChevronRight size={13} />
-        </Link>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {canFollowUp && (
+            <Button variant="ghost" onClick={() => onFollowUp(item)}>
+              <MessageSquarePlus size={13} /> บันทึกการคุย
+            </Button>
+          )}
+          <Link
+            to={`/contract/${item.contractId}`}
+            className="inline-flex items-center gap-1 rounded-lg border border-peach px-2.5 py-1.5 text-xs text-ink-soft hover:bg-peach-light"
+          >
+            ดูรายละเอียด
+            <ChevronRight size={13} />
+          </Link>
+        </div>
       </div>
     </div>
   )
@@ -120,10 +139,13 @@ function ContractRow({ item }: { item: CustomerContractItem }) {
 export default function CustomerDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { role } = useAuth()
+  const canStaff = role === 'admin' || role === 'staff'
 
   const [agg, setAgg] = useState<CustomerAggregate | null | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [followUpTarget, setFollowUpTarget] = useState<CustomerContractItem | null>(null)
 
   // ── Customer 360: ประวัติการชำระ + ประวัติการติดตาม ────────────────────────
   const [recentPayments, setRecentPayments] = useState<FlatPayment[]>([])
@@ -280,7 +302,12 @@ export default function CustomerDetail() {
         ) : (
           <div className="space-y-3">
             {agg.contracts.map((item) => (
-              <ContractRow key={item.contractId} item={item} />
+              <ContractRow
+                key={item.contractId}
+                item={item}
+                onFollowUp={(i) => setFollowUpTarget(i)}
+                canFollowUp={canStaff}
+              />
             ))}
           </div>
         )}
@@ -334,6 +361,22 @@ export default function CustomerDetail() {
             </ul>
           )}
         </Card>
+      )}
+
+      {/* FollowUpModal — admin/staff บันทึกการคุย */}
+      {followUpTarget && (
+        <FollowUpModal
+          contract={{
+            contractId: followUpTarget.contractId,
+            contractNo: followUpTarget.contractNo,
+            customerName: agg.customerName,
+            phone: agg.phone ?? null,
+            shopName: followUpTarget.shopName ?? '',
+            daysLate: followUpTarget.daysLate,
+          }}
+          adminOverride={role === 'admin'}
+          onClose={() => setFollowUpTarget(null)}
+        />
       )}
 
       {/* ── Customer 360: ประวัติการติดตามล่าสุด ──────────────────────────────── */}

@@ -9,6 +9,7 @@ import {
   getMyAssignedGrades,
   getOverduePromiseContracts,
   getPublicHolidays,
+  markCaseSeen,
   type ContractGrade,
   type FollowUpResult,
   type FreelancerQueueRow,
@@ -18,6 +19,8 @@ import { useAuth } from '../lib/auth'
 import { isContactWindowOpen } from '../lib/contactHours'
 import {
   computePriorityScore,
+  hasUnseenUpdate,
+  sortQueue,
   type PriorityTier,
   type SuppressReason,
 } from '../lib/priorityQueue'
@@ -63,6 +66,7 @@ const RESULT_LABEL: Record<FollowUpResult, string> = {
   refused: 'ปฏิเสธ',
   paid: 'จ่ายแล้ว',
   returned: 'คืนเครื่อง',
+  line_pending: 'นัดทาง LINE – รอลูกค้า',
   other: 'อื่นๆ',
 }
 
@@ -132,6 +136,7 @@ interface ScoredRow {
   tier: PriorityTier
   actionableNow: boolean
   suppressReason: SuppressReason
+  promiseToPayDate: string | null
 }
 
 // ===== Section collapsible =====
@@ -203,6 +208,14 @@ function QueueRow({
       </td>
       {/* ลูกค้า */}
       <td className="px-4 py-3">
+        {/* unseen update badge */}
+        {hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt) && (
+          <div className="mb-1">
+            <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+              🔔 มีอัปเดตใหม่
+            </span>
+          </div>
+        )}
         {/* status flags */}
         {(r.dnc || r.lawyerEngaged || r.disputed) && (
           <div className="mb-1 flex flex-wrap gap-1">
@@ -234,6 +247,12 @@ function QueueRow({
             🕐 {r.lastContactedByName ?? '?'}{' '}
             {relativeContactTime(r.lastContactedAt)}{' '}
             — {RESULT_LABEL[r.lastResult]}
+          </p>
+        )}
+        {/* latest note */}
+        {r.latestNote && (
+          <p className="mt-0.5 text-xs text-ink-soft">
+            💬 {r.latestNote.length > 40 ? r.latestNote.slice(0, 40) + '…' : r.latestNote}
           </p>
         )}
         {/* promise badge */}
@@ -496,26 +515,50 @@ export default function FreelancerWorkspace() {
         tier: result.tier,
         actionableNow: result.actionableNow,
         suppressReason: result.suppressReason,
+        promiseToPayDate: r.promiseToPayDate,
       }
     })
   }, [pendingRows, today])
 
-  // จัดกลุ่มตาม tier (sort desc by score within tier)
-  const tierGroups = useMemo((): Record<PriorityTier, ScoredRow[]> => {
+  // today string (Bangkok UTC+7) สำหรับ sortQueue + promise badge
+  const todayStr = useMemo(
+    () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10),
+    [],
+  )
+
+  // todayPlus7 สำหรับแบ่ง P2 boundary
+  const todayPlus7Str = useMemo(() => {
+    const d = new Date(`${todayStr}T00:00:00`)
+    d.setDate(d.getDate() + 7)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }, [todayStr])
+
+  // แบ่ง P1/P2/P3 และ tierGroups (จาก P3 เท่านั้น — ป้องกัน row ซ้ำใน P1/P2 section)
+  const { p1Rows, p2Rows, tierGroups } = useMemo(() => {
+    const sorted = sortQueue(scoredRows, todayStr)
+    const p1: ScoredRow[] = []
+    const p2: ScoredRow[] = []
+    const p3: ScoredRow[] = []
+    for (const sr of sorted) {
+      const d = sr.promiseToPayDate
+      if (d !== null && d < todayStr) p1.push(sr)
+      else if (d !== null && d >= todayStr && d <= todayPlus7Str) p2.push(sr)
+      else p3.push(sr)
+    }
     const groups: Record<PriorityTier, ScoredRow[]> = {
       HOT: [],
       WARM: [],
       COLD: [],
       ESCALATE: [],
     }
-    for (const sr of scoredRows) {
+    for (const sr of p3) {
       groups[sr.tier].push(sr)
     }
-    for (const tier of TIER_ORDER) {
-      groups[tier].sort((a, b) => b.score - a.score)
-    }
-    return groups
-  }, [scoredRows])
+    return { p1Rows: p1, p2Rows: p2, tierGroups: groups }
+  }, [scoredRows, todayStr, todayPlus7Str])
 
   // toggle checkbox ทีละรายการ
   function toggleSelectId(contractId: string) {
@@ -578,7 +621,13 @@ export default function FreelancerWorkspace() {
     if (selectedGrades.length > 0) void loadQueue(selectedGrades)
   }
 
-  // หลังปิด modal → reload เพื่อ sync contactedToday
+  // เปิด FollowUpModal: mark seen ก่อน แล้วค่อย set selected
+  function handleOpenCase(r: FreelancerQueueRow) {
+    void markCaseSeen(r.contractId)
+    setSelectedContract(r)
+  }
+
+  // หลังปิด modal → reload เพื่อ sync contactedToday + myLastTouchAt
   function handleModalClose() {
     setSelectedContract(null)
     if (selectedGrades.length > 0) void loadQueue(selectedGrades)
@@ -737,6 +786,201 @@ export default function FreelancerWorkspace() {
                 )
               ) : (
                 <div className="flex flex-col gap-3">
+                  {/* === P1: นัดจ่ายเลยกำหนด === */}
+                  {p1Rows.length > 0 && (
+                    <div className="overflow-hidden rounded-2xl border border-red-200 bg-white shadow-sm">
+                      <div className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-red-700">
+                        <span className="inline-block rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-700">
+                          📅 นัดจ่าย – เลยกำหนด ({p1Rows.length})
+                        </span>
+                      </div>
+                      {/* Desktop */}
+                      <div className="hidden overflow-x-auto md:block">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
+                              <th className="px-3 py-3 text-center" />
+                              <th className="px-4 py-3">ลูกค้า</th>
+                              <th className="px-4 py-3">ร้าน</th>
+                              <th className="px-4 py-3 text-center">เกรด</th>
+                              <th className="px-4 py-3 text-center">คะแนน</th>
+                              <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                              <th className="px-4 py-3 text-right">งวด</th>
+                              <th className="px-4 py-3 text-right">ค่างวด / ค่าปรับ</th>
+                              <th className="px-4 py-3 text-right">เงินต้นค้าง</th>
+                              <th className="px-4 py-3" />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {p1Rows.map((sr) => (
+                              <QueueRow
+                                key={sr.row.contractId}
+                                sr={sr}
+                                outsideHours={outsideHours}
+                                onSelect={handleOpenCase}
+                                selected={selectedIds.has(sr.row.contractId)}
+                                onToggleSelect={toggleSelectId}
+                              />
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {/* Mobile */}
+                      <div className="flex flex-col divide-y divide-peach/60 md:hidden">
+                        {p1Rows.map((sr) => {
+                          const r = sr.row
+                          const isBlocked = r.dnc || r.lawyerEngaged
+                          const disableButton = outsideHours || !sr.actionableNow
+                          const tStr = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+                          const pOverdue = r.promiseToPayDate !== null && r.promiseToPayDate < tStr
+                          const [, pMo, pDy] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
+                          let tip = ''
+                          if (outsideHours) tip = 'นอกเวลาทวงถามตามกฎหมาย'
+                          else if (sr.suppressReason) tip = SUPPRESS_LABEL[sr.suppressReason]
+                          return (
+                            <div key={r.contractId} className={`p-4 ${selectedIds.has(r.contractId) ? 'bg-peach-light/40' : ''}`}>
+                              <div className="mb-1 flex items-start gap-2">
+                                <input type="checkbox" checked={selectedIds.has(r.contractId)} disabled={!sr.actionableNow} onChange={() => toggleSelectId(r.contractId)} className="mt-0.5 h-4 w-4 cursor-pointer accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-40" />
+                                <div className="flex-1 min-w-0">
+                                  {hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt) && (
+                                    <div className="mb-1"><span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">🔔 มีอัปเดตใหม่</span></div>
+                                  )}
+                                  {(r.dnc || r.lawyerEngaged || r.disputed) && (
+                                    <div className="mb-1 flex flex-wrap gap-1">
+                                      {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ</Badge>}
+                                      {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ ทนายความ</Badge>}
+                                      {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
+                                    </div>
+                                  )}
+                                  <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>{r.customerName}</p>
+                                  <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                                  {r.deviceModel && <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>}
+                                  {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+                                  {(r.phoneAlt1 || r.phoneAlt2) && <p className="text-xs text-ink-soft">📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}</p>}
+                                  {r.lastResult !== null && r.lastContactedAt !== null && (
+                                    <p className="mt-0.5 text-xs text-ink-soft">🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}</p>
+                                  )}
+                                  {r.latestNote && <p className="mt-0.5 text-xs text-ink-soft">💬 {r.latestNote.length > 40 ? r.latestNote.slice(0, 40) + '…' : r.latestNote}</p>}
+                                  {r.promiseToPayDate !== null && pDy !== null && pMo !== null && (
+                                    <span className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${pOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>📅 สัญญาจะจ่าย {pDy}/{pMo}</span>
+                                  )}
+                                </div>
+                                <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>{TIER_EMOJI[sr.tier]} {sr.score}</span>
+                              </div>
+                              <div className="mb-3 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
+                                <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
+                                <span>ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></span>
+                                {r.installmentsTotal > 0 && <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
+                                <span>ค่างวด {baht(r.monthlyPayment)} ฿</span>
+                                {r.outstanding > 0 && <span className="font-semibold text-red-600">ค่าปรับ {baht(r.outstanding)} ฿</span>}
+                                {r.principalDue > 0 && <span className="font-semibold text-red-600">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
+                              </div>
+                              <button disabled={disableButton} onClick={() => !disableButton && handleOpenCase(r)} title={tip || undefined} className={`w-full rounded-xl border px-3 py-2 text-sm font-semibold transition ${disableButton ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60' : 'border-peach bg-white text-ink hover:bg-peach-light/50'}`}>บันทึกติดตาม</button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* === P2: นัดจ่ายใกล้ถึง (ภายใน 7 วัน) === */}
+                  {p2Rows.length > 0 && (
+                    <div className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+                      <div className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-amber-700">
+                        <span className="inline-block rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">
+                          📅 นัดจ่าย – ใกล้ถึง (ภายใน 7 วัน) ({p2Rows.length})
+                        </span>
+                      </div>
+                      {/* Desktop */}
+                      <div className="hidden overflow-x-auto md:block">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
+                              <th className="px-3 py-3 text-center" />
+                              <th className="px-4 py-3">ลูกค้า</th>
+                              <th className="px-4 py-3">ร้าน</th>
+                              <th className="px-4 py-3 text-center">เกรด</th>
+                              <th className="px-4 py-3 text-center">คะแนน</th>
+                              <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                              <th className="px-4 py-3 text-right">งวด</th>
+                              <th className="px-4 py-3 text-right">ค่างวด / ค่าปรับ</th>
+                              <th className="px-4 py-3 text-right">เงินต้นค้าง</th>
+                              <th className="px-4 py-3" />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {p2Rows.map((sr) => (
+                              <QueueRow
+                                key={sr.row.contractId}
+                                sr={sr}
+                                outsideHours={outsideHours}
+                                onSelect={handleOpenCase}
+                                selected={selectedIds.has(sr.row.contractId)}
+                                onToggleSelect={toggleSelectId}
+                              />
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {/* Mobile */}
+                      <div className="flex flex-col divide-y divide-peach/60 md:hidden">
+                        {p2Rows.map((sr) => {
+                          const r = sr.row
+                          const isBlocked = r.dnc || r.lawyerEngaged
+                          const disableButton = outsideHours || !sr.actionableNow
+                          const tStr = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+                          const pOverdue = r.promiseToPayDate !== null && r.promiseToPayDate < tStr
+                          const [, pMo, pDy] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
+                          let tip = ''
+                          if (outsideHours) tip = 'นอกเวลาทวงถามตามกฎหมาย'
+                          else if (sr.suppressReason) tip = SUPPRESS_LABEL[sr.suppressReason]
+                          return (
+                            <div key={r.contractId} className={`p-4 ${selectedIds.has(r.contractId) ? 'bg-peach-light/40' : ''}`}>
+                              <div className="mb-1 flex items-start gap-2">
+                                <input type="checkbox" checked={selectedIds.has(r.contractId)} disabled={!sr.actionableNow} onChange={() => toggleSelectId(r.contractId)} className="mt-0.5 h-4 w-4 cursor-pointer accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-40" />
+                                <div className="flex-1 min-w-0">
+                                  {hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt) && (
+                                    <div className="mb-1"><span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">🔔 มีอัปเดตใหม่</span></div>
+                                  )}
+                                  {(r.dnc || r.lawyerEngaged || r.disputed) && (
+                                    <div className="mb-1 flex flex-wrap gap-1">
+                                      {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ</Badge>}
+                                      {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ ทนายความ</Badge>}
+                                      {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
+                                    </div>
+                                  )}
+                                  <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>{r.customerName}</p>
+                                  <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                                  {r.deviceModel && <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>}
+                                  {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+                                  {(r.phoneAlt1 || r.phoneAlt2) && <p className="text-xs text-ink-soft">📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}</p>}
+                                  {r.lastResult !== null && r.lastContactedAt !== null && (
+                                    <p className="mt-0.5 text-xs text-ink-soft">🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}</p>
+                                  )}
+                                  {r.latestNote && <p className="mt-0.5 text-xs text-ink-soft">💬 {r.latestNote.length > 40 ? r.latestNote.slice(0, 40) + '…' : r.latestNote}</p>}
+                                  {r.promiseToPayDate !== null && pDy !== null && pMo !== null && (
+                                    <span className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${pOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>📅 สัญญาจะจ่าย {pDy}/{pMo}</span>
+                                  )}
+                                </div>
+                                <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>{TIER_EMOJI[sr.tier]} {sr.score}</span>
+                              </div>
+                              <div className="mb-3 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
+                                <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
+                                <span>ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></span>
+                                {r.installmentsTotal > 0 && <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
+                                <span>ค่างวด {baht(r.monthlyPayment)} ฿</span>
+                                {r.outstanding > 0 && <span className="font-semibold text-red-600">ค่าปรับ {baht(r.outstanding)} ฿</span>}
+                                {r.principalDue > 0 && <span className="font-semibold text-red-600">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
+                              </div>
+                              <button disabled={disableButton} onClick={() => !disableButton && handleOpenCase(r)} title={tip || undefined} className={`w-full rounded-xl border px-3 py-2 text-sm font-semibold transition ${disableButton ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60' : 'border-peach bg-white text-ink hover:bg-peach-light/50'}`}>บันทึกติดตาม</button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* === P3: tier sections (ที่เหลือ ไม่มี promise หรือ promise > 7 วัน) === */}
                   {TIER_ORDER.map((tier) => {
                     const group = tierGroups[tier]
                     if (group.length === 0) return null
@@ -797,7 +1041,7 @@ export default function FreelancerWorkspace() {
                                       key={sr.row.contractId}
                                       sr={sr}
                                       outsideHours={outsideHours}
-                                      onSelect={setSelectedContract}
+                                      onSelect={handleOpenCase}
                                       selected={selectedIds.has(sr.row.contractId)}
                                       onToggleSelect={toggleSelectId}
                                     />
@@ -833,6 +1077,14 @@ export default function FreelancerWorkspace() {
                                         className="mt-0.5 h-4 w-4 cursor-pointer accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-40"
                                       />
                                       <div className="flex-1 min-w-0">
+                                        {/* unseen update badge */}
+                                        {hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt) && (
+                                          <div className="mb-1">
+                                            <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                                              🔔 มีอัปเดตใหม่
+                                            </span>
+                                          </div>
+                                        )}
                                         {/* status flags */}
                                         {(r.dnc || r.lawyerEngaged || r.disputed) && (
                                           <div className="mb-1 flex flex-wrap gap-1">
@@ -855,6 +1107,11 @@ export default function FreelancerWorkspace() {
                                         {r.lastResult !== null && r.lastContactedAt !== null && (
                                           <p className="mt-0.5 text-xs text-ink-soft">
                                             🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
+                                          </p>
+                                        )}
+                                        {r.latestNote && (
+                                          <p className="mt-0.5 text-xs text-ink-soft">
+                                            💬 {r.latestNote.length > 40 ? r.latestNote.slice(0, 40) + '…' : r.latestNote}
                                           </p>
                                         )}
                                         {r.promiseToPayDate !== null && pDay !== null && pMonth !== null && (
@@ -880,7 +1137,7 @@ export default function FreelancerWorkspace() {
                                     {/* ปุ่มบันทึก */}
                                     <button
                                       disabled={disableButton}
-                                      onClick={() => !disableButton && setSelectedContract(r)}
+                                      onClick={() => !disableButton && handleOpenCase(r)}
                                       title={tooltip || undefined}
                                       className={`w-full rounded-xl border px-3 py-2 text-sm font-semibold transition ${
                                         disableButton

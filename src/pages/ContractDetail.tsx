@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle } from 'lucide-react'
+import { FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -26,6 +26,10 @@ import {
   getAllPrivateNotes,
   savePrivateNote,
   deletePrivateNote,
+  pinToInbox,
+  unpinFromInbox,
+  getInboxCases,
+  getShops,
   type ContractFlagPatch,
   type PaymentLogEntry,
   type ExtensionRecord,
@@ -47,6 +51,7 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment, PrivateNote } from '../lib/types'
+import FollowUpModal from '../components/FollowUpModal'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   due_day: 'เปลี่ยนวันที่ชำระ',
@@ -110,6 +115,7 @@ const FU_RESULT_LABEL: Record<FollowUpResult, string> = {
   refused: 'ปฏิเสธ',
   no_answer: 'ไม่รับสาย',
   returned: 'คืนเครื่อง',
+  line_pending: 'นัดทาง LINE – รอลูกค้า',
   other: 'อื่นๆ',
 }
 type BadgeTone = 'green' | 'amber' | 'red' | 'neutral'
@@ -120,6 +126,7 @@ const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
   refused: 'amber',
   no_answer: 'neutral',
   returned: 'red',
+  line_pending: 'amber',
   other: 'neutral',
 }
 
@@ -165,6 +172,12 @@ export default function ContractDetail() {
   type UndoState = { label: string; onUndo: () => Promise<void> } | null
   const [undoState, setUndoState] = useState<UndoState>(null)
 
+  // ===== FollowUpModal + pin state =====
+  const [followUpOpen, setFollowUpOpen] = useState(false)
+  const [isPinned, setIsPinned] = useState(false)
+  const [pinBusy, setPinBusy] = useState(false)
+  const [contractShopName, setContractShopName] = useState('')
+
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
@@ -198,6 +211,27 @@ export default function ContractDetail() {
       .then(setFollowHistory)
       .finally(() => setFollowHistoryLoading(false))
   }, [id])
+
+  // โหลดสถานะ pin ของสัญญานี้
+  useEffect(() => {
+    if (!id) return
+    getInboxCases()
+      .then((cases) => {
+        setIsPinned(cases.some((c) => c.contractId === id && c.pinned))
+      })
+      .catch(() => {/* ไม่มี inbox_pins table ใน mock mode — ข้ามเงียบๆ */})
+  }, [id])
+
+  // โหลดชื่อร้านสำหรับแสดงใน FollowUpModal
+  useEffect(() => {
+    if (!contract?.shopId) return
+    getShops()
+      .then((shops) => {
+        const shop = shops.find((s) => s.id === contract.shopId)
+        if (shop) setContractShopName(shop.name)
+      })
+      .catch(() => {/* ข้ามในโหมด mock */})
+  }, [contract?.shopId])
 
   const reloadNotes = useCallback(async () => {
     if (!id) return
@@ -290,6 +324,22 @@ export default function ContractDetail() {
     }
   }
 
+  async function handleTogglePin() {
+    if (!id) return
+    setPinBusy(true)
+    try {
+      if (isPinned) {
+        await unpinFromInbox(id)
+        setIsPinned(false)
+      } else {
+        await pinToInbox(id)
+        setIsPinned(true)
+      }
+    } finally {
+      setPinBusy(false)
+    }
+  }
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -315,8 +365,28 @@ export default function ContractDetail() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge tone={contract.status === 'active' ? 'green' : 'neutral'}>{statusLabel(contract.status)}</Badge>
+          {/* บันทึกการคุย — admin และ staff */}
+          {canStaff && (
+            <Button variant="ghost" onClick={() => setFollowUpOpen(true)}>
+              <MessageSquarePlus size={15} /> บันทึกการคุย
+            </Button>
+          )}
+          {/* เพิ่ม/เอาออกจากกล่อง — admin และ staff */}
+          {canStaff && (
+            <Button
+              variant="ghost"
+              disabled={pinBusy}
+              onClick={() => void handleTogglePin()}
+            >
+              {isPinned ? (
+                <><PinOff size={15} /> เอาออกจากกล่อง</>
+              ) : (
+                <><Pin size={15} /> เพิ่มเข้ากล่อง</>
+              )}
+            </Button>
+          )}
           {/* แก้ไขสัญญา — admin only */}
           {isAdmin && (
             <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
@@ -941,6 +1011,29 @@ export default function ContractDetail() {
           label={undoState.label}
           onUndo={undoState.onUndo}
           onExpire={() => setUndoState(null)}
+        />
+      )}
+
+      {/* FollowUpModal — admin/staff บันทึกการคุย */}
+      {followUpOpen && (
+        <FollowUpModal
+          contract={{
+            contractId: contract.id,
+            contractNo: contract.contractNo,
+            customerName: contract.customerName,
+            phone: contract.phone ?? null,
+            shopName: contractShopName,
+            daysLate: 0,
+          }}
+          adminOverride={role === 'admin'}
+          onClose={() => {
+            setFollowUpOpen(false)
+            // reload follow history ให้ตรง
+            if (id) {
+              setFollowHistoryLoading(true)
+              getFollowUps(id).then(setFollowHistory).finally(() => setFollowHistoryLoading(false))
+            }
+          }}
         />
       )}
     </div>
