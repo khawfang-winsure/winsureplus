@@ -2950,6 +2950,122 @@ export async function getCollectorScorecard(
   return { rows, uncreditedBaht }
 }
 
+// ---------- My Scorecard — self-only (migration 0048) ----------
+
+/** 1 grade row จาก RPC get_my_collector_scorecard */
+interface MyScorecardViewRow {
+  author_id: string
+  current_grade: string | null
+  calls: number
+  unique_contracts: number
+  total_attempts: number
+  successful_attempts: number
+  collected_baht: string | number
+  last_activity_at: string | null
+}
+
+/** byGrade entry — ตาม shape เดิมของ CollectorScorecardRow['byGrade'][number] */
+export interface MyScorecardGradeRow {
+  grade: 'A' | 'B' | 'C' | 'D' | 'E'
+  calls: number
+  uniqueContracts: number
+  totalAttempts: number
+  successfulAttempts: number
+  collectedBaht: number
+  bahtPerCall: number | null
+  contactRate: number | null
+}
+
+/** totals รวมทุก grade (รวม null-grade) */
+export interface MyScorecardTotals {
+  collectedBaht: number
+  calls: number
+  uniqueContracts: number
+  totalAttempts: number
+  successfulAttempts: number
+  bahtPerCall: number | null
+  contactRate: number | null
+}
+
+export interface MyScorecardResult {
+  byGrade: MyScorecardGradeRow[]
+  totals: MyScorecardTotals
+}
+
+/**
+ * ผลงานของฉัน — self-only scorecard สำหรับ freelancer (RPC 0048)
+ * คืน byGrade[] (per-grade) + totals (รวมทุก grade รวม null-grade)
+ * ไม่ต้องการ role guard — RPC filter ด้วย auth.uid() แล้ว
+ * @param start วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param end   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getMyScorecard(
+  start: string,
+  end: string,
+): Promise<MyScorecardResult> {
+  const empty: MyScorecardResult = {
+    byGrade: [],
+    totals: {
+      collectedBaht: 0,
+      calls: 0,
+      uniqueContracts: 0,
+      totalAttempts: 0,
+      successfulAttempts: 0,
+      bahtPerCall: null,
+      contactRate: null,
+    },
+  }
+  if (!supabase) return empty
+
+  const { data, error } = await supabase
+    .rpc('get_my_collector_scorecard', { p_start: start, p_end: end })
+  if (error) throw error
+
+  // Aggregate — totals รวมทุก row (incl. null-grade); byGrade เฉพาะ grade ที่รู้จัก
+  let tCalls = 0
+  let tUniqueContracts = 0
+  let tTotalAttempts = 0
+  let tSuccessfulAttempts = 0
+  let tCollectedBaht = 0
+
+  const byGrade: MyScorecardGradeRow[] = []
+
+  for (const row of (data ?? []) as MyScorecardViewRow[]) {
+    const collected = Number(row.collected_baht)
+    tCalls += row.calls
+    tUniqueContracts += row.unique_contracts
+    tTotalAttempts += row.total_attempts
+    tSuccessfulAttempts += row.successful_attempts
+    tCollectedBaht += collected
+
+    if (row.current_grade != null) {
+      byGrade.push({
+        grade: row.current_grade as 'A' | 'B' | 'C' | 'D' | 'E',
+        calls: row.calls,
+        uniqueContracts: row.unique_contracts,
+        totalAttempts: row.total_attempts,
+        successfulAttempts: row.successful_attempts,
+        collectedBaht: collected,
+        bahtPerCall: bahtPerCall(collected, row.calls),
+        contactRate: contactRate(row.successful_attempts, row.total_attempts),
+      })
+    }
+  }
+
+  return {
+    byGrade,
+    totals: {
+      collectedBaht: tCollectedBaht,
+      calls: tCalls,
+      uniqueContracts: tUniqueContracts,
+      totalAttempts: tTotalAttempts,
+      successfulAttempts: tSuccessfulAttempts,
+      bahtPerCall: bahtPerCall(tCollectedBaht, tCalls),
+      contactRate: contactRate(tSuccessfulAttempts, tTotalAttempts),
+    },
+  }
+}
+
 // ---------- Grade Mobility (migration 0030) ----------
 
 interface GradeMonthlyChangeRow {

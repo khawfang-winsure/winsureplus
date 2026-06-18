@@ -15,6 +15,7 @@ import {
   Receipt,
   Send,
   Settings,
+  TrendingUp,
   Truck,
   Users,
   type LucideIcon,
@@ -39,6 +40,7 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   // กลุ่ม freelancer — แยกออกมา ไม่อยู่ในกลุ่มหลัก
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
+  { to: '/my-performance', label: 'ผลงานของฉัน', icon: TrendingUp, freelancerOnly: true },
 
   // วันนี้ต้องทำ
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },

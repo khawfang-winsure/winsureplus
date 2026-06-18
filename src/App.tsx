@@ -35,6 +35,7 @@ const SaleHistory = lazy(() => import('./pages/SaleHistory'))
 const WeeklyReport = lazy(() => import('./pages/WeeklyReport'))
 const Import = lazy(() => import('./pages/Import'))
 const InboxPage = lazy(() => import('./pages/InboxPage'))
+const MyPerformance = lazy(() => import('./pages/MyPerformance'))
 
 export default function App() {
   return (
@@ -71,8 +72,9 @@ function Gate() {
         <Route path="/letters/print" element={isExecutive ? <Navigate to="/exec" replace /> : <LettersPrint />} />
         <Route path="/letters/field" element={isExecutive ? <Navigate to="/exec" replace /> : <FieldVisitPrint />} />
         <Route element={<Layout />}>
-          {/* ผู้ติดตามหนี้ — เห็นเฉพาะ /queue */}
+          {/* ผู้ติดตามหนี้ — เห็นเฉพาะ /queue และ /my-performance */}
           <Route path="/queue" element={isExecutive ? <Navigate to="/exec" replace /> : <FreelancerWorkspace />} />
+          <Route path="/my-performance" element={isFreelancer ? <MyPerformance /> : <Navigate to={isExecutive ? '/exec' : '/'} replace />} />
 
           {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue; executive ไป /exec */}
           <Route index element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Dashboard />} />
