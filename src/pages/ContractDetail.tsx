@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -32,6 +32,9 @@ import {
   getShops,
   markDocsReceived,
   markBoxReceived,
+  revertDocReceipt,
+  getDocRejectLog,
+  type DocRejectEntry,
   type ContractFlagPatch,
   type PaymentLogEntry,
   type ExtensionRecord,
@@ -180,6 +183,10 @@ export default function ContractDetail() {
   const [pinBusy, setPinBusy] = useState(false)
   const [contractShopName, setContractShopName] = useState('')
 
+  // ===== ตีกลับเอกสาร/กล่อง =====
+  const [revertTarget, setRevertTarget] = useState<'docs' | 'box' | null>(null)
+  const [docRejectLog, setDocRejectLog] = useState<DocRejectEntry[]>([])
+
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
@@ -222,6 +229,14 @@ export default function ContractDetail() {
         setIsPinned(cases.some((c) => c.contractId === id && c.pinned))
       })
       .catch(() => {/* ไม่มี inbox_pins table ใน mock mode — ข้ามเงียบๆ */})
+  }, [id])
+
+  // โหลดประวัติตีกลับเอกสาร/กล่อง
+  useEffect(() => {
+    if (!id) return
+    getDocRejectLog(id)
+      .then(setDocRejectLog)
+      .catch(() => setDocRejectLog([]))
   }, [id])
 
   // โหลดชื่อร้านสำหรับแสดงใน FollowUpModal
@@ -551,10 +566,19 @@ export default function ContractDetail() {
             <div>
               <p className="mb-1 text-xs text-ink-soft">เอกสารตัวจริง</p>
               {contract.originalDocsReceived ? (
-                <p className="flex items-center gap-1 text-sm text-green-700">
-                  <FileCheck size={14} />
-                  {`รับแล้ว · ${contract.originalDocsReceivedAt ? thaiDate(contract.originalDocsReceivedAt.slice(0, 10)) : '—'} · โดย ${contract.originalDocsReceivedBy ?? 'ไม่ทราบ'}`}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="flex items-center gap-1 text-sm text-green-700">
+                    <FileCheck size={14} />
+                    {`รับแล้ว · ${contract.originalDocsReceivedAt ? thaiDate(contract.originalDocsReceivedAt.slice(0, 10)) : '—'} · โดย ${contract.originalDocsReceivedBy ?? 'ไม่ทราบ'}`}
+                  </p>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setRevertTarget('docs')}
+                    className="text-xs text-red-600 hover:bg-red-50"
+                  >
+                    <RotateCcw size={13} /> ตีกลับ
+                  </Button>
+                </div>
               ) : (
                 <div className="flex items-center gap-2">
                   <Badge tone="amber">รอรับ</Badge>
@@ -587,10 +611,19 @@ export default function ContractDetail() {
               {!contract.hasPhoneBox ? (
                 <p className="text-sm text-ink-soft">ร้านแจ้งว่าไม่มีกล่อง</p>
               ) : contract.phoneBoxReceived ? (
-                <p className="flex items-center gap-1 text-sm text-green-700">
-                  <FileCheck size={14} />
-                  {`รับแล้ว · ${contract.phoneBoxReceivedAt ? thaiDate(contract.phoneBoxReceivedAt.slice(0, 10)) : '—'} · โดย ${contract.phoneBoxReceivedBy ?? 'ไม่ทราบ'}`}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="flex items-center gap-1 text-sm text-green-700">
+                    <FileCheck size={14} />
+                    {`รับแล้ว · ${contract.phoneBoxReceivedAt ? thaiDate(contract.phoneBoxReceivedAt.slice(0, 10)) : '—'} · โดย ${contract.phoneBoxReceivedBy ?? 'ไม่ทราบ'}`}
+                  </p>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setRevertTarget('box')}
+                    className="text-xs text-red-600 hover:bg-red-50"
+                  >
+                    <RotateCcw size={13} /> ตีกลับ
+                  </Button>
+                </div>
               ) : (
                 <div className="flex items-center gap-2">
                   <Badge tone="amber">รอรับ</Badge>
@@ -618,6 +651,28 @@ export default function ContractDetail() {
               )}
             </div>
           </div>
+
+          {/* ===== ประวัติตีกลับ (แสดงเมื่อมีประวัติ) ===== */}
+          {docRejectLog.length > 0 && (
+            <div className="mt-3 border-t border-peach pt-3">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink-soft">
+                <RotateCcw size={12} /> ประวัติตีกลับ ({docRejectLog.length} ครั้ง)
+              </p>
+              <ol className="flex flex-col gap-1.5">
+                {docRejectLog.map((e) => (
+                  <li key={e.id} className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                    <span className="font-semibold">
+                      ตีกลับ{e.itemType === 'docs' ? 'เอกสาร' : 'กล่อง'}:
+                    </span>{' '}
+                    {e.reason}
+                    <span className="ml-2 text-red-500">
+                      · {thaiDate(e.rejectedAt.slice(0, 10))} · โดย {e.rejectedBy ?? 'ไม่ทราบ'}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
         </Card>
       )}
 
@@ -1098,6 +1153,39 @@ export default function ContractDetail() {
           label={undoState.label}
           onUndo={undoState.onUndo}
           onExpire={() => setUndoState(null)}
+        />
+      )}
+
+      {/* ตีกลับเอกสาร/กล่อง */}
+      {revertTarget && id && (
+        <RevertDocModal
+          contractId={id}
+          itemType={revertTarget}
+          userName={userName ?? undefined}
+          onClose={() => setRevertTarget(null)}
+          onDone={() => {
+            // capture ค่าก่อน clear (closure ยังเห็นค่าเดิมอยู่ เพราะ setRevertTarget async)
+            const wasType = revertTarget
+            setRevertTarget(null)
+            // optimistic reverse: คืนสถานะกลับเป็น "รอรับ"
+            if (wasType === 'docs') {
+              setContract((prev) =>
+                prev
+                  ? { ...prev, originalDocsReceived: false, originalDocsReceivedAt: null, originalDocsReceivedBy: null }
+                  : prev,
+              )
+            } else {
+              setContract((prev) =>
+                prev
+                  ? { ...prev, phoneBoxReceived: false, phoneBoxReceivedAt: null, phoneBoxReceivedBy: null }
+                  : prev,
+              )
+            }
+            // reload reject log เพื่อแสดงรายการใหม่ทันที (id guard ครอบแล้วจาก outer condition)
+            getDocRejectLog(id)
+              .then(setDocRejectLog)
+              .catch(() => setDocRejectLog([]))
+          }}
         />
       )}
 
@@ -1800,6 +1888,72 @@ function AddExtraChargeModal({
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
           <Button onClick={save} disabled={busy || amount <= 0 || !reason.trim()}>
             {busy ? 'กำลังบันทึก...' : 'เพิ่มค่าใช้จ่าย'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * RevertDocModal — ตีกลับเอกสารตัวจริง หรือ กล่องโทรศัพท์
+ * เหตุผลบังคับกรอก (ปุ่มยืนยันปิดเมื่อว่าง)
+ */
+function RevertDocModal({
+  contractId,
+  itemType,
+  userName,
+  onClose,
+  onDone,
+}: {
+  contractId: string
+  itemType: 'docs' | 'box'
+  userName?: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const label = itemType === 'docs' ? 'เอกสารตัวจริง' : 'กล่องเครื่อง'
+
+  async function save() {
+    if (!reason.trim()) {
+      setErr('กรุณาระบุเหตุผลในการตีกลับ')
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      await revertDocReceipt(contractId, itemType, reason.trim(), userName)
+      onDone()
+    } catch (e) {
+      setErr(errMsg(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={`ตีกลับ${label}`} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+          การตีกลับจะเปลี่ยนสถานะ{label}กลับเป็น "รอรับ" และบันทึกลงประวัติ
+        </p>
+        <Field label="เหตุผลในการตีกลับ (จำเป็น)">
+          <Textarea
+            autoFocus
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder={`เช่น ${itemType === 'docs' ? 'เอกสารไม่ถูกต้อง / เซ็นไม่ครบ' : 'กล่องชำรุด / ไม่ใช่กล่องเดิม'}`}
+            rows={2}
+          />
+        </Field>
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy || !reason.trim()}>
+            {busy ? 'กำลังบันทึก...' : 'ยืนยันตีกลับ'}
           </Button>
         </div>
       </div>

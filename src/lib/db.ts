@@ -598,6 +598,73 @@ export async function markBoxReceived(contractId: string, receiverName?: string)
   if (error) throw error
 }
 
+// ============================================================================
+// Doc Reject Log (0051) — ตีกลับเอกสาร/กล่อง พร้อมเหตุผล
+// ============================================================================
+
+/** แถวจาก doc_reject_log (snake_case ตาม Postgres) */
+export interface DocRejectLogRow {
+  id:          string
+  contract_id: string
+  item_type:   'docs' | 'box'
+  reason:      string
+  rejected_by: string | null
+  rejected_at: string
+}
+
+/** Domain type สำหรับ UI (camelCase) */
+export interface DocRejectEntry {
+  id:          string
+  itemType:    'docs' | 'box'
+  reason:      string
+  rejectedBy:  string | null
+  rejectedAt:  string
+}
+
+function mapDocRejectEntry(r: DocRejectLogRow): DocRejectEntry {
+  return {
+    id:         r.id,
+    itemType:   r.item_type,
+    reason:     r.reason,
+    rejectedBy: r.rejected_by,
+    rejectedAt: r.rejected_at,
+  }
+}
+
+/** ตีกลับเอกสาร หรือ กล่องโทรศัพท์ → reset flag + บันทึกประวัติ (atomic RPC 0051)
+ *  @param contractId  id ของสัญญา
+ *  @param itemType    'docs' = เอกสารตัวจริง | 'box' = กล่องโทรศัพท์
+ *  @param reason      เหตุผลการตีกลับ (บังคับ)
+ *  @param byName      ชื่อผู้ตีกลับ (useAuth().name) — optional */
+export async function revertDocReceipt(
+  contractId: string,
+  itemType:   'docs' | 'box',
+  reason:     string,
+  byName?:    string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('revert_doc_receipt', {
+    p_contract_id: contractId,
+    p_item_type:   itemType,
+    p_reason:      reason,
+    p_by:          byName ?? null,
+  })
+  if (error) throw error
+}
+
+/** ดึงประวัติการตีกลับเอกสาร/กล่องของสัญญา เรียงล่าสุดก่อน (0051)
+ *  @param contractId  id ของสัญญา */
+export async function getDocRejectLog(contractId: string): Promise<DocRejectEntry[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('doc_reject_log')
+    .select('*')
+    .eq('contract_id', contractId)
+    .order('rejected_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []).map((r) => mapDocRejectEntry(r as DocRejectLogRow))
+}
+
 export async function getContract(id: string): Promise<Contract | null> {
   if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
   const { data, error } = await supabase.from('contracts').select('*').eq('id', id).maybeSingle()
