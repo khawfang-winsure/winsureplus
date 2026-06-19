@@ -228,11 +228,12 @@ export default function AddContract() {
   // รันเลขที่สัญญาถัดไปอัตโนมัติเมื่อเลือกร้าน (แยกตามร้าน) — ไม่ทับถ้าพนักงานพิมพ์เอง / โหมดแก้ไข
   useEffect(() => {
     if (isEdit || !f.shopId) return
+    const shopCode = opts.shops.find((s) => s.id === f.shopId)?.code ?? ''
     let cancelled = false
     getShopContractNos(f.shopId)
       .then((nos) => {
         if (cancelled) return
-        const next = nextContractNo(nos)
+        const next = nextContractNo(shopCode, nos)
         setF((prev) => {
           if (manualNoRef.current && prev.contractNo) return prev // พนักงานพิมพ์เองแล้ว
           return { ...prev, contractNo: next ?? '' }
@@ -242,7 +243,7 @@ export default function AddContract() {
     return () => {
       cancelled = true
     }
-  }, [f.shopId, isEdit])
+  }, [f.shopId, isEdit, opts.shops])
 
   const currentYear = new Date().getFullYear()
 
