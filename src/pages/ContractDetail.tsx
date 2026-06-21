@@ -188,6 +188,9 @@ export default function ContractDetail() {
   const [revertTarget, setRevertTarget] = useState<'docs' | 'box' | null>(null)
   const [docRejectLog, setDocRejectLog] = useState<DocRejectEntry[]>([])
 
+  // ===== Inline toggle รอเอกสาร (Case Online) =====
+  const [pendingDocsBusy, setPendingDocsBusy] = useState(false)
+
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
@@ -559,6 +562,28 @@ export default function ContractDetail() {
             {!contract.pendingDocuments && !contract.dnc && !contract.lawyerEngaged && !contract.disputed && (
               <span className="text-xs text-ink-soft">— ไม่มีสถานะพิเศษ</span>
             )}
+          </div>
+
+          {/* ===== ทางลัด: toggle รอเอกสาร (Case Online) ===== */}
+          <div className="mt-3 border-t border-peach pt-3">
+            <Button
+              variant={contract.pendingDocuments ? 'ghost' : 'primary'}
+              disabled={pendingDocsBusy}
+              onClick={() => {
+                const next = !contract.pendingDocuments
+                setPendingDocsBusy(true)
+                setContract((prev) => prev ? { ...prev, pendingDocuments: next } : prev)
+                void setContractFlags(contract.id, { pendingDocuments: next })
+                  .then(() => load())
+                  .catch(() => {
+                    // rollback optimistic update หากล้มเหลว
+                    setContract((prev) => prev ? { ...prev, pendingDocuments: !next } : prev)
+                  })
+                  .finally(() => setPendingDocsBusy(false))
+              }}
+            >
+              {contract.pendingDocuments ? 'เอกสารครบแล้ว — ปลดรอเอกสาร' : 'ทำเป็นรอเอกสาร (Case Online)'}
+            </Button>
           </div>
         </Card>
       )}
