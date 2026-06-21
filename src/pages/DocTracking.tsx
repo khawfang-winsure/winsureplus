@@ -4,10 +4,21 @@ import { FileBox, FileCheck } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import { thaiDate } from '../lib/format'
 import { getContracts, getShops, markDocsReceived, markBoxReceived } from '../lib/db'
-import { isDocComplete, shopDocStats } from '../lib/docTracking'
+import { boxRequired, isDocComplete, shopDocStats } from '../lib/docTracking'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
 import type { Contract, Shop } from '../lib/types'
+
+// ===== แปลง YYYY-MM → ชื่อเดือนไทย + ปี พ.ศ. =====
+function thaiMonthLabel(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  if (!y || !m) return ym
+  const monthNames = [
+    'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+    'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
+  ]
+  return `${monthNames[m - 1] ?? m} ${y + 543}`
+}
 
 // ===== วันค้าง (วันนี้ − transactionDate, Math.floor) =====
 function daysOpen(transactionDate: string, ref: Date): number {
@@ -55,12 +66,17 @@ function DocRow({
   return (
     <tr className="border-t border-peach-light/60 hover:bg-peach-light/20">
       <td className="py-2 pr-3 text-sm">
-        <Link
-          to={`/contract/${contract.id}`}
-          className="font-medium text-ink hover:text-salmon-deep hover:underline"
-        >
-          {contract.customerName}
-        </Link>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Link
+            to={`/contract/${contract.id}`}
+            className="font-medium text-ink hover:text-salmon-deep hover:underline"
+          >
+            {contract.customerName}
+          </Link>
+          {boxRequired(contract) && contract.phoneBoxReceived !== true && (
+            <Badge tone="red">📦 มือหนึ่ง ต้องมีกล่อง</Badge>
+          )}
+        </div>
         <p className="text-xs text-ink-soft">{contract.contractNo}</p>
       </td>
       <td className="py-2 pr-3 text-sm text-ink">
@@ -155,6 +171,25 @@ export default function DocTracking() {
     [activeOnline],
   )
 
+  // รวบรวมเดือนที่มีในลิสต์ (YYYY-MM จาก transactionDate) เรียงล่าสุดก่อน
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>()
+    pending.forEach((c) => {
+      const ym = c.transactionDate?.slice(0, 7)
+      if (ym && /^\d{4}-\d{2}$/.test(ym)) set.add(ym)
+    })
+    return Array.from(set).sort((a, b) => b.localeCompare(a))
+  }, [pending])
+
+  // null = ยังไม่เลือก (auto-default เดือนล่าสุด), 'all' = user เลือก "ทุกเดือน" ชัดเจน
+  const [filterMonth, setFilterMonth] = useState<string | null>(null)
+
+  // effectiveMonth: null+มีข้อมูล → เดือนล่าสุด; 'all' → ทุกเดือน; เดือนจริง → ตามที่เลือก
+  const effectiveMonth: string =
+    filterMonth === null
+      ? (monthOptions[0] ?? 'all')
+      : filterMonth
+
   // search filter
   const searched = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -166,11 +201,23 @@ export default function DocTracking() {
     )
   }, [pending, search])
 
+  // month filter
+  const filteredByMonth = useMemo(() => {
+    if (effectiveMonth === 'all') return searched
+    return searched.filter((c) => c.transactionDate?.slice(0, 7) === effectiveMonth)
+  }, [searched, effectiveMonth])
+
   // shop filter
   const filtered = useMemo(() => {
-    if (filterShop === 'all') return searched
-    return searched.filter((c) => c.shopId === filterShop)
-  }, [searched, filterShop])
+    if (filterShop === 'all') return filteredByMonth
+    return filteredByMonth.filter((c) => c.shopId === filterShop)
+  }, [filteredByMonth, filterShop])
+
+  // ชุด activeOnline ที่กรองด้วยเดือนแล้ว — ส่งให้ shopDocStats เพื่อให้ stats ตรงกับ rows ที่แสดง
+  const activeOnlineForStats = useMemo(() => {
+    if (effectiveMonth === 'all') return activeOnline
+    return activeOnline.filter((c) => c.transactionDate?.slice(0, 7) === effectiveMonth)
+  }, [activeOnline, effectiveMonth])
 
   // จัดกลุ่มตาม shopId เรียงตาม totalPendingCount มาก→น้อย
   const groups = useMemo(() => {
@@ -185,16 +232,16 @@ export default function DocTracking() {
         shopId,
         shop: shopOf(shopId),
         rows,
-        stats: shopDocStats(activeOnline, shopId, refDate),
+        stats: shopDocStats(activeOnlineForStats, shopId, refDate),
       }))
       .sort((a, b) => b.stats.totalPendingCount - a.stats.totalPendingCount)
-  }, [filtered, data.shops, activeOnline, refDate])
+  }, [filtered, data.shops, activeOnlineForStats, refDate])
 
-  // shop dropdown options — เฉพาะร้านที่มีรายการค้าง
+  // shop dropdown options — เฉพาะร้านที่มีรายการค้างในเดือนที่เลือก
   const shopOptions = useMemo(() => {
-    const ids = new Set(pending.map((c) => c.shopId))
+    const ids = new Set(filteredByMonth.map((c) => c.shopId))
     return data.shops.filter((s) => ids.has(s.id))
-  }, [pending, data.shops])
+  }, [filteredByMonth, data.shops])
 
   if (loading) {
     return (
@@ -207,7 +254,13 @@ export default function DocTracking() {
 
   return (
     <div>
-      <PageTitle sub={`ค้าง ${pending.length} รายการ`}>
+      <PageTitle
+        sub={
+          effectiveMonth !== 'all'
+            ? `${thaiMonthLabel(effectiveMonth)} — ค้าง ${filtered.length} รายการ`
+            : `ค้าง ${pending.length} รายการ`
+        }
+      >
         <span className="flex items-center gap-2">
           <FileBox size={20} /> รับเอกสาร/กล่อง
         </span>
@@ -221,6 +274,18 @@ export default function DocTracking() {
           placeholder="ค้นหาชื่อลูกค้า / เลขสัญญา"
           className="w-64"
         />
+        <Select
+          value={effectiveMonth}
+          onChange={(e) => setFilterMonth(e.target.value)}
+          className="w-44"
+        >
+          <option value="all">ทุกเดือน</option>
+          {monthOptions.map((ym) => (
+            <option key={ym} value={ym}>
+              {thaiMonthLabel(ym)}
+            </option>
+          ))}
+        </Select>
         <Select
           value={filterShop}
           onChange={(e) => setFilterShop(e.target.value)}

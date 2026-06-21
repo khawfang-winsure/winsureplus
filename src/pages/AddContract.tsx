@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Navigate, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
 import { Button, Card, Field, Input, Loading, PageTitle, Select } from '../components/ui'
 import { calcSummary } from '../lib/calc'
 import { ageRange, baht } from '../lib/format'
-import { nextContractNo } from '../lib/contractNo'
+import { derivePrefix, nextContractNo } from '../lib/contractNo'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
 import {
   contractNoExists,
@@ -156,13 +156,13 @@ function fromContract(c: Contract): FormState {
   }
 }
 
+
 export default function AddContract() {
   const { id } = useParams()
   const isEdit = Boolean(id)
   const navigate = useNavigate()
   const { name: myName, role, configured } = useAuth()
-  const isAdmin = !configured || role === 'admin'
-  if (isEdit && !isAdmin) return <Navigate to="/" replace />
+  const isStaff = configured && role === 'staff'
 
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
@@ -185,7 +185,10 @@ export default function AddContract() {
   const [saving, setSaving] = useState(false)
   const [loadingContract, setLoadingContract] = useState(isEdit)
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
+  const [confirmed, setConfirmed] = useState(false) // ยืนยันแล้ว (emailSentAt && summarySentAt)
+  const [dupWarning, setDupWarning] = useState(false) // เลขสัญญาซ้ำ (ตรวจสดจาก DB)
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
+  const shopChangedRef = useRef(false) // true = เปลี่ยนร้านระหว่างแก้ไข (ต้องบังคับ prefix ใหม่)
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setF((prev) => ({ ...prev, [key]: value }))
     if (errors[key]) setErrors((prev) => { const next = { ...prev }; delete next[key]; return next })
@@ -207,7 +210,10 @@ export default function AddContract() {
     setLoadingContract(true)
     Promise.all([getContract(id), getContractAddresses(id)])
       .then(([c, a]) => {
-        if (c) setF(fromContract(c))
+        if (c) {
+          setF(fromContract(c))
+          setConfirmed(Boolean(c.emailSentAt && c.summarySentAt))
+        }
         setAddr({ current: a.current ?? {}, id_card: a.id_card ?? {}, work: a.work ?? {} })
       })
       .finally(() => setLoadingContract(false))
@@ -244,6 +250,16 @@ export default function AddContract() {
       cancelled = true
     }
   }, [f.shopId, isEdit, opts.shops])
+
+  // ตรวจเลขสัญญาซ้ำสด — แสดง warning ใต้ช่องเลขสัญญา
+  useEffect(() => {
+    if (!f.contractNo) { setDupWarning(false); return }
+    let cancelled = false
+    contractNoExists(f.contractNo, isEdit ? id : undefined)
+      .then((dup) => { if (!cancelled) setDupWarning(dup) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [f.contractNo, isEdit, id])
 
   const currentYear = new Date().getFullYear()
 
@@ -341,6 +357,16 @@ export default function AddContract() {
     if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
     if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
     if (!f.devicePrice || num(f.devicePrice) <= 0) newErrors.devicePrice = 'กรุณากรอกราคาตัวเครื่อง'
+
+    // ตรวจ prefix — บังคับเฉพาะ: เพิ่มใหม่ หรือ แก้ไขและเปลี่ยนร้าน
+    if (!isEdit || shopChangedRef.current) {
+      const shopCode = opts.shops.find((s) => s.id === f.shopId)?.code ?? ''
+      const p = derivePrefix(shopCode)
+      if (p && f.contractNo && !f.contractNo.startsWith(p.prefix)) {
+        newErrors.contractNo = `เลขสัญญาต้องขึ้นต้นด้วย "${p.prefix}" (ร้านนี้)`
+      }
+    }
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors)
       return
@@ -395,6 +421,18 @@ export default function AddContract() {
     )
   }
 
+  // staff แก้ไม่ได้เมื่อยืนยันแล้ว (emailSentAt && summarySentAt) — admin ผ่านได้เสมอ
+  if (isEdit && isStaff && confirmed) {
+    return (
+      <div>
+        <PageTitle>{isEdit ? 'แก้ไขสัญญา' : 'เพิ่มข้อมูลสัญญา'}</PageTitle>
+        <Card>
+          <p className="text-sm text-ink">สัญญานี้ยืนยันแล้ว — แก้ไม่ได้ (ติดต่อแอดมิน)</p>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div>
       <PageTitle sub="กรอกครั้งเดียว ได้ครบ — บันทึกแล้วไปสร้างข้อความสรุปยอด/อีเมลที่หน้าคิวได้เลย">
@@ -415,7 +453,27 @@ export default function AddContract() {
                 />
               </Field>
               <Field label="ชื่อร้านค้า" required>
-                <Select value={f.shopId} onChange={(e) => set('shopId', e.target.value)}>
+                <Select
+                  value={f.shopId}
+                  onChange={(e) => {
+                    const newShopId = e.target.value
+                    set('shopId', newShopId)
+                    if (isEdit) {
+                      shopChangedRef.current = true
+                      // รันเลขถัดไปของร้านใหม่ (อัตโนมัติ)
+                      const shopCode = opts.shops.find((s) => s.id === newShopId)?.code ?? ''
+                      getShopContractNos(newShopId)
+                        .then((nos) => {
+                          const next = nextContractNo(shopCode, nos)
+                          if (next) {
+                            manualNoRef.current = false
+                            setF((prev) => ({ ...prev, contractNo: next }))
+                          }
+                        })
+                        .catch(() => {})
+                    }
+                  }}
+                >
                   {opts.shops.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.code} {s.name}
@@ -438,6 +496,14 @@ export default function AddContract() {
                     เลือกร้านแล้วระบบจะรันเลขถัดไปให้ — แก้เองได้ (เคสแรกของร้านพิมพ์เอง)
                   </p>
                 )}
+                {isEdit && (
+                  <p className="mt-1 text-xs text-ink-soft">
+                    เปลี่ยนร้านค้า → ระบบจะรันเลขถัดไปของร้านใหม่ให้อัตโนมัติ
+                  </p>
+                )}
+                {dupWarning && (
+                  <p className="mt-1 text-xs font-semibold text-red-600">⚠️ เลขซ้ำ — มีสัญญาเลขนี้อยู่แล้วในระบบ</p>
+                )}
                 {errors.contractNo && <p className="mt-1 text-xs text-red-600">{errors.contractNo}</p>}
               </Field>
               <Field label="เลข INV" required>
@@ -445,34 +511,43 @@ export default function AddContract() {
                 {errors.invNo && <p className="mt-1 text-xs text-red-600">{errors.invNo}</p>}
               </Field>
             </div>
-            <div className="mt-3">
-              <label className="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={f.pendingDocuments}
-                  onChange={(e) => set('pendingDocuments', e.target.checked)}
-                  className="h-4 w-4 accent-amber-500"
-                />
-                <span className="font-medium text-ink">เป็น Case Online (รอเอกสาร)</span>
-              </label>
-              <p className="ml-6 mt-0.5 text-xs text-ink-soft">
-                เคสออนไลน์ที่ยังรอเอกสาร — จะมีแจ้งเตือนก่อนส่งเมล/สรุปยอด
-              </p>
-            </div>
-            <div className="mt-2">
-              <label className="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={f.hasPhoneBox}
-                  onChange={(e) => set('hasPhoneBox', e.target.checked)}
-                  className="h-4 w-4 accent-amber-500"
-                />
-                <span className="font-medium text-ink">มีกล่องเครื่อง</span>
-              </label>
-              <p className="ml-6 mt-0.5 text-xs text-ink-soft">
-                ร้านแจ้งว่าจะส่งกล่องโทรศัพท์คืนมาด้วย — ระบบจะติดตามการรับกล่อง
-              </p>
-            </div>
+            {!isEdit && (
+              <>
+                <div className="mt-3">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={f.pendingDocuments}
+                      onChange={(e) => set('pendingDocuments', e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span className="font-medium text-ink">เป็น Case Online (รอเอกสาร)</span>
+                  </label>
+                  <p className="ml-6 mt-0.5 text-xs text-ink-soft">
+                    เคสออนไลน์ที่ยังรอเอกสาร — จะมีแจ้งเตือนก่อนส่งเมล/สรุปยอด
+                  </p>
+                </div>
+                <div className="mt-2">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={f.hasPhoneBox}
+                      onChange={(e) => set('hasPhoneBox', e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span className="font-medium text-ink">มีกล่องเครื่อง</span>
+                    {f.condition === 'new' && (
+                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-700">
+                        มือหนึ่ง: ต้องมีกล่อง
+                      </span>
+                    )}
+                  </label>
+                  <p className="ml-6 mt-0.5 text-xs text-ink-soft">
+                    ร้านแจ้งว่าจะส่งกล่องโทรศัพท์คืนมาด้วย — ระบบจะติดตามการรับกล่อง
+                  </p>
+                </div>
+              </>
+            )}
           </Card>
 
           <Card>

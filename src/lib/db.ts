@@ -118,6 +118,7 @@ interface ContractRow {
   phone_box_received: boolean | null
   phone_box_received_at: string | null
   phone_box_received_by: string | null
+  created_at: string
 }
 
 function mapContract(r: ContractRow): Contract {
@@ -184,6 +185,7 @@ function mapContract(r: ContractRow): Contract {
     phoneBoxReceived: r.phone_box_received ?? false,
     phoneBoxReceivedAt: r.phone_box_received_at ?? null,
     phoneBoxReceivedBy: r.phone_box_received_by ?? null,
+    createdAt: r.created_at,
   }
 }
 
@@ -690,9 +692,53 @@ export async function contractNoExists(contractNo: string, exceptId?: string): P
   return (data ?? []).length > 0
 }
 
+/** payload สำหรับ UPDATE — ตรงกับ toInsert แต่ไม่มี doc-tracking fields
+ *  (original_docs_received, has_phone_box, pending_documents)
+ *  เพื่อกันการรีเซ็ตสถานะรับเอกสาร/กล่องทุกครั้งที่กดแก้ไขสัญญา */
+function toUpdate(c: Omit<Contract, 'id'>) {
+  return {
+    contract_no: c.contractNo,
+    inv_no: c.invNo || null,
+    sn: c.sn || null,
+    imei: c.imei || null,
+    customer_name: c.customerName,
+    national_id: c.nationalId || null,
+    phone: c.phone || null,
+    phone_alt1: c.phoneAlt1 || null,
+    phone_alt2: c.phoneAlt2 || null,
+    facebook_link: c.facebookLink || null,
+    birth_year: c.birthYear ?? null,
+    occupation: c.occupation || null,
+    occupation_proof: c.occupationProof || null,
+    shop_id: c.shopId,
+    model: c.model || null,
+    storage: c.storage || null,
+    condition: c.condition,
+    origin: c.origin,
+    device_price: c.devicePrice,
+    down_percent: c.downPercent,
+    commission_percent: c.commissionPercent,
+    doc_fee: c.docFee,
+    finance_amount: c.financeAmount,
+    monthly_payment: c.monthlyPayment,
+    term_months: c.termMonths,
+    due_day: c.dueDay,
+    has_promotion: c.hasPromotion,
+    promotion: c.promotion || null,
+    promotion_detail: c.promotionDetail || null,
+    status: c.status,
+    transaction_date: c.transactionDate,
+    operator: c.operator || null,
+    notes: c.notes || null,
+    color: c.color || null,
+    // doc-tracking fields (original_docs_received, has_phone_box, pending_documents)
+    // ไม่ถูกส่งใน UPDATE — แก้ผ่าน markDocsReceived / setContractFlags / revertDocReceipt
+  }
+}
+
 export async function updateContract(id: string, c: Omit<Contract, 'id'>): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase.from('contracts').update(toInsert(c)).eq('id', id)
+  const { error } = await supabase.from('contracts').update(toUpdate(c)).eq('id', id)
   if (error) throw error
 }
 
@@ -2281,7 +2327,21 @@ export async function setContractFlags(
   if (patch.lawyerEngagedAt !== undefined) upd.lawyer_engaged_at = patch.lawyerEngagedAt
   if (patch.disputed !== undefined) upd.disputed = patch.disputed
   if (patch.disputedSince !== undefined) upd.disputed_since = patch.disputedSince
-  if (patch.pendingDocuments !== undefined) upd.pending_documents = patch.pendingDocuments
+  if (patch.pendingDocuments !== undefined) {
+    upd.pending_documents = patch.pendingDocuments
+    // bounce-back: ทุกครั้งที่ tick "รอเอกสาร" → clear ประวัติส่งเมล/สรุป
+    // เพื่อให้เคสเด้งกลับเข้าหน้า WaitingEmail + WaitingSummary (filter !sentAt)
+    // ปลอดภัยแม้ true→true เพราะ markEmailSent/markSummarySent ตั้ง pending=false เสมอ
+    // จึงไม่มีเคสที่ pending อยู่แล้วแล้วถูก clear ซ้ำโดยไม่ตั้งใจ
+    if (patch.pendingDocuments === true) {
+      upd.email_sent_at = null
+      upd.email_sent_by = null
+      upd.summary_sent_at = null
+      upd.summary_sent_by = null
+      upd.documents_confirmed_at = null
+      upd.documents_confirmed_by = null
+    }
+  }
   if (Object.keys(upd).length === 0) return // ไม่มีอะไรให้อัปเดต
   const { error } = await supabase.from('contracts').update(upd).eq('id', contractId)
   if (error) throw error

@@ -54,6 +54,7 @@ import {
 import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
+import { boxRequired } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
@@ -405,11 +406,18 @@ export default function ContractDetail() {
               )}
             </Button>
           )}
-          {/* แก้ไขสัญญา — admin only */}
-          {isAdmin && (
-            <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
-              <Pencil size={15} /> แก้ไข
-            </Button>
+          {/* แก้ไขสัญญา — admin เสมอ, staff ได้เมื่อยังไม่ยืนยัน */}
+          {canStaff && (
+            isAdmin || !(contract.emailSentAt && contract.summarySentAt)
+              ? (
+                <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
+                  <Pencil size={15} /> แก้ไข
+                </Button>
+              ) : (
+                <span className="rounded-xl px-3 py-1.5 text-xs text-ink-soft">
+                  ยืนยันแล้ว — แก้ไม่ได้ (ติดต่อแอดมิน)
+                </span>
+              )
           )}
           {/* ขยายระยะเวลา + คืนเครื่อง — admin และ staff */}
           {canStaff && contract.status === 'active' && (
@@ -608,6 +616,11 @@ export default function ContractDetail() {
             {/* ===== กล่องเครื่อง ===== */}
             <div>
               <p className="mb-1 text-xs text-ink-soft">กล่องเครื่อง</p>
+              {boxRequired(contract) && contract.phoneBoxReceived !== true && (
+                <div className="mb-1">
+                  <Badge tone="red">📦 มือหนึ่ง ต้องมีกล่อง</Badge>
+                </div>
+              )}
               {!contract.hasPhoneBox ? (
                 <p className="text-sm text-ink-soft">ร้านแจ้งว่าไม่มีกล่อง</p>
               ) : contract.phoneBoxReceived ? (

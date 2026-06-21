@@ -10,7 +10,7 @@
  * - "JA02"      → { prefix: "P-JA02",    width: 4 }
  * - อื่นๆ       → null (พนักงานพิมพ์เอง)
  */
-function derivePrefix(code: string): { prefix: string; width: number } | null {
+export function derivePrefix(code: string): { prefix: string; width: number } | null {
   const c = code.trim().toUpperCase()
 
   // รูปแบบ AQ S00XXX  (เช่น "AQ S00001", "AQ S00016")

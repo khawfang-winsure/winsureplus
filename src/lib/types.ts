@@ -223,6 +223,8 @@ export interface Contract {
   phoneBoxReceived?: boolean           // รับกล่องโทรศัพท์แล้ว
   phoneBoxReceivedAt?: string | null   // timestamp ที่รับกล่อง
   phoneBoxReceivedBy?: string | null   // ชื่อผู้รับกล่อง
+  // --- system timestamp (กฎมือหนึ่งต้องมีกล่อง — ใช้เปรียบเทียบกับ DOC_BOX_RULE_CUTOFF) ---
+  createdAt?: string // ISO timestamptz ที่บันทึกสัญญาเข้า DB (ไม่ backdatable)
 }
 
 // ---------- Extra Charges (migration 0032) ----------
