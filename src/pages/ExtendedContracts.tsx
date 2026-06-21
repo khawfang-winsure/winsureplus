@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { CalendarRange } from 'lucide-react'
 import { Badge, Card, Loading, PageTitle, Select } from '../components/ui'
 import { LineChart } from '../components/LineChart'
+import Pagination from '../components/Pagination'
 import { baht } from '../lib/format'
 import { getAllExtensions, getAllStatuses, type ExtensionRecord, type ExtensionType } from '../lib/db'
 import { EXT_TYPE_LABEL } from './ContractDetail'
@@ -104,7 +105,20 @@ export default function ExtendedContracts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, statusMap])
 
-  const filtered = filter === 'all' ? rows : rows.filter((r) => r.extType === filter)
+  const filtered = useMemo(
+    () => (filter === 'all' ? rows : rows.filter((r) => r.extType === filter)),
+    [rows, filter],
+  )
+
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+
+  useEffect(() => { setPage(1) }, [filter])
+
+  const pagedRows = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize],
+  )
 
   if (loading) {
     return (
@@ -171,6 +185,7 @@ export default function ExtendedContracts() {
           {rows.length === 0 ? 'ยังไม่มีลูกค้าที่ขยายระยะเวลา' : 'ไม่มีรายการในประเภทที่เลือก'}
         </Card>
       ) : (
+        <>
         <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
           <table className="w-full min-w-[960px] text-sm">
             <thead>
@@ -181,7 +196,7 @@ export default function ExtendedContracts() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((e, idx) => (
+              {pagedRows.map((e, idx) => (
                 <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                   <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
                   <td className="px-3 py-2.5">
@@ -204,6 +219,14 @@ export default function ExtendedContracts() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          total={filtered.length}
+          page={page}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(1) }}
+        />
+        </>
       )}
     </div>
   )

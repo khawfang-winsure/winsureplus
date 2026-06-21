@@ -118,6 +118,7 @@ interface ContractRow {
   phone_box_received: boolean | null
   phone_box_received_at: string | null
   phone_box_received_by: string | null
+  pending_doc_items: string[] | null  // jsonb array (0053)
   created_at: string
 }
 
@@ -178,6 +179,7 @@ function mapContract(r: ContractRow): Contract {
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     color: r.color ?? undefined,
     pendingDocuments: r.pending_documents ?? false,
+    pendingDocItems: Array.isArray(r.pending_doc_items) ? r.pending_doc_items : [],
     originalDocsReceived: r.original_docs_received ?? false,
     originalDocsReceivedAt: r.original_docs_received_at ?? null,
     originalDocsReceivedBy: r.original_docs_received_by ?? null,
@@ -227,6 +229,7 @@ function toInsert(c: Omit<Contract, 'id'>) {
     notes: c.notes || null,
     color: c.color || null,
     pending_documents: c.pendingDocuments ?? false,
+    pending_doc_items: c.pendingDocItems ?? [],   // 0053 — รายการเอกสารที่รอ
     original_docs_received: false, // สัญญาใหม่ = ยังไม่ได้รับเอกสาร เสมอ
     has_phone_box: c.hasPhoneBox ?? false,
   }
@@ -731,8 +734,8 @@ function toUpdate(c: Omit<Contract, 'id'>) {
     operator: c.operator || null,
     notes: c.notes || null,
     color: c.color || null,
-    // doc-tracking fields (original_docs_received, has_phone_box, pending_documents)
-    // ไม่ถูกส่งใน UPDATE — แก้ผ่าน markDocsReceived / setContractFlags / revertDocReceipt
+    // doc-tracking fields (original_docs_received, has_phone_box, pending_documents,
+    //   pending_doc_items) ไม่ถูกส่งใน UPDATE — แก้ผ่าน markDocsReceived / setContractFlags / revertDocReceipt
   }
 }
 
@@ -1272,20 +1275,50 @@ export interface ReturnInput {
   lastInstallmentPaid: boolean
   penaltyPaid: boolean
   repairFee: number
+  // --- Shipping method (0052) — optional ไม่กระทบ call-site เดิม ---
+  returnMethod?: 'shipped' | 'walk_in'   // วิธีคืนเครื่อง
+  trackingNumber?: string                // เลขพัสดุ (returnMethod='shipped' เท่านั้น)
+  courier?: string                       // ชื่อขนส่ง (returnMethod='shipped' เท่านั้น)
+  returnLocation?: string               // สถานที่คืน (returnMethod='walk_in' เท่านั้น)
+  deviceStatus?: string                 // override device_status ตอน insert (ถ้าไม่ส่ง → derive จาก returnMethod)
 }
 
 export async function submitReturn(contractId: string, input: ReturnInput): Promise<void> {
   if (!supabase) return
   // กรณี 3 = ชำระครบ+ค่าซ่อมแล้ว -> ปิดสัญญาสมบูรณ์, อื่นๆ = คืนเครื่อง (รอ)
   const newStatus = input.caseNo === 3 ? 'returned_closed' : 'returned'
-  const { error: e1 } = await supabase.from('device_returns').insert({
+
+  // --- คำนวณ device_status ที่ตอน insert ---
+  // ลำดับความสำคัญ: explicit deviceStatus > derive จาก returnMethod > ไม่ใส่ (DB default pending_check)
+  let insertDeviceStatus: string | undefined
+  if (input.deviceStatus !== undefined) {
+    insertDeviceStatus = input.deviceStatus
+  } else if (input.returnMethod === 'shipped') {
+    insertDeviceStatus = 'in_transit' // อยู่ระหว่างจัดส่ง รอตรวจสอบที่ปลายทาง
+  }
+  // returnMethod='walk_in' หรือไม่ระบุ → ไม่ใส่ device_status (ใช้ default 'pending_check')
+
+  const returnRow: Record<string, unknown> = {
     contract_id: contractId,
     case_no: input.caseNo,
     last_installment_paid: input.lastInstallmentPaid,
     penalty_paid: input.penaltyPaid,
     repair_fee: input.repairFee || 0,
     checked_at: input.caseNo === 3 ? new Date().toISOString() : null,
-  })
+  }
+
+  // ใส่ shipping fields เฉพาะเมื่อมีค่า
+  if (insertDeviceStatus !== undefined) returnRow.device_status = insertDeviceStatus
+  if (input.returnMethod !== undefined) returnRow.return_method = input.returnMethod
+  if (input.returnMethod === 'shipped') {
+    if (input.trackingNumber) returnRow.tracking_number = input.trackingNumber
+    if (input.courier) returnRow.courier = input.courier
+  }
+  if (input.returnMethod === 'walk_in' && input.returnLocation) {
+    returnRow.return_location = input.returnLocation
+  }
+
+  const { error: e1 } = await supabase.from('device_returns').insert(returnRow)
   if (e1) throw e1
   const { error: e2 } = await supabase.from('contracts').update({ status: newStatus }).eq('id', contractId)
   if (e2) throw e2
@@ -1327,6 +1360,10 @@ interface ReturnRow {
   attributed_at: string | null
   repair_cost: number | null
   attributed_freelancer: { full_name: string } | null
+  // Shipping method (0052)
+  courier: string | null
+  return_method: string | null
+  return_location: string | null
 }
 
 export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' }): Promise<DeviceReturnRow[]> {
@@ -1369,6 +1406,10 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
     attributedAt: r.attributed_at,
     repairCost: r.repair_cost == null ? 0 : Number(r.repair_cost),
     attributedFreelancerName: r.attributed_freelancer?.full_name ?? null,
+    // Shipping method (0052)
+    courier: r.courier ?? null,
+    returnMethod: r.return_method ?? null,
+    returnLocation: r.return_location ?? null,
   }))
 }
 
@@ -1380,6 +1421,7 @@ export async function updateReturnWorkflow(
   patch: {
     deviceStatus?: DeviceStatus
     trackingNumber?: string
+    courier?: string          // 0052: ชื่อขนส่ง (patch ภายหลัง)
     salePrice?: number
     updatedBy?: string
   },
@@ -1390,6 +1432,9 @@ export async function updateReturnWorkflow(
 
   if (patch.trackingNumber !== undefined) {
     update.tracking_number = patch.trackingNumber
+  }
+  if (patch.courier !== undefined) {
+    update.courier = patch.courier
   }
   if (patch.salePrice !== undefined) {
     update.sale_price = patch.salePrice
@@ -2309,7 +2354,8 @@ export type ContractFlagPatch = {
   lawyerEngagedAt?: string | null // date ISO
   disputed?: boolean
   disputedSince?: string | null // date ISO
-  pendingDocuments?: boolean // true = รอเอกสาร (Case Online); suppress สถานะล่าช้า
+  pendingDocuments?: boolean    // true = รอเอกสาร (Case Online); suppress สถานะล่าช้า
+  pendingDocItems?: string[]    // 0053: รายการเอกสารที่รอ — แก้แล้ว ไม่ trigger bounce-back
 }
 
 /** ตั้ง/ปลด compliance flags บนสัญญา (admin+staff ผ่าน RLS contracts_write; trigger กัน staff ปลด) */
@@ -2341,6 +2387,10 @@ export async function setContractFlags(
       upd.documents_confirmed_at = null
       upd.documents_confirmed_by = null
     }
+  }
+  // pendingDocItems: แก้รายการเอกสารที่รอ — ไม่ trigger bounce-back (Pete: "แก้ list เฉยๆ ไม่เด้งคิว")
+  if (patch.pendingDocItems !== undefined) {
+    upd.pending_doc_items = patch.pendingDocItems
   }
   if (Object.keys(upd).length === 0) return // ไม่มีอะไรให้อัปเดต
   const { error } = await supabase.from('contracts').update(upd).eq('id', contractId)

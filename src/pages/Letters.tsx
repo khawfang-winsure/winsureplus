@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Copy, MapPin, Printer, Search } from 'lucide-react'
 import { Badge, Button, Card, Loading, Modal, PageTitle } from '../components/ui'
 import { AddressFields } from '../components/AddressFields'
+import Pagination from '../components/Pagination'
 import {
   getAllAddresses,
   getAllInstallments,
@@ -150,8 +151,19 @@ export default function Letters() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, tab, search, shopFilter, onlyWithAddr])
 
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+
+  useEffect(() => { setPage(1) }, [tab, search, shopFilter, onlyWithAddr])
+
+  const pagedRows = useMemo(
+    () => visibleRows.slice((page - 1) * pageSize, page * pageSize),
+    [visibleRows, page, pageSize],
+  )
+
   // ส่ง = เลือกได้เฉพาะที่มีที่อยู่; ลงพื้นที่ = เลือกได้ทุกราย
-  const selectableIds = (tab === 'send' ? visibleRows.filter(hasAddr) : tab === 'field' ? visibleRows : [])
+  // selectableIds ขอบเขตเฉพาะหน้าปัจจุบัน (pagedRows) — "select all" = เลือกทุกแถวในหน้านี้
+  const selectableIds = (tab === 'send' ? pagedRows.filter(hasAddr) : tab === 'field' ? pagedRows : [])
     .map((r) => r.status.contractId)
   const allPageSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
   const selectedSendCount = [...selected].filter((id) => allByTab.send.some((r) => r.status.contractId === id)).length
@@ -357,6 +369,7 @@ export default function Letters() {
             ไม่มีรายการในสเตจนี้
           </p>
         ) : (
+          <>
           <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
             <table className="w-full min-w-[640px] text-sm">
               <thead>
@@ -377,7 +390,7 @@ export default function Letters() {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map((r) => (
+                {pagedRows.map((r) => (
                   <RowView
                     key={r.status.contractId}
                     r={r}
@@ -392,6 +405,14 @@ export default function Letters() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            total={visibleRows.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1) }}
+          />
+          </>
         )}
       </Card>
 

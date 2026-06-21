@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
+import Pagination from '../components/Pagination'
 import { getSaleHistoryRaw, getReturns, type SaleHistoryInput as RawInput } from '../lib/db'
 import { buildSaleHistory, type SaleHistoryRow } from '../lib/saleHistory'
 import { useAsync } from '../lib/useAsync'
@@ -120,6 +121,16 @@ export default function SaleHistory() {
     return rows.filter((r) => monthKey(r.returnedAt) === filterMonth)
   }, [rows, filterMonth])
 
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+
+  useEffect(() => { setPage(1) }, [filterMonth])
+
+  const pagedRows = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize],
+  )
+
   return (
     <div>
       <PageTitle
@@ -178,7 +189,7 @@ export default function SaleHistory() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => {
+                {pagedRows.map((r) => {
                   const freelancerName = attributionMap.get(r.contractId) ?? null
                   const freelancerCommission = r.resalePrice > 0
                     ? Math.round(r.resalePrice * FREELANCER_COMMISSION_RATE)
@@ -222,6 +233,13 @@ export default function SaleHistory() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            total={filtered.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1) }}
+          />
         </>
       )}
     </div>

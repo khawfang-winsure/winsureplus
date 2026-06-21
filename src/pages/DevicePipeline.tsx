@@ -5,6 +5,7 @@ import { baht, thaiDate } from '../lib/format'
 import { getReturns, updateDefectNotes, updateReturnWorkflow, updateSalePrice } from '../lib/db'
 import type { DeviceReturnRow } from '../lib/types'
 import {
+  COURIERS,
   DEVICE_STATUS_LABEL,
   nextStatuses,
   type DeviceStatus,
@@ -15,6 +16,7 @@ import { useAuth } from '../lib/auth'
 const FILTER_OPTIONS: { value: DeviceStatus | 'all' | 'active'; label: string }[] = [
   { value: 'active', label: 'งานที่ยัง active (ยกเว้นจัดส่งแล้ว)' },
   { value: 'all', label: 'ทั้งหมด (รวมจัดส่งแล้ว)' },
+  { value: 'in_transit', label: DEVICE_STATUS_LABEL['in_transit'] },
   { value: 'pending_check', label: DEVICE_STATUS_LABEL['pending_check'] },
   { value: 'checked', label: DEVICE_STATUS_LABEL['checked'] },
   { value: 'pending_sale', label: DEVICE_STATUS_LABEL['pending_sale'] },
@@ -25,6 +27,7 @@ const FILTER_OPTIONS: { value: DeviceStatus | 'all' | 'active'; label: string }[
 
 // ===== Badge tone ตาม DeviceStatus =====
 const STATUS_TONE: Record<DeviceStatus, 'neutral' | 'amber' | 'green' | 'red'> = {
+  in_transit: 'amber',   // 0052: ระหว่างจัดส่ง
   pending_check: 'neutral',
   checked: 'neutral',
   pending_sale: 'amber',
@@ -68,15 +71,20 @@ function applyFilter(
 // ===== Late-fill tracking cell (pending_check + ไม่มี tracking_number) =====
 function TrackingCell({ row, onSaved }: { row: DeviceReturnRow; onSaved: () => Promise<void> }) {
   const { name } = useAuth()
-  const [value, setValue] = useState('')
+  const [tracking, setTracking] = useState('')
+  const [courier, setCourier] = useState('')
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
 
   async function save() {
-    if (!value.trim()) return
+    if (!tracking.trim()) return
     setBusy(true)
     try {
-      await updateReturnWorkflow(row.id, { trackingNumber: value.trim(), updatedBy: name ?? undefined })
+      await updateReturnWorkflow(row.id, {
+        trackingNumber: tracking.trim(),
+        ...(courier ? { courier } : {}),
+        updatedBy: name ?? undefined,
+      })
       setSaved(true)
       await onSaved()
     } finally {
@@ -87,17 +95,29 @@ function TrackingCell({ row, onSaved }: { row: DeviceReturnRow; onSaved: () => P
   if (saved) return <span className="text-ink-soft text-xs">บันทึกแล้ว</span>
 
   return (
-    <div className="flex items-center gap-1">
-      <Input
-        type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="ใส่เลขพัสดุ"
+    <div className="flex flex-col gap-1">
+      <Select
+        value={courier}
+        onChange={(e) => setCourier(e.target.value)}
         className="w-36 text-xs"
-      />
-      <Button variant="ghost" onClick={save} disabled={busy || !value.trim()}>
-        {busy ? '...' : 'บันทึก'}
-      </Button>
+      >
+        <option value="">เลือกขนส่ง</option>
+        {COURIERS.map((c) => (
+          <option key={c} value={c}>{c}</option>
+        ))}
+      </Select>
+      <div className="flex items-center gap-1">
+        <Input
+          type="text"
+          value={tracking}
+          onChange={(e) => setTracking(e.target.value)}
+          placeholder="ใส่เลขพัสดุ"
+          className="w-36 text-xs"
+        />
+        <Button variant="ghost" onClick={save} disabled={busy || !tracking.trim()}>
+          {busy ? '...' : 'บันทึก'}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -227,7 +247,7 @@ export default function DevicePipeline() {
               <tr className="border-b border-peach text-left text-ink-soft">
                 <th className="py-2 pr-4 font-medium">สัญญา / ลูกค้า</th>
                 <th className="py-2 pr-4 font-medium">สถานะปัจจุบัน</th>
-                <th className="py-2 pr-4 font-medium">เลขพัสดุ</th>
+                <th className="py-2 pr-4 font-medium">ขนส่ง / เลขพัสดุ</th>
                 <th className="py-2 pr-4 font-medium">ราคาขาย</th>
                 <th className="py-2 pr-4 font-medium">อัปเดตล่าสุด</th>
                 <th className="py-2 pr-4 font-medium">ผู้ดำเนินการ</th>
@@ -255,10 +275,19 @@ export default function DevicePipeline() {
                       </Badge>
                     </td>
                     <td className="py-3 pr-4 text-ink">
-                      {showLateFill ? (
-                        <TrackingCell row={r} onSaved={load} />
+                      {r.returnMethod === 'walk_in' ? (
+                        <span className="text-ink-soft text-xs">
+                          คืนที่ร้าน{r.returnLocation ? `: ${r.returnLocation}` : ''}
+                        </span>
                       ) : r.trackingNumber ? (
-                        r.trackingNumber
+                        <div className="flex flex-col gap-0.5">
+                          {r.courier && (
+                            <span className="text-xs text-ink-soft">{r.courier}</span>
+                          )}
+                          <span>{r.trackingNumber}</span>
+                        </div>
+                      ) : showLateFill ? (
+                        <TrackingCell row={r} onSaved={load} />
                       ) : (
                         <span className="text-ink-soft">-</span>
                       )}

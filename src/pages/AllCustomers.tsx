@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useFilter } from '../lib/useFilter'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from 'lucide-react'
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
+import Pagination from '../components/Pagination'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import { getAllInstallments, getAllStatuses, getContracts, getShops } from '../lib/db'
 import type { Contract, ContractStatus, ContractStatusRow, OverdueBucket } from '../lib/types'
@@ -144,6 +145,25 @@ export default function AllCustomers() {
     setModelFilter('')
   }
 
+  // ----- Pagination -----
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+
+  // reset to page 1 whenever any filter/search changes
+  useEffect(() => {
+    setPage(1)
+  }, [query, statusFilter, bucketFilter, shopFilter, modelFilter])
+
+  const pagedRows = useMemo(
+    () => rows.slice((page - 1) * pageSize, page * pageSize),
+    [rows, page, pageSize],
+  )
+
+  function handlePageSizeChange(s: number) {
+    setPageSize(s)
+    setPage(1)
+  }
+
   return (
     <div>
       <PageTitle count={loading ? undefined : { shown: rows.length, total: data.contracts.length }}>
@@ -218,7 +238,7 @@ export default function AllCustomers() {
                       ))}
                     </tr>
                   </thead>
-                  {rows.map((c, i) => {
+                  {pagedRows.map((c, i) => {
                     const st = statusBy.get(c.id)
                     const pr = progressBy.get(c.id) ?? { paid: 0, total: c.termMonths || 0 }
                     const pct = pr.total > 0 ? Math.round((pr.paid / pr.total) * 100) : 0
@@ -317,7 +337,7 @@ export default function AllCustomers() {
 
               {/* ===== Mobile card stack (< md) ===== */}
               <div className="flex flex-col gap-3 md:hidden">
-                {rows.map((c) => {
+                {pagedRows.map((c) => {
                   const st = statusBy.get(c.id)
                   const pr = progressBy.get(c.id) ?? { paid: 0, total: c.termMonths || 0 }
                   const pct = pr.total > 0 ? Math.round((pr.paid / pr.total) * 100) : 0
@@ -391,6 +411,15 @@ export default function AllCustomers() {
                   )
                 })}
               </div>
+
+              {/* ===== Pagination (bottom — ใช้ได้ทั้ง desktop และ mobile) ===== */}
+              <Pagination
+                total={rows.length}
+                page={page}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={handlePageSizeChange}
+              />
             </>
           )}
         </>

@@ -52,6 +52,7 @@ import {
   type RateSet,
 } from '../lib/rates'
 import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
+import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired } from '../lib/docTracking'
@@ -187,9 +188,6 @@ export default function ContractDetail() {
   // ===== ตีกลับเอกสาร/กล่อง =====
   const [revertTarget, setRevertTarget] = useState<'docs' | 'box' | null>(null)
   const [docRejectLog, setDocRejectLog] = useState<DocRejectEntry[]>([])
-
-  // ===== Inline toggle รอเอกสาร (Case Online) =====
-  const [pendingDocsBusy, setPendingDocsBusy] = useState(false)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -564,27 +562,19 @@ export default function ContractDetail() {
             )}
           </div>
 
-          {/* ===== ทางลัด: toggle รอเอกสาร (Case Online) ===== */}
-          <div className="mt-3 border-t border-peach pt-3">
-            <Button
-              variant={contract.pendingDocuments ? 'ghost' : 'primary'}
-              disabled={pendingDocsBusy}
-              onClick={() => {
-                const next = !contract.pendingDocuments
-                setPendingDocsBusy(true)
-                setContract((prev) => prev ? { ...prev, pendingDocuments: next } : prev)
-                void setContractFlags(contract.id, { pendingDocuments: next })
-                  .then(() => load())
-                  .catch(() => {
-                    // rollback optimistic update หากล้มเหลว
-                    setContract((prev) => prev ? { ...prev, pendingDocuments: !next } : prev)
-                  })
-                  .finally(() => setPendingDocsBusy(false))
-              }}
-            >
-              {contract.pendingDocuments ? 'เอกสารครบแล้ว — ปลดรอเอกสาร' : 'ทำเป็นรอเอกสาร (Case Online)'}
-            </Button>
-          </div>
+          {/* ===== รายการเอกสารที่รอ (read-only — แก้ที่หน้าแก้ไขสัญญา) ===== */}
+          {contract.pendingDocuments && contract.pendingDocItems && contract.pendingDocItems.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {contract.pendingDocItems.map((item) => (
+                <span
+                  key={item}
+                  className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-800"
+                >
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
         </Card>
       )}
 
@@ -2293,9 +2283,9 @@ function ExtendModal({
 }
 
 /**
- * ReturnModal: บันทึกการคืนเครื่อง
- * หมายเหตุ: เลขพัสดุ (tracking_number) รอน้องชีสเพิ่ม ReturnInput.trackingNumber + submitReturn
- * → ยังไม่แสดง field นี้ในโมดัลนี้ กรอกได้ภายหลังที่หน้าไพพ์ไลน์เครื่อง
+ * ReturnModal: บันทึกการคืนเครื่อง — รองรับ 2 วิธี
+ * - "ส่งพัสดุมา" (shipped): ลูกค้าหรือร้านส่งพัสดุ → เลือกขนส่ง + เลขพัสดุ (db set device_status='in_transit')
+ * - "คืนที่ร้าน" (walk_in): ลูกค้าคืนที่ร้านพาร์ทเนอร์ → ระบุรหัส/ร้านที่คืน (db คง pending_check)
  */
 function ReturnModal({
   contractId,
@@ -2311,6 +2301,10 @@ function ReturnModal({
     lastInstallmentPaid: false,
     penaltyPaid: false,
     repairFee: 0,
+    returnMethod: 'walk_in',
+    courier: '',
+    trackingNumber: '',
+    returnLocation: '',
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -2343,7 +2337,79 @@ function ReturnModal({
           </Select>
         </Field>
 
-        {/* เลขพัสดุ: กรอกได้ที่หน้าไพพ์ไลน์เครื่องภายหลัง (รอน้องชีสเพิ่ม ReturnInput.trackingNumber) */}
+        {/* ===== วิธีคืนเครื่อง ===== */}
+        <Field label="วิธีคืนเครื่อง">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setF((p) => ({ ...p, returnMethod: 'walk_in' }))}
+              className={`flex-1 rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
+                f.returnMethod === 'walk_in'
+                  ? 'border-salmon-deep bg-salmon/10 text-salmon-deep'
+                  : 'border-peach bg-white text-ink-soft hover:bg-peach-light/40'
+              }`}
+            >
+              คืนที่ร้าน
+            </button>
+            <button
+              type="button"
+              onClick={() => setF((p) => ({ ...p, returnMethod: 'shipped' }))}
+              className={`flex-1 rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
+                f.returnMethod === 'shipped'
+                  ? 'border-salmon-deep bg-salmon/10 text-salmon-deep'
+                  : 'border-peach bg-white text-ink-soft hover:bg-peach-light/40'
+              }`}
+            >
+              ส่งพัสดุมา
+            </button>
+          </div>
+        </Field>
+
+        {/* shipped — ขนส่ง + เลขพัสดุ */}
+        {f.returnMethod === 'shipped' && (
+          <>
+            <Field label="บริษัทขนส่ง">
+              <Select
+                value={f.courier ?? ''}
+                onChange={(e) => setF((p) => ({ ...p, courier: e.target.value }))}
+              >
+                <option value="">— เลือกขนส่ง —</option>
+                {COURIERS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="เลขพัสดุ (ถ้ามี)">
+              <Input
+                value={f.trackingNumber ?? ''}
+                onChange={(e) => setF((p) => ({ ...p, trackingNumber: e.target.value }))}
+                placeholder="เช่น EE123456789TH"
+              />
+            </Field>
+            {!f.courier && (
+              <p className="text-xs text-amber-700">แนะนำให้เลือกขนส่งเพื่อง่ายต่อการติดตาม</p>
+            )}
+            <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              ระบบจะบันทึกสถานะเครื่องเป็น "อยู่ระหว่างจัดส่ง" — เปลี่ยนเป็น "รอตรวจสอบ" เมื่อของถึงมือพนักงาน
+            </p>
+          </>
+        )}
+
+        {/* walk_in — ร้านที่คืน */}
+        {f.returnMethod === 'walk_in' && (
+          <>
+            <Field label="รหัส/ชื่อร้านที่ลูกค้าคืน (ถ้ามี)">
+              <Input
+                value={f.returnLocation ?? ''}
+                onChange={(e) => setF((p) => ({ ...p, returnLocation: e.target.value }))}
+                placeholder="เช่น ร้าน ABC เชียงใหม่ / รหัสร้าน 0012"
+              />
+            </Field>
+            <p className="rounded-lg bg-peach-light/60 px-3 py-2 text-xs text-ink-soft">
+              ระบบจะบันทึกสถานะเครื่องเป็น "รอตรวจสอบ"
+            </p>
+          </>
+        )}
 
         <label className="flex items-center gap-2 text-sm text-ink">
           <input
@@ -2481,19 +2547,31 @@ function FlagsModal({
           </p>
         )}
 
-        {/* รอเอกสาร (Case Online) */}
+        {/* รอเอกสาร (Case Online) — admin เท่านั้น */}
         <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
-          <label className="flex items-center gap-2 text-sm font-semibold text-ink">
-            <input
-              type="checkbox"
-              checked={f.pendingDocuments}
-              onChange={(e) => toggle('pendingDocuments', e.target.checked)}
-              className="h-4 w-4 accent-amber-500"
-            />
-            รอเอกสาร (Case Online)
-          </label>
+          {role === 'admin' ? (
+            <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <input
+                type="checkbox"
+                checked={f.pendingDocuments}
+                onChange={(e) => toggle('pendingDocuments', e.target.checked)}
+                className="h-4 w-4 accent-amber-500"
+              />
+              รอเอกสาร (Case Online)
+            </label>
+          ) : (
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink-soft">
+              <input
+                type="checkbox"
+                checked={f.pendingDocuments}
+                disabled
+                className="h-4 w-4 accent-amber-500 opacity-50"
+              />
+              รอเอกสาร (Case Online)
+            </div>
+          )}
           <p className="mt-1 text-xs text-ink-soft">
-            พนักงานและแอดมินกดปลดเองได้ — เคลียร์อัตโนมัติเมื่อส่งอีเมล/สรุปยอด
+            แก้ไขโดยแอดมินเท่านั้น — เคลียร์อัตโนมัติเมื่อส่งอีเมล/สรุปยอด
           </p>
         </div>
 

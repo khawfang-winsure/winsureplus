@@ -93,7 +93,7 @@ export interface DeviceReturnRow {
   createdAt: string
   // --- Device Pipeline (0027) ---
   trackingNumber?: string | null
-  deviceStatus?: 'pending_check' | 'checked' | 'pending_sale' | 'priced' | 'transferred' | 'shipped' | null
+  deviceStatus?: 'pending_check' | 'checked' | 'pending_sale' | 'priced' | 'transferred' | 'shipped' | 'in_transit' | null
   salePrice?: number | null
   pricedAt?: string | null
   transferredAt?: string | null
@@ -107,6 +107,10 @@ export interface DeviceReturnRow {
   repairCost?: number
   defectNotes?: string | null
   attributedFreelancerName?: string | null
+  // --- Shipping method (0052) ---
+  courier?: string | null         // ชื่อขนส่ง (EMS, Kerry ฯลฯ)
+  returnMethod?: string | null    // 'shipped' | 'walk_in' | null
+  returnLocation?: string | null  // สถานที่/รหัสที่คืน (walk_in เท่านั้น)
 }
 
 export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'
@@ -214,7 +218,8 @@ export interface Contract {
   promiseToPayDate?: string | null // วันนัดชำระ ISO yyyy-mm-dd (sync จาก trigger)
   promisedAmount?: number | null   // ยอดที่สัญญาไว้ (บาท)
   // --- Case Online / รอเอกสาร (0049) ---
-  pendingDocuments?: boolean // true = รอเอกสาร; suppress สถานะล่าช้าใน view
+  pendingDocuments?: boolean   // true = รอเอกสาร; suppress สถานะล่าช้าใน view
+  pendingDocItems?: string[]   // รายการเอกสารที่รอ เช่น ["บัตรประชาชน","ทะเบียนบ้าน"] (0053)
   // --- ติดตามเอกสารตัวจริง + กล่องโทรศัพท์ (0050) ---
   originalDocsReceived?: boolean       // รับเอกสารตัวจริงแล้ว
   originalDocsReceivedAt?: string | null // timestamp ที่รับ

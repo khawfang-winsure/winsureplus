@@ -16,6 +16,7 @@ import {
   getShops,
   insertContract,
   saveAddress,
+  setContractFlags,
   updateContract,
 } from '../lib/db'
 import {
@@ -67,12 +68,28 @@ interface FormState {
   operator: string
   notes: string
   pendingDocuments: boolean
+  pendingDocItems: string[]
   hasPhoneBox: boolean
 }
 
 type AddrKey = 'current' | 'id_card' | 'work'
 
 const today = new Date().toISOString().slice(0, 10)
+
+const CASE_ONLINE_DOC_ITEMS: string[] = [
+  'ข้อมูลลูกค้า ยื่นเข้าในระบบ',
+  'อาชีพ',
+  'เฟสบุ๊ค',
+  'เบอร์สำรอง',
+  'รูปรอบตัวเครื่อง (หน้า-หลัง, ซ้าย-ขวา, บน-ล่าง)',
+  'รูปรายละเอียดตัวเครื่อง (หน้าเกี่ยวกับ, เปอร์เซ็นแบต, ตราครุฑ)',
+  'เอกสารสัญญา',
+  'เอกสารยินยอม',
+  'ใบเสร็จ',
+  'ลูกค้าลงทะเบียนไลน์',
+  'วีดีโอเทสล็อก',
+  'รูปรับเครื่องจบเคส',
+]
 
 const initial: FormState = {
   transactionDate: today,
@@ -109,6 +126,7 @@ const initial: FormState = {
   operator: '',
   notes: '',
   pendingDocuments: false,
+  pendingDocItems: [],
   hasPhoneBox: false,
 }
 
@@ -152,6 +170,7 @@ function fromContract(c: Contract): FormState {
     operator: c.operator,
     notes: c.notes ?? '',
     pendingDocuments: c.pendingDocuments ?? false,
+    pendingDocItems: Array.isArray(c.pendingDocItems) ? c.pendingDocItems : [],
     hasPhoneBox: c.hasPhoneBox ?? false,
   }
 }
@@ -163,6 +182,8 @@ export default function AddContract() {
   const navigate = useNavigate()
   const { name: myName, role, configured } = useAuth()
   const isStaff = configured && role === 'staff'
+  // edit mode + real auth + non-admin → lock Case Online toggle & checklist (admin-only)
+  const lockCaseOnline = isEdit && configured && role !== 'admin'
 
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
@@ -189,6 +210,10 @@ export default function AddContract() {
   const [dupWarning, setDupWarning] = useState(false) // เลขสัญญาซ้ำ (ตรวจสดจาก DB)
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
   const shopChangedRef = useRef(false) // true = เปลี่ยนร้านระหว่างแก้ไข (ต้องบังคับ prefix ใหม่)
+  const origDocsRef = useRef<{ pendingDocuments: boolean; pendingDocItems: string[] }>({
+    pendingDocuments: false,
+    pendingDocItems: [],
+  })
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setF((prev) => ({ ...prev, [key]: value }))
     if (errors[key]) setErrors((prev) => { const next = { ...prev }; delete next[key]; return next })
@@ -213,6 +238,10 @@ export default function AddContract() {
         if (c) {
           setF(fromContract(c))
           setConfirmed(Boolean(c.emailSentAt && c.summarySentAt))
+          origDocsRef.current = {
+            pendingDocuments: c.pendingDocuments ?? false,
+            pendingDocItems: Array.isArray(c.pendingDocItems) ? c.pendingDocItems : [],
+          }
         }
         setAddr({ current: a.current ?? {}, id_card: a.id_card ?? {}, work: a.work ?? {} })
       })
@@ -347,6 +376,7 @@ export default function AddContract() {
     operator: f.operator,
     notes: f.notes,
     pendingDocuments: f.pendingDocuments,
+    pendingDocItems: f.pendingDocuments ? f.pendingDocItems : [],
     hasPhoneBox: f.hasPhoneBox,
   }
 
@@ -391,6 +421,17 @@ export default function AddContract() {
 
       if (isEdit && id) {
         await updateContract(id, preview)
+        // ตรวจว่า pendingDocuments หรือ pendingDocItems เปลี่ยนจากค่าที่โหลดมาไหม
+        const origPD = origDocsRef.current.pendingDocuments
+        const origPI = origDocsRef.current.pendingDocItems
+        const newPD = f.pendingDocuments
+        const newPI = f.pendingDocuments ? f.pendingDocItems : []
+        const pdChanged = newPD !== origPD
+        const piChanged =
+          newPI.length !== origPI.length || newPI.some((x) => !origPI.includes(x))
+        if (pdChanged || piChanged) {
+          await setContractFlags(id, { pendingDocuments: newPD, pendingDocItems: newPI })
+        }
         await saveAddresses(id)
         alert('แก้ไขสัญญาสำเร็จ ✅')
         if (isSupabaseConfigured) navigate('/customers')
@@ -511,42 +552,87 @@ export default function AddContract() {
                 {errors.invNo && <p className="mt-1 text-xs text-red-600">{errors.invNo}</p>}
               </Field>
             </div>
+            {/* Case Online — โหมดเพิ่มใหม่: ใครก็ติ๊กได้ / โหมดแก้ไข: admin only */}
+            <div className="mt-3">
+              <label
+                className={`flex items-center gap-2 text-sm ${lockCaseOnline ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={f.pendingDocuments}
+                  onChange={(e) => set('pendingDocuments', e.target.checked)}
+                  disabled={lockCaseOnline}
+                  className="h-4 w-4 accent-amber-500"
+                />
+                <span className="font-medium text-ink">เป็น Case Online (รอเอกสาร)</span>
+                {isEdit && lockCaseOnline && (
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-ink-soft">
+                    admin เท่านั้น
+                  </span>
+                )}
+              </label>
+              <p className="ml-6 mt-0.5 text-xs text-ink-soft">
+                เคสออนไลน์ที่ยังรอเอกสาร — จะมีแจ้งเตือนก่อนส่งเมล/สรุปยอด
+              </p>
+
+              {/* Checklist รายการเอกสาร — โผล่เมื่อติ๊ก Case Online */}
+              {f.pendingDocuments && (
+                <div className="ml-6 mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+                  <p className="mb-2 text-xs font-semibold text-amber-800">
+                    ติ๊กรายการที่ยังรออยู่ (ยังไม่ได้รับ):
+                  </p>
+                  <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                    {CASE_ONLINE_DOC_ITEMS.map((item) => {
+                      const ticked = f.pendingDocItems.includes(item)
+                      return (
+                        <label
+                          key={item}
+                          className={`flex items-start gap-2 text-xs ${lockCaseOnline ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={ticked}
+                            disabled={lockCaseOnline}
+                            onChange={() => {
+                              const next = ticked
+                                ? f.pendingDocItems.filter((x) => x !== item)
+                                : CASE_ONLINE_DOC_ITEMS.filter(
+                                    (x) => f.pendingDocItems.includes(x) || x === item,
+                                  )
+                              set('pendingDocItems', next)
+                            }}
+                            className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-amber-500"
+                          />
+                          <span className="leading-snug text-amber-900">{item}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* กล่องเครื่อง — เฉพาะโหมดเพิ่มใหม่ (ระบบติดตามรับกล่องหลังสร้างสัญญา) */}
             {!isEdit && (
-              <>
-                <div className="mt-3">
-                  <label className="flex cursor-pointer items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={f.pendingDocuments}
-                      onChange={(e) => set('pendingDocuments', e.target.checked)}
-                      className="h-4 w-4 accent-amber-500"
-                    />
-                    <span className="font-medium text-ink">เป็น Case Online (รอเอกสาร)</span>
-                  </label>
-                  <p className="ml-6 mt-0.5 text-xs text-ink-soft">
-                    เคสออนไลน์ที่ยังรอเอกสาร — จะมีแจ้งเตือนก่อนส่งเมล/สรุปยอด
-                  </p>
-                </div>
-                <div className="mt-2">
-                  <label className="flex cursor-pointer items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={f.hasPhoneBox}
-                      onChange={(e) => set('hasPhoneBox', e.target.checked)}
-                      className="h-4 w-4 accent-amber-500"
-                    />
-                    <span className="font-medium text-ink">มีกล่องเครื่อง</span>
-                    {f.condition === 'new' && (
-                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-700">
-                        มือหนึ่ง: ต้องมีกล่อง
-                      </span>
-                    )}
-                  </label>
-                  <p className="ml-6 mt-0.5 text-xs text-ink-soft">
-                    ร้านแจ้งว่าจะส่งกล่องโทรศัพท์คืนมาด้วย — ระบบจะติดตามการรับกล่อง
-                  </p>
-                </div>
-              </>
+              <div className="mt-2">
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={f.hasPhoneBox}
+                    onChange={(e) => set('hasPhoneBox', e.target.checked)}
+                    className="h-4 w-4 accent-amber-500"
+                  />
+                  <span className="font-medium text-ink">มีกล่องเครื่อง</span>
+                  {f.condition === 'new' && (
+                    <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-700">
+                      มือหนึ่ง: ต้องมีกล่อง
+                    </span>
+                  )}
+                </label>
+                <p className="ml-6 mt-0.5 text-xs text-ink-soft">
+                  ร้านแจ้งว่าจะส่งกล่องโทรศัพท์คืนมาด้วย — ระบบจะติดตามการรับกล่อง
+                </p>
+              </div>
             )}
           </Card>
 
