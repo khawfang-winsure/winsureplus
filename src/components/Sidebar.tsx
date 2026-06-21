@@ -1,53 +1,148 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { NAV } from './nav'
 import { useAuth } from '../lib/auth'
 
 // เมนูซ้าย:
-//   touch (iPad/tablet — hover:none pointer:coarse) → ขยายค้างเสมอ w-60 ทุกความกว้าง ทุกแนว
-//   mouse (desktop/laptop — hover:hover)            → rail แคบ w-16 / hover ขยาย w-72 (≥md)
-//   phone (<md)                                     → hamburger drawer (เหมือนเดิม)
+//   desktop/tablet (≥md) → 2 สถานะ: rail (w-16 icon-only) / full (w-60) สลับด้วยปุ่มคลิก, ดันเนื้อหา ไม่ overlay
+//   phone (<md)          → hamburger drawer (overlay เลื่อนจากซ้าย) ไม่กระทบ
+
+const LS_KEY = 'sidebar_collapsed'
 
 interface SidebarProps {
   mobileOpen: boolean
   onMobileClose: () => void
 }
 
+interface NavContentProps {
+  rail: boolean
+  expanded: Record<string, boolean>
+  onToggleGroup: (label: string) => void
+  onExpandSidebar: () => void
+  items: typeof NAV
+  isAdmin: boolean
+  pathname: string
+}
+
+function NavContent({
+  rail,
+  expanded,
+  onToggleGroup,
+  onExpandSidebar,
+  items,
+  isAdmin,
+  pathname,
+}: NavContentProps) {
+  const itemBase =
+    'flex items-center rounded-xl px-3 py-3 text-sm font-medium transition-colors'
+
+  return (
+    <>
+      {items.map((item) => {
+        if (item.children) {
+          const visibleChildren = item.children.filter((c) => !c.adminOnly || isAdmin)
+          if (visibleChildren.length === 0) return null
+          const groupActive = visibleChildren.some((c) => pathname === c.to)
+          const isOpen = !rail && (groupActive || !!expanded[item.label])
+
+          return (
+            <div key={item.label} className="flex flex-col gap-1">
+              <button
+                type="button"
+                aria-expanded={isOpen}
+                title={rail ? item.label : undefined}
+                onClick={() => {
+                  if (rail) {
+                    // rail mode: กดที่ group icon → ขยาย sidebar ก่อน
+                    onExpandSidebar()
+                  } else {
+                    onToggleGroup(item.label)
+                  }
+                }}
+                className={`${itemBase} w-full cursor-pointer ${rail ? 'justify-center gap-0' : 'gap-3'} ${
+                  groupActive ? 'text-salmon-deep' : 'text-ink'
+                } hover:bg-peach-light hover:text-ink`}
+              >
+                <item.icon size={20} className="shrink-0 text-salmon-deep" />
+                {!rail && (
+                  <>
+                    <span className="whitespace-nowrap">{item.label}</span>
+                    <span className="ml-auto">
+                      {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+                  </>
+                )}
+              </button>
+              {isOpen && (
+                <div className="ml-5 flex flex-col gap-1 border-l border-peach pl-3">
+                  {visibleChildren.map((child) => (
+                    <NavLink
+                      key={child.to}
+                      to={child.to}
+                      className={({ isActive }) =>
+                        `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
+                          isActive
+                            ? 'bg-salmon-deep text-white shadow-sm'
+                            : 'text-ink-soft hover:bg-peach-light hover:text-ink'
+                        }`
+                      }
+                    >
+                      <ChevronRight size={14} className="shrink-0" />
+                      <span className="whitespace-nowrap">{child.label}</span>
+                    </NavLink>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        return (
+          <NavLink
+            key={item.to}
+            to={item.to!}
+            end={item.to === '/'}
+            title={rail ? item.label : undefined}
+            className={({ isActive }) =>
+              `${itemBase} ${rail ? 'justify-center gap-0' : 'gap-3'} ${
+                isActive
+                  ? 'bg-salmon-deep text-white shadow-sm'
+                  : 'text-ink-soft hover:bg-peach-light hover:text-ink'
+              }`
+            }
+          >
+            {({ isActive }) => (
+              <item.icon
+                size={20}
+                className={`shrink-0 ${isActive ? 'text-white' : 'text-salmon-deep'}`}
+              />
+            )}
+          </NavLink>
+        )
+      })}
+    </>
+  )
+}
+
 export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const { pathname } = useLocation()
   const { role, configured } = useAuth()
-  const isAdmin = !configured || role === 'admin' // โหมด mock เปิดเต็ม
+  const isAdmin = !configured || role === 'admin'
   const isFreelancer = configured && role === 'freelancer'
   const isExecutive = configured && role === 'executive'
 
-  // ตรวจ pointer: coarse = touch (iPad ทุกรุ่น/ทุกแนว), fine = mouse/trackpad
-  // lazy init ไม่มี flash เพราะ Vite SPA ไม่มี SSR
-  const [isTouch, setIsTouch] = useState(
-    () => window.matchMedia('(hover: none) and (pointer: coarse)').matches,
-  )
-  useEffect(() => {
-    const mq = window.matchMedia('(hover: none) and (pointer: coarse)')
-    const onChange = (e: MediaQueryListEvent) => setIsTouch(e.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [])
+  // lazy init: อ่าน localStorage ก่อน; ถ้าไม่มี → touch=false(full), mouse=true(rail)
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    const saved = localStorage.getItem(LS_KEY)
+    if (saved !== null) return saved === 'true'
+    return !window.matchMedia('(hover:none) and (pointer:coarse)').matches
+  })
 
-  // itemBase, labelCls, chevronCls ขึ้นกับ isTouch — ต้องอยู่ใน component
-  // touch: label โชว์ตลอด, py-3 (~48px touch target)
-  // mouse: label ซ่อนตอน rail โผล่ตอน hover, py-2.5 เดิม
-  const itemBase = isTouch
-    ? 'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors'
-    : 'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors'
-  const labelCls = isTouch
-    ? 'whitespace-nowrap'
-    : 'whitespace-nowrap md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
-  const chevronCls = isTouch
-    ? 'ml-auto'
-    : 'ml-auto md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
-  const submenuCls = isTouch
-    ? 'ml-5 flex flex-col gap-1 border-l border-peach pl-3'
-    : 'ml-5 flex flex-col gap-1 border-l border-peach pl-3 md:hidden md:group-hover:flex'
+  // persist ทุกครั้งที่ collapsed เปลี่ยน
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, String(collapsed))
+  }, [collapsed])
 
   // state สำหรับ expand/collapse ของแต่ละ group (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -56,93 +151,12 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
     setExpanded((prev) => ({ ...prev, [label]: !prev[label] }))
   }
 
-  // executive เห็นเฉพาะ executiveVisible; freelancer เห็นเฉพาะ freelancerOnly; admin/staff ตามปกติ
   const items = NAV.filter((item) => {
     if (isExecutive) return item.executiveVisible === true
     if (isFreelancer) return item.freelancerOnly === true
     if (item.freelancerOnly) return false
     return !item.adminOnly || isAdmin
   })
-
-  // เนื้อ nav — render เหมือนกันทั้ง desktop และ mobile drawer
-  // เรียกแบบ function call (ไม่ใช่ JSX element) เพื่อหลีกเลี่ยงการ remount ทุกครั้ง pathname เปลี่ยน
-  function navContent() {
-    return (
-      <>
-        {items.map((item) => {
-          if (item.children) {
-            // กรอง child เมนูที่เป็น admin only ตอน role=staff
-            const visibleChildren = item.children.filter((c) => !c.adminOnly || isAdmin)
-            if (visibleChildren.length === 0) return null
-            const groupActive = visibleChildren.some((c) => pathname === c.to)
-            // auto-expand ถ้า current route อยู่ใน sub; ไม่งั้นใช้ manual toggle
-            const isOpen = groupActive || !!expanded[item.label]
-            return (
-              <div key={item.label} className="flex flex-col gap-1">
-                <button
-                  type="button"
-                  aria-expanded={isOpen}
-                  onClick={() => toggleGroup(item.label)}
-                  className={`${itemBase} w-full cursor-pointer ${
-                    groupActive ? 'text-salmon-deep' : 'text-ink'
-                  } hover:bg-peach-light hover:text-ink`}
-                >
-                  <item.icon size={20} className="shrink-0 text-salmon-deep" />
-                  <span className={labelCls}>{item.label}</span>
-                  {/* chevron: touch=โชว์ตลอด / mouse=ซ่อนตอน rail โผล่ตอน hover */}
-                  <span className={chevronCls}>
-                    {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  </span>
-                </button>
-                {/* เมนูย่อย: touch=โชว์ตลอดตอน isOpen / mouse=ซ่อนบน rail โผล่ตอน hover */}
-                {isOpen && (
-                  <div className={submenuCls}>
-                    {visibleChildren.map((child) => (
-                      <NavLink
-                        key={child.to}
-                        to={child.to}
-                        className={({ isActive }) =>
-                          `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-                            isActive
-                              ? 'bg-salmon-deep text-white shadow-sm'
-                              : 'text-ink-soft hover:bg-peach-light hover:text-ink'
-                          }`
-                        }
-                      >
-                        <ChevronRight size={14} className="shrink-0" />
-                        <span className="whitespace-nowrap">{child.label}</span>
-                      </NavLink>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          }
-
-          return (
-            <NavLink
-              key={item.to}
-              to={item.to!}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `${itemBase} ${
-                  isActive
-                    ? 'bg-salmon-deep text-white shadow-sm'
-                    : 'text-ink-soft hover:bg-peach-light hover:text-ink'
-                }`
-              }
-            >
-              <item.icon
-                size={20}
-                className={`shrink-0 ${pathname === item.to ? 'text-white' : 'text-salmon-deep'}`}
-              />
-              <span className={labelCls}>{item.label}</span>
-            </NavLink>
-          )
-        })}
-      </>
-    )
-  }
 
   return (
     <>
@@ -161,28 +175,47 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        {navContent()}
+        <NavContent
+          rail={false}
+          expanded={expanded}
+          onToggleGroup={toggleGroup}
+          onExpandSidebar={() => setCollapsed(false)}
+          items={items}
+          isAdmin={isAdmin}
+          pathname={pathname}
+        />
       </aside>
 
       {/* ===== Desktop sidebar (≥ md) ===== */}
-      {/* sticky+self-start: ล็อกเมนูค้างขณะ content เลื่อน (ทั้ง touch และ mouse) */}
-      {/* touch → spacer w-60 / aside w-60 ขยายค้าง ไม่มี hover-rail */}
-      {/* mouse → spacer w-16 / aside w-16 rail + hover ขยาย w-72 */}
-      <div
-        className={`relative hidden md:sticky md:top-6 md:block md:h-[calc(100vh-3rem)] md:shrink-0 md:self-start ${
-          isTouch ? 'md:w-60' : 'md:w-16'
+      {/* aside เดียวเป็น flex child — เปลี่ยนความกว้างตาม collapsed state ดัน <main> เอง ไม่ overlay */}
+      <aside
+        className={`hidden md:sticky md:top-6 md:flex md:shrink-0 md:self-start md:h-[calc(100vh-3rem)] md:flex-col md:gap-1 md:overflow-x-hidden md:overflow-y-auto md:rounded-2xl md:border md:border-peach md:bg-cream-deep md:p-3 md:shadow-sm md:transition-[width] md:duration-200 ${
+          collapsed ? 'md:w-16' : 'md:w-60'
         }`}
       >
-        <aside
-          className={`group flex w-full flex-col gap-1 rounded-2xl border border-peach bg-cream-deep shadow-sm md:absolute md:inset-y-0 md:left-0 md:z-30 md:overflow-x-hidden md:overflow-y-auto ${
-            isTouch
-              ? 'p-3 md:w-60'
-              : 'p-2.5 md:w-16 md:transition-[width] md:duration-200 md:ease-out md:hover:w-72 md:hover:p-3 md:hover:shadow-xl'
+        {/* ปุ่ม toggle ย่อ/ขยาย — desktop เท่านั้น */}
+        <button
+          type="button"
+          aria-label={collapsed ? 'ขยายเมนู' : 'ย่อเมนู'}
+          title={collapsed ? 'ขยายเมนู' : 'ย่อเมนู'}
+          onClick={() => setCollapsed((c) => !c)}
+          className={`flex items-center rounded-xl px-3 py-2 text-ink-soft transition-colors hover:bg-peach-light hover:text-ink mb-1 ${
+            collapsed ? 'justify-center' : 'justify-end'
           }`}
         >
-          {navContent()}
-        </aside>
-      </div>
+          {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+
+        <NavContent
+          rail={collapsed}
+          expanded={expanded}
+          onToggleGroup={toggleGroup}
+          onExpandSidebar={() => setCollapsed(false)}
+          items={items}
+          isAdmin={isAdmin}
+          pathname={pathname}
+        />
+      </aside>
     </>
   )
 }
