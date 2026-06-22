@@ -45,25 +45,40 @@ function NavContent({
           const visibleChildren = item.children.filter((c) => !c.adminOnly || isAdmin)
           if (visibleChildren.length === 0) return null
           const groupActive = visibleChildren.some((c) => pathname === c.to)
-          // mobile: accordion toggle; desktop: always open on group-hover (CSS-only)
-          const mobileOpen = isMobile && (groupActive || !!expanded[item.label])
+          // mobile: accordion — open ถ้า active หรือ expanded; desktop: click-toggle เท่านั้น
+          const open = !!expanded[item.label] || (isMobile && groupActive)
+
+          const childLinks = visibleChildren.map((child) => (
+            <NavLink
+              key={child.to}
+              to={child.to}
+              className={({ isActive }) =>
+                `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
+                  isActive
+                    ? 'bg-salmon-deep text-white shadow-sm'
+                    : 'text-ink-soft hover:bg-peach-light hover:text-ink'
+                }`
+              }
+            >
+              <ChevronRight size={14} className="shrink-0" />
+              <span className="whitespace-nowrap">{child.label}</span>
+            </NavLink>
+          ))
 
           return (
             <div key={item.label} className="flex flex-col gap-1">
               <button
                 type="button"
-                aria-expanded={mobileOpen}
+                aria-expanded={open}
                 title={item.label}
-                onClick={() => {
-                  if (isMobile) onToggleGroup(item.label)
-                }}
-                className={`${itemBase} w-full gap-3 cursor-pointer md:cursor-default ${
+                onClick={() => onToggleGroup(item.label)}
+                className={`${itemBase} w-full gap-3 cursor-pointer ${
                   groupActive ? 'text-salmon-deep' : 'text-ink'
                 } hover:bg-peach-light hover:text-ink`}
               >
                 <item.icon size={20} className="shrink-0 text-salmon-deep" />
                 <span className={isMobile ? 'whitespace-nowrap' : labelCls}>{item.label}</span>
-                {/* chevron: desktop ซ่อนตอน rail */}
+                {/* chevron: desktop ซ่อนตอน rail โผล่ตอน hover กาง */}
                 <span
                   className={
                     isMobile
@@ -71,33 +86,44 @@ function NavContent({
                       : 'ml-auto md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
                   }
                 >
-                  {mobileOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </span>
               </button>
-              {/* submenu: mobile = accordion; desktop = CSS group-hover */}
-              <div
-                className={[
-                  'ml-5 flex-col gap-1 border-l border-peach pl-3',
-                  isMobile ? (mobileOpen ? 'flex' : 'hidden') : 'hidden md:group-hover:flex',
-                ].join(' ')}
-              >
-                {visibleChildren.map((child) => (
-                  <NavLink
-                    key={child.to}
-                    to={child.to}
-                    className={({ isActive }) =>
-                      `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-                        isActive
-                          ? 'bg-salmon-deep text-white shadow-sm'
-                          : 'text-ink-soft hover:bg-peach-light hover:text-ink'
-                      }`
-                    }
-                  >
-                    <ChevronRight size={14} className="shrink-0" />
-                    <span className="whitespace-nowrap">{child.label}</span>
-                  </NavLink>
-                ))}
-              </div>
+
+              {/* submenu mobile = flex/hidden ธรรมดา */}
+              {isMobile && (
+                <div
+                  className={[
+                    'ml-5 flex-col gap-1 border-l border-peach pl-3',
+                    open ? 'flex' : 'hidden',
+                  ].join(' ')}
+                >
+                  {childLinks}
+                </div>
+              )}
+
+              {/* submenu desktop = grid-rows slide-down
+                  Logic: ลูกเมนูเปิดได้ก็ต่อเมื่อ rail กาง (group-hover) AND กดเปิด (expanded)
+                  - [grid-template-rows:0fr]                     = base: ปิดเสมอ
+                  - md:group-hover:[grid-template-rows:0fr]       = rail กาง แต่ไม่ expanded → ปิด
+                  - open → md:group-hover:[grid-template-rows:1fr] = rail กาง + expanded → เปิด */}
+              {!isMobile && (
+                <div
+                  className={[
+                    'ml-5 border-l border-peach pl-3',
+                    'grid [grid-template-rows:0fr] transition-[grid-template-rows] duration-200 ease-out',
+                    open
+                      ? 'md:group-hover:[grid-template-rows:1fr]'
+                      : 'md:group-hover:[grid-template-rows:0fr]',
+                  ].join(' ')}
+                >
+                  <div className="overflow-hidden min-h-0">
+                    <div className="flex flex-col gap-1 pt-1">
+                      {childLinks}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )
         }
