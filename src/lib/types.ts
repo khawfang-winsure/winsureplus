@@ -78,6 +78,7 @@ export interface ContractStatusRow {
   daysLate: number
   bucket: OverdueBucket
   grade: string | null // A-E หรือ null (ปกติ/ปิดแล้ว) — เพิ่มใน 0018
+  overdueAmount: number // ยอดงวดที่เลยกำหนดและยังไม่ชำระ (ไม่รวมค่าปรับ) — เพิ่มใน 0055
 }
 
 export interface DeviceReturnRow {

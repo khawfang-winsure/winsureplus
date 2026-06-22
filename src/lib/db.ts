@@ -1211,6 +1211,7 @@ interface StatusRow {
   days_late: number
   bucket: OverdueBucket
   grade: string | null
+  overdue_amount: number // ยอดงวดที่เลยกำหนด (0055) — numeric จาก DB มาเป็น string ต้อง Number()
 }
 
 function mapStatus(r: StatusRow): ContractStatusRow {
@@ -1227,6 +1228,7 @@ function mapStatus(r: StatusRow): ContractStatusRow {
     daysLate: r.days_late,
     bucket: r.bucket,
     grade: r.grade ?? null,
+    overdueAmount: Number(r.overdue_amount),
   }
 }
 

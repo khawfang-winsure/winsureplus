@@ -6,7 +6,6 @@ import { AddressFields } from '../components/AddressFields'
 import Pagination from '../components/Pagination'
 import {
   getAllAddresses,
-  getAllInstallments,
   getAllLetters,
   getAllStatuses,
   getContracts,
@@ -16,7 +15,6 @@ import {
   saveLetterTemplate,
   updateLetterReply,
   type ContractAddresses,
-  type InstallmentLite,
 } from '../lib/db'
 import {
   ADDRESS_KIND_LABEL,
@@ -33,7 +31,6 @@ import {
 import type { FieldItem } from './FieldVisitPrint'
 import type { Contract, ContractStatusRow } from '../lib/types'
 
-const today = () => new Date().toISOString().slice(0, 10)
 const baht = (n: number) => n.toLocaleString('th-TH')
 function thaiDateFull(): string {
   const d = new Date()
@@ -57,7 +54,6 @@ export default function Letters() {
   const navigate = useNavigate()
   const [statuses, setStatuses] = useState<ContractStatusRow[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
-  const [installments, setInstallments] = useState<InstallmentLite[]>([])
   const [letters, setLetters] = useState<LetterRecord[]>([])
   const [addresses, setAddresses] = useState<Record<string, ContractAddresses>>({})
   const [template, setTemplate] = useState('')
@@ -74,17 +70,15 @@ export default function Letters() {
   async function load() {
     setLoading(true)
     try {
-      const [st, c, ins, lt, ad, tpl] = await Promise.all([
+      const [st, c, lt, ad, tpl] = await Promise.all([
         getAllStatuses(),
         getContracts(),
-        getAllInstallments(),
         getAllLetters(),
         getAllAddresses(),
         getLetterTemplate(),
       ])
       setStatuses(st)
       setContracts(c)
-      setInstallments(ins)
       setLetters(lt)
       setAddresses(ad)
       setTemplate(tpl)
@@ -97,14 +91,7 @@ export default function Letters() {
   }, [])
 
   const rows = useMemo<Row[]>(() => {
-    const t = today()
     const cById = new Map(contracts.map((c) => [c.id, c]))
-    const insByContract = new Map<string, InstallmentLite[]>()
-    for (const i of installments) {
-      const arr = insByContract.get(i.contractId)
-      if (arr) arr.push(i)
-      else insByContract.set(i.contractId, [i])
-    }
     const out: Row[] = []
     for (const s of statuses) {
       if (s.status !== 'active' || !s.nextDue) continue
@@ -114,14 +101,11 @@ export default function Letters() {
       const stage = nextLetterAction(lettersThisEpisode, s.daysLate, !isAddressEmpty(addr.registry))
       if (stage.kind === 'none') continue
       const c = cById.get(s.contractId)
-      const overdueCount = (insByContract.get(s.contractId) ?? []).filter(
-        (i) => !i.paidAt && i.dueDate.slice(0, 10) <= t,
-      ).length
-      const amount = overdueCount * (c?.monthlyPayment ?? 0) + s.penaltyDue
+      const amount = s.overdueAmount + s.penaltyDue
       out.push({ status: s, contract: c, addresses: addr, episodeKey, lettersThisEpisode, stage, amount })
     }
     return out.sort((a, b) => b.status.daysLate - a.status.daysLate)
-  }, [statuses, contracts, installments, letters, addresses])
+  }, [statuses, contracts, letters, addresses])
 
   const allByTab: Record<TabKey, Row[]> = {
     send: rows.filter((r) => r.stage.kind === 'send'),
