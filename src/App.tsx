@@ -37,6 +37,7 @@ const Import = lazy(() => import('./pages/Import'))
 const InboxPage = lazy(() => import('./pages/InboxPage'))
 const MyPerformance = lazy(() => import('./pages/MyPerformance'))
 const DocTracking = lazy(() => import('./pages/DocTracking'))
+const OtherIncomePage = lazy(() => import('./pages/OtherIncome'))
 
 export default function App() {
   return (
@@ -86,6 +87,7 @@ function Gate() {
           <Route path="/waiting-email" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingEmail />} />
           <Route path="/waiting-summary" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <WaitingSummary />} />
           <Route path="/doc-tracking" element={isAdminOrStaff ? <DocTracking /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/other-income" element={isAdminOrStaff ? <OtherIncomePage /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/customers" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <AllCustomers />} />
           <Route path="/customer-overview" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <CustomerOverview />} />
           <Route path="/contract/:id" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <ContractDetail />} />

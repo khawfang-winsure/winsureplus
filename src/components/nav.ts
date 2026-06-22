@@ -19,6 +19,7 @@ import {
   TrendingUp,
   Truck,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -50,6 +51,7 @@ export const NAV: NavItem[] = [
   { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
   { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
   { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
+  { to: '/other-income', label: 'รายได้อื่นๆ', icon: Wallet },
   { to: '/doc-tracking', label: 'รับเอกสาร/กล่อง', icon: FileBox },
   { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', icon: CalendarClock },
   {

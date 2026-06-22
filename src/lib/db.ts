@@ -15,6 +15,7 @@ import type {
   Installment,
   NotificationItem,
   Option,
+  OtherIncome,
   OverdueBucket,
   OverduePromiseContract,
   PrivateNote,
@@ -3896,6 +3897,88 @@ export async function insertExtraCharge(
 export async function deleteExtraCharge(id: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('extra_charges').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ---------- helper 6+: other_income (migration 0054) ----------
+
+interface OtherIncomeRow {
+  id: string
+  contract_id: string | null
+  amount: number
+  category: string
+  note: string | null
+  received_at: string
+  recorded_by: string | null
+  created_at: string
+}
+
+function mapOtherIncome(r: OtherIncomeRow): OtherIncome {
+  return {
+    id: r.id,
+    contractId: r.contract_id ?? null,
+    amount: Number(r.amount),
+    category: r.category,
+    note: r.note ?? null,
+    receivedAt: r.received_at,
+    recordedBy: r.recorded_by ?? null,
+    createdAt: r.created_at,
+  }
+}
+
+/** รายได้อื่นๆ ของสัญญาหนึ่ง (ใหม่ → เก่า) */
+export async function getOtherIncome(contractId: string): Promise<OtherIncome[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('other_income')
+    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at')
+    .eq('contract_id', contractId)
+    .order('received_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as OtherIncomeRow[]).map(mapOtherIncome)
+}
+
+/** รายได้อื่นๆ ทั้งหมด (สำหรับ cashflow dashboard) */
+export async function getAllOtherIncome(): Promise<OtherIncome[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('other_income')
+    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at')
+    .order('received_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as OtherIncomeRow[]).map(mapOtherIncome)
+}
+
+/**
+ * บันทึกรายได้อื่นๆ (admin + staff ตาม RLS migration 0054)
+ * @param input.recordedBy ชื่อผู้บันทึก (useAuth().name) — เก็บเป็น text snapshot
+ */
+export async function insertOtherIncome(input: {
+  contractId?: string | null
+  amount: number
+  category: string
+  note?: string
+  receivedAt: string
+  recordedBy?: string
+}): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('other_income').insert({
+    contract_id: input.contractId ?? null,
+    amount: input.amount,
+    category: input.category,
+    note: input.note ?? null,
+    received_at: input.receivedAt,
+    recorded_by: input.recordedBy ?? null,
+  })
+  if (error) throw error
+}
+
+/** ลบรายได้อื่นๆ (admin only ตาม RLS migration 0054) */
+export async function deleteOtherIncome(id: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('other_income').delete().eq('id', id)
   if (error) throw error
 }
 

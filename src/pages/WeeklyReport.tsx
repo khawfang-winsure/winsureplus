@@ -12,6 +12,7 @@ import {
   getEscalateContracts,
   getFreelancerPerformance,
   getOverduePromiseContracts,
+  getAllOtherIncome,
 } from '../lib/db'
 import { detectBottlenecks } from '../lib/bottleneck'
 import { buildCashflow } from '../lib/execDashboard'
@@ -85,7 +86,7 @@ function dayKeyOf(d: Date): string {
 // ===== loader =====
 
 async function loadAll() {
-  const [contracts, statuses, installments, payments, returns_, escalate, freelancers, promiseOverdue] =
+  const [contracts, statuses, installments, payments, returns_, escalate, freelancers, promiseOverdue, otherIncome] =
     await Promise.all([
       getContracts(),
       getAllStatuses(),
@@ -95,8 +96,9 @@ async function loadAll() {
       getEscalateContracts(),
       getFreelancerPerformance(7),
       getOverduePromiseContracts(),
+      getAllOtherIncome(),
     ])
-  return { contracts, statuses, installments, payments, returns: returns_, escalate, freelancers, promiseOverdue }
+  return { contracts, statuses, installments, payments, returns: returns_, escalate, freelancers, promiseOverdue, otherIncome }
 }
 
 type LoadedData = Awaited<ReturnType<typeof loadAll>>
@@ -259,7 +261,7 @@ export default function WeeklyReport() {
 
   const { data, loading, error } = useAsync<LoadedData>(
     loadAll,
-    { contracts: [], statuses: [], installments: [], payments: [], returns: [], escalate: [], freelancers: [], promiseOverdue: [] },
+    { contracts: [], statuses: [], installments: [], payments: [], returns: [], escalate: [], freelancers: [], promiseOverdue: [], otherIncome: [] },
   )
 
   const stats = useMemo(() => {
@@ -274,10 +276,10 @@ export default function WeeklyReport() {
     )
   }, [data, weekStart, weekEnd])
 
-  // Cashflow สัปดาห์นี้ (buildCashflow: 1 week window)
+  // Cashflow สัปดาห์นี้ (buildCashflow: 1 week window รวม other income)
   const cashflow = useMemo(() => {
     if (!data.contracts.length && !data.payments.length) return null
-    const rows = buildCashflow(data.contracts, data.payments, 'week', 1, todayISO())
+    const rows = buildCashflow(data.contracts, data.payments, 'week', 1, todayISO(), undefined, data.otherIncome)
     return rows[0] ?? null
   }, [data])
 
@@ -405,7 +407,7 @@ export default function WeeklyReport() {
         <SectionTitle>เงินสด สัปดาห์นี้</SectionTitle>
         {cashflow ? (
           <div className="divide-y divide-peach rounded-xl border border-peach bg-white px-4 py-2 print:border-gray-300">
-            <Row label="เงินเข้า (เก็บค่างวด)" value={fmtBaht(cashflow.income)} />
+            <Row label="เงินเข้า (รวมรายได้อื่นๆ)" value={fmtBaht(cashflow.income)} />
             <Row label="เงินออก (โอนให้ร้านสัญญาใหม่)" value={fmtBaht(cashflow.expense)} />
             <Row label="สุทธิ" value={fmtBaht(cashflow.net)} />
             <Row label="สัญญาใหม่" value={`${cashflow.newCases} รายการ`} />

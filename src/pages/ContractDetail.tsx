@@ -17,6 +17,9 @@ import {
   getExtraCharges,
   insertExtraCharge,
   deleteExtraCharge,
+  getOtherIncome,
+  insertOtherIncome,
+  deleteOtherIncome,
   adjustPayment,
   cancelPayment,
   restructureContract,
@@ -57,7 +60,7 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
-import type { Contract, ExtraCharge, Installment, PrivateNote } from '../lib/types'
+import type { Contract, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
@@ -150,6 +153,8 @@ export default function ContractDetail() {
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
   const [rateSets, setRateSets] = useState<RateSet[]>([])
   const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
+  const [otherIncomeItems, setOtherIncomeItems] = useState<OtherIncome[]>([])
+  const [addOtherIncomeOpen, setAddOtherIncomeOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
@@ -192,7 +197,7 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec, poh] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec, poh, oi] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
@@ -200,6 +205,7 @@ export default function ContractDetail() {
       getRateSets(),
       getExtraCharges(id),
       getPenaltyOverrideHistory(id),
+      getOtherIncome(id),
     ])
     setContract(c)
     setInstallments(ins)
@@ -208,6 +214,7 @@ export default function ContractDetail() {
     setRateSets(rs)
     setExtraCharges(ec)
     setPenaltyOverrideHistory(poh)
+    setOtherIncomeItems(oi)
     setLoading(false)
   }, [id])
 
@@ -966,6 +973,73 @@ export default function ContractDetail() {
         )}
       </div>
 
+      {/* #4b — รายได้อื่นๆ ของสัญญานี้ */}
+      <div className="mt-6">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 className="font-semibold text-ink">รายได้อื่นๆ (ของสัญญานี้)</h3>
+          {/* admin+staff เพิ่มได้ */}
+          {canStaff && (
+            <Button variant="ghost" onClick={() => setAddOtherIncomeOpen(true)}>
+              <Plus size={14} /> เพิ่มรายได้
+            </Button>
+          )}
+        </div>
+        {otherIncomeItems.length === 0 ? (
+          <p className="rounded-xl bg-green-50/60 px-4 py-3 text-sm text-ink-soft">
+            ยังไม่มีรายได้อื่นๆ
+          </p>
+        ) : (
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-green-200">
+            <table className="w-full min-w-[540px] text-sm">
+              <thead>
+                <tr className="bg-green-50 text-left text-ink">
+                  {['วันที่รับ', 'หมวด', 'ยอด', 'หมายเหตุ', 'ผู้บันทึก', ''].map((h, i) => (
+                    <th key={h || i} className="px-3 py-2.5 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {otherIncomeItems.map((oi, idx) => (
+                  <tr key={oi.id} className={idx % 2 ? 'bg-white' : 'bg-green-50/30'}>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(oi.receivedAt)}</td>
+                    <td className="px-3 py-2.5">{oi.category}</td>
+                    <td className="px-3 py-2.5 font-semibold text-green-600">{baht(oi.amount)} ฿</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{oi.note || '—'}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{oi.recordedBy || '—'}</td>
+                    <td className="px-3 py-2.5">
+                      {isAdmin && (
+                        <button
+                          onClick={async () => {
+                            if (!window.confirm('ยืนยันลบรายการนี้?')) return
+                            try {
+                              await deleteOtherIncome(oi.id)
+                              await load()
+                            } catch (e) {
+                              alert(errMsg(e))
+                            }
+                          }}
+                          className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                        >
+                          ลบ
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {otherIncomeItems.length > 0 && (
+          <p className="mt-2 text-right text-sm text-ink-soft">
+            รวมรายได้อื่นๆ{' '}
+            <b className="text-green-600">
+              {baht(otherIncomeItems.reduce((s, oi) => s + oi.amount, 0))} ฿
+            </b>
+          </p>
+        )}
+      </div>
+
       {/* ประวัติการแก้ค่าปรับ (admin+staff) */}
       {canStaff && penaltyOverrideHistory.length > 0 && (
         <div className="mt-6">
@@ -1154,6 +1228,19 @@ export default function ContractDetail() {
           onClose={() => setAddExtraOpen(false)}
           onDone={async () => {
             setAddExtraOpen(false)
+            await load()
+          }}
+        />
+      )}
+
+      {/* #4b — เพิ่มรายได้อื่นๆ ของสัญญา (admin+staff) */}
+      {addOtherIncomeOpen && id && (
+        <AddContractOtherIncomeModal
+          contractId={id}
+          userName={userName ?? ''}
+          onClose={() => setAddOtherIncomeOpen(false)}
+          onDone={async () => {
+            setAddOtherIncomeOpen(false)
             await load()
           }}
         />
@@ -2669,6 +2756,110 @@ function FlagsModal({
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
           <Button onClick={save} disabled={busy}>
             {busy ? 'กำลังบันทึก...' : 'บันทึกสถานะ'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * #4b — AddContractOtherIncomeModal (admin+staff)
+ * เพิ่มรายได้อื่นๆ ที่ผูกกับสัญญาโดยอัตโนมัติ
+ */
+function AddContractOtherIncomeModal({
+  contractId,
+  userName,
+  onClose,
+  onDone,
+}: {
+  contractId: string
+  userName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [amount, setAmount] = useState<number>(0)
+  const [category, setCategory] = useState('ค่าเปลี่ยนวันที่ชำระ')
+  const [note, setNote] = useState('')
+  const [receivedAt, setReceivedAt] = useState(
+    new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10),
+  )
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function save() {
+    if (amount <= 0 || !category.trim()) {
+      setErr('กรุณาระบุหมวดหมู่และยอดเงิน')
+      return
+    }
+    if (!receivedAt) {
+      setErr('กรุณาระบุวันที่รับเงิน')
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      await insertOtherIncome({
+        contractId,
+        amount,
+        category: category.trim(),
+        note: note.trim() || undefined,
+        receivedAt,
+        recordedBy: userName,
+      })
+      onDone()
+    } catch (e) {
+      setErr(errMsg(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="เพิ่มรายได้อื่นๆ" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="หมวดหมู่" required>
+          <Input
+            type="text"
+            autoFocus
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="เช่น ค่าเปลี่ยนวันที่ชำระ"
+            list="oi-contract-category-suggestions"
+          />
+          <datalist id="oi-contract-category-suggestions">
+            <option value="ค่าเปลี่ยนวันที่ชำระ" />
+            <option value="ค่าธรรมเนียมอื่นๆ" />
+            <option value="รายได้อื่นๆ" />
+          </datalist>
+        </Field>
+        <Field label="ยอดเงิน (บาท)" required>
+          <Input
+            type="number"
+            min={1}
+            value={amount || ''}
+            onChange={(e) => setAmount(Number(e.target.value) || 0)}
+          />
+        </Field>
+        <Field label="วันที่รับเงิน" required>
+          <Input
+            type="date"
+            value={receivedAt}
+            onChange={(e) => setReceivedAt(e.target.value)}
+          />
+        </Field>
+        <Field label="หมายเหตุ (ไม่บังคับ)">
+          <Textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="รายละเอียดเพิ่มเติม"
+            rows={2}
+          />
+        </Field>
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy || amount <= 0 || !category.trim()}>
+            {busy ? 'กำลังบันทึก...' : 'บันทึกรายได้'}
           </Button>
         </div>
       </div>

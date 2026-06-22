@@ -243,6 +243,26 @@ export interface ExtraCharge {
   createdBy: string | null // denormalized name snapshot (text col)
 }
 
+// ---------- Other Income (migration 0054) ----------
+
+/** รายได้อื่นๆ ที่ไม่ใช่ค่างวด (เช่น ค่าเปลี่ยนวันชำระ) */
+export interface OtherIncome {
+  id: string
+  contractId?: string | null    // nullable — รายได้อาจไม่ผูกสัญญา
+  amount: number
+  category: string              // free-text เช่น 'ค่าเปลี่ยนวันที่ชำระ'
+  note?: string | null
+  receivedAt: string            // 'YYYY-MM-DD' — วันรับเงินจริง
+  recordedBy?: string | null    // snapshot ชื่อผู้บันทึก
+  createdAt: string             // ISO timestamptz
+}
+
+/** สำหรับ execDashboard cashflow bucket (เฉพาะ field ที่ต้องการ) */
+export interface OtherIncomeLite {
+  amount: number
+  receivedAt: string // 'YYYY-MM-DD'
+}
+
 // ---------- Grade Mobility (migration 0030) ----------
 
 /** ประเภทการเปลี่ยนแปลงเกรดรายเดือน จาก view v_grade_monthly_changes */

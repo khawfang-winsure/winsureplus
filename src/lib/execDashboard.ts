@@ -1,6 +1,6 @@
 // ===== ตัวคำนวณ Dashboard ผู้บริหาร (ฟังก์ชันบริสุทธิ์ — แยกจาก UI/DB เพื่อทดสอบง่าย) =====
 // รวมข้อมูลจากหลายแหล่ง (สัญญา/สถานะ/งวด/ร้าน/การชำระ/ขยายเวลา/คืนเครื่อง) เป็นตัวเลขสรุป
-import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, ShopReportRow, GradeMonthlyChange } from './types'
+import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, ShopReportRow, GradeMonthlyChange, OtherIncomeLite } from './types'
 import type { InstallmentLite, PaymentLite, ExtensionRecord } from './db'
 import { ageRange } from './format'
 import { buildShopReport, topShopsByCases } from './report'
@@ -25,6 +25,9 @@ export interface ExecInput {
   recruitTiers?: RecruitTier[]
   recruitBonuses?: RecruitBonusRule[]
   employeeNames?: Record<string, string> // user id → ชื่อ
+  // optional other income — wired by น้องวิว in Wave 2 (ExecDashboard.tsx calls getAllOtherIncome())
+  // absent → default empty [] → cashflow unchanged (backward compat)
+  otherIncome?: OtherIncomeLite[]
 }
 
 export interface StatusGroup { count: number; value: number }
@@ -191,6 +194,7 @@ export function buildCashflow(
   count: number,
   todayISO: string,
   anchorISO?: string,
+  otherIncome?: OtherIncomeLite[],
 ): CashflowRow[] {
   const today = localDate(anchorISO ?? todayISO)
   const rows: CashflowRow[] = []
@@ -221,13 +225,19 @@ export function buildCashflow(
     return `${d.getFullYear()}-${d.getMonth()}`
   }
 
-  // เงินเข้า — การรับชำระ
+  // เงินเข้า — การรับชำระค่างวด
   for (const p of payments) {
     if (p.action !== 'pay') continue
     const i = idx.get(keyOf(localDate(p.createdAt)))
     if (i == null) continue
     rows[i].income += p.amount
     rows[i].paymentsCount++
+  }
+  // เงินเข้า — รายได้อื่นๆ (other_income bucket by received_at; paymentsCount ไม่นับ — metric นั้นนับ collection ค่างวดล้วน)
+  for (const oi of (otherIncome ?? [])) {
+    const i = idx.get(keyOf(localDate(oi.receivedAt)))
+    if (i == null) continue
+    rows[i].income += oi.amount
   }
   // เงินออก — โอนให้ร้านของสัญญาใหม่ (ตามวันที่ทำรายการ)
   for (const c of contracts) {
@@ -564,6 +574,10 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   for (const p of payments) {
     if (p.action === 'pay' && inRange(p.createdAt)) receivedThisMonth += p.amount
   }
+  // รวมรายได้อื่นๆ ที่ received_at ตกในช่วง effective (inRange ใช้ ISO date ได้ตรงๆ)
+  for (const oi of (input.otherIncome ?? [])) {
+    if (inRange(oi.receivedAt)) receivedThisMonth += oi.amount
+  }
 
   const penaltyTotal = active.reduce((s, c) => s + (statusBy.get(c.id)?.penaltyDue ?? 0), 0)
 
@@ -684,9 +698,10 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
       (endD.getFullYear() - startD.getFullYear()) * 12 + (endD.getMonth() - startD.getMonth())
     cfMonthCount = Math.max(1, monthDiff + 1)
   }
-  const cashflowDay = buildCashflow(contracts, payments, 'day', cfDayCount, todayISO, cfAnchor)
-  const cashflowWeek = buildCashflow(contracts, payments, 'week', cfWeekCount, todayISO, cfAnchor)
-  const cashflowMonth = buildCashflow(contracts, payments, 'month', cfMonthCount, todayISO, cfAnchor)
+  const oi = input.otherIncome ?? [] // other_income ถ้ายังไม่ wire (Wave 2) → [] → cashflow ไม่เปลี่ยน
+  const cashflowDay = buildCashflow(contracts, payments, 'day', cfDayCount, todayISO, cfAnchor, oi)
+  const cashflowWeek = buildCashflow(contracts, payments, 'week', cfWeekCount, todayISO, cfAnchor, oi)
+  const cashflowMonth = buildCashflow(contracts, payments, 'month', cfMonthCount, todayISO, cfAnchor, oi)
 
   const briefing = buildBriefing(
     input,
