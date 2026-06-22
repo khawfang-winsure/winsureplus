@@ -156,7 +156,31 @@ export interface CashflowRow {
   paymentsCount: number // จำนวนครั้งที่รับชำระ
 }
 
-/** เงินโอนให้ร้าน (ต้นทุนปล่อยเครื่อง) = ยอดหลังหักดาวน์ + คอม − ค่าเอกสาร */
+/**
+ * เงินดาวน์ที่บริษัทได้รับ (รายได้ต้นสัญญา) = ราคาเครื่อง × %ดาวน์
+ * ใช้ bucket ตาม transactionDate (ไม่ใช่วันนำเข้า)
+ */
+function downOf(c: Contract): number {
+  if (!c.devicePrice) return 0
+  return Math.max(0, c.devicePrice * ((c.downPercent || 0) / 100))
+}
+
+/**
+ * เงินโอนจริงให้ร้าน (เงินออก) = ยอดหลังหักดาวน์ + คอม
+ * หมายเหตุ: ค่าเอกสาร (docFee) ถูก reclassify เป็น income stream แยกต่างหาก
+ * ดังนั้น cash-out จริงคือ afterDown + commission (ไม่หัก docFee)
+ */
+function shopCashOut(c: Contract): number {
+  const afterDown = c.devicePrice * (1 - (c.downPercent || 0) / 100)
+  const commission = afterDown * ((c.commissionPercent || 0) / 100)
+  return afterDown + commission
+}
+
+/**
+ * เงินโอนให้ร้าน (ต้นทุนปล่อยเครื่อง) สำหรับ grossMarginEstimate = ยอดหลังหักดาวน์ + คอม − ค่าเอกสาร
+ * ยังคงหัก docFee เพื่อให้ grossMarginEstimate เท่าเดิม (docFee = รายได้ที่ดัน margin ขึ้นอยู่แล้วทางอ้อม)
+ * ใช้เฉพาะใน grossMarginEstimate เท่านั้น — ห้ามนำไปใช้คำนวณ cashflow expense
+ */
 function netTransferOf(c: Contract): number {
   const afterDown = c.devicePrice * (1 - (c.downPercent || 0) / 100)
   const commission = afterDown * ((c.commissionPercent || 0) / 100)
@@ -239,11 +263,20 @@ export function buildCashflow(
     if (i == null) continue
     rows[i].income += oi.amount
   }
-  // เงินออก — โอนให้ร้านของสัญญาใหม่ (ตามวันที่ทำรายการ)
+  // เงินเข้า — เงินดาวน์ + ค่าเอกสาร (bucket ตาม transactionDate ของสัญญา)
+  // docFee reclassify: เดิมถูกหักออกจากยอดโอนร้าน → ย้ายมาเป็น income stream แยก (net เท่าเดิม)
+  // down: รายได้ใหม่ที่ไม่เคยนับมาก่อน (net เพิ่มขึ้นตาม Σdown จริง — ตั้งใจ)
   for (const c of contracts) {
     const i = idx.get(keyOf(localDate(c.transactionDate)))
     if (i == null) continue
-    rows[i].expense += netTransferOf(c)
+    rows[i].income += downOf(c) + (c.docFee || 0)
+  }
+  // เงินออก — โอนให้ร้านของสัญญาใหม่ (ตามวันที่ทำรายการ)
+  // ใช้ shopCashOut (afterDown + commission) ไม่หัก docFee เพราะ docFee ย้ายไปเป็น income แล้ว
+  for (const c of contracts) {
+    const i = idx.get(keyOf(localDate(c.transactionDate)))
+    if (i == null) continue
+    rows[i].expense += shopCashOut(c)
     rows[i].newCases++
   }
   for (const r of rows) {
@@ -577,6 +610,12 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   // รวมรายได้อื่นๆ ที่ received_at ตกในช่วง effective (inRange ใช้ ISO date ได้ตรงๆ)
   for (const oi of (input.otherIncome ?? [])) {
     if (inRange(oi.receivedAt)) receivedThisMonth += oi.amount
+  }
+  // รวมเงินดาวน์ + ค่าเอกสาร bucket ตาม transactionDate (mirror buildCashflow income loop)
+  // docFee reclassify: net เท่าเดิม (ดูหมายเหตุใน shopCashOut)
+  // down: รายได้ใหม่ที่เพิ่ม receivedThisMonth จริง (ตั้งใจ)
+  for (const c of contracts) {
+    if (inRange(c.transactionDate)) receivedThisMonth += downOf(c) + (c.docFee || 0)
   }
 
   const penaltyTotal = active.reduce((s, c) => s + (statusBy.get(c.id)?.penaltyDue ?? 0), 0)

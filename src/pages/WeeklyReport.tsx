@@ -407,7 +407,7 @@ export default function WeeklyReport() {
         <SectionTitle>เงินสด สัปดาห์นี้</SectionTitle>
         {cashflow ? (
           <div className="divide-y divide-peach rounded-xl border border-peach bg-white px-4 py-2 print:border-gray-300">
-            <Row label="เงินเข้า (รวมรายได้อื่นๆ)" value={fmtBaht(cashflow.income)} />
+            <Row label="เงินเข้า (ค่างวด + ดาวน์ + รายได้อื่นๆ)" value={fmtBaht(cashflow.income)} />
             <Row label="เงินออก (โอนให้ร้านสัญญาใหม่)" value={fmtBaht(cashflow.expense)} />
             <Row label="สุทธิ" value={fmtBaht(cashflow.net)} />
             <Row label="สัญญาใหม่" value={`${cashflow.newCases} รายการ`} />

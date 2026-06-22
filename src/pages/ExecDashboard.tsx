@@ -421,7 +421,7 @@ function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }
     <div className="flex flex-col gap-5">
       {/* สรุปรวมทั้งช่วง */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi label={`เงินเข้า (รวม ${rows.length} ${unit})`} value={`฿${money(totalIncome)}`} sub="ค่างวด + รายได้อื่นๆ" tone="text-green-600" />
+        <Kpi label={`เงินเข้า (รวม ${rows.length} ${unit})`} value={`฿${money(totalIncome)}`} sub="ค่างวด + ดาวน์ + รายได้อื่นๆ" tone="text-green-600" />
         <Kpi label={`เงินออก (รวม ${rows.length} ${unit})`} value={`฿${money(totalExpense)}`} sub="โอนให้ร้าน (สัญญาใหม่)" tone="text-amber-600" />
         <Kpi label="กระแสเงินสดสุทธิ" value={`฿${money(totalNet)}`} sub="เข้า − ออก" tone={totalNet >= 0 ? 'text-green-600' : 'text-red-600'} />
         <Kpi label={`เคสใหม่ (${rows.length} ${unit})`} value={`${totalCases} ราย`} sub={last ? `ล่าสุด ${last.label}: ${last.newCases} ราย` : ''} />

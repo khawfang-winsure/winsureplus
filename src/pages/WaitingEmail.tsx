@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Mail } from 'lucide-react'
 import { Badge, Button, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import CopyBox from '../components/CopyBox'
@@ -54,7 +55,12 @@ export default function WaitingEmail() {
           {pending.map((c) => (
             <li key={c.id} className="flex items-center justify-between rounded-xl border border-peach bg-white px-4 py-3">
               <div>
-                <p className="font-medium text-ink">{c.customerName} — {c.contractNo}</p>
+                <p className="font-medium text-ink">
+                  <Link to={`/contract/${c.id}`} className="text-salmon-deep hover:underline">
+                    {c.customerName}
+                  </Link>
+                  {' '}— {c.contractNo}
+                </p>
                 <p className="text-sm text-ink-soft">{shopOf(c.shopId)?.name ?? '-'} · {thaiDate(c.transactionDate)}</p>
               </div>
               <div className="flex items-center gap-2">

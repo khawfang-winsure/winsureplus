@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Receipt } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle } from '../components/ui'
 import CopyBox from '../components/CopyBox'
@@ -134,7 +135,16 @@ export default function WaitingSummary() {
                     <input type="checkbox" checked={checked} readOnly className="h-4 w-4 accent-salmon-deep" />
                     <div className="flex-1">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <p className="font-medium text-ink">{c.customerName} — {c.contractNo}</p>
+                        <p className="font-medium text-ink">
+                          <Link
+                            to={`/contract/${c.id}`}
+                            className="text-salmon-deep hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {c.customerName}
+                          </Link>
+                          {' '}— {c.contractNo}
+                        </p>
                         {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
                       </div>
                       <p className="text-sm text-ink-soft">

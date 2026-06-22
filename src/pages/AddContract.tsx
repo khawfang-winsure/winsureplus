@@ -560,7 +560,15 @@ export default function AddContract() {
                 <input
                   type="checkbox"
                   checked={f.pendingDocuments}
-                  onChange={(e) => set('pendingDocuments', e.target.checked)}
+                  onChange={(e) => {
+                    const on = e.target.checked
+                    set('pendingDocuments', on)
+                    // เปิด Case Online ใหม่: seed ทุกรายการเป็น "ยังไม่ได้รับ" (= อยู่ใน pending)
+                    // ใช้ length === 0 กันทับค่าที่โหลดมาในโหมดแก้ไข
+                    if (on && f.pendingDocItems.length === 0) {
+                      set('pendingDocItems', [...CASE_ONLINE_DOC_ITEMS])
+                    }
+                  }}
                   disabled={lockCaseOnline}
                   className="h-4 w-4 accent-amber-500"
                 />
@@ -579,11 +587,11 @@ export default function AddContract() {
               {f.pendingDocuments && (
                 <div className="ml-6 mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
                   <p className="mb-2 text-xs font-semibold text-amber-800">
-                    ติ๊กรายการที่ยังรออยู่ (ยังไม่ได้รับ):
+                    ติ๊กรายการที่ได้รับแล้ว (ที่เหลือ = ยังรออยู่):
                   </p>
                   <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
                     {CASE_ONLINE_DOC_ITEMS.map((item) => {
-                      const ticked = f.pendingDocItems.includes(item)
+                      const inPending = f.pendingDocItems.includes(item)
                       return (
                         <label
                           key={item}
@@ -591,10 +599,10 @@ export default function AddContract() {
                         >
                           <input
                             type="checkbox"
-                            checked={ticked}
+                            checked={!inPending}
                             disabled={lockCaseOnline}
                             onChange={() => {
-                              const next = ticked
+                              const next = inPending
                                 ? f.pendingDocItems.filter((x) => x !== item)
                                 : CASE_ONLINE_DOC_ITEMS.filter(
                                     (x) => f.pendingDocItems.includes(x) || x === item,
@@ -746,7 +754,15 @@ export default function AddContract() {
               </Field>
             </div>
             {/* แสดงผลคำนวณสด */}
-            <div className="mt-3 grid grid-cols-3 gap-3 rounded-xl bg-white p-3 text-sm">
+            <div className="mt-3 grid grid-cols-2 gap-3 rounded-xl bg-white p-3 text-sm sm:grid-cols-4">
+              <div>
+                <p className="text-ink-soft">ยอดเงินดาวน์</p>
+                <p className="font-semibold text-ink">
+                  {num(f.devicePrice) && num(f.downPercent)
+                    ? `${baht(Math.round(num(f.devicePrice) * num(f.downPercent) / 100))} ฿`
+                    : '—'}
+                </p>
+              </div>
               <div>
                 <p className="text-ink-soft">หลังหักดาวน์</p>
                 <p className="font-semibold text-ink">{baht(summary.afterDown)} ฿</p>

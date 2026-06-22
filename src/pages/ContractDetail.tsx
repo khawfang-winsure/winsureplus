@@ -298,6 +298,13 @@ export default function ContractDetail() {
   const extraChargesSum = sumExtraCharges(extraCharges)
   const principalRemaining = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
   const totalOutstandingAmt = calcTotalOutstanding(penaltyDue, extraChargesSum, principalRemaining)
+  // เงินดาวน์ + ค่าเอกสาร (ชำระ ณ วันเริ่มสัญญา — ไม่ดันเข้า installments state)
+  const _summary = contract.devicePrice
+    ? calcSummary(contract.devicePrice, contract.downPercent, contract.commissionPercent, contract.docFee)
+    : null
+  const downPayment = _summary ? Math.round(contract.devicePrice - _summary.afterDown) : 0
+  const downPlusDoc = downPayment + contract.docFee
+  const downRowDate = contract.transactionDate ?? installments[0]?.dueDate
   // ยอดคงค้างหลังคืนเครื่อง (แสดงแทน totalOutstanding เมื่อ status='returned')
   const returnedOutstanding: OutstandingAfterReturnResult | null =
     contract.status === 'returned'
@@ -832,6 +839,18 @@ export default function ContractDetail() {
               </tr>
             </thead>
             <tbody>
+              {/* บรรทัดพิเศษ: เงินดาวน์ + ค่าเอกสาร — ชำระแล้ว ณ วันเริ่มสัญญา */}
+              {downPlusDoc > 0 && (
+                <tr className="bg-green-50/40">
+                  <td className="px-3 py-2.5 whitespace-nowrap text-xs text-ink-soft">เงินดาวน์ + ค่าเอกสาร</td>
+                  <td className="px-3 py-2.5">{downRowDate ? thaiDate(downRowDate) : '—'}</td>
+                  <td className="px-3 py-2.5">{baht(downPlusDoc)}</td>
+                  <td className="px-3 py-2.5">{baht(downPlusDoc)}</td>
+                  <td className="px-3 py-2.5 text-ink-soft">-</td>
+                  <td className="px-3 py-2.5"><Badge tone="green">ชำระแล้ว</Badge></td>
+                  <td className="px-3 py-2.5" />
+                </tr>
+              )}
               {installments.map((i, idx) => {
                 const remaining = Math.max(0, i.amount - i.paidAmount)
                 const partial = !i.paidAt && i.paidAmount > 0
