@@ -62,6 +62,8 @@ import { boxRequired } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
+import CopyBox from '../components/CopyBox'
+import { buildPendingDocMessage } from '../lib/messages'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   due_day: 'เปลี่ยนวันที่ชำระ',
@@ -578,16 +580,24 @@ export default function ContractDetail() {
 
           {/* ===== รายการเอกสารที่รอ (read-only — แก้ที่หน้าแก้ไขสัญญา) ===== */}
           {contract.pendingDocuments && contract.pendingDocItems && contract.pendingDocItems.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {contract.pendingDocItems.map((item) => (
-                <span
-                  key={item}
-                  className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-800"
-                >
-                  {item}
-                </span>
-              ))}
-            </div>
+            <>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {contract.pendingDocItems.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-800"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3">
+                <CopyBox
+                  title="แจ้งร้านค้า — เอกสารที่ยังขาด"
+                  text={contractShopName ? buildPendingDocMessage(contract, contractShopName) : ''}
+                />
+              </div>
+            </>
           )}
         </Card>
       )}

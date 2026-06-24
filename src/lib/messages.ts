@@ -86,6 +86,30 @@ export function buildBulkSummary(
   return parts.join('\n')
 }
 
+/** ข้อความแจ้งร้านค้าเรื่องเอกสารค้าง (Case Online) */
+export function buildPendingDocMessage(
+  contract: Pick<Contract, 'contractNo' | 'invNo' | 'customerName' | 'pendingDocItems'>,
+  shopName: string,
+): string {
+  const items = contract.pendingDocItems ?? []
+  if (items.length === 0) return ''
+  const lines: string[] = [
+    '📋 แจ้งเอกสารค้าง',
+    `ร้าน: ${shopName}`,
+  ]
+  if (contract.contractNo) lines.push(`เลขที่สัญญา: ${contract.contractNo}`)
+  if (contract.invNo) lines.push(`INV: ${contract.invNo}`)
+  lines.push(
+    `ลูกค้า: ${contract.customerName}`,
+    '',
+    'ยังขาดเอกสารต่อไปนี้:',
+    ...items.map((item) => `• ${item}`),
+    '',
+    'รบกวนส่งเอกสารเพิ่มเติมด้วยนะคะ ขอบคุณค่ะ 🙏',
+  )
+  return lines.join('\n')
+}
+
 /** ข้อความอีเมลส่งพาร์ทเนอร์ (1 เคส) */
 export function buildEmailText(c: Contract, shop: Shop): string {
   const downAmount = Math.round(c.devicePrice * (c.downPercent / 100))

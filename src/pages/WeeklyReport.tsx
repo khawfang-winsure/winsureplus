@@ -7,17 +7,18 @@ import {
   getContracts,
   getAllStatuses,
   getAllInstallments,
-  getAllPayments,
+  getCashflowDaily,
   getReturns,
   getEscalateContracts,
   getFreelancerPerformance,
   getOverduePromiseContracts,
   getAllOtherIncome,
+  type DailyCashflowRow,
 } from '../lib/db'
 import { detectBottlenecks } from '../lib/bottleneck'
 import { buildCashflow } from '../lib/execDashboard'
 import type { Contract, ContractStatusRow } from '../lib/types'
-import type { InstallmentLite, PaymentLite } from '../lib/db'
+import type { InstallmentLite } from '../lib/db'
 
 // ===== date helpers =====
 
@@ -86,19 +87,19 @@ function dayKeyOf(d: Date): string {
 // ===== loader =====
 
 async function loadAll() {
-  const [contracts, statuses, installments, payments, returns_, escalate, freelancers, promiseOverdue, otherIncome] =
+  const [contracts, statuses, installments, dailyRows, returns_, escalate, freelancers, promiseOverdue, otherIncome] =
     await Promise.all([
       getContracts(),
       getAllStatuses(),
       getAllInstallments(),
-      getAllPayments(),
+      getCashflowDaily(),
       getReturns(),
       getEscalateContracts(),
       getFreelancerPerformance(7),
       getOverduePromiseContracts(),
       getAllOtherIncome(),
     ])
-  return { contracts, statuses, installments, payments, returns: returns_, escalate, freelancers, promiseOverdue, otherIncome }
+  return { contracts, statuses, installments, dailyRows, returns: returns_, escalate, freelancers, promiseOverdue, otherIncome }
 }
 
 type LoadedData = Awaited<ReturnType<typeof loadAll>>
@@ -123,7 +124,7 @@ function computeWeekStats(
   contracts: Contract[],
   statuses: ContractStatusRow[],
   installments: InstallmentLite[],
-  payments: PaymentLite[],
+  dailyRows: DailyCashflowRow[],
   weekStart: Date,
   weekEnd: Date,
 ): WeekStats {
@@ -153,14 +154,10 @@ function computeWeekStats(
   const dueInWeek = installments.filter((i) => i.dueDate >= startISO && i.dueDate <= endISO)
   const dueThisWeek = dueInWeek.length
 
-  // ยอดชำระ (payment_log action=pay) ใน window
-  const collectedThisWeek = payments
-    .filter((p) => {
-      if (p.action !== 'pay') return false
-      const d = p.createdAt.slice(0, 10)
-      return d >= startISO && d <= endISO
-    })
-    .reduce((s, p) => s + p.amount, 0)
+  // ยอดชำระใน window — จาก v_cashflow_daily aggregate (payDate = YYYY-MM-DD ท้องถิ่น)
+  const collectedThisWeek = dailyRows
+    .filter((dr) => dr.payDate >= startISO && dr.payDate <= endISO)
+    .reduce((s, dr) => s + dr.income, 0)
 
   // อัตราจัดเก็บ = เก็บได้ ÷ งวดที่ครบกำหนด (จำนวนงวด × ค่างวดเฉลี่ย)
   const expectedThisWeek = dueInWeek.reduce((s, i) => s + i.amount, 0)
@@ -261,7 +258,7 @@ export default function WeeklyReport() {
 
   const { data, loading, error } = useAsync<LoadedData>(
     loadAll,
-    { contracts: [], statuses: [], installments: [], payments: [], returns: [], escalate: [], freelancers: [], promiseOverdue: [], otherIncome: [] },
+    { contracts: [], statuses: [], installments: [], dailyRows: [], returns: [], escalate: [], freelancers: [], promiseOverdue: [], otherIncome: [] },
   )
 
   const stats = useMemo(() => {
@@ -270,7 +267,7 @@ export default function WeeklyReport() {
       data.contracts,
       data.statuses,
       data.installments,
-      data.payments,
+      data.dailyRows,
       weekStart,
       weekEnd,
     )
@@ -278,8 +275,8 @@ export default function WeeklyReport() {
 
   // Cashflow สัปดาห์นี้ (buildCashflow: 1 week window รวม other income)
   const cashflow = useMemo(() => {
-    if (!data.contracts.length && !data.payments.length) return null
-    const rows = buildCashflow(data.contracts, data.payments, 'week', 1, todayISO(), undefined, data.otherIncome)
+    if (!data.contracts.length && !data.dailyRows.length) return null
+    const rows = buildCashflow(data.contracts, data.dailyRows, 'week', 1, todayISO(), undefined, data.otherIncome)
     return rows[0] ?? null
   }, [data])
 

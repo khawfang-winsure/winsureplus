@@ -1,7 +1,7 @@
 // ===== ตัวคำนวณ Dashboard ผู้บริหาร (ฟังก์ชันบริสุทธิ์ — แยกจาก UI/DB เพื่อทดสอบง่าย) =====
 // รวมข้อมูลจากหลายแหล่ง (สัญญา/สถานะ/งวด/ร้าน/การชำระ/ขยายเวลา/คืนเครื่อง) เป็นตัวเลขสรุป
 import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, ShopReportRow, GradeMonthlyChange, OtherIncomeLite } from './types'
-import type { InstallmentLite, PaymentLite, ExtensionRecord } from './db'
+import type { InstallmentLite, ExtensionRecord, DailyCashflowRow } from './db'
 import { ageRange } from './format'
 import { buildShopReport, topShopsByCases } from './report'
 import { buildCommissionReport, type CommissionTier, type RecruitTier, type RecruitBonusRule } from './commission'
@@ -13,7 +13,8 @@ export interface ExecInput {
   statuses: ContractStatusRow[]
   installments: InstallmentLite[]
   shops: Shop[]
-  payments: PaymentLite[]
+  /** ยอดรายได้รวมรายวัน จาก v_cashflow_daily (migration 0056) แทน raw payments ที่ติด PAGE_CAP */
+  dailyRows: DailyCashflowRow[]
   extensions: ExtensionRecord[]
   returns: DeviceReturnRow[]
   todayISO: string // 'YYYY-MM-DD'
@@ -213,7 +214,7 @@ function weekStartOf(d: Date): Date {
  */
 export function buildCashflow(
   contracts: Contract[],
-  payments: PaymentLite[],
+  dailyRows: DailyCashflowRow[],
   granularity: Granularity,
   count: number,
   todayISO: string,
@@ -249,13 +250,13 @@ export function buildCashflow(
     return `${d.getFullYear()}-${d.getMonth()}`
   }
 
-  // เงินเข้า — การรับชำระค่างวด
-  for (const p of payments) {
-    if (p.action !== 'pay') continue
-    const i = idx.get(keyOf(localDate(p.createdAt)))
+  // เงินเข้า — การรับชำระค่างวด (จาก v_cashflow_daily aggregate — ไม่ติด PAGE_CAP)
+  // payDate เป็น YYYY-MM-DD ท้องถิ่น (Asia/Bangkok) จาก view — ใช้ localDate() แบบ date-only path
+  for (const dr of dailyRows) {
+    const i = idx.get(keyOf(localDate(dr.payDate)))
     if (i == null) continue
-    rows[i].income += p.amount
-    rows[i].paymentsCount++
+    rows[i].income += dr.income
+    rows[i].paymentsCount += dr.payCount
   }
   // เงินเข้า — รายได้อื่นๆ (other_income bucket by received_at; paymentsCount ไม่นับ — metric นั้นนับ collection ค่างวดล้วน)
   for (const oi of (otherIncome ?? [])) {
@@ -483,7 +484,7 @@ function buildBriefing(
 }
 
 export function buildExecDashboard(input: ExecInput): ExecDashboard {
-  const { contracts, statuses, installments, shops, payments, extensions, returns, todayISO } = input
+  const { contracts, statuses, installments, shops, dailyRows, extensions, returns, todayISO } = input
   const today = new Date(`${todayISO}T00:00:00`)
   const curYear = today.getFullYear()
   const curMonthIndex = today.getMonth() // 0-based
@@ -503,7 +504,6 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     let s = input.rangeStart as string
     let e = input.rangeEnd as string
     if (s > e) {
-      console.warn(`[execDashboard] rangeStart (${s}) > rangeEnd (${e}) — swapping`)
       const tmp = s; s = e; e = tmp
     }
     effectiveStart = s
@@ -604,8 +604,9 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
   const collectionRate = pct(collectedDue, dueToDate)
 
   let receivedThisMonth = 0
-  for (const p of payments) {
-    if (p.action === 'pay' && inRange(p.createdAt)) receivedThisMonth += p.amount
+  // รวมยอดรายวันจาก v_cashflow_daily แทน raw payments ที่ติด PAGE_CAP
+  for (const dr of dailyRows) {
+    if (inRange(dr.payDate)) receivedThisMonth += dr.income
   }
   // รวมรายได้อื่นๆ ที่ received_at ตกในช่วง effective (inRange ใช้ ISO date ได้ตรงๆ)
   for (const oi of (input.otherIncome ?? [])) {
@@ -682,11 +683,11 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     const mk = monthKey(c.transactionDate)
     newCasesMap.set(mk, (newCasesMap.get(mk) ?? 0) + 1)
   }
+  // collectedByMonth (12-month trend) — bucket ยอดรายวันตามเดือน
   const collectedMap = new Map<string, number>()
-  for (const p of payments) {
-    if (p.action !== 'pay') continue
-    const mk = monthKey(p.createdAt)
-    collectedMap.set(mk, (collectedMap.get(mk) ?? 0) + p.amount)
+  for (const dr of dailyRows) {
+    const mk = monthKey(dr.payDate)
+    collectedMap.set(mk, (collectedMap.get(mk) ?? 0) + dr.income)
   }
   const newCasesByMonth = trendKeys.map((k) => newCasesMap.get(k) ?? 0)
   const collectedByMonth = trendKeys.map((k) => r0(collectedMap.get(k) ?? 0))
@@ -738,9 +739,9 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     cfMonthCount = Math.max(1, monthDiff + 1)
   }
   const oi = input.otherIncome ?? [] // other_income ถ้ายังไม่ wire (Wave 2) → [] → cashflow ไม่เปลี่ยน
-  const cashflowDay = buildCashflow(contracts, payments, 'day', cfDayCount, todayISO, cfAnchor, oi)
-  const cashflowWeek = buildCashflow(contracts, payments, 'week', cfWeekCount, todayISO, cfAnchor, oi)
-  const cashflowMonth = buildCashflow(contracts, payments, 'month', cfMonthCount, todayISO, cfAnchor, oi)
+  const cashflowDay = buildCashflow(contracts, dailyRows, 'day', cfDayCount, todayISO, cfAnchor, oi)
+  const cashflowWeek = buildCashflow(contracts, dailyRows, 'week', cfWeekCount, todayISO, cfAnchor, oi)
+  const cashflowMonth = buildCashflow(contracts, dailyRows, 'month', cfMonthCount, todayISO, cfAnchor, oi)
 
   const briefing = buildBriefing(
     input,

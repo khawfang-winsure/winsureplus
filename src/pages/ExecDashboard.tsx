@@ -15,7 +15,7 @@ import {
   getAllStatuses,
   getAllInstallments,
   getShops,
-  getAllPayments,
+  getCashflowDaily,
   getAllExtensions,
   getReturns,
   getCommissionTiers,
@@ -94,7 +94,7 @@ export default function ExecDashboard() {
       getAllStatuses(),
       getAllInstallments(),
       getShops(),
-      getAllPayments(),
+      getCashflowDaily(),
       getAllExtensions(),
       getReturns(),
       getCommissionTiers(),
@@ -103,14 +103,14 @@ export default function ExecDashboard() {
       getEmployees(),
       getAllOtherIncome(),
     ])
-      .then(([contracts, statuses, installments, shops, payments, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome]) => {
+      .then(([contracts, statuses, installments, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome]) => {
         if (!active) return
         const built = buildExecDashboard({
           contracts,
           statuses,
           installments,
           shops,
-          payments,
+          dailyRows,
           extensions,
           returns,
           todayISO,

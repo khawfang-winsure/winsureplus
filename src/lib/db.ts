@@ -1081,6 +1081,51 @@ export async function getAllPayments(): Promise<PaymentLite[]> {
   }))
 }
 
+// ---------- รายได้รายวัน (aggregate view — migration 0056) ----------
+
+/**
+ * แถวข้อมูลรายได้รายวันจาก v_cashflow_daily
+ * view aggregate ฝั่ง DB → ไม่ติด PAGE_CAP ไม่ว่า payment_log จะมีกี่หมื่นแถว
+ */
+export interface DailyCashflowRow {
+  payDate: string         // วันที่ (YYYY-MM-DD, Asia/Bangkok)
+  income: number          // ยอดรับรวม = principal + penalty_paid_amount
+  penaltyIncome: number   // ยอดค่าปรับแยก (เผื่อ breakdown wave ถัดไป)
+  payCount: number        // จำนวนรายการ action='pay'
+}
+
+interface DailyCashflowViewRow {
+  pay_date: string
+  income: string | number | null
+  penalty_income: string | number | null
+  pay_count: string | number | null
+}
+
+function mapDailyCashflow(r: DailyCashflowViewRow): DailyCashflowRow {
+  return {
+    payDate: r.pay_date,
+    income: Number(r.income ?? 0),
+    penaltyIncome: Number(r.penalty_income ?? 0),
+    payCount: Number(r.pay_count ?? 0),
+  }
+}
+
+/**
+ * ดึงรายได้รายวันจาก v_cashflow_daily (migration 0056)
+ * แก้บั๊ก: getAllPayments ติด PAGE_CAP 4,999 ทำให้ยอดรายได้ /exec ขาด ~65%
+ * view aggregate ฝั่ง DB คืน 1 แถวต่อวัน → ครบทุกบาทไม่ว่า payment_log จะใหญ่แค่ไหน
+ * เรียงจากเก่าสุด → ใหม่สุด (view ใช้ ORDER BY pay_date)
+ */
+export async function getCashflowDaily(): Promise<DailyCashflowRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_cashflow_daily')
+    .select('pay_date, income, penalty_income, pay_count')
+    .range(0, 1999)
+  if (error) throw error
+  return ((data ?? []) as DailyCashflowViewRow[]).map(mapDailyCashflow)
+}
+
 // ---------- ขยายระยะเวลา (restructure) — Feature B ----------
 export type ExtensionType = 'due_day' | 'months' | 'both'
 
