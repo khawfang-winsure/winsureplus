@@ -412,6 +412,22 @@ function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }
   // ช่วงล่าสุด (แถวสุดท้าย)
   const last = rows[rows.length - 1]
 
+  // รวม 5 หมวดทั้งช่วง
+  const totalInstallment = rows.reduce((s, r) => s + r.incomeInstallment, 0)
+  const totalPenalty = rows.reduce((s, r) => s + r.incomePenalty, 0)
+  const totalDown = rows.reduce((s, r) => s + r.incomeDown, 0)
+  const totalDocFee = rows.reduce((s, r) => s + r.incomeDocFee, 0)
+  const totalOther = rows.reduce((s, r) => s + r.incomeOther, 0)
+
+  // legend สีต่อหมวด (ใช้ซ้ำทั้งตารางรวมและตารางรายช่วง)
+  const BREAKDOWN_ITEMS: { key: keyof CashflowRow; label: string; color: string }[] = [
+    { key: 'incomeInstallment', label: 'ค่างวด', color: 'text-green-700' },
+    { key: 'incomePenalty', label: 'ค่าปรับ', color: 'text-amber-600' },
+    { key: 'incomeDown', label: 'เงินดาวน์', color: 'text-sky-600' },
+    { key: 'incomeDocFee', label: 'ค่าเอกสาร', color: 'text-violet-600' },
+    { key: 'incomeOther', label: 'อื่นๆ', color: 'text-pink-600' },
+  ]
+
   return (
     <div className="flex flex-col gap-5">
       {/* สรุปรวมทั้งช่วง */}
@@ -421,6 +437,32 @@ function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }
         <Kpi label="กระแสเงินสดสุทธิ" value={`฿${money(totalNet)}`} sub="เข้า − ออก" tone={totalNet >= 0 ? 'text-green-600' : 'text-red-600'} />
         <Kpi label={`เคสใหม่ (${rows.length} ${unit})`} value={`${totalCases} ราย`} sub={last ? `ล่าสุด ${last.label}: ${last.newCases} ราย` : ''} />
       </div>
+
+      {/* แยกหมวดรายได้ (รวมทั้งช่วง) */}
+      <Card>
+        <h3 className="mb-3 font-semibold text-ink">รายได้แยกหมวด (รวม {rows.length} {unit})</h3>
+        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          {[
+            { label: 'ค่างวด', value: totalInstallment, color: 'text-green-700', dot: 'bg-green-700' },
+            { label: 'ค่าปรับ', value: totalPenalty, color: 'text-amber-600', dot: 'bg-amber-500' },
+            { label: 'เงินดาวน์', value: totalDown, color: 'text-sky-600', dot: 'bg-sky-500' },
+            { label: 'ค่าเอกสาร', value: totalDocFee, color: 'text-violet-600', dot: 'bg-violet-500' },
+            { label: 'รายได้อื่นๆ', value: totalOther, color: 'text-pink-600', dot: 'bg-pink-500' },
+          ].map((item) => (
+            <div key={item.label} className="rounded-xl border border-peach bg-white p-3">
+              <div className="flex items-center gap-1.5 text-xs text-ink-soft">
+                <span className={`inline-block h-2 w-2 rounded-full ${item.dot}`} />
+                {item.label}
+              </div>
+              <p className={`mt-1 text-lg font-bold ${item.color}`}>฿{money(item.value)}</p>
+              <p className="text-xs text-ink-soft">
+                {totalIncome > 0 ? `${((item.value / totalIncome) * 100).toFixed(0)}%` : '—'} ของรายได้
+              </p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-ink-soft">รวม 5 หมวด = เงินเข้าทั้งหมด (ค่างวดดูดเศษปัดเศษ — ผลรวมตรงทุก{unit})</p>
+      </Card>
 
       {/* กราฟเข้า vs ออก */}
       <Card>
@@ -435,15 +477,18 @@ function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }
         />
       </Card>
 
-      {/* ตารางรายช่วง */}
+      {/* ตารางรายช่วง (รวม breakdown 5 หมวด) */}
       <Card>
         <h3 className="mb-3 font-semibold text-ink">รายละเอียดราย{unit}</h3>
         <div className="scrollbar-thin overflow-x-auto">
-          <table className="w-full min-w-[560px] text-sm">
+          <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr className="border-b border-peach text-left text-ink-soft">
                 <th className="py-2 font-semibold">ช่วง</th>
                 <th className="py-2 text-right font-semibold">เงินเข้า</th>
+                {BREAKDOWN_ITEMS.map((b) => (
+                  <th key={b.key as string} className={`py-2 text-right text-xs font-semibold ${b.color}`}>{b.label}</th>
+                ))}
                 <th className="py-2 text-right font-semibold">เงินออก</th>
                 <th className="py-2 text-right font-semibold">สุทธิ</th>
                 <th className="py-2 text-right font-semibold">รับชำระ</th>
@@ -454,7 +499,12 @@ function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }
               {[...rows].reverse().map((r) => (
                 <tr key={r.key} className="border-b border-peach/50 last:border-0">
                   <td className="py-1.5 text-ink">{r.label}</td>
-                  <td className="py-1.5 text-right text-green-600">฿{money(r.income)}</td>
+                  <td className="py-1.5 text-right font-medium text-green-600">฿{money(r.income)}</td>
+                  {BREAKDOWN_ITEMS.map((b) => (
+                    <td key={b.key as string} className={`py-1.5 text-right text-xs ${b.color}`}>
+                      {(r[b.key] as number) > 0 ? `฿${money(r[b.key] as number)}` : <span className="text-ink-soft/40">—</span>}
+                    </td>
+                  ))}
                   <td className="py-1.5 text-right text-amber-600">฿{money(r.expense)}</td>
                   <td className={`py-1.5 text-right font-semibold ${r.net >= 0 ? 'text-ink' : 'text-red-600'}`}>฿{money(r.net)}</td>
                   <td className="py-1.5 text-right text-ink-soft">{r.paymentsCount}</td>
@@ -465,7 +515,7 @@ function CashflowView({ gran, rows }: { gran: Granularity; rows: CashflowRow[] }
           </table>
         </div>
         <p className="mt-3 text-xs text-ink-soft">
-          * เงินเข้า = ค่างวดที่บันทึกรับชำระในช่วงนั้น (อิงเวลาที่พนักงานคีย์) · เงินออก = เงินโอนให้ร้านของสัญญาใหม่ตามวันที่ทำรายการ
+          * เงินเข้า = รวมทุกหมวด (ค่างวด + ค่าปรับ + เงินดาวน์ + ค่าเอกสาร + อื่นๆ) · เงินออก = เงินโอนให้ร้านของสัญญาใหม่ตามวันที่ทำรายการ
         </p>
       </Card>
     </div>

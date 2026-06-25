@@ -157,11 +157,18 @@ export type Granularity = 'day' | 'week' | 'month'
 export interface CashflowRow {
   key: string
   label: string
-  income: number // เงินเข้า: ค่างวดที่เก็บได้ (payment_log action='pay')
+  income: number // เงินเข้า: รวมทุกหมวด (invariant: = sum ของ 5 หมวดด้านล่าง)
   expense: number // เงินออก: เงินโอนให้ร้านของสัญญาใหม่
   net: number // สุทธิ = เข้า − ออก
   newCases: number // จำนวนสัญญาใหม่
   paymentsCount: number // จำนวนครั้งที่รับชำระ
+  // ===== income breakdown 5 หมวด =====
+  // invariant: incomeInstallment + incomePenalty + incomeDown + incomeDocFee + incomeOther === income (ก่อน r0)
+  incomeInstallment: number // ค่างวด (principal ล้วน = dr.income − dr.penaltyIncome)
+  incomePenalty: number     // ค่าปรับที่เก็บได้จริง (= dr.penaltyIncome)
+  incomeDown: number        // เงินดาวน์ (downOf(c) ตาม transactionDate)
+  incomeDocFee: number      // ค่าเอกสาร (c.docFee ตาม transactionDate)
+  incomeOther: number       // รายได้อื่นๆ (other_income bucket by received_at)
 }
 
 /**
@@ -248,7 +255,11 @@ export function buildCashflow(
       label = `${TH_MON[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`
     }
     idx.set(key, rows.length)
-    rows.push({ key, label, income: 0, expense: 0, net: 0, newCases: 0, paymentsCount: 0 })
+    rows.push({
+      key, label,
+      income: 0, expense: 0, net: 0, newCases: 0, paymentsCount: 0,
+      incomeInstallment: 0, incomePenalty: 0, incomeDown: 0, incomeDocFee: 0, incomeOther: 0,
+    })
   }
 
   const keyOf = (d: Date): string => {
@@ -259,17 +270,22 @@ export function buildCashflow(
 
   // เงินเข้า — การรับชำระค่างวด (จาก v_cashflow_daily aggregate — ไม่ติด PAGE_CAP)
   // payDate เป็น YYYY-MM-DD ท้องถิ่น (Asia/Bangkok) จาก view — ใช้ localDate() แบบ date-only path
+  // แตก 2 หมวด: incomeInstallment (principal) + incomePenalty (ค่าปรับ)
   for (const dr of dailyRows) {
     const i = idx.get(keyOf(localDate(dr.payDate)))
     if (i == null) continue
     rows[i].income += dr.income
     rows[i].paymentsCount += dr.payCount
+    // breakdown: penaltyIncome มาจาก v_cashflow_daily (field เดิมที่เพิ่มไว้แล้ว)
+    rows[i].incomePenalty += dr.penaltyIncome
+    rows[i].incomeInstallment += dr.income - dr.penaltyIncome
   }
   // เงินเข้า — รายได้อื่นๆ (other_income bucket by received_at; paymentsCount ไม่นับ — metric นั้นนับ collection ค่างวดล้วน)
   for (const oi of (otherIncome ?? [])) {
     const i = idx.get(keyOf(localDate(oi.receivedAt)))
     if (i == null) continue
     rows[i].income += oi.amount
+    rows[i].incomeOther += oi.amount
   }
   // เงินเข้า — เงินดาวน์ + ค่าเอกสาร (bucket ตาม transactionDate ของสัญญา)
   // docFee reclassify: เดิมถูกหักออกจากยอดโอนร้าน → ย้ายมาเป็น income stream แยก (net เท่าเดิม)
@@ -277,7 +293,11 @@ export function buildCashflow(
   for (const c of contracts) {
     const i = idx.get(keyOf(localDate(c.transactionDate)))
     if (i == null) continue
-    rows[i].income += downOf(c) + (c.docFee || 0)
+    const down = downOf(c)
+    const doc = c.docFee || 0
+    rows[i].income += down + doc
+    rows[i].incomeDown += down
+    rows[i].incomeDocFee += doc
   }
   // เงินออก — โอนให้ร้านของสัญญาใหม่ (ตามวันที่ทำรายการ)
   // ใช้ shopCashOut (afterDown + commission) ไม่หัก docFee เพราะ docFee ย้ายไปเป็น income แล้ว
@@ -288,9 +308,16 @@ export function buildCashflow(
     rows[i].newCases++
   }
   for (const r of rows) {
+    // Option B: round 4 หมวด + income ก่อน แล้ว incomeInstallment ดูดเศษ → Σ 5 หมวด = income เป๊ะทุก row
+    r.incomePenalty = r0(r.incomePenalty)
+    r.incomeDown = r0(r.incomeDown)
+    r.incomeDocFee = r0(r.incomeDocFee)
+    r.incomeOther = r0(r.incomeOther)
     r.income = r0(r.income)
     r.expense = r0(r.expense)
     r.net = r.income - r.expense
+    // incomeInstallment = residual หลัง round ทุกหมวดและ income แล้ว — Σ 5 หมวด = income เสมอ (diff = 0)
+    r.incomeInstallment = r.income - r.incomePenalty - r.incomeDown - r.incomeDocFee - r.incomeOther
   }
   return rows
 }
