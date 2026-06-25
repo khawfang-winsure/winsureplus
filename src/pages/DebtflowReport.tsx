@@ -1,10 +1,24 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Search } from 'lucide-react'
+import { Search, Users, Wallet, CalendarClock, AlertTriangle } from 'lucide-react'
 import { Badge, Card, Loading, PageTitle } from '../components/ui'
 import Pagination from '../components/Pagination'
-import { getDebtflowSummary, getDebtflowCases } from '../lib/db'
-import type { DebtflowCase, DebtflowSummary } from '../lib/types'
+import {
+  getDebtflowSummary,
+  getDebtflowCases,
+  getPjRecoverySummary,
+  getPjRecoveryMonthly,
+  getPjRecoveryByEmployee,
+  getPjDaysLateDist,
+} from '../lib/db'
+import type {
+  DebtflowCase,
+  DebtflowSummary,
+  PjRecoverySummary,
+  PjRecoveryMonth,
+  PjRecoveryEmployee,
+  PjDaysLateBucket,
+} from '../lib/types'
 import { baht, thaiDate } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 
@@ -48,6 +62,34 @@ function statusTone(s: string | null): 'green' | 'amber' | 'neutral' {
   if (s === 'ชำระเงินครบแล้ว') return 'green'
   if (s.includes('รอ') || s.includes('pending')) return 'amber'
   return 'neutral'
+}
+
+// ===== helpers สำหรับ "การตามหนี้ย้อนหลัง (PJ)" =====
+
+const EMPTY_PJ: PjRecoverySummary = {
+  lateContracts: 0,
+  lateInstallments: 0,
+  recoveredTotal: 0,
+  avgDaysLate: 0,
+  maxDaysLate: 0,
+}
+
+const MONTH_TH_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
+
+// 'YYYY-MM' (ค.ศ.) → 'ส.ค.68' (พ.ศ. ย่อ)
+function thaiMonthShort(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  if (!y || !m || m < 1 || m > 12) return ym
+  const be = (y + 543) % 100 // 2 หลักท้าย พ.ศ.
+  return `${MONTH_TH_SHORT[m - 1]}${be.toString().padStart(2, '0')}`
+}
+
+// เรียงช่วงวันช้าให้ถูก (อย่าให้ 90+ มาก่อน)
+const DAYS_LATE_ORDER = ['1-7', '8-30', '31-60', '61-90', '90+']
+function sortDaysLateBuckets(rows: PjDaysLateBucket[]): PjDaysLateBucket[] {
+  return [...rows].sort(
+    (a, b) => DAYS_LATE_ORDER.indexOf(a.bucket) - DAYS_LATE_ORDER.indexOf(b.bucket),
+  )
 }
 
 // ===== KPI cards =====
@@ -324,18 +366,246 @@ function CaseTable({ cases }: { cases: DebtflowCase[] }) {
   )
 }
 
-// ===== หน้าหลัก =====
-
-async function loadAll(): Promise<{ summary: DebtflowSummary; cases: DebtflowCase[] }> {
-  const [summary, cases] = await Promise.all([getDebtflowSummary(), getDebtflowCases()])
-  return { summary, cases }
+// ===== PJ: KPI cards 4 ใบ =====
+function PjKpiCards({ s }: { s: PjRecoverySummary }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <Card className="p-4 text-center">
+        <Users size={18} className="mx-auto mb-1 text-ink-soft" />
+        <p className="text-xs text-ink-soft mb-1">ลูกค้าเคยจ่ายช้า</p>
+        <p className="text-xl font-bold text-ink">{s.lateContracts.toLocaleString()}</p>
+        <p className="text-xs text-ink-soft">ราย</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <Wallet size={18} className="mx-auto mb-1 text-green-600" />
+        <p className="text-xs text-ink-soft mb-1">เงินตามกลับมาได้รวม</p>
+        <p className="text-xl font-bold text-green-600">฿{baht(s.recoveredTotal)}</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <CalendarClock size={18} className="mx-auto mb-1 text-peach-deep" />
+        <p className="text-xs text-ink-soft mb-1">จ่ายช้าเฉลี่ย</p>
+        <p className="text-xl font-bold text-peach-deep">{s.avgDaysLate.toLocaleString()}</p>
+        <p className="text-xs text-ink-soft">วัน</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <AlertTriangle size={18} className="mx-auto mb-1 text-red-500" />
+        <p className="text-xs text-ink-soft mb-1">ช้าสุด</p>
+        <p className="text-xl font-bold text-red-600">{s.maxDaysLate.toLocaleString()}</p>
+        <p className="text-xs text-ink-soft">วัน</p>
+      </Card>
+    </div>
+  )
 }
 
-const INIT = { summary: EMPTY_SUMMARY, cases: [] as DebtflowCase[] }
+// ===== PJ: กราฟแท่งแนวตั้งเงินตามกลับรายเดือน =====
+function PjMonthlyChart({ rows }: { rows: PjRecoveryMonth[] }) {
+  const [hover, setHover] = useState<number | null>(null)
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ รายเดือน</h2>
+        <p className="py-10 text-center text-sm text-ink-soft">ยังไม่มีข้อมูล</p>
+      </Card>
+    )
+  }
+
+  const max = Math.max(1, ...rows.map((r) => r.recoveredBaht))
+  // โชว์ป้ายแกนทุกแท่งถ้าไม่เกิน 18 เดือน ไม่งั้นเว้น
+  const showEvery = rows.length <= 18 ? 1 : 2
+
+  return (
+    <Card>
+      <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ รายเดือน</h2>
+      <p className="mb-4 text-xs text-ink-soft">แท่งสูง = เก็บเงินจากงวดจ่ายช้าได้มากในเดือนนั้น</p>
+      <div className="flex items-end gap-1.5 sm:gap-2" style={{ height: 180 }}>
+        {rows.map((r, i) => {
+          const h = Math.max(2, (r.recoveredBaht / max) * 150)
+          const active = hover === i
+          return (
+            <div
+              key={r.month}
+              className="relative flex flex-1 flex-col items-center justify-end"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover(null)}
+            >
+              {active && (
+                <div className="pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg bg-zinc-900 px-2.5 py-1.5 text-xs text-white shadow-lg">
+                  <div className="font-medium text-zinc-300">{thaiMonthShort(r.month)}</div>
+                  <div className="font-semibold">฿{baht(r.recoveredBaht)}</div>
+                  <div className="text-zinc-300">{r.installments.toLocaleString()} งวด</div>
+                </div>
+              )}
+              <div
+                className="w-full rounded-t-md transition-colors"
+                style={{
+                  height: h,
+                  backgroundColor: active ? '#ea580c' : '#f97316',
+                  maxWidth: 36,
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
+      {/* ป้ายแกนล่าง */}
+      <div className="mt-1.5 flex gap-1.5 sm:gap-2">
+        {rows.map((r, i) => (
+          <span
+            key={r.month}
+            className="flex-1 overflow-hidden text-center text-[10px] leading-tight text-ink-soft"
+          >
+            {i % showEvery === 0 ? thaiMonthShort(r.month) : ''}
+          </span>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+// ===== PJ: การกระจายวันช้า 5 ช่วง =====
+function PjDaysLateDist({ rows }: { rows: PjDaysLateBucket[] }) {
+  const sorted = sortDaysLateBuckets(rows)
+  if (sorted.length === 0) return null
+  const max = Math.max(1, ...sorted.map((r) => r.installments))
+  // สีไล่จากเขียว (ช้าน้อย) → แดง (ช้ามาก)
+  const TONE = ['bg-green-500', 'bg-lime-500', 'bg-amber-400', 'bg-orange-500', 'bg-red-500']
+
+  return (
+    <Card>
+      <h2 className="mb-3 text-sm font-semibold text-ink">จ่ายช้ากี่วัน (แยกช่วง)</h2>
+      <div className="grid grid-cols-5 gap-2">
+        {sorted.map((r) => {
+          const tone = TONE[DAYS_LATE_ORDER.indexOf(r.bucket)] ?? 'bg-peach-deep'
+          const barH = Math.max(6, (r.installments / max) * 64)
+          return (
+            <div key={r.bucket} className="flex flex-col items-center">
+              <div className="flex h-20 w-full items-end justify-center">
+                <div
+                  className={`w-7 rounded-t-md ${tone}`}
+                  style={{ height: barH }}
+                  title={`${r.installments.toLocaleString()} งวด`}
+                />
+              </div>
+              <p className="mt-1 text-sm font-semibold text-ink">{r.installments.toLocaleString()}</p>
+              <p className="text-[10px] text-ink-soft">งวด</p>
+              <p className="mt-0.5 text-xs font-medium text-ink-soft">
+                {r.bucket === '90+' ? '90+ วัน' : `${r.bucket} วัน`}
+              </p>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+// ===== PJ: ตารางแยกพนักงาน =====
+function PjEmployeeTable({ rows, lateContracts }: { rows: PjRecoveryEmployee[]; lateContracts: number }) {
+  const sorted = useMemo(
+    () => [...rows].sort((a, b) => b.recoveredBaht - a.recoveredBaht),
+    [rows],
+  )
+  return (
+    <Card>
+      <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ แยกพนักงาน</h2>
+      <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+        แยกตามพนักงานได้เฉพาะเคสที่อยู่ในระบบ DEBTFLOW — เคสจ่ายช้าทั้งหมด {lateContracts.toLocaleString()} ราย
+        แต่รู้ผู้ดูแลเฉพาะส่วนที่ DEBTFLOW บันทึกไว้ ส่วนที่เหลือไม่ทราบผู้ดูแล
+      </p>
+      {sorted.length === 0 ? (
+        <p className="py-6 text-center text-sm text-ink-soft">ยังไม่มีข้อมูล</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 font-medium">พนักงาน</th>
+                <th className="pb-2 text-right font-medium">จำนวนสัญญา</th>
+                <th className="pb-2 text-right font-medium">เงินตามกลับมาได้ (฿)</th>
+                <th className="pb-2 text-right font-medium">ช้าเฉลี่ย (วัน)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((row) => (
+                <tr key={row.employee} className="border-b border-peach/40 last:border-0">
+                  <td className="py-2 font-medium text-ink">{row.employee}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.contracts.toLocaleString()}</td>
+                  <td className="py-2 text-right font-semibold text-green-700">฿{baht(row.recoveredBaht)}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.avgDaysLate.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ===== PJ: section รวม =====
+function PjRecoverySection({
+  summary,
+  monthly,
+  byEmployee,
+  daysLate,
+}: {
+  summary: PjRecoverySummary
+  monthly: PjRecoveryMonth[]
+  byEmployee: PjRecoveryEmployee[]
+  daysLate: PjDaysLateBucket[]
+}) {
+  return (
+    <div className="space-y-4 border-t border-peach pt-6">
+      <div>
+        <h2 className="text-base font-bold text-ink">การตามหนี้ย้อนหลัง (จากระบบ PJ)</h2>
+        <p className="text-sm text-ink-soft">
+          วันจ่ายจริงรายงวดจาก PJ — เงินจากงวดที่จ่ายช้าแล้วในที่สุดตามกลับมาได้
+        </p>
+      </div>
+
+      <PjKpiCards s={summary} />
+      <PjMonthlyChart rows={monthly} />
+      <PjDaysLateDist rows={daysLate} />
+      <PjEmployeeTable rows={byEmployee} lateContracts={summary.lateContracts} />
+    </div>
+  )
+}
+
+// ===== หน้าหลัก =====
+
+interface AllData {
+  summary: DebtflowSummary
+  cases: DebtflowCase[]
+  pjSummary: PjRecoverySummary
+  pjMonthly: PjRecoveryMonth[]
+  pjByEmployee: PjRecoveryEmployee[]
+  pjDaysLate: PjDaysLateBucket[]
+}
+
+async function loadAll(): Promise<AllData> {
+  const [summary, cases, pjSummary, pjMonthly, pjByEmployee, pjDaysLate] = await Promise.all([
+    getDebtflowSummary(),
+    getDebtflowCases(),
+    getPjRecoverySummary(),
+    getPjRecoveryMonthly(),
+    getPjRecoveryByEmployee(),
+    getPjDaysLateDist(),
+  ])
+  return { summary, cases, pjSummary, pjMonthly, pjByEmployee, pjDaysLate }
+}
+
+const INIT: AllData = {
+  summary: EMPTY_SUMMARY,
+  cases: [],
+  pjSummary: EMPTY_PJ,
+  pjMonthly: [],
+  pjByEmployee: [],
+  pjDaysLate: [],
+}
 
 export default function DebtflowReport() {
   const { data, loading, error } = useAsync(loadAll, INIT)
-  const { summary, cases } = data
+  const { summary, cases, pjSummary, pjMonthly, pjByEmployee, pjDaysLate } = data
 
   // last import date อ่านจาก importedAt ของเคสแรก (ทุกเคสนำเข้าพร้อมกัน)
   const importedDate = useMemo(() => {
@@ -392,6 +662,14 @@ export default function DebtflowReport() {
 
       {/* รายเคส */}
       <CaseTable cases={cases} />
+
+      {/* การตามหนี้ย้อนหลัง (PJ) */}
+      <PjRecoverySection
+        summary={pjSummary}
+        monthly={pjMonthly}
+        byEmployee={pjByEmployee}
+        daysLate={pjDaysLate}
+      />
     </div>
   )
 }

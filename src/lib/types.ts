@@ -382,3 +382,40 @@ export interface DebtflowByStatus {
   status: string
   n: number
 }
+
+// ---------- PJ Recovery report (migration 0066) ----------
+// รายงาน "การตามหนี้ย้อนหลังจาก PJ" — สรุปเงินที่ตามกลับมาได้จากงวดที่จ่ายช้า
+// (recovered = งวดจ่ายช้า ไม่ใช่แถวค่าปรับ) อ่านจาก 4 aggregate views
+
+/** สรุปรวมการตามหนี้จาก PJ (1 แถว จาก v_pj_recovery_summary) */
+export interface PjRecoverySummary {
+  lateContracts: number
+  lateInstallments: number
+  recoveredTotal: number
+  avgDaysLate: number
+  maxDaysLate: number
+}
+
+/** เงินตามกลับรายเดือน (จาก v_pj_recovery_monthly) */
+export interface PjRecoveryMonth {
+  month: string          // 'YYYY-MM'
+  installments: number
+  contracts: number
+  recoveredBaht: number
+}
+
+/** เงินตามกลับแยกพนักงาน (จาก v_pj_recovery_by_employee — เฉพาะเคสที่อยู่ใน DEBTFLOW) */
+export interface PjRecoveryEmployee {
+  employee: string
+  contracts: number
+  lateInstallments: number
+  recoveredBaht: number
+  avgDaysLate: number
+}
+
+/** การกระจายวันช้าของงวด recovery (จาก v_pj_days_late_dist) */
+export interface PjDaysLateBucket {
+  bucket: string         // '1-7' | '8-30' | '31-60' | '61-90' | '90+'
+  installments: number
+  contracts: number
+}

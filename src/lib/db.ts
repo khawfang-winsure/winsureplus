@@ -23,6 +23,10 @@ import type {
   OtherIncome,
   OverdueBucket,
   OverduePromiseContract,
+  PjDaysLateBucket,
+  PjRecoveryEmployee,
+  PjRecoveryMonth,
+  PjRecoverySummary,
   PrivateNote,
   Shop,
 } from './types'
@@ -5001,4 +5005,111 @@ export async function getDebtflowSummary(): Promise<DebtflowSummary> {
     .sort((a, b) => b.n - a.n)
 
   return { totalCases, totalCollected, closedCases, byEmployee, byGrade, byPaymentStatus }
+}
+
+// ---------- PJ Recovery report — การตามหนี้ย้อนหลังจาก PJ (migration 0066) ----------
+// อ่านจาก 4 aggregate views (1 แถว / รายเดือน / พนักงาน / bucket วันช้า)
+// "recovered" = งวดจ่ายช้า ไม่ใช่แถวค่าปรับ — filter อยู่ใน view แล้ว
+// ทุก view aggregate ฝั่ง DB → ไม่ติด PAGE_CAP; รองรับ isSupabaseConfigured=false
+
+interface PjRecoverySummaryRow {
+  late_contracts: string | number | null
+  late_installments: string | number | null
+  recovered_total: string | number | null
+  avg_days_late: string | number | null
+  max_days_late: string | number | null
+}
+
+interface PjRecoveryMonthRow {
+  month: string
+  installments: string | number | null
+  contracts: string | number | null
+  recovered_baht: string | number | null
+}
+
+interface PjRecoveryEmployeeRow {
+  employee: string
+  contracts: string | number | null
+  late_installments: string | number | null
+  recovered_baht: string | number | null
+  avg_days_late: string | number | null
+}
+
+interface PjDaysLateBucketRow {
+  bucket: string
+  installments: string | number | null
+  contracts: string | number | null
+}
+
+/**
+ * สรุปรวมการตามหนี้จาก PJ (v_pj_recovery_summary — 1 แถว)
+ * คืนค่าศูนย์ทั้งหมดถ้าไม่ได้ตั้ง Supabase หรือยังไม่มีข้อมูล
+ */
+export async function getPjRecoverySummary(): Promise<PjRecoverySummary> {
+  const empty: PjRecoverySummary = {
+    lateContracts: 0, lateInstallments: 0, recoveredTotal: 0, avgDaysLate: 0, maxDaysLate: 0,
+  }
+  if (!supabase) return empty
+  const { data, error } = await supabase
+    .from('v_pj_recovery_summary')
+    .select('late_contracts, late_installments, recovered_total, avg_days_late, max_days_late')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return empty
+  const r = data as PjRecoverySummaryRow
+  return {
+    lateContracts: Number(r.late_contracts ?? 0),
+    lateInstallments: Number(r.late_installments ?? 0),
+    recoveredTotal: Number(r.recovered_total ?? 0),
+    avgDaysLate: Number(r.avg_days_late ?? 0),
+    maxDaysLate: Number(r.max_days_late ?? 0),
+  }
+}
+
+/** เงินตามกลับรายเดือน (v_pj_recovery_monthly — เรียงตามเดือนใน view) */
+export async function getPjRecoveryMonthly(): Promise<PjRecoveryMonth[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_pj_recovery_monthly')
+    .select('month, installments, contracts, recovered_baht')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as PjRecoveryMonthRow[]).map(r => ({
+    month: r.month,
+    installments: Number(r.installments ?? 0),
+    contracts: Number(r.contracts ?? 0),
+    recoveredBaht: Number(r.recovered_baht ?? 0),
+  }))
+}
+
+/** เงินตามกลับแยกพนักงาน (v_pj_recovery_by_employee — เฉพาะเคสที่อยู่ใน DEBTFLOW) */
+export async function getPjRecoveryByEmployee(): Promise<PjRecoveryEmployee[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_pj_recovery_by_employee')
+    .select('employee, contracts, late_installments, recovered_baht, avg_days_late')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as PjRecoveryEmployeeRow[]).map(r => ({
+    employee: r.employee,
+    contracts: Number(r.contracts ?? 0),
+    lateInstallments: Number(r.late_installments ?? 0),
+    recoveredBaht: Number(r.recovered_baht ?? 0),
+    avgDaysLate: Number(r.avg_days_late ?? 0),
+  }))
+}
+
+/** การกระจายวันช้าของงวด recovery (v_pj_days_late_dist) */
+export async function getPjDaysLateDist(): Promise<PjDaysLateBucket[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_pj_days_late_dist')
+    .select('bucket, installments, contracts')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as PjDaysLateBucketRow[]).map(r => ({
+    bucket: r.bucket,
+    installments: Number(r.installments ?? 0),
+    contracts: Number(r.contracts ?? 0),
+  }))
 }
