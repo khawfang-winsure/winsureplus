@@ -191,8 +191,6 @@ export default function AddContract() {
   const navigate = useNavigate()
   const { name: myName, role, configured } = useAuth()
   const isStaff = configured && role === 'staff'
-  // edit mode + real auth + non-admin → lock Case Online toggle & checklist (admin-only)
-  const lockCaseOnline = isEdit && configured && role !== 'admin'
 
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
@@ -212,6 +210,9 @@ export default function AddContract() {
   )
 
   const [f, setF] = useState<FormState>(initial)
+  // edit mode + real auth + non-admin → lock Case Online toggle & checklist (admin-only)
+  // ยกเว้น: ถ้าสัญญาอยู่สถานะรอเอกสาร (pendingDocuments=true) ให้ staff แก้เช็กลิสต์ได้
+  const lockCaseOnline = isEdit && configured && role !== 'admin' && !f.pendingDocuments
   const [saving, setSaving] = useState(false)
   const [loadingContract, setLoadingContract] = useState(isEdit)
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
