@@ -8,6 +8,11 @@ import type {
   Contract,
   ContractStatus,
   ContractStatusRow,
+  DebtflowByEmployee,
+  DebtflowByGrade,
+  DebtflowByStatus,
+  DebtflowCase,
+  DebtflowSummary,
   DeviceReturnRow,
   ExtraCharge,
   GradeChangeType,
@@ -4826,4 +4831,160 @@ export async function getContractExtensionIds(contractId: string): Promise<{ id:
     .limit(1)
   if (error) throw error
   return (data ?? []) as { id: string }[]
+}
+
+// ===== DEBTFLOW import (migration 0064) =====
+
+interface DebtflowCaseRow {
+  id: string
+  contract_id: string | null
+  source_inv: string
+  customer_name: string | null
+  due_date: string | null
+  days_late: number | null
+  grade: string | null
+  primary_phone: string | null
+  call_status: string | null
+  phone_alt1: string | null
+  phone_alt2: string | null
+  device_status: string | null
+  conversation_note: string | null
+  promise_date: string | null
+  assigned_employee: string | null
+  payment_status: string | null
+  installment_amount: number | null
+  cumulative_paid: number | null
+  date_added: string | null
+  last_update: string | null
+  imported_at: string
+  // join field (ถ้า select contracts(contract_no)) — supabase-js คืน array แม้ join FK
+  contracts?: { contract_no: string }[] | null
+}
+
+function mapDebtflowCase(r: DebtflowCaseRow): DebtflowCase {
+  return {
+    id: r.id,
+    contractId: r.contract_id ?? null,
+    contractNo: r.contracts?.[0]?.contract_no ?? null,
+    sourceInv: r.source_inv,
+    customerName: r.customer_name ?? null,
+    dueDate: r.due_date ?? null,
+    daysLate: r.days_late != null ? Number(r.days_late) : null,
+    grade: r.grade ?? null,
+    primaryPhone: r.primary_phone ?? null,
+    callStatus: r.call_status ?? null,
+    phoneAlt1: r.phone_alt1 ?? null,
+    phoneAlt2: r.phone_alt2 ?? null,
+    deviceStatus: r.device_status ?? null,
+    conversationNote: r.conversation_note ?? null,
+    promiseDate: r.promise_date ?? null,
+    assignedEmployee: r.assigned_employee ?? null,
+    paymentStatus: r.payment_status ?? null,
+    installmentAmount: r.installment_amount != null ? Number(r.installment_amount) : null,
+    cumulativePaid: r.cumulative_paid != null ? Number(r.cumulative_paid) : null,
+    dateAdded: r.date_added ?? null,
+    lastUpdate: r.last_update ?? null,
+    importedAt: r.imported_at,
+  }
+}
+
+/**
+ * รายการเคส DEBTFLOW ทั้งหมด (admin only ตาม RLS)
+ * join contracts.contract_no เพื่อให้ Wave 2 แสดงเลขสัญญาของระบบ
+ * 450 เคส ไม่เกิน PAGE_CAP — range(0, 999) ไว้กันถ้ามีเพิ่มในอนาคต
+ */
+export async function getDebtflowCases(): Promise<DebtflowCase[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('debtflow_cases')
+    .select(`
+      id, contract_id, source_inv,
+      customer_name, due_date, days_late, grade,
+      primary_phone, call_status, phone_alt1, phone_alt2,
+      device_status, conversation_note, promise_date,
+      assigned_employee, payment_status,
+      installment_amount, cumulative_paid,
+      date_added, last_update, imported_at,
+      contracts(contract_no)
+    `)
+    .order('days_late', { ascending: false })
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as DebtflowCaseRow[]).map(mapDebtflowCase)
+}
+
+/**
+ * สรุป aggregate ของ DEBTFLOW batch สำหรับหน้ารายงาน
+ * aggregate ฝั่ง DB ผ่าน query แยก — กัน PAGE_CAP / ไม่ดึง raw rows มา client
+ */
+export async function getDebtflowSummary(): Promise<DebtflowSummary> {
+  if (!supabase) {
+    return {
+      totalCases: 0, totalCollected: 0, closedCases: 0,
+      byEmployee: [], byGrade: [], byPaymentStatus: [],
+    }
+  }
+
+  // query 1: totals
+  const { data: totalsData, error: totalsErr } = await supabase
+    .from('debtflow_cases')
+    .select('cumulative_paid, payment_status')
+    .range(0, 999)
+  if (totalsErr) throw totalsErr
+
+  const rows = (totalsData ?? []) as { cumulative_paid: number | null; payment_status: string | null }[]
+  const totalCases = rows.length
+  const totalCollected = rows.reduce((s, r) => s + (Number(r.cumulative_paid) || 0), 0)
+  const closedCases = rows.filter(r => r.payment_status === 'ชำระเงินครบแล้ว').length
+
+  // query 2: by employee
+  const { data: empData, error: empErr } = await supabase
+    .from('debtflow_cases')
+    .select('assigned_employee, cumulative_paid, payment_status')
+    .range(0, 999)
+  if (empErr) throw empErr
+
+  const empMap = new Map<string, { cases: number; collected: number; closed: number }>()
+  for (const r of (empData ?? []) as { assigned_employee: string | null; cumulative_paid: number | null; payment_status: string | null }[]) {
+    const key = r.assigned_employee || '(ไม่ระบุ)'
+    const cur = empMap.get(key) ?? { cases: 0, collected: 0, closed: 0 }
+    cur.cases++
+    cur.collected += Number(r.cumulative_paid) || 0
+    if (r.payment_status === 'ชำระเงินครบแล้ว') cur.closed++
+    empMap.set(key, cur)
+  }
+  const byEmployee: DebtflowByEmployee[] = Array.from(empMap.entries())
+    .map(([employee, v]) => ({ employee, ...v }))
+    .sort((a, b) => b.collected - a.collected)
+
+  // query 3: by grade
+  const { data: gradeData, error: gradeErr } = await supabase
+    .from('debtflow_cases')
+    .select('grade, cumulative_paid')
+    .range(0, 999)
+  if (gradeErr) throw gradeErr
+
+  const gradeMap = new Map<string, { cases: number; collected: number }>()
+  for (const r of (gradeData ?? []) as { grade: string | null; cumulative_paid: number | null }[]) {
+    const key = r.grade || '(ไม่ระบุ)'
+    const cur = gradeMap.get(key) ?? { cases: 0, collected: 0 }
+    cur.cases++
+    cur.collected += Number(r.cumulative_paid) || 0
+    gradeMap.set(key, cur)
+  }
+  const byGrade: DebtflowByGrade[] = Array.from(gradeMap.entries())
+    .map(([grade, v]) => ({ grade, ...v }))
+    .sort((a, b) => a.grade.localeCompare(b.grade))
+
+  // query 4: by payment status
+  const statusMap = new Map<string, number>()
+  for (const r of rows) {
+    const key = r.payment_status || '(ไม่ระบุ)'
+    statusMap.set(key, (statusMap.get(key) ?? 0) + 1)
+  }
+  const byPaymentStatus: DebtflowByStatus[] = Array.from(statusMap.entries())
+    .map(([status, n]) => ({ status, n }))
+    .sort((a, b) => b.n - a.n)
+
+  return { totalCases, totalCollected, closedCases, byEmployee, byGrade, byPaymentStatus }
 }

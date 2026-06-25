@@ -38,6 +38,7 @@ const InboxPage = lazy(() => import('./pages/InboxPage'))
 const MyPerformance = lazy(() => import('./pages/MyPerformance'))
 const DocTracking = lazy(() => import('./pages/DocTracking'))
 const OtherIncomePage = lazy(() => import('./pages/OtherIncome'))
+const DebtflowReport = lazy(() => import('./pages/DebtflowReport'))
 
 export default function App() {
   return (
@@ -106,6 +107,7 @@ function Gate() {
           <Route path="/commission" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <Commission /> : <Navigate to="/" replace />} />
           <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
           <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
+          <Route path="/debtflow" element={isAdmin ? <DebtflowReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/import" element={isAdmin ? <Import /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/inbox" element={isAdminOrStaff ? <InboxPage /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="*" element={<Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/add'} replace />} />
