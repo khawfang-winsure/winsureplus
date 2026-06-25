@@ -419,3 +419,24 @@ export interface PjDaysLateBucket {
   installments: number
   contracts: number
 }
+
+// ---------- PJ Recovery outcome — ตามเก็บได้ vs ยังเก็บไม่ได้ (migration 0067) ----------
+// cohort ตามเดือนครบกำหนด (due_date): recovered = จ่ายช้าแล้วในที่สุดจ่าย,
+// outstanding = เลยกำหนดแล้วยังไม่จ่าย. อัตราสำเร็จ % คำนวณฝั่ง frontend
+
+/** ตามเก็บได้ vs ยังเก็บไม่ได้ รายเดือนครบกำหนด (จาก v_pj_recovery_outcome_monthly) */
+export interface PjRecoveryOutcomeMonth {
+  month: string          // 'YYYY-MM' (เดือนของ due_date)
+  recoveredInstallments: number
+  recoveredBaht: number
+  outstandingInstallments: number
+  outstandingBaht: number
+}
+
+/** สรุปรวม ตามเก็บได้ vs ยังเก็บไม่ได้ (1 แถว จาก v_pj_recovery_outcome_summary) */
+export interface PjRecoveryOutcomeSummary {
+  recoveredInstallments: number
+  recoveredBaht: number
+  outstandingInstallments: number
+  outstandingBaht: number
+}

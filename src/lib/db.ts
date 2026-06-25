@@ -26,6 +26,8 @@ import type {
   PjDaysLateBucket,
   PjRecoveryEmployee,
   PjRecoveryMonth,
+  PjRecoveryOutcomeMonth,
+  PjRecoveryOutcomeSummary,
   PjRecoverySummary,
   PrivateNote,
   Shop,
@@ -5112,4 +5114,65 @@ export async function getPjDaysLateDist(): Promise<PjDaysLateBucket[]> {
     installments: Number(r.installments ?? 0),
     contracts: Number(r.contracts ?? 0),
   }))
+}
+
+// ---------- PJ Recovery outcome — ตามเก็บได้ vs ยังเก็บไม่ได้ (migration 0067) ----------
+// cohort ตามเดือนครบกำหนด (due_date): recovered (จ่ายช้าแล้วในที่สุดจ่าย) vs
+// outstanding (เลยกำหนดแล้วยังไม่จ่าย) — filter แถวค่าปรับออกใน view แล้ว
+// aggregate ฝั่ง DB → ไม่ติด PAGE_CAP; รองรับ isSupabaseConfigured=false
+
+interface PjRecoveryOutcomeMonthRow {
+  due_month: string
+  recovered_installments: string | number | null
+  recovered_baht: string | number | null
+  outstanding_installments: string | number | null
+  outstanding_baht: string | number | null
+}
+
+interface PjRecoveryOutcomeSummaryRow {
+  recovered_installments: string | number | null
+  recovered_baht: string | number | null
+  outstanding_installments: string | number | null
+  outstanding_baht: string | number | null
+}
+
+/** ตามเก็บได้ vs ยังเก็บไม่ได้ รายเดือนครบกำหนด (v_pj_recovery_outcome_monthly — เรียงตามเดือนใน view) */
+export async function getPjRecoveryOutcomeMonthly(): Promise<PjRecoveryOutcomeMonth[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_pj_recovery_outcome_monthly')
+    .select('due_month, recovered_installments, recovered_baht, outstanding_installments, outstanding_baht')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as PjRecoveryOutcomeMonthRow[]).map(r => ({
+    month: r.due_month,
+    recoveredInstallments: Number(r.recovered_installments ?? 0),
+    recoveredBaht: Number(r.recovered_baht ?? 0),
+    outstandingInstallments: Number(r.outstanding_installments ?? 0),
+    outstandingBaht: Number(r.outstanding_baht ?? 0),
+  }))
+}
+
+/**
+ * สรุปรวม ตามเก็บได้ vs ยังเก็บไม่ได้ (v_pj_recovery_outcome_summary — 1 แถว)
+ * คืนค่าศูนย์ทั้งหมดถ้าไม่ได้ตั้ง Supabase หรือยังไม่มีข้อมูล
+ */
+export async function getPjRecoveryOutcomeSummary(): Promise<PjRecoveryOutcomeSummary> {
+  const empty: PjRecoveryOutcomeSummary = {
+    recoveredInstallments: 0, recoveredBaht: 0, outstandingInstallments: 0, outstandingBaht: 0,
+  }
+  if (!supabase) return empty
+  const { data, error } = await supabase
+    .from('v_pj_recovery_outcome_summary')
+    .select('recovered_installments, recovered_baht, outstanding_installments, outstanding_baht')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return empty
+  const r = data as PjRecoveryOutcomeSummaryRow
+  return {
+    recoveredInstallments: Number(r.recovered_installments ?? 0),
+    recoveredBaht: Number(r.recovered_baht ?? 0),
+    outstandingInstallments: Number(r.outstanding_installments ?? 0),
+    outstandingBaht: Number(r.outstanding_baht ?? 0),
+  }
 }
