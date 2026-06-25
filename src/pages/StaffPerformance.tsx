@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, Download, X } from 'lucide-react'
+import { ChevronRight, Download, X, Users, Wallet, CalendarClock, AlertTriangle } from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
   DateRangePicker,
@@ -12,8 +12,22 @@ import {
   getDeviceReturnCountsByFreelancerThisMonth,
   getDeviceReturnTiers,
   getCollectorScorecard,
+  getPjRecoverySummary,
+  getPjRecoveryMonthly,
+  getPjRecoveryByEmployee,
+  getPjDaysLateDist,
+  getPjRecoveryOutcomeMonthly,
+  getPjRecoveryOutcomeSummary,
   type CollectorScorecardRow,
 } from '../lib/db'
+import type {
+  PjRecoverySummary,
+  PjRecoveryMonth,
+  PjRecoveryEmployee,
+  PjDaysLateBucket,
+  PjRecoveryOutcomeMonth,
+  PjRecoveryOutcomeSummary,
+} from '../lib/types'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
 import { baht } from '../lib/format'
 
@@ -265,6 +279,453 @@ function DrillDownPanel({ row, onClose, rangeLabel }: DrillDownProps) {
   )
 }
 
+// ===== PJ: helpers (ผลการตามหนี้จริงจากระบบ PJ) =====
+
+const EMPTY_PJ: PjRecoverySummary = {
+  lateContracts: 0,
+  lateInstallments: 0,
+  recoveredTotal: 0,
+  avgDaysLate: 0,
+  maxDaysLate: 0,
+}
+
+const EMPTY_OUTCOME: PjRecoveryOutcomeSummary = {
+  recoveredInstallments: 0,
+  recoveredBaht: 0,
+  outstandingInstallments: 0,
+  outstandingBaht: 0,
+}
+
+// อัตราสำเร็จ (ตามบาท) = ตามได้ / (ตามได้ + ยังค้าง) — กัน /0
+function outcomeRate(recovered: number, outstanding: number): number {
+  const total = recovered + outstanding
+  if (total <= 0) return 0
+  return Math.round((recovered / total) * 100)
+}
+
+// 'YYYY-MM' (ค.ศ.) → 'ส.ค.68' (พ.ศ. ย่อ)
+function thaiMonthShort(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  if (!y || !m || m < 1 || m > 12) return ym
+  const be = (y + 543) % 100 // 2 หลักท้าย พ.ศ.
+  return `${MONTH_SHORT[m - 1]}${be.toString().padStart(2, '0')}`
+}
+
+// เรียงช่วงวันช้าให้ถูก (อย่าให้ 90+ มาก่อน)
+const DAYS_LATE_ORDER = ['1-7', '8-30', '31-60', '61-90', '90+']
+function sortDaysLateBuckets(rows: PjDaysLateBucket[]): PjDaysLateBucket[] {
+  return [...rows].sort(
+    (a, b) => DAYS_LATE_ORDER.indexOf(a.bucket) - DAYS_LATE_ORDER.indexOf(b.bucket),
+  )
+}
+
+// ===== PJ: KPI cards 4 ใบ =====
+function PjKpiCards({ s }: { s: PjRecoverySummary }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <Card className="p-4 text-center">
+        <Users size={18} className="mx-auto mb-1 text-ink-soft" />
+        <p className="text-xs text-ink-soft mb-1">ลูกค้าเคยจ่ายช้า</p>
+        <p className="text-xl font-bold text-ink">{s.lateContracts.toLocaleString()}</p>
+        <p className="text-xs text-ink-soft">ราย</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <Wallet size={18} className="mx-auto mb-1 text-green-600" />
+        <p className="text-xs text-ink-soft mb-1">เงินตามกลับมาได้รวม</p>
+        <p className="text-xl font-bold text-green-600">฿{baht(s.recoveredTotal)}</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <CalendarClock size={18} className="mx-auto mb-1 text-peach-deep" />
+        <p className="text-xs text-ink-soft mb-1">จ่ายช้าเฉลี่ย</p>
+        <p className="text-xl font-bold text-peach-deep">{s.avgDaysLate.toLocaleString()}</p>
+        <p className="text-xs text-ink-soft">วัน</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <AlertTriangle size={18} className="mx-auto mb-1 text-red-500" />
+        <p className="text-xs text-ink-soft mb-1">ช้าสุด</p>
+        <p className="text-xl font-bold text-red-600">{s.maxDaysLate.toLocaleString()}</p>
+        <p className="text-xs text-ink-soft">วัน</p>
+      </Card>
+    </div>
+  )
+}
+
+// ===== PJ: กราฟแท่งแนวตั้งเงินตามกลับรายเดือน =====
+function PjMonthlyChart({ rows }: { rows: PjRecoveryMonth[] }) {
+  const [hover, setHover] = useState<number | null>(null)
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ รายเดือน</h2>
+        <p className="py-10 text-center text-sm text-ink-soft">ยังไม่มีข้อมูล</p>
+      </Card>
+    )
+  }
+
+  const max = Math.max(1, ...rows.map((r) => r.recoveredBaht))
+  // โชว์ป้ายแกนทุกแท่งถ้าไม่เกิน 18 เดือน ไม่งั้นเว้น
+  const showEvery = rows.length <= 18 ? 1 : 2
+
+  return (
+    <Card>
+      <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ รายเดือน</h2>
+      <p className="mb-4 text-xs text-ink-soft">แท่งสูง = เก็บเงินจากงวดจ่ายช้าได้มากในเดือนนั้น</p>
+      <div className="flex items-end gap-1.5 sm:gap-2" style={{ height: 180 }}>
+        {rows.map((r, i) => {
+          const h = Math.max(2, (r.recoveredBaht / max) * 150)
+          const active = hover === i
+          return (
+            <div
+              key={r.month}
+              className="relative flex flex-1 flex-col items-center justify-end"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover(null)}
+            >
+              {active && (
+                <div className="pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg bg-zinc-900 px-2.5 py-1.5 text-xs text-white shadow-lg">
+                  <div className="font-medium text-zinc-300">{thaiMonthShort(r.month)}</div>
+                  <div className="font-semibold">฿{baht(r.recoveredBaht)}</div>
+                  <div className="text-zinc-300">{r.installments.toLocaleString()} งวด</div>
+                </div>
+              )}
+              <div
+                className="w-full rounded-t-md transition-colors"
+                style={{
+                  height: h,
+                  backgroundColor: active ? '#ea580c' : '#f97316',
+                  maxWidth: 36,
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
+      {/* ป้ายแกนล่าง */}
+      <div className="mt-1.5 flex gap-1.5 sm:gap-2">
+        {rows.map((r, i) => (
+          <span
+            key={r.month}
+            className="flex-1 overflow-hidden text-center text-[10px] leading-tight text-ink-soft"
+          >
+            {i % showEvery === 0 ? thaiMonthShort(r.month) : ''}
+          </span>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+// ===== PJ: การกระจายวันช้า 5 ช่วง =====
+function PjDaysLateDist({ rows }: { rows: PjDaysLateBucket[] }) {
+  const sorted = sortDaysLateBuckets(rows)
+  if (sorted.length === 0) return null
+  const max = Math.max(1, ...sorted.map((r) => r.installments))
+  // สีไล่จากเขียว (ช้าน้อย) → แดง (ช้ามาก)
+  const TONE = ['bg-green-500', 'bg-lime-500', 'bg-amber-400', 'bg-orange-500', 'bg-red-500']
+
+  return (
+    <Card>
+      <h2 className="mb-3 text-sm font-semibold text-ink">จ่ายช้ากี่วัน (แยกช่วง)</h2>
+      <div className="grid grid-cols-5 gap-2">
+        {sorted.map((r) => {
+          const tone = TONE[DAYS_LATE_ORDER.indexOf(r.bucket)] ?? 'bg-peach-deep'
+          const barH = Math.max(6, (r.installments / max) * 64)
+          return (
+            <div key={r.bucket} className="flex flex-col items-center">
+              <div className="flex h-20 w-full items-end justify-center">
+                <div
+                  className={`w-7 rounded-t-md ${tone}`}
+                  style={{ height: barH }}
+                  title={`${r.installments.toLocaleString()} งวด`}
+                />
+              </div>
+              <p className="mt-1 text-sm font-semibold text-ink">{r.installments.toLocaleString()}</p>
+              <p className="text-[10px] text-ink-soft">งวด</p>
+              <p className="mt-0.5 text-xs font-medium text-ink-soft">
+                {r.bucket === '90+' ? '90+ วัน' : `${r.bucket} วัน`}
+              </p>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+// ===== PJ: ตารางแยกพนักงาน =====
+function PjEmployeeTable({ rows, lateContracts }: { rows: PjRecoveryEmployee[]; lateContracts: number }) {
+  const sorted = useMemo(
+    () => [...rows].sort((a, b) => b.recoveredBaht - a.recoveredBaht),
+    [rows],
+  )
+  return (
+    <Card>
+      <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ แยกพนักงาน</h2>
+      <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+        แยกตามพนักงานได้เฉพาะเคสที่อยู่ในระบบ DEBTFLOW — เคสจ่ายช้าทั้งหมด {lateContracts.toLocaleString()} ราย
+        แต่รู้ผู้ดูแลเฉพาะส่วนที่ DEBTFLOW บันทึกไว้ ส่วนที่เหลือไม่ทราบผู้ดูแล
+      </p>
+      {sorted.length === 0 ? (
+        <p className="py-6 text-center text-sm text-ink-soft">ยังไม่มีข้อมูล</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 font-medium">พนักงาน</th>
+                <th className="pb-2 text-right font-medium">จำนวนสัญญา</th>
+                <th className="pb-2 text-right font-medium">เงินตามกลับมาได้ (฿)</th>
+                <th className="pb-2 text-right font-medium">ช้าเฉลี่ย (วัน)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((row) => (
+                <tr key={row.employee} className="border-b border-peach/40 last:border-0">
+                  <td className="py-2 font-medium text-ink">{row.employee}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.contracts.toLocaleString()}</td>
+                  <td className="py-2 text-right font-semibold text-green-700">฿{baht(row.recoveredBaht)}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.avgDaysLate.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ===== PJ outcome: การ์ดสรุป ตามได้ vs ยังค้าง =====
+function PjOutcomeCards({ s }: { s: PjRecoveryOutcomeSummary }) {
+  const rate = outcomeRate(s.recoveredBaht, s.outstandingBaht)
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <Card className="p-4 text-center">
+        <p className="text-xs text-ink-soft mb-1">อัตราสำเร็จ (คิดจากยอดเงิน)</p>
+        <p className="text-3xl font-bold text-peach-deep">{rate}%</p>
+        <p className="text-xs text-ink-soft">ของยอดที่ครบกำหนดทั้งหมด</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <p className="text-xs text-ink-soft mb-1">ตามเก็บได้แล้ว</p>
+        <p className="text-xl font-bold text-green-600">฿{baht(s.recoveredBaht)}</p>
+        <p className="text-xs text-ink-soft">{s.recoveredInstallments.toLocaleString()} งวด</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <p className="text-xs text-ink-soft mb-1">ยังเก็บไม่ได้</p>
+        <p className="text-xl font-bold text-red-600">฿{baht(s.outstandingBaht)}</p>
+        <p className="text-xs text-ink-soft">{s.outstandingInstallments.toLocaleString()} งวด</p>
+      </Card>
+    </div>
+  )
+}
+
+// ===== PJ outcome: กราฟแท่งซ้อน ตามได้(เขียว)+ยังค้าง(แดง) รายเดือนครบกำหนด =====
+function PjOutcomeChart({ rows }: { rows: PjRecoveryOutcomeMonth[] }) {
+  const [hover, setHover] = useState<number | null>(null)
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <h3 className="mb-1 text-sm font-semibold text-ink">ตามได้ vs ยังค้าง รายเดือนครบกำหนด</h3>
+        <p className="py-10 text-center text-sm text-ink-soft">ยังไม่มีข้อมูล</p>
+      </Card>
+    )
+  }
+
+  // สเกลจากยอดรวมต่อเดือนที่สูงสุด (แท่งซ้อน)
+  const max = Math.max(1, ...rows.map((r) => r.recoveredBaht + r.outstandingBaht))
+  const showEvery = rows.length <= 18 ? 1 : 2
+
+  return (
+    <Card>
+      <h3 className="mb-1 text-sm font-semibold text-ink">ตามได้ vs ยังค้าง รายเดือนครบกำหนด</h3>
+      <p className="mb-2 text-xs text-ink-soft">
+        <span className="mr-3 inline-flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />
+          ตามเก็บได้
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#ef4444' }} />
+          ยังเก็บไม่ได้
+        </span>
+      </p>
+      <div className="flex items-end gap-1.5 sm:gap-2" style={{ height: 180 }}>
+        {rows.map((r, i) => {
+          const total = r.recoveredBaht + r.outstandingBaht
+          const stackH = Math.max(2, (total / max) * 150)
+          const recH = total > 0 ? (r.recoveredBaht / total) * stackH : 0
+          const outH = stackH - recH
+          const active = hover === i
+          const rate = outcomeRate(r.recoveredBaht, r.outstandingBaht)
+          return (
+            <div
+              key={r.month}
+              className="relative flex flex-1 flex-col items-center justify-end"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover(null)}
+            >
+              {active && (
+                <div className="pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg bg-zinc-900 px-2.5 py-1.5 text-xs text-white shadow-lg">
+                  <div className="font-medium text-zinc-300">{thaiMonthShort(r.month)}</div>
+                  <div className="font-semibold text-green-400">
+                    ตามได้ ฿{baht(r.recoveredBaht)} · {r.recoveredInstallments.toLocaleString()} งวด
+                  </div>
+                  <div className="font-semibold text-red-400">
+                    ยังค้าง ฿{baht(r.outstandingBaht)} · {r.outstandingInstallments.toLocaleString()} งวด
+                  </div>
+                  <div className="mt-0.5 text-zinc-300">สำเร็จ {rate}%</div>
+                </div>
+              )}
+              <div
+                className="flex w-full flex-col justify-end"
+                style={{ height: stackH, maxWidth: 36 }}
+              >
+                {/* ยังค้าง (แดง) อยู่ด้านบน */}
+                <div
+                  className="w-full rounded-t-md transition-colors"
+                  style={{ height: outH, backgroundColor: active ? '#dc2626' : '#ef4444' }}
+                />
+                {/* ตามได้ (เขียว) อยู่ฐาน */}
+                <div
+                  className="w-full transition-colors"
+                  style={{ height: recH, backgroundColor: active ? '#16a34a' : '#22c55e' }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {/* ป้ายแกนล่าง */}
+      <div className="mt-1.5 flex gap-1.5 sm:gap-2">
+        {rows.map((r, i) => (
+          <span
+            key={r.month}
+            className="flex-1 overflow-hidden text-center text-[10px] leading-tight text-ink-soft"
+          >
+            {i % showEvery === 0 ? thaiMonthShort(r.month) : ''}
+          </span>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+// ===== PJ outcome: ตารางรายเดือน เรียงเก่า→ใหม่ =====
+function PjOutcomeTable({ rows }: { rows: PjRecoveryOutcomeMonth[] }) {
+  const sorted = useMemo(
+    () => [...rows].sort((a, b) => a.month.localeCompare(b.month)),
+    [rows],
+  )
+  if (sorted.length === 0) return null
+  return (
+    <Card>
+      <h3 className="mb-3 text-sm font-semibold text-ink">รายเดือน (เรียงเดือนเก่า → ใหม่)</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-peach text-left text-xs text-ink-soft">
+              <th className="pb-2 font-medium">เดือนครบกำหนด</th>
+              <th className="pb-2 text-right font-medium">ตามได้ (งวด)</th>
+              <th className="pb-2 text-right font-medium">ตามได้ (฿)</th>
+              <th className="pb-2 text-right font-medium">ยังค้าง (งวด)</th>
+              <th className="pb-2 text-right font-medium">ยังค้าง (฿)</th>
+              <th className="pb-2 text-right font-medium">อัตราสำเร็จ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => {
+              const rate = outcomeRate(r.recoveredBaht, r.outstandingBaht)
+              const rateColor =
+                rate >= 80 ? 'text-green-700' : rate >= 50 ? 'text-amber-600' : 'text-red-600'
+              const rowBg =
+                rate >= 80 ? 'bg-green-50/60' : rate >= 50 ? 'bg-amber-50/50' : 'bg-red-50/50'
+              return (
+                <tr key={r.month} className={`border-b border-peach/40 last:border-0 ${rowBg}`}>
+                  <td className="py-2 font-medium text-ink">{thaiMonthShort(r.month)}</td>
+                  <td className="py-2 text-right text-ink-soft">
+                    {r.recoveredInstallments.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-right font-semibold text-green-700">
+                    ฿{baht(r.recoveredBaht)}
+                  </td>
+                  <td className="py-2 text-right text-ink-soft">
+                    {r.outstandingInstallments.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-right font-semibold text-red-600">
+                    {r.outstandingBaht > 0 ? `฿${baht(r.outstandingBaht)}` : '—'}
+                  </td>
+                  <td className={`py-2 text-right font-semibold ${rateColor}`}>{rate}%</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
+// ===== PJ outcome: sub-section รวม =====
+function PjOutcomeSection({
+  summary,
+  monthly,
+}: {
+  summary: PjRecoveryOutcomeSummary
+  monthly: PjRecoveryOutcomeMonth[]
+}) {
+  return (
+    <div className="space-y-4 border-t border-peach/60 pt-5">
+      <div>
+        <h3 className="text-sm font-bold text-ink">
+          ตามเก็บได้ vs ยังเก็บไม่ได้ (แยกตามเดือนครบกำหนด)
+        </h3>
+        <p className="text-sm text-ink-soft">
+          งวดที่ครบกำหนดในเดือนนั้น สุดท้ายตามเก็บได้แล้วเท่าไร เทียบกับที่ยังค้างอยู่ — เห็นอัตราความสำเร็จการตามหนี้แต่ละเดือน
+        </p>
+      </div>
+
+      <PjOutcomeCards s={summary} />
+      <PjOutcomeChart rows={monthly} />
+      <PjOutcomeTable rows={monthly} />
+
+      <p className="text-xs text-ink-soft">
+        * ยังเก็บไม่ได้ = งวดที่เลยกำหนดแล้วยังไม่จ่ายจนถึงตอนนี้ (รวมเคสค้างที่ไม่เคยจ่ายกลับมาเลยแล้ว)
+      </p>
+    </div>
+  )
+}
+
+// ===== PJ: section รวม (ผลการตามหนี้จริงจากระบบ PJ) =====
+interface PjData {
+  summary: PjRecoverySummary
+  monthly: PjRecoveryMonth[]
+  byEmployee: PjRecoveryEmployee[]
+  daysLate: PjDaysLateBucket[]
+  outcomeSummary: PjRecoveryOutcomeSummary
+  outcomeMonthly: PjRecoveryOutcomeMonth[]
+}
+
+function PjRecoverySection({ data }: { data: PjData }) {
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">ผลการตามหนี้จริง (จากระบบ PJ)</h2>
+        <p className="text-sm text-ink-soft">
+          วันจ่ายจริงรายงวดจาก PJ — เงินจากงวดที่จ่ายช้าแล้วในที่สุดตามกลับมาได้ (ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน)
+        </p>
+      </div>
+
+      <div className="space-y-4">
+        <PjKpiCards s={data.summary} />
+        <PjMonthlyChart rows={data.monthly} />
+        <PjDaysLateDist rows={data.daysLate} />
+        <PjEmployeeTable rows={data.byEmployee} lateContracts={data.summary.lateContracts} />
+
+        <PjOutcomeSection summary={data.outcomeSummary} monthly={data.outcomeMonthly} />
+      </div>
+    </Card>
+  )
+}
+
 // ===== Main Page =====
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
@@ -289,6 +750,16 @@ export default function StaffPerformance() {
   const [deviceCountMap, setDeviceCountMap] = useState<Map<string, number>>(new Map())
   const [deviceTiers, setDeviceTiers] = useState<DeviceReturnTier[]>([])
 
+  // ผลการตามหนี้จริงจากระบบ PJ: โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
+  const [pjData, setPjData] = useState<PjData>({
+    summary: EMPTY_PJ,
+    monthly: [],
+    byEmployee: [],
+    daysLate: [],
+    outcomeSummary: EMPTY_OUTCOME,
+    outcomeMonthly: [],
+  })
+
   useEffect(() => {
     Promise.all([
       getDeviceReturnCountsByFreelancerThisMonth(),
@@ -298,6 +769,21 @@ export default function StaffPerformance() {
       setDeviceTiers(tiers)
     }).catch(() => {
       // silent — ค่าคอมคืนเครื่องไม่กระทบ scorecard หลัก
+    })
+  }, [])
+
+  useEffect(() => {
+    Promise.all([
+      getPjRecoverySummary(),
+      getPjRecoveryMonthly(),
+      getPjRecoveryByEmployee(),
+      getPjDaysLateDist(),
+      getPjRecoveryOutcomeSummary(),
+      getPjRecoveryOutcomeMonthly(),
+    ]).then(([summary, monthly, byEmployee, daysLate, outcomeSummary, outcomeMonthly]) => {
+      setPjData({ summary, monthly, byEmployee, daysLate, outcomeSummary, outcomeMonthly })
+    }).catch(() => {
+      // silent — PJ ไม่กระทบ scorecard หลัก
     })
   }, [])
 
@@ -369,6 +855,13 @@ export default function StaffPerformance() {
           {error}
         </div>
       )}
+
+      {/* หมายเหตุ: สกอร์การ์ดด้านล่างอิงการบันทึกโทรใน /queue */}
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <span className="font-semibold">หมายเหตุ:</span>{' '}
+        สกอร์การ์ดส่วนนี้อิงการบันทึกโทรใน /queue — ถ้าทีมยังไม่เริ่มบันทึกการโทร ตัวเลขจะเป็น 0
+        ดู “ผลการตามหนี้จริง (จากระบบ PJ)” ด้านล่างเพื่อดูผลการตามหนี้จากข้อมูลจริง
+      </div>
 
       {/* Section 1: Team Summary */}
       <Card>
@@ -513,6 +1006,9 @@ export default function StaffPerformance() {
           </div>
         </Card>
       )}
+
+      {/* Section 3: ผลการตามหนี้จริง (จากระบบ PJ) */}
+      <PjRecoverySection data={pjData} />
     </div>
   )
 }

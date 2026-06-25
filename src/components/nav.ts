@@ -2,24 +2,14 @@
 import {
   AlertTriangle,
   BarChart3,
-  CalendarClock,
-  CalendarRange,
-  FileBox,
-  FilePlus2,
   Gauge,
   Inbox,
   LayoutDashboard,
-  Mail,
-  PackageOpen,
   Phone,
-  PieChart,
-  Receipt,
-  Send,
   Settings,
   TrendingUp,
   Truck,
   Users,
-  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -44,16 +34,37 @@ export const NAV: NavItem[] = [
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
   { to: '/my-performance', label: 'ผลงานของฉัน', icon: TrendingUp, freelancerOnly: true },
 
-  // เมนูหลัก (ไม่มีหัวข้อกลุ่ม)
+  // เมนูหลัก — item เดี่ยวบนสุด
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
-  { to: '/inbox', label: 'กล่องรับงาน', icon: Inbox },
-  { to: '/add', label: 'เพิ่มข้อมูลสัญญา', icon: FilePlus2 },
-  { to: '/waiting-email', label: 'รอส่งอีเมล', icon: Mail },
-  { to: '/waiting-summary', label: 'รอสรุปยอด', icon: Receipt },
-  { to: '/other-income', label: 'รายได้อื่นๆ', icon: Wallet },
-  { to: '/doc-tracking', label: 'รับเอกสาร/กล่อง', icon: FileBox },
-  { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', icon: CalendarClock },
+
+  // กลุ่มพับได้: รับเรื่อง/บันทึก
+  {
+    label: 'รับเรื่อง/บันทึก',
+    icon: Inbox,
+    children: [
+      { to: '/inbox', label: 'กล่องรับงาน' },
+      { to: '/add', label: 'เพิ่มข้อมูลสัญญา' },
+      { to: '/waiting-email', label: 'รอส่งอีเมล' },
+      { to: '/waiting-summary', label: 'รอสรุปยอด' },
+      { to: '/other-income', label: 'รายได้อื่นๆ' },
+    ],
+  },
+
+  // กลุ่มพับได้: ลูกค้า & หนี้
+  {
+    label: 'ลูกค้า & หนี้',
+    icon: Users,
+    children: [
+      { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด' },
+      { to: '/customers', label: 'ลูกค้าทั้งหมด' },
+      { to: '/extended', label: 'ลูกค้าขยายระยะเวลา' },
+      { to: '/customer-overview', label: 'ภาพรวมลูกค้า' },
+      { to: '/letters', label: 'ส่งจดหมาย' },
+    ],
+  },
+
+  // กลุ่มพับได้: ลูกค้าล่าช้า-หนี้เสีย
   {
     label: 'ลูกค้าล่าช้า-หนี้เสีย',
     icon: AlertTriangle,
@@ -66,12 +77,17 @@ export const NAV: NavItem[] = [
       { to: '/overdue/120+', label: 'ล่าช้า 120 วันขึ้นไป' },
     ],
   },
-  { to: '/customers', label: 'ลูกค้าทั้งหมด', icon: Users },
-  { to: '/extended', label: 'ลูกค้าขยายระยะเวลา', icon: CalendarRange },
-  { to: '/customer-overview', label: 'ภาพรวมลูกค้า', icon: PieChart },
-  { to: '/letters', label: 'ส่งจดหมาย', icon: Send },
-  { to: '/device-pipeline', label: 'ติดตามเครื่อง', icon: Truck },
-  { to: '/returns', label: 'ลูกค้าคืนเครื่อง', icon: PackageOpen },
+
+  // กลุ่มพับได้: เครื่อง & เอกสาร
+  {
+    label: 'เครื่อง & เอกสาร',
+    icon: Truck,
+    children: [
+      { to: '/doc-tracking', label: 'รับเอกสาร/กล่อง' },
+      { to: '/device-pipeline', label: 'ติดตามเครื่อง' },
+      { to: '/returns', label: 'ลูกค้าคืนเครื่อง' },
+    ],
+  },
 
   // รายงาน (collapsible)
   {
