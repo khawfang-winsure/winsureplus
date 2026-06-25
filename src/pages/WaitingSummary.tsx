@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Receipt } from 'lucide-react'
-import { Badge, Button, EmptyState, Input, Loading, PageTitle } from '../components/ui'
+import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
@@ -10,6 +10,36 @@ import { getContracts, getShops, markSummarySent } from '../lib/db'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
+
+type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
+type SortDir = 'asc' | 'desc'
+
+const SORT_OPTS: { value: `${SortKey}_${SortDir}`; label: string }[] = [
+  { value: 'transactionDate_desc', label: 'วันที่ทำรายการ (ใหม่→เก่า)' },
+  { value: 'transactionDate_asc',  label: 'วันที่ทำรายการ (เก่า→ใหม่)' },
+  { value: 'contractNo_asc',       label: 'เลขที่สัญญา (ก→ฮ)' },
+  { value: 'contractNo_desc',      label: 'เลขที่สัญญา (ฮ→ก)' },
+  { value: 'createdAt_desc',       label: 'วันที่เพิ่มข้อมูล (ใหม่→เก่า)' },
+  { value: 'createdAt_asc',        label: 'วันที่เพิ่มข้อมูล (เก่า→ใหม่)' },
+]
+
+function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[] {
+  return [...list].sort((a, b) => {
+    let cmp = 0
+    if (key === 'contractNo') {
+      cmp = a.contractNo.localeCompare(b.contractNo, 'th', { numeric: true })
+    } else {
+      // date fields — null/undefined ไปท้ายเสมอ
+      const av = key === 'createdAt' ? (a.createdAt ?? '') : a.transactionDate
+      const bv = key === 'createdAt' ? (b.createdAt ?? '') : b.transactionDate
+      if (!av && !bv) cmp = 0
+      else if (!av) return 1
+      else if (!bv) return -1
+      else cmp = av < bv ? -1 : av > bv ? 1 : 0
+    }
+    return dir === 'asc' ? cmp : -cmp
+  })
+}
 
 const today = new Date().toISOString().slice(0, 10)
 const netOf = (c: Contract) =>
@@ -29,9 +59,15 @@ export default function WaitingSummary() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [date, setDate] = useState(today)
   const [output, setOutput] = useState('')
+  const [sortOpt, setSortOpt] = useState<`${SortKey}_${SortDir}`>('transactionDate_desc')
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
-  const pending = data.contracts.filter((c) => !c.summarySentAt && !locallySent.has(c.id))
+
+  const pending = useMemo(() => {
+    const [key, dir] = sortOpt.split('_') as [SortKey, SortDir]
+    const unsorted = data.contracts.filter((c) => !c.summarySentAt && !locallySent.has(c.id))
+    return sortContracts(unsorted, key, dir)
+  }, [data.contracts, locallySent, sortOpt])
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -118,6 +154,15 @@ export default function WaitingSummary() {
                 วันที่สรุป
                 <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-auto" />
               </label>
+              <Select
+                value={sortOpt}
+                onChange={(e) => setSortOpt(e.target.value as `${SortKey}_${SortDir}`)}
+                className="w-auto text-sm"
+              >
+                {SORT_OPTS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </Select>
               <span className="text-sm text-ink-soft">เลือกแล้ว {selected.size} เคส</span>
             </div>
 

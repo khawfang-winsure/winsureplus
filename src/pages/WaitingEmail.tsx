@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Mail } from 'lucide-react'
-import { Badge, Button, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
+import { Badge, Button, EmptyState, Loading, Modal, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { thaiDate } from '../lib/format'
 import { buildEmailText } from '../lib/messages'
@@ -9,6 +9,35 @@ import { getContracts, getShops, markEmailSent } from '../lib/db'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
+
+type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
+type SortDir = 'asc' | 'desc'
+
+const SORT_OPTS: { value: `${SortKey}_${SortDir}`; label: string }[] = [
+  { value: 'transactionDate_desc', label: 'วันที่ทำรายการ (ใหม่→เก่า)' },
+  { value: 'transactionDate_asc',  label: 'วันที่ทำรายการ (เก่า→ใหม่)' },
+  { value: 'contractNo_asc',       label: 'เลขที่สัญญา (ก→ฮ)' },
+  { value: 'contractNo_desc',      label: 'เลขที่สัญญา (ฮ→ก)' },
+  { value: 'createdAt_desc',       label: 'วันที่เพิ่มข้อมูล (ใหม่→เก่า)' },
+  { value: 'createdAt_asc',        label: 'วันที่เพิ่มข้อมูล (เก่า→ใหม่)' },
+]
+
+function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[] {
+  return [...list].sort((a, b) => {
+    let cmp = 0
+    if (key === 'contractNo') {
+      cmp = a.contractNo.localeCompare(b.contractNo, 'th', { numeric: true })
+    } else {
+      const av = key === 'createdAt' ? (a.createdAt ?? '') : a.transactionDate
+      const bv = key === 'createdAt' ? (b.createdAt ?? '') : b.transactionDate
+      if (!av && !bv) cmp = 0
+      else if (!av) return 1
+      else if (!bv) return -1
+      else cmp = av < bv ? -1 : av > bv ? 1 : 0
+    }
+    return dir === 'asc' ? cmp : -cmp
+  })
+}
 
 export default function WaitingEmail() {
   const { name } = useAuth()
@@ -22,9 +51,15 @@ export default function WaitingEmail() {
 
   const [sentIds, setSentIds] = useState<Set<string>>(new Set())
   const [view, setView] = useState<Contract | null>(null)
+  const [sortOpt, setSortOpt] = useState<`${SortKey}_${SortDir}`>('transactionDate_desc')
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
-  const pending = data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id))
+
+  const pending = useMemo(() => {
+    const [key, dir] = sortOpt.split('_') as [SortKey, SortDir]
+    const unsorted = data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id))
+    return sortContracts(unsorted, key, dir)
+  }, [data.contracts, sentIds, sortOpt])
 
   async function doMarkSent(c: Contract) {
     if (c.pendingDocuments) {
@@ -51,7 +86,19 @@ export default function WaitingEmail() {
       ) : pending.length === 0 ? (
         <EmptyState title="ไม่มีเคสค้างส่งอีเมล" hint="เคสที่ส่งแล้วจะถูกซ่อนอัตโนมัติ" />
       ) : (
-        <ul className="flex flex-col gap-2">
+        <>
+          <div className="mb-3 flex items-center gap-3">
+            <Select
+              value={sortOpt}
+              onChange={(e) => setSortOpt(e.target.value as `${SortKey}_${SortDir}`)}
+              className="w-auto text-sm"
+            >
+              {SORT_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </Select>
+          </div>
+          <ul className="flex flex-col gap-2">
           {pending.map((c) => (
             <li key={c.id} className="flex items-center justify-between rounded-xl border border-peach bg-white px-4 py-3">
               <div>
@@ -72,7 +119,8 @@ export default function WaitingEmail() {
               </div>
             </li>
           ))}
-        </ul>
+          </ul>
+        </>
       )}
 
       {view && (
