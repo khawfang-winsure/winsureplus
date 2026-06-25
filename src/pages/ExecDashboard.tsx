@@ -30,10 +30,11 @@ import {
   getDueScheduleMonthly,
   getForecastByGrade,
   getClawbackAggregates,
+  getOverdueMonthSnapshot,
   type EscalateContract,
   type ForecastByGradeRow,
 } from '../lib/db'
-import { buildExecDashboard, buildGradeMovement, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult } from '../lib/execDashboard'
+import { buildExecDashboard, buildGradeMovement, buildOverdueTrend, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult, type OverdueTrendResult } from '../lib/execDashboard'
 import { buildCashflowForecast, type CashflowForecastResult } from '../lib/cashflowForecast'
 import { detectBottlenecks, type BottleneckAlert } from '../lib/bottleneck'
 import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
@@ -90,6 +91,7 @@ export default function ExecDashboard() {
   const rangeKey = range ? `${range.start}_${range.end}` : 'all'
   const [data, setData] = useState<ExecDashboard | null>(null)
   const [loading, setLoading] = useState(true)
+  const [overdueTrend, setOverdueTrend] = useState<OverdueTrendResult | null>(null)
   useEffect(() => {
     let active = true
     setLoading(true)
@@ -108,8 +110,9 @@ export default function ExecDashboard() {
       getContractAggregates(),
       getDueScheduleMonthly(),
       getClawbackAggregates(),
+      getOverdueMonthSnapshot(),
     ])
-      .then(([contracts, statuses, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome, contractAggregates, dueSchedule, clawbackAggregates]) => {
+      .then(([contracts, statuses, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome, contractAggregates, dueSchedule, clawbackAggregates, overdueSnapshot]) => {
         if (!active) return
         const built = buildExecDashboard({
           contracts,
@@ -131,6 +134,7 @@ export default function ExecDashboard() {
           clawbackAggregates,
         })
         setData(built)
+        setOverdueTrend(buildOverdueTrend(overdueSnapshot))
       })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
@@ -386,6 +390,11 @@ export default function ExecDashboard() {
           />
         </Card>
       </div>
+
+      {/* ===== แถว 6b: แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน ===== */}
+      {overdueTrend && overdueTrend.points.length >= 2 && (
+        <OverdueTrendCard trend={overdueTrend} />
+      )}
 
       {/* ===== แถว 7: ความเสี่ยงตามกลุ่ม ===== */}
       <div className="grid gap-4 lg:grid-cols-3">
@@ -945,6 +954,76 @@ function ForecastView({ result }: { result: CashflowForecastResult }) {
         </div>
       </Card>
     </div>
+  )
+}
+
+// ---------- แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน (12 เดือน) ----------
+function OverdueTrendCard({ trend }: { trend: OverdueTrendResult }) {
+  const { points, overdueMoM, badMoM } = trend
+  const labels = points.map((p) => p.label)
+
+  /** format absolute delta: +153 เคส หรือ -22 เคส */
+  function fmtCount(delta: number): string {
+    return `${delta >= 0 ? '+' : ''}${delta.toLocaleString('th-TH')} เคส`
+  }
+  /** format absolute amount delta: +฿657K หรือ -฿248K */
+  function fmtAmt(delta: number): string {
+    const sign = delta >= 0 ? '+' : '-'
+    const abs = Math.abs(delta)
+    if (abs >= 1_000_000) return `${sign}฿${(abs / 1_000_000).toFixed(2)}M`
+    if (abs >= 10_000) return `${sign}฿${(abs / 1_000).toFixed(0)}K`
+    return `${sign}฿${abs.toLocaleString('th-TH')}`
+  }
+
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-ink">
+            แนวโน้มหนี้ล่าช้า / หนี้เสีย (12 เดือน)
+            <span className="ml-2 text-xs font-normal text-ink-soft">(ประมาณการ)</span>
+          </h3>
+          <p className="mt-0.5 text-xs text-ink-soft">จำนวนสัญญาที่ค้างชำระรายเดือน ณ สิ้นเดือน</p>
+        </div>
+        {/* MoM badges */}
+        {(overdueMoM || badMoM) && (
+          <div className="flex flex-wrap gap-2 text-xs">
+            {overdueMoM && (
+              <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
+                <p className="font-semibold text-ink">ค้างทั้งหมด (vs เดือนก่อน)</p>
+                <p className={overdueMoM.countDelta > 0 ? 'text-red-600 font-medium' : overdueMoM.countDelta < 0 ? 'text-green-600 font-medium' : 'text-ink-soft'}>
+                  {fmtCount(overdueMoM.countDelta)}
+                </p>
+                <p className={overdueMoM.amountDelta > 0 ? 'text-red-600' : overdueMoM.amountDelta < 0 ? 'text-green-600' : 'text-ink-soft'}>
+                  {fmtAmt(overdueMoM.amountDelta)}
+                </p>
+              </div>
+            )}
+            {badMoM && (
+              <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
+                <p className="font-semibold text-ink">หนี้เสีย (vs เดือนก่อน)</p>
+                <p className={badMoM.countDelta > 0 ? 'text-red-600 font-medium' : badMoM.countDelta < 0 ? 'text-green-600 font-medium' : 'text-ink-soft'}>
+                  {fmtCount(badMoM.countDelta)}
+                </p>
+                <p className={badMoM.amountDelta > 0 ? 'text-red-600' : badMoM.amountDelta < 0 ? 'text-green-600' : 'text-ink-soft'}>
+                  {fmtAmt(badMoM.amountDelta)}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <LineChart
+        labels={labels}
+        series={[
+          { name: 'ค้างทั้งหมด (เคส)', color: '#f59e0b', values: points.map((p) => p.overdueCount), fill: true },
+          { name: 'หนี้เสีย (เคส)', color: '#dc2626', values: points.map((p) => p.badCount) },
+        ]}
+      />
+      <p className="mt-2 text-xs text-ink-soft">
+        * หนี้เสีย = ค้างชำระ ≥ 60 วัน · ค้างทั้งหมด = ค้างชำระ ≥ 1 วัน · ตัวเลขประมาณการจากข้อมูลปัจจุบัน
+      </p>
+    </Card>
   )
 }
 

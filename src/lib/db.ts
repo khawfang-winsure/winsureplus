@@ -1223,6 +1223,55 @@ export async function getForecastByGrade(): Promise<ForecastByGradeRow[]> {
   return ((data ?? []) as ForecastByGradeViewRow[]).map(mapForecastByGrade)
 }
 
+// ---------- v_overdue_month_snapshot — แนวโน้มหนี้ค้าง/หนี้เสียรายเดือน (migration 0060) ----------
+
+/**
+ * 1 แถวต่อเดือน (12 เดือนล่าสุด) จาก v_overdue_month_snapshot
+ * overdue = สัญญา active ที่ค้างอยู่ ณ สิ้นเดือน (days_late≥1)
+ * badDebt  = สัญญา active ที่ค้างนานเกิน 60 วัน ณ สิ้นเดือน (days_late≥60)
+ */
+export interface OverdueSnapshotRow {
+  snapshotMonth: string  // yyyy-mm-dd (วันที่ 1 ของเดือน)
+  overdueCount: number   // จำนวนสัญญาที่ค้าง (days_late≥1)
+  overdueAmount: number  // ยอดค้างรวม (บาท) ของกลุ่ม overdue
+  badCount: number       // จำนวนสัญญาหนี้เสีย (days_late≥60)
+  badAmount: number      // ยอดค้างรวม (บาท) ของกลุ่ม bad_debt
+}
+
+interface OverdueSnapshotViewRow {
+  snapshot_month: string
+  overdue_count: number | string | null
+  overdue_amount: number | string | null
+  bad_count: number | string | null
+  bad_amount: number | string | null
+}
+
+function mapOverdueSnapshot(r: OverdueSnapshotViewRow): OverdueSnapshotRow {
+  return {
+    snapshotMonth: r.snapshot_month.slice(0, 10),
+    overdueCount: Number(r.overdue_count ?? 0),
+    overdueAmount: Number(r.overdue_amount ?? 0),
+    badCount: Number(r.bad_count ?? 0),
+    badAmount: Number(r.bad_amount ?? 0),
+  }
+}
+
+/**
+ * ดึงแนวโน้มหนี้ค้าง/หนี้เสียรายเดือน (12 เดือนล่าสุด) จาก v_overdue_month_snapshot (migration 0060)
+ * คืน 12 แถวเรียงจากเก่า → ใหม่ — ไม่ติด PAGE_CAP แน่นอน
+ * ใช้ใน Exec Dashboard trend chart (buildOverdueTrend — Wave ถัดไป น้องวิว)
+ */
+export async function getOverdueMonthSnapshot(): Promise<OverdueSnapshotRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_overdue_month_snapshot')
+    .select('snapshot_month, overdue_count, overdue_amount, bad_count, bad_amount')
+    .order('snapshot_month', { ascending: true })
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as OverdueSnapshotViewRow[]).map(mapOverdueSnapshot)
+}
+
 // ---------- ขยายระยะเวลา (restructure) — Feature B ----------
 export type ExtensionType = 'due_day' | 'months' | 'both'
 

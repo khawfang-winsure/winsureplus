@@ -1,7 +1,7 @@
 // ===== ตัวคำนวณ Dashboard ผู้บริหาร (ฟังก์ชันบริสุทธิ์ — แยกจาก UI/DB เพื่อทดสอบง่าย) =====
 // รวมข้อมูลจากหลายแหล่ง (สัญญา/สถานะ/งวด/ร้าน/การชำระ/ขยายเวลา/คืนเครื่อง) เป็นตัวเลขสรุป
 import type { Contract, ContractStatusRow, Shop, DeviceReturnRow, ShopGrade, ShopReportRow, GradeMonthlyChange, OtherIncomeLite } from './types'
-import type { InstallmentLite, ExtensionRecord, DailyCashflowRow, ContractAggregate, DueScheduleRow, ClawbackAggregate } from './db'
+import type { InstallmentLite, ExtensionRecord, DailyCashflowRow, ContractAggregate, DueScheduleRow, ClawbackAggregate, OverdueSnapshotRow } from './db'
 import { ageRange } from './format'
 import { buildShopReport, topShopsByCases } from './report'
 import { buildCommissionReport, type CommissionTier, type RecruitTier, type RecruitBonusRule } from './commission'
@@ -857,6 +857,69 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     cashflowMonth,
     briefing,
   }
+}
+
+// ===== Overdue Trend (แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน 12 เดือน) =====
+
+export interface OverdueTrendPoint {
+  label: string       // เช่น "มิ.ย. 69"
+  overdueCount: number
+  overdueAmount: number
+  badCount: number
+  badAmount: number
+}
+
+export interface OverdueMoMDelta {
+  countDelta: number   // absolute (บวก = เพิ่มขึ้น)
+  amountDelta: number
+}
+
+export interface OverdueTrendResult {
+  points: OverdueTrendPoint[]                // เรียงเก่า→ใหม่
+  overdueMoM: OverdueMoMDelta | null         // null ถ้าน้อยกว่า 2 เดือน
+  badMoM: OverdueMoMDelta | null
+}
+
+/**
+ * แปลง OverdueSnapshotRow[] → OverdueTrendResult
+ * - label แบบไทย: "มิ.ย. 69" (CE 2-digit — ตรงกับ convention เดิม)
+ * - MoM = เดือนล่าสุด − เดือนก่อน (absolute count + absolute amount)
+ */
+export function buildOverdueTrend(
+  rows: OverdueSnapshotRow[],
+): OverdueTrendResult {
+  if (rows.length === 0) {
+    return { points: [], overdueMoM: null, badMoM: null }
+  }
+
+  const points: OverdueTrendPoint[] = rows.map((r) => {
+    const [y, mo] = r.snapshotMonth.split('-').map(Number)
+    const label = `${TH_MON[mo - 1]} ${String(y).slice(2)}`
+    return {
+      label,
+      overdueCount: r.overdueCount,
+      overdueAmount: r.overdueAmount,
+      badCount: r.badCount,
+      badAmount: r.badAmount,
+    }
+  })
+
+  if (points.length < 2) {
+    return { points, overdueMoM: null, badMoM: null }
+  }
+
+  const prev = points[points.length - 2]
+  const last = points[points.length - 1]
+  const overdueMoM: OverdueMoMDelta = {
+    countDelta: last.overdueCount - prev.overdueCount,
+    amountDelta: last.overdueAmount - prev.overdueAmount,
+  }
+  const badMoM: OverdueMoMDelta = {
+    countDelta: last.badCount - prev.badCount,
+    amountDelta: last.badAmount - prev.badAmount,
+  }
+
+  return { points, overdueMoM, badMoM }
 }
 
 // ===== Grade Movement (Roll / Cure rate รายเดือน) =====
