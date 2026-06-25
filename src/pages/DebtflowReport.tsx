@@ -90,24 +90,59 @@ function EmployeeTable({ s }: { s: DebtflowSummary }) {
             <tr className="border-b border-peach text-left text-xs text-ink-soft">
               <th className="pb-2 font-medium">พนักงาน</th>
               <th className="pb-2 text-right font-medium">เคส</th>
+              <th className="pb-2 text-right font-medium">ยอดเลยกำหนด (฿)</th>
               <th className="pb-2 text-right font-medium">เก็บได้ (฿)</th>
-              <th className="pb-2 text-right font-medium">ปิดได้</th>
+              <th className="pb-2 text-right font-medium">เฉลี่ย/เคส (฿)</th>
+              <th className="pb-2 text-right font-medium">ปิดได้ (%)</th>
             </tr>
           </thead>
           <tbody>
-            {s.byEmployee.map((row) => (
-              <tr key={row.employee} className="border-b border-peach/40 last:border-0">
-                <td className="py-2 font-medium text-ink">{row.employee}</td>
-                <td className="py-2 text-right text-ink-soft">{row.cases}</td>
-                <td className="py-2 text-right font-semibold text-green-700">
-                  ฿{baht(row.collected)}
-                </td>
-                <td className="py-2 text-right text-ink-soft">{row.closed}</td>
-              </tr>
-            ))}
+            {s.byEmployee.map((row) => {
+              const crColor =
+                row.closedRate >= 50 ? 'text-green-700' : row.closedRate >= 20 ? 'text-amber-600' : 'text-red-600'
+              const barWidth = Math.min(100, Math.max(0, row.closedRate))
+              const barColor =
+                row.closedRate >= 50 ? 'bg-green-500' : row.closedRate >= 20 ? 'bg-amber-400' : 'bg-red-500'
+              return (
+                <tr key={row.employee} className="border-b border-peach/40 last:border-0">
+                  <td className="py-2 font-medium text-ink">{row.employee}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.cases}</td>
+                  <td className="py-2 text-right text-amber-700">
+                    {row.outstandingHeld > 0 ? `฿${baht(row.outstandingHeld)}` : '—'}
+                  </td>
+                  <td className="py-2 text-right font-semibold text-green-700">
+                    ฿{baht(row.collected)}
+                  </td>
+                  <td className="py-2 text-right text-ink-soft">
+                    {row.avgPerCase > 0 ? `฿${baht(row.avgPerCase)}` : '—'}
+                  </td>
+                  <td className="py-2 text-right">
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span className={`text-xs font-semibold ${crColor}`}>
+                        {row.closed}/{row.cases}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-peach-light">
+                          <div
+                            className={`h-full rounded-full ${barColor}`}
+                            style={{ width: `${barWidth}%` }}
+                          />
+                        </div>
+                        <span className={`w-10 text-right text-xs font-semibold ${crColor}`}>
+                          {row.closedRate}%
+                        </span>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
+      <p className="mt-2 text-xs text-ink-soft">
+        * ยอดเลยกำหนด = ยอดงวดที่เลยกำหนดและยังไม่จ่าย · ปิดได้ = จำนวนปิดเคส ÷ เคสทั้งหมด · สีเขียว ≥ 50% / เหลือง ≥ 20% / แดง &lt; 20%
+      </p>
     </Card>
   )
 }

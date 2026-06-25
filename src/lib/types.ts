@@ -367,6 +367,9 @@ export interface DebtflowByEmployee {
   cases: number
   collected: number
   closed: number
+  outstandingHeld: number   // Σ overdue_amount ของเคสที่พนักงานรับผิดชอบ (ยอดเลยกำหนดยังไม่จ่าย)
+  closedRate: number        // round(100 * closed / cases) — จำนวนเต็ม
+  avgPerCase: number        // round(collected / cases)
 }
 
 export interface DebtflowByGrade {

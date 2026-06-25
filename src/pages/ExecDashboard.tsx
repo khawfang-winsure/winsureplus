@@ -1097,7 +1097,84 @@ function OverdueTrendCard({ trend }: { trend: OverdueTrendResult }) {
         </div>
       </div>
 
-      {/* MoM badges */}
+      {/* ===== บล็อกสรุปภาษาคน ===== */}
+      {filteredPoints.length > 0 && (() => {
+        const last = filteredPoints[filteredPoints.length - 1]
+        const monthLabel = last.label // เช่น "มิ.ย. 26"
+        const overdueCount = last.overdueCount
+        const overdueAmt = last.overdueAmount
+        const badCount = last.badCount
+        const badAmt = last.badAmount
+
+        const overdueDir = mom ? (mom.overdue > 0 ? 'up' : mom.overdue < 0 ? 'down' : 'flat') : 'flat'
+        const badDir = mom ? (mom.bad > 0 ? 'up' : mom.bad < 0 ? 'down' : 'flat') : 'flat'
+
+        const arrowOverdue = overdueDir === 'up' ? '▲' : overdueDir === 'down' ? '▼' : '—'
+        const arrowBad = badDir === 'up' ? '▲' : badDir === 'down' ? '▼' : '—'
+        const colorOverdue = overdueDir === 'up' ? 'text-red-600' : overdueDir === 'down' ? 'text-green-600' : 'text-ink-soft'
+        const colorBad = badDir === 'up' ? 'text-red-600' : badDir === 'down' ? 'text-green-600' : 'text-ink-soft'
+
+        const momOverdueStr = mom
+          ? (mom.isCount
+            ? `${arrowOverdue} ${mom.overdue >= 0 ? '+' : ''}${mom.overdue.toLocaleString('th-TH')} ราย`
+            : `${arrowOverdue} ${fmtAmt(mom.overdue)}`)
+          : null
+        const momBadStr = mom
+          ? (mom.isCount
+            ? `${arrowBad} ${mom.bad >= 0 ? '+' : ''}${mom.bad.toLocaleString('th-TH')} ราย`
+            : `${arrowBad} ${fmtAmt(mom.bad)}`)
+          : null
+
+        return (
+          <div className="mb-4 rounded-2xl border-2 border-amber-200 bg-amber-50 px-4 py-4">
+            <p className="mb-3 text-sm font-bold text-ink">
+              สรุปเดือน {monthLabel}
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {/* ค้างชำระทั้งหมด */}
+              <div>
+                <p className="mb-0.5 text-xs text-ink-soft">ค้างชำระทั้งหมด</p>
+                <p className="text-2xl font-bold text-amber-700">
+                  {trendMetric === 'count'
+                    ? <>{overdueCount.toLocaleString('th-TH')} <span className="text-base font-normal">ราย</span></>
+                    : <>{fmtAmt(overdueAmt).replace(/^[+-]/, '')}</>
+                  }
+                </p>
+                {trendMetric === 'count' && (
+                  <p className="mt-0.5 text-xs text-ink-soft">{fmtAmt(overdueAmt).replace(/^[+-]/, '')} คงค้าง</p>
+                )}
+                {momOverdueStr && (
+                  <p className={`mt-1 text-sm font-semibold ${colorOverdue}`}>
+                    {momOverdueStr}
+                    <span className="ml-1 font-normal text-ink-soft">จากเดือนก่อน</span>
+                  </p>
+                )}
+              </div>
+              {/* หนี้เสีย */}
+              <div>
+                <p className="mb-0.5 text-xs text-ink-soft">หนี้เสีย (ค้าง ≥ 60 วัน)</p>
+                <p className="text-2xl font-bold text-red-700">
+                  {trendMetric === 'count'
+                    ? <>{badCount.toLocaleString('th-TH')} <span className="text-base font-normal">ราย</span></>
+                    : <>{fmtAmt(badAmt).replace(/^[+-]/, '')}</>
+                  }
+                </p>
+                {trendMetric === 'count' && (
+                  <p className="mt-0.5 text-xs text-ink-soft">{fmtAmt(badAmt).replace(/^[+-]/, '')} คงค้าง</p>
+                )}
+                {momBadStr && (
+                  <p className={`mt-1 text-sm font-semibold ${colorBad}`}>
+                    {momBadStr}
+                    <span className="ml-1 font-normal text-ink-soft">จากเดือนก่อน</span>
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* MoM badges (เล็ก ยังคงไว้เป็น reference) */}
       {mom && (
         <div className="mb-3 flex flex-wrap gap-2 text-xs">
           <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">

@@ -4929,7 +4929,7 @@ export async function getDebtflowSummary(): Promise<DebtflowSummary> {
   const { data: totalsData, error: totalsErr } = await supabase
     .from('debtflow_cases')
     .select('cumulative_paid, payment_status')
-    .range(0, 999)
+    .range(0, PAGE_CAP)
   if (totalsErr) throw totalsErr
 
   const rows = (totalsData ?? []) as { cumulative_paid: number | null; payment_status: string | null }[]
@@ -4937,24 +4937,38 @@ export async function getDebtflowSummary(): Promise<DebtflowSummary> {
   const totalCollected = rows.reduce((s, r) => s + (Number(r.cumulative_paid) || 0), 0)
   const closedCases = rows.filter(r => r.payment_status === 'ชำระเงินครบแล้ว').length
 
-  // query 2: by employee
+  // query 2: by employee (เพิ่ม contract_id เพื่อ join outstanding ฝั่ง client)
   const { data: empData, error: empErr } = await supabase
     .from('debtflow_cases')
-    .select('assigned_employee, cumulative_paid, payment_status')
-    .range(0, 999)
+    .select('assigned_employee, cumulative_paid, payment_status, contract_id')
+    .range(0, PAGE_CAP)
   if (empErr) throw empErr
 
-  const empMap = new Map<string, { cases: number; collected: number; closed: number }>()
-  for (const r of (empData ?? []) as { assigned_employee: string | null; cumulative_paid: number | null; payment_status: string | null }[]) {
+  // ดึง overdue map (contract_id → overdueAmount) จาก v_contract_status
+  const allStatuses = await getAllStatuses()
+  const overdueMap = new Map<string, number>(
+    allStatuses.map(s => [s.contractId, s.overdueAmount])
+  )
+
+  const empMap = new Map<string, { cases: number; collected: number; closed: number; contractIds: Set<string> }>()
+  for (const r of (empData ?? []) as { assigned_employee: string | null; cumulative_paid: number | null; payment_status: string | null; contract_id: string | null }[]) {
     const key = r.assigned_employee || '(ไม่ระบุ)'
-    const cur = empMap.get(key) ?? { cases: 0, collected: 0, closed: 0 }
+    const cur = empMap.get(key) ?? { cases: 0, collected: 0, closed: 0, contractIds: new Set<string>() }
     cur.cases++
     cur.collected += Number(r.cumulative_paid) || 0
     if (r.payment_status === 'ชำระเงินครบแล้ว') cur.closed++
+    if (r.contract_id) cur.contractIds.add(r.contract_id)
     empMap.set(key, cur)
   }
   const byEmployee: DebtflowByEmployee[] = Array.from(empMap.entries())
-    .map(([employee, v]) => ({ employee, ...v }))
+    .map(([employee, v]) => {
+      const outstandingHeld = Array.from(v.contractIds).reduce(
+        (s, cid) => s + (overdueMap.get(cid) ?? 0), 0
+      )
+      const closedRate = v.cases > 0 ? Math.round(100 * v.closed / v.cases) : 0
+      const avgPerCase = v.cases > 0 ? Math.round(v.collected / v.cases) : 0
+      return { employee, cases: v.cases, collected: v.collected, closed: v.closed, outstandingHeld, closedRate, avgPerCase }
+    })
     .sort((a, b) => b.collected - a.collected)
 
   // query 3: by grade
