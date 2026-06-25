@@ -58,7 +58,7 @@ import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
 import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
-import { boxRequired } from '../lib/docTracking'
+import { boxRequired, DOC_BOX_RULE_CUTOFF } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
@@ -660,7 +660,34 @@ export default function ContractDetail() {
                   <Badge tone="red">📦 มือหนึ่ง ต้องมีกล่อง</Badge>
                 </div>
               )}
-              {!contract.hasPhoneBox ? (
+              {/* toggle "มีกล่องเครื่อง" — แก้ has_phone_box หลังสร้างสัญญา
+                  มือหนึ่งบังคับมีกล่อง (new + createdAt >= cutoff) → read-only ปลดไม่ได้
+                  มือสอง / มือหนึ่งก่อน cutoff → ติ๊กได้ */}
+              {contract.condition === 'new' &&
+              (contract.createdAt ?? '').slice(0, 10) >= DOC_BOX_RULE_CUTOFF ? (
+                <p className="mb-2 flex items-center gap-1.5 text-xs text-ink-soft">
+                  <input type="checkbox" checked disabled className="h-3.5 w-3.5 accent-salmon-deep" />
+                  มีกล่อง (บังคับ - มือหนึ่ง)
+                </p>
+              ) : (
+                <label className="mb-2 flex cursor-pointer items-center gap-1.5 text-xs text-ink">
+                  <input
+                    type="checkbox"
+                    checked={contract.hasPhoneBox === true}
+                    onChange={() => {
+                      const nextHasBox = !contract.hasPhoneBox
+                      void setContractFlags(contract.id, { hasPhoneBox: nextHasBox }).then(() => {
+                        setContract((prev) =>
+                          prev ? { ...prev, hasPhoneBox: nextHasBox } : prev,
+                        )
+                      })
+                    }}
+                    className="h-3.5 w-3.5 accent-salmon-deep"
+                  />
+                  สินค้ามีกล่อง (ติ๊กเมื่อร้านส่งกล่องมา)
+                </label>
+              )}
+              {!boxRequired(contract) ? (
                 <p className="text-sm text-ink-soft">ร้านแจ้งว่าไม่มีกล่อง</p>
               ) : contract.phoneBoxReceived ? (
                 <div className="flex flex-wrap items-center gap-2">

@@ -100,7 +100,7 @@ function DocRow({
         )}
       </td>
       <td className="py-2">
-        {!contract.hasPhoneBox ? (
+        {!boxRequired(contract) ? (
           <span className="text-xs text-ink-soft">—</span>
         ) : contract.phoneBoxReceived ? (
           <span className="flex items-center gap-1 text-xs text-green-700">

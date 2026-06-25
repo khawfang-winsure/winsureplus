@@ -2562,6 +2562,7 @@ export type ContractFlagPatch = {
   disputedSince?: string | null // date ISO
   pendingDocuments?: boolean    // true = รอเอกสาร (Case Online); suppress สถานะล่าช้า
   pendingDocItems?: string[]    // 0053: รายการเอกสารที่รอ — แก้แล้ว ไม่ trigger bounce-back
+  hasPhoneBox?: boolean         // แก้ค่ากล่องโทรศัพท์ (มี/ไม่มีกล่องส่งคืน) หลังสร้างสัญญาแล้ว
 }
 
 /** ตั้ง/ปลด compliance flags บนสัญญา (admin+staff ผ่าน RLS contracts_write; trigger กัน staff ปลด) */
@@ -2597,6 +2598,10 @@ export async function setContractFlags(
   // pendingDocItems: แก้รายการเอกสารที่รอ — ไม่ trigger bounce-back (Pete: "แก้ list เฉยๆ ไม่เด้งคิว")
   if (patch.pendingDocItems !== undefined) {
     upd.pending_doc_items = patch.pendingDocItems
+  }
+  // hasPhoneBox: แก้ค่ากล่องโทรศัพท์หลังสร้างสัญญา — แก้เฉพาะ has_phone_box ไม่แตะ phone_box_received/ฯลฯ
+  if (patch.hasPhoneBox !== undefined) {
+    upd.has_phone_box = patch.hasPhoneBox
   }
   if (Object.keys(upd).length === 0) return // ไม่มีอะไรให้อัปเดต
   const { error } = await supabase.from('contracts').update(upd).eq('id', contractId)
