@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
 import { Loading, PageTitle, Card, Badge } from '../components/ui'
@@ -957,16 +957,72 @@ function ForecastView({ result }: { result: CashflowForecastResult }) {
   )
 }
 
-// ---------- แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน (12 เดือน) ----------
+// ---------- แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน ----------
 function OverdueTrendCard({ trend }: { trend: OverdueTrendResult }) {
-  const { points, overdueMoM, badMoM } = trend
-  const labels = points.map((p) => p.label)
+  const { points } = trend
 
-  /** format absolute delta: +153 เคส หรือ -22 เคส */
+  // label format: "มิ.ย. 26" (CE year 2-digit suffix จาก execDashboard.ts)
+  // derive CE = 2000 + parseInt(suffix), กรองเฉพาะปีที่มีข้อมูลจริง (overdueCount > 0 อย่างน้อย 1 เดือน)
+  const availableYears = useMemo(() => {
+    const ceMap = new Map<number, number>() // ce → max overdueCount ของปีนั้น
+    for (const p of points) {
+      const parts = p.label.split(' ')
+      if (parts.length === 2) {
+        const ce = 2000 + parseInt(parts[1], 10)
+        ceMap.set(ce, Math.max(ceMap.get(ce) ?? 0, p.overdueCount))
+      }
+    }
+    return Array.from(ceMap.entries())
+      .filter(([, maxCount]) => maxCount > 0)
+      .map(([ce]) => ce)
+      .sort((a, b) => a - b)
+  }, [points])
+
+  const latestYear = availableYears[availableYears.length - 1] ?? new Date().getFullYear()
+  const [trendMetric, setTrendMetric] = useState<'count' | 'amount'>('count')
+  const [trendYear, setTrendYear] = useState<number>(latestYear)
+
+  // sync trendYear เมื่อ availableYears เปลี่ยน (เช่น first render หรือข้อมูลโหลดใหม่)
+  useEffect(() => {
+    if (!availableYears.includes(trendYear)) {
+      setTrendYear(latestYear)
+    }
+  }, [availableYears, latestYear, trendYear])
+
+  // filter เฉพาะเดือนในปีที่เลือก
+  const filteredPoints = useMemo(() => {
+    return points.filter((p) => {
+      const parts = p.label.split(' ')
+      if (parts.length !== 2) return false
+      return 2000 + parseInt(parts[1], 10) === trendYear
+    })
+  }, [points, trendYear])
+
+  // MoM จากจุดสุดท้าย 2 จุดของ filtered list ตาม metric ที่กำลังดู
+  const mom = useMemo(() => {
+    if (filteredPoints.length < 2) return null
+    const prev = filteredPoints[filteredPoints.length - 2]
+    const last = filteredPoints[filteredPoints.length - 1]
+    if (trendMetric === 'count') {
+      return {
+        overdue: last.overdueCount - prev.overdueCount,
+        bad: last.badCount - prev.badCount,
+        isCount: true,
+      }
+    } else {
+      return {
+        overdue: last.overdueAmount - prev.overdueAmount,
+        bad: last.badAmount - prev.badAmount,
+        isCount: false,
+      }
+    }
+  }, [filteredPoints, trendMetric])
+
+  /** format delta จำนวนเคส: +12 หรือ -5 */
   function fmtCount(delta: number): string {
     return `${delta >= 0 ? '+' : ''}${delta.toLocaleString('th-TH')} เคส`
   }
-  /** format absolute amount delta: +฿657K หรือ -฿248K */
+  /** format delta ยอดเงิน: +฿1.20M / -฿320K */
   function fmtAmt(delta: number): string {
     const sign = delta >= 0 ? '+' : '-'
     const abs = Math.abs(delta)
@@ -975,53 +1031,106 @@ function OverdueTrendCard({ trend }: { trend: OverdueTrendResult }) {
     return `${sign}฿${abs.toLocaleString('th-TH')}`
   }
 
+  const labels = filteredPoints.map((p) => p.label.split(' ')[0]) // แสดงแค่ชื่อเดือน (ปีอยู่ใน dropdown แล้ว)
+
+  const seriesCount = [
+    { name: 'ค้างทั้งหมด (เคส)', color: '#f59e0b', values: filteredPoints.map((p) => p.overdueCount), fill: true as const },
+    { name: 'หนี้เสีย (เคส)', color: '#dc2626', values: filteredPoints.map((p) => p.badCount) },
+  ]
+  const seriesAmount = [
+    { name: 'ค้างทั้งหมด (พันบาท)', color: '#f59e0b', values: filteredPoints.map((p) => Math.round(p.overdueAmount / 1000)), fill: true as const },
+    { name: 'หนี้เสีย (พันบาท)', color: '#dc2626', values: filteredPoints.map((p) => Math.round(p.badAmount / 1000)) },
+  ]
+
   return (
     <Card>
+      {/* Header row */}
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold text-ink">
-            แนวโน้มหนี้ล่าช้า / หนี้เสีย (12 เดือน)
+            แนวโน้มหนี้ล่าช้า / หนี้เสีย
             <span className="ml-2 text-xs font-normal text-ink-soft">(ประมาณการ)</span>
           </h3>
-          <p className="mt-0.5 text-xs text-ink-soft">จำนวนสัญญาที่ค้างชำระรายเดือน ณ สิ้นเดือน</p>
+          <p className="mt-0.5 text-xs text-ink-soft">สัญญาที่ค้างชำระรายเดือน ณ สิ้นเดือน</p>
         </div>
-        {/* MoM badges */}
-        {(overdueMoM || badMoM) && (
-          <div className="flex flex-wrap gap-2 text-xs">
-            {overdueMoM && (
-              <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
-                <p className="font-semibold text-ink">ค้างทั้งหมด (vs เดือนก่อน)</p>
-                <p className={overdueMoM.countDelta > 0 ? 'text-red-600 font-medium' : overdueMoM.countDelta < 0 ? 'text-green-600 font-medium' : 'text-ink-soft'}>
-                  {fmtCount(overdueMoM.countDelta)}
-                </p>
-                <p className={overdueMoM.amountDelta > 0 ? 'text-red-600' : overdueMoM.amountDelta < 0 ? 'text-green-600' : 'text-ink-soft'}>
-                  {fmtAmt(overdueMoM.amountDelta)}
-                </p>
-              </div>
-            )}
-            {badMoM && (
-              <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
-                <p className="font-semibold text-ink">หนี้เสีย (vs เดือนก่อน)</p>
-                <p className={badMoM.countDelta > 0 ? 'text-red-600 font-medium' : badMoM.countDelta < 0 ? 'text-green-600 font-medium' : 'text-ink-soft'}>
-                  {fmtCount(badMoM.countDelta)}
-                </p>
-                <p className={badMoM.amountDelta > 0 ? 'text-red-600' : badMoM.amountDelta < 0 ? 'text-green-600' : 'text-ink-soft'}>
-                  {fmtAmt(badMoM.amountDelta)}
-                </p>
-              </div>
-            )}
+
+        {/* Controls: metric toggle + year dropdown */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Segmented toggle: จำนวนเคส / ยอดเงิน */}
+          <div className="flex overflow-hidden rounded-xl border border-peach text-sm">
+            <button
+              onClick={() => setTrendMetric('count')}
+              className={`px-3 py-1.5 font-medium transition ${
+                trendMetric === 'count'
+                  ? 'bg-salmon-deep text-white'
+                  : 'bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              จำนวนเคส
+            </button>
+            <button
+              onClick={() => setTrendMetric('amount')}
+              className={`px-3 py-1.5 font-medium transition ${
+                trendMetric === 'amount'
+                  ? 'bg-salmon-deep text-white'
+                  : 'bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              ยอดเงิน (บาท)
+            </button>
           </div>
-        )}
+
+          {/* Year dropdown */}
+          {availableYears.length > 1 && (
+            <select
+              value={trendYear}
+              onChange={(e) => setTrendYear(Number(e.target.value))}
+              className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-salmon-deep/30"
+            >
+              {availableYears.map((ce) => (
+                <option key={ce} value={ce}>
+                  พ.ศ. {ce + 543}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
-      <LineChart
-        labels={labels}
-        series={[
-          { name: 'ค้างทั้งหมด (เคส)', color: '#f59e0b', values: points.map((p) => p.overdueCount), fill: true },
-          { name: 'หนี้เสีย (เคส)', color: '#dc2626', values: points.map((p) => p.badCount) },
-        ]}
-      />
+
+      {/* MoM badges */}
+      {mom && (
+        <div className="mb-3 flex flex-wrap gap-2 text-xs">
+          <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
+            <p className="font-semibold text-ink">ค้างทั้งหมด (vs เดือนก่อน)</p>
+            <p className={mom.overdue > 0 ? 'font-medium text-red-600' : mom.overdue < 0 ? 'font-medium text-green-600' : 'text-ink-soft'}>
+              {mom.isCount ? fmtCount(mom.overdue) : fmtAmt(mom.overdue)}
+              {mom.overdue > 0 ? ' ↑' : mom.overdue < 0 ? ' ↓' : ''}
+            </p>
+          </div>
+          <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
+            <p className="font-semibold text-ink">หนี้เสีย (vs เดือนก่อน)</p>
+            <p className={mom.bad > 0 ? 'font-medium text-red-600' : mom.bad < 0 ? 'font-medium text-green-600' : 'text-ink-soft'}>
+              {mom.isCount ? fmtCount(mom.bad) : fmtAmt(mom.bad)}
+              {mom.bad > 0 ? ' ↑' : mom.bad < 0 ? ' ↓' : ''}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {filteredPoints.length === 0 ? (
+        <p className="py-6 text-center text-sm text-ink-soft">ไม่มีข้อมูลในปีนี้</p>
+      ) : (
+        <LineChart
+          labels={labels}
+          valueSuffix={trendMetric === 'amount' ? 'K' : undefined}
+          series={trendMetric === 'count' ? seriesCount : seriesAmount}
+        />
+      )}
+
       <p className="mt-2 text-xs text-ink-soft">
-        * หนี้เสีย = ค้างชำระ ≥ 60 วัน · ค้างทั้งหมด = ค้างชำระ ≥ 1 วัน · ตัวเลขประมาณการจากข้อมูลปัจจุบัน
+        * หนี้เสีย = ค้างชำระ ≥ 60 วัน · ค้างทั้งหมด = ค้างชำระ ≥ 1 วัน
+        {trendMetric === 'amount' ? ' · ยอดเงินหน่วยพันบาท (K)' : ''}
+        {' '}· ตัวเลขประมาณการจากข้อมูลปัจจุบัน
       </p>
     </Card>
   )

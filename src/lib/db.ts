@@ -1257,8 +1257,9 @@ function mapOverdueSnapshot(r: OverdueSnapshotViewRow): OverdueSnapshotRow {
 }
 
 /**
- * ดึงแนวโน้มหนี้ค้าง/หนี้เสียรายเดือน (12 เดือนล่าสุด) จาก v_overdue_month_snapshot (migration 0060)
- * คืน 12 แถวเรียงจากเก่า → ใหม่ — ไม่ติด PAGE_CAP แน่นอน
+ * ดึงแนวโน้มหนี้ค้าง/หนี้เสียรายเดือน จาก v_overdue_month_snapshot (migration 0061)
+ * คืนทุกเดือนตั้งแต่เดือนแรกที่มี due_date จนถึงเดือนปัจจุบัน (~21+ แถว ข้ามหลายปี)
+ * เรียงจากเก่า → ใหม่ — range(0,999) รองรับ row ทั้งหมดได้สบาย
  * ใช้ใน Exec Dashboard trend chart (buildOverdueTrend — Wave ถัดไป น้องวิว)
  */
 export async function getOverdueMonthSnapshot(): Promise<OverdueSnapshotRow[]> {
