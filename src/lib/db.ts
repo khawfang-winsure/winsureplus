@@ -831,6 +831,7 @@ export interface ContractAggregate {
   totalPaid: number
   totalOutstanding: number
   totalPenalty: number
+  totalScheduled: number   // Σ amount ทุกงวด (เพิ่ม 0057) — ใช้คำนวณ portfolioPayable ใน ExecDashboard
   lastPaidAt: string | null
   nextDueDate: string | null
 }
@@ -843,6 +844,7 @@ interface ContractAggregateRow {
   total_paid: number | null
   total_outstanding: number | null
   total_penalty: number | null
+  total_scheduled: number | null  // เพิ่ม 0057
   last_paid_at: string | null
   next_due_date: string | null
 }
@@ -856,6 +858,7 @@ function mapContractAggregate(r: ContractAggregateRow): ContractAggregate {
     totalPaid: Number(r.total_paid ?? 0),
     totalOutstanding: Number(r.total_outstanding ?? 0),
     totalPenalty: Number(r.total_penalty ?? 0),
+    totalScheduled: Number(r.total_scheduled ?? 0),  // เพิ่ม 0057
     lastPaidAt: r.last_paid_at ?? null,
     nextDueDate: r.next_due_date ?? null,
   }
@@ -864,14 +867,14 @@ function mapContractAggregate(r: ContractAggregateRow): ContractAggregate {
 /**
  * ดึงยอดรวมต่อสัญญาจาก v_contract_aggregates (1 query แทนการ scan raw installments)
  * คืน Map<contractId, ContractAggregate> สำหรับ dashboard/ค่าคอม/outstanding
- * รองรับ 2,400+ สัญญาโดยไม่ติด PAGE_CAP (aggregate ฝั่ง DB แล้ว)
+ * รองรับถึง 10,000 สัญญา — range(0, 9999) เพราะ view คืน 1 แถว/สัญญา
  */
 export async function getContractAggregates(): Promise<Map<string, ContractAggregate>> {
   if (!supabase) return new Map()
   const { data, error } = await supabase
     .from('v_contract_aggregates')
     .select('*')
-    .range(0, PAGE_CAP)
+    .range(0, 9999)
   if (error) throw error
   const map = new Map<string, ContractAggregate>()
   for (const r of (data ?? []) as ContractAggregateRow[]) {
@@ -1113,7 +1116,7 @@ function mapDailyCashflow(r: DailyCashflowViewRow): DailyCashflowRow {
 /**
  * ดึงรายได้รายวันจาก v_cashflow_daily (migration 0056)
  * แก้บั๊ก: getAllPayments ติด PAGE_CAP 4,999 ทำให้ยอดรายได้ /exec ขาด ~65%
- * view aggregate ฝั่ง DB คืน 1 แถวต่อวัน → ครบทุกบาทไม่ว่า payment_log จะใหญ่แค่ไหน
+ * view aggregate ฝั่ง DB คืน 1 แถวต่อวัน — range(0, 9999) รองรับ ~27 ปี เกินอายุโปรเจกต์
  * เรียงจากเก่าสุด → ใหม่สุด (view ใช้ ORDER BY pay_date)
  */
 export async function getCashflowDaily(): Promise<DailyCashflowRow[]> {
@@ -1121,9 +1124,103 @@ export async function getCashflowDaily(): Promise<DailyCashflowRow[]> {
   const { data, error } = await supabase
     .from('v_cashflow_daily')
     .select('pay_date, income, penalty_income, pay_count')
-    .range(0, 1999)
+    .range(0, 9999)
   if (error) throw error
   return ((data ?? []) as DailyCashflowViewRow[]).map(mapDailyCashflow)
+}
+
+// ---------- v_due_schedule_monthly — รวมยอดงวดต่อเดือน (migration 0058) ----------
+
+/**
+ * แถวยอดงวดรายเดือน (สัญญา active ทั้งหมด รวมในเดือนเดียวกัน)
+ * คืนจาก v_due_schedule_monthly — ~24-36 แถว ไม่ติด PAGE_CAP
+ */
+export interface DueScheduleRow {
+  dueMonth: string        // yyyy-mm-dd (date_trunc month → วันที่ 1 ของเดือน)
+  scheduledAmount: number // Σ amount งวดทุกสัญญา active ในเดือนนี้
+  collectedAmount: number // Σ paid_amount ที่ paid_at not null
+  remainingAmount: number // Σ remain ที่ยังไม่จ่าย (greatest(amount−paid_amount,0) where paid_at null)
+  totalCount: number      // จำนวนงวดทั้งหมด
+  paidCount: number       // จำนวนงวดที่จ่ายแล้ว
+}
+
+interface DueScheduleViewRow {
+  due_month: string
+  scheduled_amount: string | number | null
+  collected_amount: string | number | null
+  remaining_amount: string | number | null
+  total_count: string | number | null
+  paid_count: string | number | null
+}
+
+function mapDueSchedule(r: DueScheduleViewRow): DueScheduleRow {
+  return {
+    dueMonth: r.due_month.slice(0, 10),
+    scheduledAmount: Number(r.scheduled_amount ?? 0),
+    collectedAmount: Number(r.collected_amount ?? 0),
+    remainingAmount: Number(r.remaining_amount ?? 0),
+    totalCount: Number(r.total_count ?? 0),
+    paidCount: Number(r.paid_count ?? 0),
+  }
+}
+
+/**
+ * ดึงยอดงวดรายเดือน (active contracts) จาก v_due_schedule_monthly (migration 0058)
+ * แก้บั๊ก: raw installments ติด PAGE_CAP ทำให้ expectedThisMonth/expectedNextMonth ใน /exec ขาด
+ * view คืน 1 แถวต่อเดือน — range(0, 999) รองรับ >80 ปี เกินอายุโปรเจกต์แน่นอน
+ */
+export async function getDueScheduleMonthly(): Promise<DueScheduleRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_due_schedule_monthly')
+    .select('due_month, scheduled_amount, collected_amount, remaining_amount, total_count, paid_count')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as DueScheduleViewRow[]).map(mapDueSchedule)
+}
+
+// ---------- v_forecast_monthly_by_grade — ยอดคาดรับรายเดือนแยก grade (migration 0058) ----------
+
+/**
+ * แถวยอดคาดรับต่อ (เดือน, grade/bucket) สำหรับ forecast chart
+ * คืนจาก v_forecast_monthly_by_grade — ~60 แถว (เดือน × grade) ไม่ติด PAGE_CAP
+ */
+export interface ForecastByGradeRow {
+  dueMonth: string       // yyyy-mm-dd (date_trunc month)
+  grade: string          // เกรดร้าน A-E จาก v_contract_status.grade: 'A'|'B'|'C'|'D'|'E'|'unknown'
+  expectedAmount: number // Σ amount งวดที่ยังไม่จ่าย + due_date >= today
+  installmentCount: number
+}
+
+interface ForecastByGradeViewRow {
+  due_month: string
+  grade: string
+  expected_amount: string | number | null
+  installment_count: string | number | null
+}
+
+function mapForecastByGrade(r: ForecastByGradeViewRow): ForecastByGradeRow {
+  return {
+    dueMonth: r.due_month.slice(0, 10),
+    grade: r.grade,
+    expectedAmount: Number(r.expected_amount ?? 0),
+    installmentCount: Number(r.installment_count ?? 0),
+  }
+}
+
+/**
+ * ดึงยอดคาดรับแยก grade รายเดือนจาก v_forecast_monthly_by_grade (migration 0058)
+ * ใช้วาด forecast chart ใน /exec โดยไม่ scan raw installments ทุกแถว
+ * view คืน 1 แถวต่อ (เดือน × grade) — range(0, 999) รองรับได้มากกว่า 100 ปี × 8 grade
+ */
+export async function getForecastByGrade(): Promise<ForecastByGradeRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_forecast_monthly_by_grade')
+    .select('due_month, grade, expected_amount, installment_count')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as ForecastByGradeViewRow[]).map(mapForecastByGrade)
 }
 
 // ---------- ขยายระยะเวลา (restructure) — Feature B ----------
@@ -4594,4 +4691,60 @@ export async function unpinFromInbox(contractId: string): Promise<void> {
     .delete()
     .eq('contract_id', contractId)
   if (error) throw error
+}
+
+// ---------- clawback aggregates (Fix C — แก้ PAGE_CAP ค่าคอม clawback) ----------
+
+/**
+ * aggregate งวดล่าช้า/ค้างต่อสัญญา — มาจาก view v_clawback_status
+ * ใช้แทน getAllInstallments() ในส่วนคิด clawback ของ buildCommissionReport
+ * คืน ~2,400 แถว (1/สัญญา) ไม่ติด PAGE_CAP
+ */
+export interface ClawbackAggregate {
+  contractId: string
+  /** MIN(due_date) ของงวดที่จ่ายแล้วและจ่ายช้า (paid_at >= due_date+30d); null = ไม่มีงวดจ่ายช้า */
+  earliestPaidLateDue: string | null
+  /** installment_no ของ earliestPaidLateDue; null ถ้า earliestPaidLateDue null */
+  earliestPaidLateNo: number | null
+  /** MIN(due_date) ของงวดที่ยังไม่จ่าย; null = จ่ายครบแล้ว */
+  oldestUnpaidDue: string | null
+  /** installment_no ของ oldestUnpaidDue; null ถ้า oldestUnpaidDue null */
+  oldestUnpaidNo: number | null
+}
+
+interface ClawbackAggregateRow {
+  contract_id: string
+  earliest_paid_late_due: string | null
+  earliest_paid_late_no: number | null
+  oldest_unpaid_due: string | null
+  oldest_unpaid_no: number | null
+}
+
+function mapClawbackAggregate(r: ClawbackAggregateRow): ClawbackAggregate {
+  return {
+    contractId: r.contract_id,
+    earliestPaidLateDue: r.earliest_paid_late_due ?? null,
+    earliestPaidLateNo: r.earliest_paid_late_no != null ? Number(r.earliest_paid_late_no) : null,
+    oldestUnpaidDue: r.oldest_unpaid_due ?? null,
+    oldestUnpaidNo: r.oldest_unpaid_no != null ? Number(r.oldest_unpaid_no) : null,
+  }
+}
+
+/**
+ * ดึง aggregate งวดล่าช้า/ค้างจาก v_clawback_status (1 query, 1 แถว/สัญญา)
+ * คืน Map<contractId, ClawbackAggregate> สำหรับ buildCommissionReport
+ * range(0, 9999) รองรับถึง 10,000 สัญญา
+ */
+export async function getClawbackAggregates(): Promise<Map<string, ClawbackAggregate>> {
+  if (!supabase) return new Map()
+  const { data, error } = await supabase
+    .from('v_clawback_status')
+    .select('contract_id, earliest_paid_late_due, earliest_paid_late_no, oldest_unpaid_due, oldest_unpaid_no')
+    .range(0, 9999)
+  if (error) throw error
+  const map = new Map<string, ClawbackAggregate>()
+  for (const r of (data ?? []) as ClawbackAggregateRow[]) {
+    map.set(r.contract_id, mapClawbackAggregate(r))
+  }
+  return map
 }

@@ -1,16 +1,15 @@
 // ===== Cashflow Forecast — 3 เดือนข้างหน้า (pure function) =====
 // ผู้บริหารดูว่าพอร์ตจะหมุนเข้าเท่าไหร่ — ไม่ยุ่งกับ UI / DB โดยตรง
+// เฟส B: เปลี่ยน input จาก raw installments → ForecastByGradeRow[] (aggregate view) ไม่ติด PAGE_CAP
+
+import type { ForecastByGradeRow } from './db'
 
 export interface CashflowForecastInput {
-  /** ค่างวดในอนาคต — schedule ที่ทราบ */
-  upcomingInstallments: Array<{
-    contractId: string
-    dueDate: string          // 'YYYY-MM-DD'
-    amount: number           // ค่างวด principal
-    status: 'pending' | 'paid' | 'late'
-    contractStatus: string   // 'active' | 'returned' | 'closed' | ...
-    currentGrade: string | null  // 'A' | 'B' | 'C' | 'D' | 'E'
-  }>
+  /**
+   * ยอดคาดรับงวดในอนาคต แยกตาม (เดือน, grade/bucket) จาก v_forecast_monthly_by_grade
+   * เฟส B: แทน upcomingInstallments[] เดิม ไม่ติด PAGE_CAP
+   */
+  forecastRows: ForecastByGradeRow[]
 
   /**
    * เงินที่ต้องโอนออกให้ร้านย้อนหลัง 3 เดือน (รายเดือน)
@@ -49,6 +48,7 @@ const TH_MON = [
   'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
 ]
 
+
 export function buildCashflowForecast(input: CashflowForecastInput): CashflowForecastResult {
   // ─── 1) อัตราความน่าจะเป็นจ่ายตรงต่อ grade ─────────────────────────────────
   // baseline ค่าเริ่มต้น — Pete สามารถ override ผ่าน settings อนาคตได้
@@ -61,17 +61,37 @@ export function buildCashflowForecast(input: CashflowForecastInput): CashflowFor
   }
   const defaultRate = 0.50  // ไม่มี grade (ลูกค้าใหม่ / ข้อมูลเก่า)
 
-  // ─── 2) Group installments → เดือน (ใช้ string compare แทน Date() → timezone-safe) ──
-  const monthBuckets = new Map<string, Array<(typeof input.upcomingInstallments)[number]>>()
+  // ─── 2) Group forecastRows → เดือน (ใช้ string compare → timezone-safe) ──────
+  // forecastRows มี dueMonth เป็น 'YYYY-MM-DD' (วันที่ 1 ของเดือน)
+  // กรอง: เฉพาะเดือนที่ dueMonth >= todayISO[:7] (เดือนปัจจุบันขึ้นไป)
+  const todayMonth = input.todayISO.slice(0, 7) // 'YYYY-MM'
 
-  for (const inst of input.upcomingInstallments) {
-    if (inst.contractStatus !== 'active') continue   // ข้าม returned/closed
-    if (inst.status === 'paid') continue              // ข้ามที่จ่ายแล้ว
-    if (inst.dueDate < input.todayISO) continue       // ข้ามที่ผ่านมาแล้ว (ISO string compare ปลอดภัย)
+  // Map<monthYYYYMM, { expectedInflow, installmentCount, expectedPaidCount }>
+  type MonthBucket = { expectedInflow: number; installmentCount: number; expectedPaidCount: number }
+  const monthBuckets = new Map<string, MonthBucket>()
 
-    const monthKey = inst.dueDate.slice(0, 7)         // 'YYYY-MM'
-    if (!monthBuckets.has(monthKey)) monthBuckets.set(monthKey, [])
-    monthBuckets.get(monthKey)!.push(inst)
+  for (const row of input.forecastRows) {
+    const rowMonth = row.dueMonth.slice(0, 7) // 'YYYY-MM'
+    if (rowMonth < todayMonth) continue        // ข้ามเดือนที่ผ่านมาแล้ว
+
+    // row.grade มาจาก v_contract_status: grade_for_days_late() → 'A'|'B'|'C'|'D'|'E'|null
+    // null → coalesced เป็น 'unknown' ใน view → ตก defaultRate (ถูกต้อง)
+    const rate = payRateByGrade[row.grade] ?? defaultRate
+    const inflow = row.expectedAmount * rate
+    const paidCount = row.installmentCount * rate
+
+    const existing = monthBuckets.get(rowMonth)
+    if (existing) {
+      existing.expectedInflow += inflow
+      existing.installmentCount += row.installmentCount
+      existing.expectedPaidCount += paidCount
+    } else {
+      monthBuckets.set(rowMonth, {
+        expectedInflow: inflow,
+        installmentCount: row.installmentCount,
+        expectedPaidCount: paidCount,
+      })
+    }
   }
 
   // ─── 3) คัด 3 เดือนแรกที่มีข้อมูล (ตามลำดับเวลา) ──────────────────────────
@@ -85,30 +105,20 @@ export function buildCashflowForecast(input: CashflowForecastInput): CashflowFor
       : 0
 
   // ─── 5) คำนวณรายเดือน ────────────────────────────────────────────────────────
-  const months: CashflowForecastMonth[] = next3Months.map((monthKey) => {
-    const bucket = monthBuckets.get(monthKey)!
-    let expectedInflow = 0
-    let expectedPaidCount = 0
+  const months: CashflowForecastMonth[] = next3Months.map((mk) => {
+    const bucket = monthBuckets.get(mk)!
 
-    for (const inst of bucket) {
-      const rate = inst.currentGrade != null
-        ? (payRateByGrade[inst.currentGrade] ?? defaultRate)
-        : defaultRate
-      expectedInflow += inst.amount * rate
-      expectedPaidCount += rate   // ผลรวม probability = งวดที่คาดว่าจะจ่าย
-    }
-
-    const year = Number(monthKey.slice(0, 4))
-    const month = Number(monthKey.slice(5, 7))   // 1-12
+    const year = Number(mk.slice(0, 4))
+    const month = Number(mk.slice(5, 7))   // 1-12
     const monthLabel = `${TH_MON[month - 1]} ${String(year).slice(2)}`
 
     return {
       monthLabel,
-      expectedInflow: Math.round(expectedInflow),
+      expectedInflow: Math.round(bucket.expectedInflow),
       expectedOutflow: Math.round(avgMonthlyOutflow),
-      net: Math.round(expectedInflow - avgMonthlyOutflow),
-      installmentCount: bucket.length,
-      expectedPaidCount: Math.round(expectedPaidCount),
+      net: Math.round(bucket.expectedInflow - avgMonthlyOutflow),
+      installmentCount: bucket.installmentCount,
+      expectedPaidCount: Math.round(bucket.expectedPaidCount),
     }
   })
 

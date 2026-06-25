@@ -4,6 +4,7 @@
 
 import type { Contract, DeviceReturnRow, Shop, ShopGrade } from './types'
 import { gradeFor } from './report'
+import type { ClawbackAggregate } from './db'
 
 export interface CommissionTier {
   minCases: number // ตั้งแต่กี่เคส
@@ -193,7 +194,7 @@ function isRiskyAsOf(insts: ReportInstallment[], asOf: string): boolean {
   return daysBetween(oldestUnpaidDue, asOf) >= 31
 }
 
-interface ClawbackEvent {
+export interface ClawbackEvent {
   reason: ClawbackReason
   date: string // yyyy-mm-dd ที่เหตุการณ์เกิด (วันที่งวดล่าช้าครบ 30 วัน)
 }
@@ -236,6 +237,74 @@ function detectClawback(
   return { reason, date: addDays(earliest.due, LATE_DAYS) }
 }
 
+// ============================================================================
+// Aggregate-based clawback helpers (Fix C — ไม่ติด PAGE_CAP)
+// port logic เดิมเป๊ะ — แทน raw installments ด้วย pre-aggregated view
+// ============================================================================
+
+/**
+ * ตรวจว่าสัญญานี้ "เสี่ยง" (ล่าช้า 31 วันขึ้นไป) ณ วันที่ asOf หรือไม่
+ * ใช้ agg.oldestUnpaidDue แทนการ scan งวดทั้งหมด
+ * งวดถือว่ายังไม่จ่ายถ้า oldest_unpaid_due ไม่ null
+ */
+export function isRiskyAsOfFromAggregate(agg: ClawbackAggregate, asOf: string): boolean {
+  if (agg.oldestUnpaidDue == null) return false
+  return daysBetween(agg.oldestUnpaidDue, asOf) >= 31
+}
+
+/**
+ * ตรวจว่าสัญญานี้ต้องหักคืนค่าคอมไหม + เกิดเดือนไหน
+ * ใช้ ClawbackAggregate แทน raw installments — port logic ของ detectClawback เป๊ะ
+ *
+ * กฎเหมือนเดิม:
+ *   - มีงวดที่จ่ายช้า (earliest_paid_late_due not null): หักแน่ (ลูกค้าเคยจ่ายแล้ว)
+ *   - ไม่มีงวดจ่ายช้า + มีงวดค้าง (oldest_unpaid_due not null):
+ *       วัดถึง asOfRef — ถ้า asOfRef >= oldest_unpaid_due + 30d → หัก
+ *   - เลือก earliest (ระหว่าง paid_late_due+30d กับ unpaid_due+30d) เป็นวันหัก
+ *
+ * @param c          สัญญา
+ * @param agg        aggregate จาก v_clawback_status (หรือ null ถ้าไม่มีข้อมูล)
+ * @param asOfRef    วันอ้างอิงสำหรับงวดที่ยังไม่จ่าย (active=today, returned=วันคืน, else null)
+ * @param status     c.status (ส่งผ่านเพื่อกำหนด reason)
+ */
+export function detectClawbackFromAggregate(
+  c: Contract,
+  agg: ClawbackAggregate | null,
+  asOfRef: string | null,
+): ClawbackEvent | null {
+  if (!agg) return null
+
+  // ผู้สมัครทั้งสอง: งวดจ่ายช้า (ประวัติคงที่) + งวดยังไม่จ่าย (วัดถึง asOfRef)
+  const candidates: { due: string; no: number }[] = []
+
+  if (agg.earliestPaidLateDue != null && agg.earliestPaidLateNo != null) {
+    candidates.push({ due: agg.earliestPaidLateDue, no: agg.earliestPaidLateNo })
+  }
+
+  if (
+    agg.oldestUnpaidDue != null &&
+    agg.oldestUnpaidNo != null &&
+    asOfRef != null &&
+    asOfRef >= addDays(agg.oldestUnpaidDue, LATE_DAYS)
+  ) {
+    candidates.push({ due: agg.oldestUnpaidDue, no: agg.oldestUnpaidNo })
+  }
+
+  if (candidates.length === 0) return null
+
+  // เลือก due เร็วสุด (เดียวกับ detectClawback เดิม)
+  const earliest = candidates.reduce((a, b) => (a.due <= b.due ? a : b))
+
+  const reason: ClawbackReason =
+    c.status === 'returned' || c.status === 'returned_closed'
+      ? 'returned'
+      : earliest.no === 1
+        ? 'first_unpaid'
+        : 'over30'
+
+  return { reason, date: addDays(earliest.due, LATE_DAYS) }
+}
+
 /** คีย์ระบุช่วงปิดยอด (เก็บใน commission_locked_month) — ช่วงวันเองได้ ไม่ตัดตามเดือน */
 export function periodKeyOf(start: string, end: string): string {
   return `${start}..${end}`
@@ -254,11 +323,16 @@ export interface CommissionReportInput {
   recruitTiers: RecruitTier[]
   recruitBonuses: RecruitBonusRule[]
   asOf: string // วันนี้ yyyy-mm-dd
+  /**
+   * (Fix C) aggregate งวดล่าช้า/ค้าง จาก v_clawback_status — ถ้ามีจะใช้แทน installments ในส่วน clawback
+   * ถ้าไม่ส่ง (undefined) จะ fallback ไปใช้ installments เดิม (backward compat)
+   */
+  clawbackAggregates?: Map<string, ClawbackAggregate>
 }
 
 /** สร้างรายงานค่าคอมของทุกพนักงาน สำหรับช่วงวันที่เลือก (ค่าคอมเคส + ค่าคอมหาร้าน) */
 export function buildCommissionReport(input: CommissionReportInput): EmployeeCommission[] {
-  const { start, end, contracts, installments, returns, shops, tiers, recruitTiers, recruitBonuses, asOf } =
+  const { start, end, contracts, installments, returns, shops, tiers, recruitTiers, recruitBonuses, asOf, clawbackAggregates } =
     input
   const periodKey = periodKeyOf(start, end)
   const inRange = (iso: string) => {
@@ -348,7 +422,16 @@ export function buildCommissionReport(input: CommissionReportInput): EmployeeCom
       if (c.commissionLockedMonth === periodKey) e.locked = true
     }
     // (ข) หักคืน — เคสที่ "เสีย" ในช่วงรายงาน (ไม่ว่าบันทึกช่วงไหน)
-    const cb = detectClawback(c, instByContract.get(c.id) ?? [], retById.get(c.id), asOf)
+    // Fix C: ถ้ามี clawbackAggregates ใช้ aggregate แทน raw installments (ไม่ติด PAGE_CAP)
+    let asOfRef: string | null
+    if (c.status === 'active') asOfRef = asOf
+    else if (c.status === 'returned' || c.status === 'returned_closed') {
+      const ret = retById.get(c.id)
+      asOfRef = ret ? dateOnly(ret.checkedAt ?? ret.createdAt) : asOf
+    } else asOfRef = null
+    const cb = clawbackAggregates
+      ? detectClawbackFromAggregate(c, clawbackAggregates.get(c.id) ?? null, asOfRef)
+      : detectClawback(c, instByContract.get(c.id) ?? [], retById.get(c.id), asOf)
     if (cb && inRange(cb.date)) {
       const e = ensureEmp(empKey(c))
       const rate = originalRate(c)
@@ -396,7 +479,14 @@ export function buildCommissionReport(input: CommissionReportInput): EmployeeCom
       )
       let risky = 0
       for (const c of shopContracts) {
-        if (isRiskyAsOf(instByContract.get(c.id) ?? [], windowEnd)) risky++
+        // Fix: ใช้ aggregate grade ถ้ามี clawbackAggregates (ป้องกันการจ่าย recruit bonus ผิดเมื่อ installments=[])
+        // NOTE: isRiskyAsOfFromAggregate ใช้ oldestUnpaidDue snapshot ปัจจุบันประเมิน ณ windowEnd
+        //       = ประมาณการ (เหมือน nplLastMonth) — Pete รับรู้แล้ว
+        const agg = clawbackAggregates?.get(c.id)
+        const isRisky = agg != null
+          ? isRiskyAsOfFromAggregate(agg, windowEnd)
+          : isRiskyAsOf(instByContract.get(c.id) ?? [], windowEnd)
+        if (isRisky) risky++
       }
       const grade = gradeFor(
         shopContracts.length ? (risky / shopContracts.length) * 100 : 0,

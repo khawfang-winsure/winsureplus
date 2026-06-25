@@ -4,8 +4,8 @@ import { Coins, Lock, LockOpen, Plus, Smartphone, Store, Trash2, Trophy, Users }
 import { Badge, Button, Card, Input, Loading, PageTitle } from '../components/ui'
 import { useAuth } from '../lib/auth'
 import {
-  getAllInstallments,
   getAllShops,
+  getClawbackAggregates,
   getCommissionTiers,
   getContracts,
   getDeviceReturnCountsByFreelancerThisMonth,
@@ -21,7 +21,7 @@ import {
   saveRecruitBonuses,
   saveRecruitTiers,
   unlockCommissionMonth,
-  type InstallmentLite,
+  type ClawbackAggregate,
 } from '../lib/db'
 import {
   buildCommissionReport,
@@ -85,7 +85,7 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
   const [start, setStart] = useState<string>(firstOfThisMonth())
   const [end, setEnd] = useState<string>(today())
   const [contracts, setContracts] = useState<Contract[]>([])
-  const [installments, setInstallments] = useState<InstallmentLite[]>([])
+  const [clawbackAggregates, setClawbackAggregates] = useState<Map<string, ClawbackAggregate>>(new Map())
   const [returns, setReturns] = useState<DeviceReturnRow[]>([])
   const [shops, setShops] = useState<Shop[]>([])
   const [employeeNames, setEmployeeNames] = useState<Record<string, string>>({})
@@ -99,9 +99,9 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
   async function load() {
     setLoading(true)
     try {
-      const [c, ins, r, sh, emp, t, rt, rb] = await Promise.all([
+      const [c, agg, r, sh, emp, t, rt, rb] = await Promise.all([
         getContracts(),
-        getAllInstallments(),
+        getClawbackAggregates(),
         getReturns(),
         getAllShops(),
         getEmployees(),
@@ -110,7 +110,7 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
         getRecruitBonuses(),
       ])
       setContracts(c)
-      setInstallments(ins)
+      setClawbackAggregates(agg)
       setReturns(r)
       setShops(sh)
       setEmployeeNames(Object.fromEntries(emp.map((e) => [e.id, e.fullName])))
@@ -132,7 +132,7 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
         start,
         end,
         contracts,
-        installments,
+        installments: [],
         returns,
         shops,
         employeeNames,
@@ -140,8 +140,9 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
         recruitTiers,
         recruitBonuses,
         asOf,
+        clawbackAggregates,
       }),
-    [start, end, contracts, installments, returns, shops, employeeNames, tiers, recruitTiers, recruitBonuses, asOf],
+    [start, end, contracts, clawbackAggregates, returns, shops, employeeNames, tiers, recruitTiers, recruitBonuses, asOf],
   )
 
   const periodKey = periodKeyOf(start, end)

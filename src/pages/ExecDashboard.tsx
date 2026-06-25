@@ -13,7 +13,6 @@ import { useAuth } from '../lib/auth'
 import {
   getContracts,
   getAllStatuses,
-  getAllInstallments,
   getShops,
   getCashflowDaily,
   getAllExtensions,
@@ -27,10 +26,15 @@ import {
   getActiveGradedCount,
   getOverduePromiseContracts,
   getAllOtherIncome,
+  getContractAggregates,
+  getDueScheduleMonthly,
+  getForecastByGrade,
+  getClawbackAggregates,
   type EscalateContract,
+  type ForecastByGradeRow,
 } from '../lib/db'
 import { buildExecDashboard, buildGradeMovement, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult } from '../lib/execDashboard'
-import { buildCashflowForecast, type CashflowForecastInput, type CashflowForecastResult } from '../lib/cashflowForecast'
+import { buildCashflowForecast, type CashflowForecastResult } from '../lib/cashflowForecast'
 import { detectBottlenecks, type BottleneckAlert } from '../lib/bottleneck'
 import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
 import type { ShopGrade } from '../lib/types'
@@ -92,7 +96,6 @@ export default function ExecDashboard() {
     Promise.all([
       getContracts(),
       getAllStatuses(),
-      getAllInstallments(),
       getShops(),
       getCashflowDaily(),
       getAllExtensions(),
@@ -102,13 +105,15 @@ export default function ExecDashboard() {
       getRecruitBonuses(),
       getEmployees(),
       getAllOtherIncome(),
+      getContractAggregates(),
+      getDueScheduleMonthly(),
+      getClawbackAggregates(),
     ])
-      .then(([contracts, statuses, installments, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome]) => {
+      .then(([contracts, statuses, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome, contractAggregates, dueSchedule, clawbackAggregates]) => {
         if (!active) return
         const built = buildExecDashboard({
           contracts,
           statuses,
-          installments,
           shops,
           dailyRows,
           extensions,
@@ -121,6 +126,9 @@ export default function ExecDashboard() {
           recruitBonuses,
           employeeNames: Object.fromEntries(employees.map((e) => [e.id, e.fullName])),
           otherIncome,
+          contractAggregates,
+          dueSchedule,
+          clawbackAggregates,
         })
         setData(built)
       })
@@ -133,22 +141,9 @@ export default function ExecDashboard() {
     return buildGradeMovement(rows, count, todayISO)
   }, null)
 
-  const { data: forecastInputData, loading: forecastLoading, error: forecastError } = useAsync<{ upcomingInstallments: CashflowForecastInput['upcomingInstallments'] } | null>(async () => {
-    const [installments, statuses] = await Promise.all([getAllInstallments(), getAllStatuses()])
-    // สร้าง lookup: contractId → { contractStatus, grade }
-    const statusMap = new Map(statuses.map((s) => [s.contractId, { contractStatus: s.status, grade: s.grade }]))
-    const upcomingInstallments = installments.map((inst) => {
-      const info = statusMap.get(inst.contractId)
-      return {
-        contractId: inst.contractId,
-        dueDate: inst.dueDate,
-        amount: inst.amount,
-        status: inst.paidAt != null ? 'paid' as const : 'pending' as const,
-        contractStatus: info?.contractStatus ?? 'closed',
-        currentGrade: info?.grade ?? null,
-      }
-    })
-    return { upcomingInstallments }
+  const { data: forecastRows, loading: forecastLoading, error: forecastError } = useAsync<ForecastByGradeRow[] | null>(async () => {
+    // เฟส B: ใช้ getForecastByGrade() แทน getAllInstallments() — ไม่ติด PAGE_CAP
+    return getForecastByGrade()
   }, null)
 
   if (loading || !data) {
@@ -221,9 +216,9 @@ export default function ExecDashboard() {
       {tab === 'forecast' && (
         forecastLoading ? <Loading />
         : forecastError ? <p className="text-sm text-red-500 p-4">โหลดข้อมูลไม่ได้: {String(forecastError)}</p>
-        : forecastInputData ? <ForecastView
+        : forecastRows ? <ForecastView
             result={buildCashflowForecast({
-              upcomingInstallments: forecastInputData.upcomingInstallments,
+              forecastRows,
               pastMonthlyOutflows: d.cashflowMonth.slice(-3).map((r) => r.expense),
               todayISO,
             })}
