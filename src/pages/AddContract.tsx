@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
-import { Button, Card, Field, Input, Loading, PageTitle, Select } from '../components/ui'
+import { Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { calcSummary } from '../lib/calc'
 import { ageRange, baht } from '../lib/format'
 import { derivePrefix, nextContractNo } from '../lib/contractNo'
@@ -10,15 +10,24 @@ import {
   contractNoExists,
   getContract,
   getContractAddresses,
+  getContractExtensionIds,
+  getInstallments,
   getOptions,
   getRateSets,
   getShopContractNos,
   getShops,
   insertContract,
+  regenerateInstallments,
   saveAddress,
   setContractFlags,
   updateContract,
 } from '../lib/db'
+import {
+  computeSchedulePreview,
+  regenSafety,
+  scheduleRegenFields,
+  type SchedulePreviewRow,
+} from '../lib/scheduleRegen'
 import {
   activeRateSets,
   financeFromPrincipal,
@@ -214,6 +223,23 @@ export default function AddContract() {
     pendingDocuments: false,
     pendingDocItems: [],
   })
+  // snapshot 4 fields ที่กำหนดตารางงวด (โหลดจาก DB ตอน edit mode)
+  const origScheduleRef = useRef<{
+    transactionDate: string
+    dueDay: number
+    termMonths: number
+    monthlyPayment: number
+  } | null>(null)
+
+  // state สำหรับ modal ยืนยันสร้างตารางงวดใหม่ (safe)
+  const [regenConfirm, setRegenConfirm] = useState<{
+    preview: SchedulePreviewRow[]
+    pendingPayload: Parameters<typeof updateContract>[1]
+  } | null>(null)
+  // state สำหรับ modal แจ้งเหตุผลที่ทำไม่ได้ (blocked)
+  const [regenBlocked, setRegenBlocked] = useState<string | null>(null)
+  // state สำหรับ modal แจ้ง error บันทึกไม่สำเร็จ
+  const [saveError, setSaveError] = useState<string | null>(null)
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setF((prev) => ({ ...prev, [key]: value }))
     if (errors[key]) setErrors((prev) => { const next = { ...prev }; delete next[key]; return next })
@@ -241,6 +267,13 @@ export default function AddContract() {
           origDocsRef.current = {
             pendingDocuments: c.pendingDocuments ?? false,
             pendingDocItems: Array.isArray(c.pendingDocItems) ? c.pendingDocItems : [],
+          }
+          // snapshot 4 fields ที่กำหนดตารางงวด
+          origScheduleRef.current = {
+            transactionDate: c.transactionDate,
+            dueDay: c.dueDay,
+            termMonths: c.termMonths,
+            monthlyPayment: c.monthlyPayment,
           }
         }
         setAddr({ current: a.current ?? {}, id_card: a.id_card ?? {}, work: a.work ?? {} })
@@ -380,6 +413,91 @@ export default function AddContract() {
     hasPhoneBox: f.hasPhoneBox,
   }
 
+  // ---- helper: บันทึก edit (ไม่ regen) ----
+  async function doEditSave(
+    contractId: string,
+    payload: Parameters<typeof updateContract>[1],
+    saveAddresses: (cid: string) => Promise<void>,
+  ) {
+    await updateContract(contractId, payload)
+    // ตรวจว่า pendingDocuments หรือ pendingDocItems เปลี่ยนจากค่าที่โหลดมาไหม
+    const origPD = origDocsRef.current.pendingDocuments
+    const origPI = origDocsRef.current.pendingDocItems
+    const newPD = f.pendingDocuments
+    const newPI = f.pendingDocuments ? f.pendingDocItems : []
+    const pdChanged = newPD !== origPD
+    const piChanged = newPI.length !== origPI.length || newPI.some((x) => !origPI.includes(x))
+    if (pdChanged || piChanged) {
+      await setContractFlags(contractId, { pendingDocuments: newPD, pendingDocItems: newPI })
+    }
+    await saveAddresses(contractId)
+    alert('แก้ไขสัญญาสำเร็จ')
+    if (isSupabaseConfigured) navigate('/customers')
+  }
+
+  // ---- handler: ผู้ใช้กดยืนยันสร้างตารางงวดใหม่ ----
+  async function handleRegenConfirm() {
+    if (!regenConfirm || !id) return
+    setSaving(true)
+    setRegenConfirm(null)
+    try {
+      const saveAddresses = async (contractId: string) => {
+        const keys: AddrKey[] = ['current', 'id_card', 'work']
+        await Promise.all(
+          keys.filter((k) => !isAddressEmpty(addr[k])).map((k) => saveAddress(contractId, k, addr[k])),
+        )
+      }
+      await updateContract(id, regenConfirm.pendingPayload)
+      await regenerateInstallments(id)
+      // update origScheduleRef ให้ตรงกับค่าใหม่ (กันกด Save ซ้ำ)
+      origScheduleRef.current = {
+        transactionDate: regenConfirm.pendingPayload.transactionDate,
+        dueDay: regenConfirm.pendingPayload.dueDay,
+        termMonths: regenConfirm.pendingPayload.termMonths,
+        monthlyPayment: regenConfirm.pendingPayload.monthlyPayment,
+      }
+      // บันทึก flags + ที่อยู่
+      const origPD = origDocsRef.current.pendingDocuments
+      const origPI = origDocsRef.current.pendingDocItems
+      const newPD = f.pendingDocuments
+      const newPI = f.pendingDocuments ? f.pendingDocItems : []
+      const pdChanged = newPD !== origPD
+      const piChanged = newPI.length !== origPI.length || newPI.some((x) => !origPI.includes(x))
+      if (pdChanged || piChanged) {
+        await setContractFlags(id, { pendingDocuments: newPD, pendingDocItems: newPI })
+      }
+      await saveAddresses(id)
+      alert('แก้ไขสัญญาสำเร็จ และสร้างตารางงวดใหม่แล้ว')
+      if (isSupabaseConfigured) navigate('/customers')
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e)
+      const friendlyMsg =
+        raw.includes('blocked_paid')
+          ? 'ไม่สามารถแก้ไขตารางงวดได้ เนื่องจากสัญญานี้มีการบันทึกชำระเงินแล้ว'
+          : raw.includes('blocked_extended')
+          ? 'ไม่สามารถแก้ไขตารางงวดได้ เนื่องจากสัญญานี้มีการขยายระยะเวลาแล้ว'
+          : `บันทึกไม่สำเร็จ: ${raw}`
+      setSaveError(friendlyMsg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ---- handler: ผู้ใช้กดยกเลิก (ไม่สร้างตารางใหม่) → ย้อน 4 field แล้วยกเลิก save ทั้งหมด ----
+  function handleRegenCancel() {
+    setRegenConfirm(null)
+    if (origScheduleRef.current) {
+      const orig = origScheduleRef.current
+      setF((prev) => ({
+        ...prev,
+        transactionDate: orig.transactionDate,
+        dueDay: String(orig.dueDay),
+        termMonths: String(orig.termMonths),
+        monthlyPayment: String(orig.monthlyPayment),
+      }))
+    }
+  }
+
   async function handleSave() {
     const newErrors: Partial<Record<keyof FormState, string>> = {}
     if (!f.contractNo) newErrors.contractNo = 'กรุณากรอกเลขที่สัญญา'
@@ -420,21 +538,55 @@ export default function AddContract() {
       }
 
       if (isEdit && id) {
-        await updateContract(id, preview)
-        // ตรวจว่า pendingDocuments หรือ pendingDocItems เปลี่ยนจากค่าที่โหลดมาไหม
-        const origPD = origDocsRef.current.pendingDocuments
-        const origPI = origDocsRef.current.pendingDocItems
-        const newPD = f.pendingDocuments
-        const newPI = f.pendingDocuments ? f.pendingDocItems : []
-        const pdChanged = newPD !== origPD
-        const piChanged =
-          newPI.length !== origPI.length || newPI.some((x) => !origPI.includes(x))
-        if (pdChanged || piChanged) {
-          await setContractFlags(id, { pendingDocuments: newPD, pendingDocItems: newPI })
+        // ===== ตรวจ schedule regen =====
+        const orig = origScheduleRef.current
+        if (orig) {
+          // สร้าง Contract object จาก orig snapshot เพื่อป้อน scheduleRegenFields
+          const origContract = {
+            transactionDate: orig.transactionDate,
+            dueDay: orig.dueDay,
+            termMonths: orig.termMonths,
+            monthlyPayment: orig.monthlyPayment,
+          } as Parameters<typeof scheduleRegenFields>[0]
+
+          const needRegen = scheduleRegenFields(origContract, preview)
+          if (needRegen) {
+            setSaving(false)
+            // ดึง installments + extensions ขนาน
+            const [installments, extensions] = await Promise.all([
+              getInstallments(id),
+              getContractExtensionIds(id),
+            ])
+            const safety = regenSafety(installments, extensions)
+
+            if (safety.status !== 'safe') {
+              // blocked — แจ้งสาเหตุ แล้วย้อน 4 field กลับค่าเดิม
+              setF((prev) => ({
+                ...prev,
+                transactionDate: orig.transactionDate,
+                dueDay: String(orig.dueDay),
+                termMonths: String(orig.termMonths),
+                monthlyPayment: String(orig.monthlyPayment),
+              }))
+              setRegenBlocked(safety.reason)
+              return
+            }
+
+            // safe — คำนวณ preview แล้วเปิด confirm modal
+            const schedPreview = computeSchedulePreview(
+              preview.transactionDate,
+              preview.dueDay,
+              preview.termMonths,
+              preview.monthlyPayment,
+            )
+            setRegenConfirm({ preview: schedPreview, pendingPayload: preview })
+            return
+          }
         }
-        await saveAddresses(id)
-        alert('แก้ไขสัญญาสำเร็จ ✅')
-        if (isSupabaseConfigured) navigate('/customers')
+
+        // ไม่ต้อง regen — save ปกติ
+        await doEditSave(id, preview, saveAddresses)
+        return
       } else {
         const newId = await insertContract(preview)
         await saveAddresses(newId)
@@ -971,6 +1123,66 @@ export default function AddContract() {
           </Button>
         </div>
       </div>
+
+      {/* ===== Modal: save error ===== */}
+      {saveError && (
+        <Modal title="บันทึกไม่สำเร็จ" onClose={() => setSaveError(null)}>
+          <p className="mb-5 text-sm leading-relaxed text-ink">{saveError}</p>
+          <div className="flex justify-end">
+            <Button onClick={() => setSaveError(null)}>รับทราบ</Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ===== Modal: blocked — ทำไม่ได้ ===== */}
+      {regenBlocked && (
+        <Modal title="ไม่สามารถเปลี่ยนตารางงวดได้" onClose={() => setRegenBlocked(null)}>
+          <p className="mb-5 text-sm leading-relaxed text-ink">{regenBlocked}</p>
+          <p className="mb-5 text-sm text-ink-soft">
+            ข้อมูลอื่นๆ ที่แก้ไว้ (เช่น ชื่อลูกค้า เบอร์โทร) ยังถูกบันทึกตามปกติ
+            — เฉพาะฟิลด์วันที่ทำรายการ / วันครบกำหนด / จำนวนงวด / ค่างวดจะถูกคืนกลับค่าเดิม
+          </p>
+          <div className="flex justify-end">
+            <Button onClick={() => setRegenBlocked(null)}>รับทราบ</Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ===== Modal: safe — ขอยืนยันสร้างตารางงวดใหม่ ===== */}
+      {regenConfirm && (() => {
+        const rows = regenConfirm.preview
+        const first = rows[0]
+        const last = rows[rows.length - 1]
+        const thaiDateShort = (d: string) => {
+          const [y, m, day] = d.split('-')
+          const months = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.']
+          return `${Number(day)} ${months[Number(m) - 1]} ${Number(y) + 543}`
+        }
+        return (
+          <Modal title="ยืนยันสร้างตารางงวดใหม่" onClose={handleRegenCancel}>
+            <div className="mb-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold mb-1">ระบบจะลบตารางงวดเดิมแล้วสร้างใหม่ทั้งหมด</p>
+              <p>จำนวน <span className="font-bold">{rows.length} งวด</span></p>
+              {first && <p>งวดแรก: <span className="font-semibold">{thaiDateShort(first.dueDate)}</span></p>}
+              {last && rows.length > 1 && (
+                <p>งวดสุดท้าย: <span className="font-semibold">{thaiDateShort(last.dueDate)}</span></p>
+              )}
+              <p className="mt-1 text-xs text-amber-700">ค่างวดละ {regenConfirm.pendingPayload.monthlyPayment.toLocaleString()} บาท</p>
+            </div>
+            <p className="mb-5 text-sm text-ink-soft">
+              การดำเนินการนี้ไม่สามารถยกเลิกได้ — กดยืนยันเพื่อบันทึกการแก้ไขและสร้างตารางงวดใหม่
+            </p>
+            <div className="flex justify-end gap-3">
+              <Button variant="ghost" onClick={handleRegenCancel} disabled={saving}>
+                ยกเลิก (ไม่เปลี่ยนตาราง)
+              </Button>
+              <Button onClick={handleRegenConfirm} disabled={saving}>
+                {saving ? 'กำลังบันทึก...' : 'ยืนยัน สร้างตารางงวดใหม่'}
+              </Button>
+            </div>
+          </Modal>
+        )
+      })()}
     </div>
   )
 }

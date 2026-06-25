@@ -4798,3 +4798,32 @@ export async function getClawbackAggregates(): Promise<Map<string, ClawbackAggre
   }
   return map
 }
+
+// ===== Schedule Regen (Wave 2 — 2026-06-25) =====
+
+/**
+ * เรียก RPC regen_installments เพื่อสร้างตารางงวดใหม่
+ * ถ้า DB raise 'blocked_extended' หรือ 'blocked_paid' → throw Error ข้อความนั้น
+ * UI รับ error.message แล้ว map แสดงผล
+ */
+export async function regenerateInstallments(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('regen_installments', { p_contract_id: contractId })
+  if (error) throw error
+}
+
+/**
+ * ดึง contract_extensions ของสัญญาเดียว (เฉพาะ id) สำหรับป้อน regenSafety()
+ * ใช้ getContractExtensions() ที่มีอยู่แล้วได้เลย — แต่ฟังก์ชันนี้ return เฉพาะ {id}
+ * เพื่อให้ signature ตรงกับ regenSafety param และไม่ดึงข้อมูลเกิน
+ */
+export async function getContractExtensionIds(contractId: string): Promise<{ id: string }[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_extensions')
+    .select('id')
+    .eq('contract_id', contractId)
+    .limit(1)
+  if (error) throw error
+  return (data ?? []) as { id: string }[]
+}
