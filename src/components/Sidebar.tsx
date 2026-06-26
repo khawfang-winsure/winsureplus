@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { NAV } from './nav'
@@ -21,6 +21,8 @@ interface NavContentProps {
   pathname: string
   /** true = ใน mobile drawer (labels โชว์ครบ ไม่มี md: class ซ่อน) */
   isMobile: boolean
+  /** true = อุปกรณ์ touch (hover: none) — desktop sidebar กางถาวร + เปิด submenu ด้วยการแตะ ไม่พึ่ง hover */
+  isTouch: boolean
 }
 
 // label/chevron: โชว์เต็มใน mobile; desktop ซ่อนตอน rail → โผล่ตอน group-hover
@@ -34,6 +36,7 @@ function NavContent({
   isAdmin,
   pathname,
   isMobile,
+  isTouch,
 }: NavContentProps) {
   const itemBase =
     'flex items-center rounded-xl px-3 py-3 text-sm font-medium transition-colors'
@@ -77,11 +80,11 @@ function NavContent({
                 } hover:bg-peach-light hover:text-ink`}
               >
                 <item.icon size={20} className="shrink-0 text-salmon-deep" />
-                <span className={isMobile ? 'whitespace-nowrap' : labelCls}>{item.label}</span>
-                {/* chevron: desktop ซ่อนตอน rail โผล่ตอน hover กาง */}
+                <span className={isMobile || isTouch ? 'whitespace-nowrap' : labelCls}>{item.label}</span>
+                {/* chevron: desktop ซ่อนตอน rail โผล่ตอน hover กาง (touch = โชว์เสมอ) */}
                 <span
                   className={
-                    isMobile
+                    isMobile || isTouch
                       ? 'ml-auto'
                       : 'ml-auto md:opacity-0 md:transition-opacity md:duration-200 md:group-hover:opacity-100'
                   }
@@ -112,9 +115,13 @@ function NavContent({
                   className={[
                     'ml-5 border-l border-peach pl-3',
                     'grid [grid-template-rows:0fr] transition-[grid-template-rows] duration-200 ease-out',
-                    open
-                      ? 'md:group-hover:[grid-template-rows:1fr]'
-                      : 'md:group-hover:[grid-template-rows:0fr]',
+                    isTouch
+                      ? open
+                        ? '[grid-template-rows:1fr]'
+                        : '[grid-template-rows:0fr]'
+                      : open
+                        ? 'md:group-hover:[grid-template-rows:1fr]'
+                        : 'md:group-hover:[grid-template-rows:0fr]',
                   ].join(' ')}
                 >
                   <div className="overflow-hidden min-h-0">
@@ -148,7 +155,7 @@ function NavContent({
                   size={20}
                   className={`shrink-0 ${isActive ? 'text-white' : 'text-salmon-deep'}`}
                 />
-                <span className={isMobile ? 'whitespace-nowrap' : labelCls}>{item.label}</span>
+                <span className={isMobile || isTouch ? 'whitespace-nowrap' : labelCls}>{item.label}</span>
               </>
             )}
           </NavLink>
@@ -167,6 +174,18 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
   // state สำหรับ expand/collapse ของแต่ละ group บนมือถือ (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  // ตรวจอุปกรณ์ touch (hover: none) — iPad/มือถือ คืน true, เมาส์ desktop คืน false
+  // touch ใช้ desktop sidebar (≥md) แต่ไม่มี hover → ต้องกางถาวร + เปิด submenu ด้วยการแตะ
+  const [isTouch, setIsTouch] = useState(false)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mql = window.matchMedia('(hover: none)')
+    setIsTouch(mql.matches)
+    const onChange = (e: MediaQueryListEvent) => setIsTouch(e.matches)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
 
   function toggleGroup(label: string) {
     setExpanded((prev) => ({ ...prev, [label]: !prev[label] }))
@@ -204,7 +223,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <NavContent {...sharedNavProps} isMobile={true} />
+        <NavContent {...sharedNavProps} isMobile={true} isTouch={false} />
       </aside>
 
       {/* ===== Desktop sidebar (≥ md) ===== */}
@@ -215,9 +234,13 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
         - overflow-x-hidden กัน label ล้นออกมาขณะ transition
       */}
       <aside
-        className="group hidden md:sticky md:top-6 md:flex md:shrink-0 md:self-start md:h-[calc(100vh-3rem)] md:w-16 md:hover:w-60 md:flex-col md:gap-1 md:overflow-x-hidden md:overflow-y-auto md:rounded-2xl md:border md:border-peach md:bg-cream-deep md:p-3 md:shadow-sm md:transition-[width] md:duration-200 md:ease-out"
+        className={
+          isTouch
+            ? 'group hidden md:sticky md:top-6 md:flex md:shrink-0 md:self-start md:h-[calc(100vh-3rem)] md:w-60 md:flex-col md:gap-1 md:overflow-x-hidden md:overflow-y-auto md:rounded-2xl md:border md:border-peach md:bg-cream-deep md:p-3 md:shadow-sm md:transition-[width] md:duration-200 md:ease-out'
+            : 'group hidden md:sticky md:top-6 md:flex md:shrink-0 md:self-start md:h-[calc(100vh-3rem)] md:w-16 md:hover:w-60 md:flex-col md:gap-1 md:overflow-x-hidden md:overflow-y-auto md:rounded-2xl md:border md:border-peach md:bg-cream-deep md:p-3 md:shadow-sm md:transition-[width] md:duration-200 md:ease-out'
+        }
       >
-        <NavContent {...sharedNavProps} isMobile={false} />
+        <NavContent {...sharedNavProps} isMobile={false} isTouch={isTouch} />
       </aside>
     </>
   )
