@@ -14,7 +14,6 @@ import {
   getCollectorScorecard,
   getPjRecoverySummary,
   getPjRecoveryMonthly,
-  getPjRecoveryByEmployee,
   getPjDaysLateDist,
   getPjRecoveryOutcomeMonthly,
   getPjRecoveryOutcomeSummary,
@@ -24,7 +23,6 @@ import {
 import type {
   PjRecoverySummary,
   PjRecoveryMonth,
-  PjRecoveryEmployee,
   PjDaysLateBucket,
   PjRecoveryOutcomeMonth,
   PjRecoveryOutcomeSummary,
@@ -454,49 +452,6 @@ function PjDaysLateDist({ rows }: { rows: PjDaysLateBucket[] }) {
   )
 }
 
-// ===== PJ: ตารางแยกพนักงาน =====
-function PjEmployeeTable({ rows, lateContracts }: { rows: PjRecoveryEmployee[]; lateContracts: number }) {
-  const sorted = useMemo(
-    () => [...rows].sort((a, b) => b.recoveredBaht - a.recoveredBaht),
-    [rows],
-  )
-  return (
-    <Card>
-      <h2 className="mb-1 text-sm font-semibold text-ink">เงินตามกลับมาได้ แยกพนักงาน</h2>
-      <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
-        แยกตามพนักงานได้เฉพาะเคสที่อยู่ในระบบ DEBTFLOW — เคสจ่ายช้าทั้งหมด {lateContracts.toLocaleString()} ราย
-        แต่รู้ผู้ดูแลเฉพาะส่วนที่ DEBTFLOW บันทึกไว้ ส่วนที่เหลือไม่ทราบผู้ดูแล
-      </p>
-      {sorted.length === 0 ? (
-        <p className="py-6 text-center text-sm text-ink-soft">ยังไม่มีข้อมูล</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-peach text-left text-xs text-ink-soft">
-                <th className="pb-2 font-medium">พนักงาน</th>
-                <th className="pb-2 text-right font-medium">จำนวนสัญญา</th>
-                <th className="pb-2 text-right font-medium">เงินตามกลับมาได้ (฿)</th>
-                <th className="pb-2 text-right font-medium">ช้าเฉลี่ย (วัน)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((row) => (
-                <tr key={row.employee} className="border-b border-peach/40 last:border-0">
-                  <td className="py-2 font-medium text-ink">{row.employee}</td>
-                  <td className="py-2 text-right text-ink-soft">{row.contracts.toLocaleString()}</td>
-                  <td className="py-2 text-right font-semibold text-green-700">฿{baht(row.recoveredBaht)}</td>
-                  <td className="py-2 text-right text-ink-soft">{row.avgDaysLate.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Card>
-  )
-}
-
 // ===== PJ outcome: การ์ดสรุป ตามได้ vs ยังค้าง =====
 function PjOutcomeCards({ s }: { s: PjRecoveryOutcomeSummary }) {
   const rate = outcomeRate(s.recoveredBaht, s.outstandingBaht)
@@ -700,7 +655,6 @@ function PjOutcomeSection({
 interface PjData {
   summary: PjRecoverySummary
   monthly: PjRecoveryMonth[]
-  byEmployee: PjRecoveryEmployee[]
   daysLate: PjDaysLateBucket[]
   outcomeSummary: PjRecoveryOutcomeSummary
   outcomeMonthly: PjRecoveryOutcomeMonth[]
@@ -720,7 +674,6 @@ function PjRecoverySection({ data }: { data: PjData }) {
         <PjKpiCards s={data.summary} />
         <PjMonthlyChart rows={data.monthly} />
         <PjDaysLateDist rows={data.daysLate} />
-        <PjEmployeeTable rows={data.byEmployee} lateContracts={data.summary.lateContracts} />
 
         <PjOutcomeSection summary={data.outcomeSummary} monthly={data.outcomeMonthly} />
       </div>
@@ -909,7 +862,6 @@ export default function StaffPerformance() {
   const [pjData, setPjData] = useState<PjData>({
     summary: EMPTY_PJ,
     monthly: [],
-    byEmployee: [],
     daysLate: [],
     outcomeSummary: EMPTY_OUTCOME,
     outcomeMonthly: [],
@@ -931,12 +883,11 @@ export default function StaffPerformance() {
     Promise.all([
       getPjRecoverySummary(),
       getPjRecoveryMonthly(),
-      getPjRecoveryByEmployee(),
       getPjDaysLateDist(),
       getPjRecoveryOutcomeSummary(),
       getPjRecoveryOutcomeMonthly(),
-    ]).then(([summary, monthly, byEmployee, daysLate, outcomeSummary, outcomeMonthly]) => {
-      setPjData({ summary, monthly, byEmployee, daysLate, outcomeSummary, outcomeMonthly })
+    ]).then(([summary, monthly, daysLate, outcomeSummary, outcomeMonthly]) => {
+      setPjData({ summary, monthly, daysLate, outcomeSummary, outcomeMonthly })
     }).catch(() => {
       // silent — PJ ไม่กระทบ scorecard หลัก
     })
