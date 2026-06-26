@@ -18,6 +18,7 @@ import {
   getPjDaysLateDist,
   getPjRecoveryOutcomeMonthly,
   getPjRecoveryOutcomeSummary,
+  getCollectorCallOutcomes,
   type CollectorScorecardRow,
 } from '../lib/db'
 import type {
@@ -27,6 +28,7 @@ import type {
   PjDaysLateBucket,
   PjRecoveryOutcomeMonth,
   PjRecoveryOutcomeSummary,
+  CollectorCallOutcome,
 } from '../lib/types'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
 import { baht } from '../lib/format'
@@ -726,6 +728,156 @@ function PjRecoverySection({ data }: { data: PjData }) {
   )
 }
 
+// ===== Call outcomes: ผลการโทร & การนัดชำระ (รายคน) =====
+
+interface CallOutcomeTotals {
+  casesFollowed: number
+  casesReached: number
+  casesNoAnswer: number
+  casesUnreachable: number
+  promisesMade: number
+  promisesKept: number
+  promisesBroken: number
+  promisesPending: number
+}
+
+function computeCallOutcomeTotals(rows: CollectorCallOutcome[]): CallOutcomeTotals {
+  const t: CallOutcomeTotals = {
+    casesFollowed: 0,
+    casesReached: 0,
+    casesNoAnswer: 0,
+    casesUnreachable: 0,
+    promisesMade: 0,
+    promisesKept: 0,
+    promisesBroken: 0,
+    promisesPending: 0,
+  }
+  for (const r of rows) {
+    t.casesFollowed += r.casesFollowed
+    t.casesReached += r.casesReached
+    t.casesNoAnswer += r.casesNoAnswer
+    t.casesUnreachable += r.casesUnreachable
+    t.promisesMade += r.promisesMade
+    t.promisesKept += r.promisesKept
+    t.promisesBroken += r.promisesBroken
+    t.promisesPending += r.promisesPending
+  }
+  return t
+}
+
+/** จำนวนเต็มในตาราง: 0 → "—" (ให้สอดคล้องกับ scorecard) */
+function fmtInt(n: number): string {
+  if (n === 0) return '—'
+  return n.toLocaleString('th-TH')
+}
+
+function CallOutcomeSection({
+  rows,
+  totals,
+}: {
+  rows: CollectorCallOutcome[]
+  totals: CallOutcomeTotals
+}) {
+  const sorted = useMemo(
+    () => [...rows].sort((a, b) => b.casesFollowed - a.casesFollowed),
+    [rows],
+  )
+
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">ผลการโทร &amp; การนัดชำระ (รายคน)</h2>
+        <p className="text-sm text-ink-soft">
+          อิงการบันทึกการติดตามใน /queue ในช่วงวันที่เลือกด้านบน — โทรกี่เคส ติดต่อได้/ไม่ได้ และผลการนัดชำระของแต่ละคน
+        </p>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูลการโทรในช่วงนี้ — ตัวเลขจะขึ้นเมื่อทีมเริ่มบันทึกการติดตามใน /queue
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* Team overview cards */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">{totals.casesFollowed.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-ink-soft">📋 ติดตาม (เคส)</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">{totals.casesReached.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-ink-soft">📞 ติดต่อได้</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">{totals.casesNoAnswer.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-ink-soft">ไม่รับสาย</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">{totals.casesUnreachable.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-ink-soft">ติดต่อไม่ได้เลย</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">{totals.promisesMade.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-ink-soft">นัดจ่าย</div>
+            </div>
+            <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-green-700">{totals.promisesKept.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-green-700/80">✅ ชำระตามนัด</div>
+            </div>
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-red-600">{totals.promisesBroken.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-red-600/80">❌ ผิดนัด</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-lg font-semibold text-ink-soft">{totals.promisesPending.toLocaleString('th-TH')}</div>
+              <div className="mt-1 text-xs text-ink-soft">รอถึงนัด</div>
+            </div>
+          </div>
+
+          {/* Per-person table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                  <th className="pb-2 font-medium">พนักงาน</th>
+                  <th className="pb-2 text-right font-medium">ติดตาม (เคส)</th>
+                  <th className="pb-2 text-right font-medium">ติดต่อได้</th>
+                  <th className="pb-2 text-right font-medium">ไม่รับสาย</th>
+                  <th className="pb-2 text-right font-medium">ติดต่อไม่ได้เลย</th>
+                  <th className="pb-2 text-right font-medium">นัดจ่าย</th>
+                  <th className="pb-2 text-right font-medium">ตามนัด</th>
+                  <th className="pb-2 text-right font-medium">ผิดนัด</th>
+                  <th className="pb-2 text-right font-medium">รอถึงนัด</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((r) => (
+                  <tr key={r.authorId} className="border-b border-peach/40 last:border-0">
+                    <td className="py-2 font-medium text-ink">{r.authorName}</td>
+                    <td className="py-2 text-right text-ink">{fmtInt(r.casesFollowed)}</td>
+                    <td className="py-2 text-right text-ink">{fmtInt(r.casesReached)}</td>
+                    <td className="py-2 text-right text-ink-soft">{fmtInt(r.casesNoAnswer)}</td>
+                    <td className="py-2 text-right text-ink-soft">{fmtInt(r.casesUnreachable)}</td>
+                    <td className="py-2 text-right text-ink">{fmtInt(r.promisesMade)}</td>
+                    <td className="py-2 text-right font-semibold text-green-700">{fmtInt(r.promisesKept)}</td>
+                    <td className="py-2 text-right font-semibold text-red-600">{fmtInt(r.promisesBroken)}</td>
+                    <td className="py-2 text-right text-ink-soft">{fmtInt(r.promisesPending)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-xs leading-relaxed text-ink-soft">
+            ติดต่อไม่ได้เลย = โทรแล้วเจอแต่ไม่รับสาย ไม่เคยติดต่อได้เลย · ตามนัด = จ่ายภายใน/ก่อนวันนัด ·
+            ผิดนัด = เลยวันนัดแล้วยังไม่จ่าย · รอถึงนัด = ยังไม่ถึงวันนัด
+          </p>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ===== Main Page =====
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
@@ -749,6 +901,9 @@ export default function StaffPerformance() {
   // ค่าคอมคืนเครื่อง: โหลด 1 ครั้ง (ไม่ขึ้นกับช่วงวัน — เป็นยอดเดือนนี้เสมอ)
   const [deviceCountMap, setDeviceCountMap] = useState<Map<string, number>>(new Map())
   const [deviceTiers, setDeviceTiers] = useState<DeviceReturnTier[]>([])
+
+  // ผลการโทร & การนัดชำระ (รายคน): โหลดตามช่วงวันที่เลือก (เหมือน scorecard)
+  const [callOutcomes, setCallOutcomes] = useState<CollectorCallOutcome[]>([])
 
   // ผลการตามหนี้จริงจากระบบ PJ: โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [pjData, setPjData] = useState<PjData>({
@@ -806,7 +961,19 @@ export default function StaffPerformance() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range])
 
+  // ผลการโทร & การนัดชำระ — โหลดตามช่วงวันที่เลือก (เหมือน scorecard)
+  useEffect(() => {
+    const eff = effectiveRange(range)
+    getCollectorCallOutcomes(eff.start, eff.end)
+      .then(setCallOutcomes)
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range])
+
   const teamSummary = useMemo(() => computeTeamSummary(rows), [rows])
+  const callOutcomeTotals = useMemo(() => computeCallOutcomeTotals(callOutcomes), [callOutcomes])
   const totalWithUncredited = teamSummary.totalCollected + uncreditedBaht
 
   const rangeLabel = useMemo(() => {
@@ -1006,6 +1173,9 @@ export default function StaffPerformance() {
           </div>
         </Card>
       )}
+
+      {/* Section 2.5: ผลการโทร & การนัดชำระ (รายคน) — อิง /queue ช่วงที่เลือก */}
+      <CallOutcomeSection rows={callOutcomes} totals={callOutcomeTotals} />
 
       {/* Section 3: ผลการตามหนี้จริง (จากระบบ PJ) */}
       <PjRecoverySection data={pjData} />

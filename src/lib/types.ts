@@ -440,3 +440,21 @@ export interface PjRecoveryOutcomeSummary {
   outstandingInstallments: number
   outstandingBaht: number
 }
+
+// ---------- Collector call & promise outcomes — per คนติดตามหนี้ (migration 0068) ----------
+// 1 row ต่อ author (freelancer active) จาก RPC get_collector_call_outcomes(p_start, p_end)
+// รองรับภาพรวมทีม (รวมทุกแถว) + รายคน. promisesKept + promisesBroken + promisesPending = promisesMade
+
+/** ผลการโทร + ผลการนัดชำระ ต่อคนติดตามหนี้ ตามช่วงวัน */
+export interface CollectorCallOutcome {
+  authorId: string
+  authorName: string
+  casesFollowed: number      // สัญญา (distinct) ที่บันทึก follow-up อย่างน้อย 1 ครั้ง
+  casesReached: number       // สัญญาที่ติดต่อลูกค้าได้จริงอย่างน้อย 1 ครั้ง
+  casesNoAnswer: number      // สัญญาที่มี no_answer อย่างน้อย 1 ครั้ง
+  casesUnreachable: number   // สัญญาที่ติดต่อไม่ได้เลย (มี no_answer แต่ไม่เคยติดต่อได้)
+  promisesMade: number       // จำนวนครั้งที่นัดชำระ (result='promised' + มีวันนัด)
+  promisesKept: number       // นัดที่ลูกค้าจ่ายในกรอบเวลานัด
+  promisesBroken: number     // นัดที่ไม่จ่าย และเลยวันนัดแล้ว (ผิดนัด)
+  promisesPending: number    // นัดที่ยังไม่ถึงวันนัด (ยังไม่ตัดสิน)
+}

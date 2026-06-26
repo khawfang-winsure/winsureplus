@@ -5,6 +5,7 @@ import { supabase } from './supabase'
 import type {
   AuditEvent,
   AuditEventType,
+  CollectorCallOutcome,
   Contract,
   ContractStatus,
   ContractStatusRow,
@@ -3401,6 +3402,53 @@ export async function getCollectorScorecard(
   })
 
   return { rows, uncreditedBaht }
+}
+
+// ---------- Collector call & promise outcomes (migration 0068) ----------
+
+/** 1 row ต่อ author จาก RPC get_collector_call_outcomes — numeric/int มาเป็น number|string จาก PostgREST */
+interface CallOutcomeViewRow {
+  author_id: string
+  author_name: string | null
+  cases_followed: number | string
+  cases_reached: number | string
+  cases_no_answer: number | string
+  cases_unreachable: number | string
+  promises_made: number | string
+  promises_kept: number | string
+  promises_broken: number | string
+  promises_pending: number | string
+}
+
+/**
+ * Collector call & promise outcomes — ผลการโทร + ผลการนัดชำระ ต่อคนติดตามหนี้ ตามช่วงวัน [start, end]
+ * ใช้กับหน้า /staff-performance — รองรับภาพรวมทีม (sum ทุก row) + รายคน (1 row ต่อ author)
+ * RPC guard ด้วย is_admin()/is_staff() — freelancer/anon เรียกได้ 0 rows
+ * @param start วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param end   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getCollectorCallOutcomes(
+  start: string,
+  end: string,
+): Promise<CollectorCallOutcome[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_collector_call_outcomes', { p_start: start, p_end: end })
+  if (error) throw error
+
+  return ((data ?? []) as CallOutcomeViewRow[]).map((row) => ({
+    authorId: row.author_id,
+    authorName: row.author_name ?? '-',
+    casesFollowed: Number(row.cases_followed),
+    casesReached: Number(row.cases_reached),
+    casesNoAnswer: Number(row.cases_no_answer),
+    casesUnreachable: Number(row.cases_unreachable),
+    promisesMade: Number(row.promises_made),
+    promisesKept: Number(row.promises_kept),
+    promisesBroken: Number(row.promises_broken),
+    promisesPending: Number(row.promises_pending),
+  }))
 }
 
 // ---------- My Scorecard — self-only (migration 0048) ----------
