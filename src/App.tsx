@@ -32,7 +32,6 @@ const DevicePipeline = lazy(() => import('./pages/DevicePipeline'))
 const CustomerDetail = lazy(() => import('./pages/CustomerDetail'))
 const StaffDailyReport = lazy(() => import('./pages/StaffDailyReport'))
 const SaleHistory = lazy(() => import('./pages/SaleHistory'))
-const WeeklyReport = lazy(() => import('./pages/WeeklyReport'))
 const Import = lazy(() => import('./pages/Import'))
 const InboxPage = lazy(() => import('./pages/InboxPage'))
 const MyPerformance = lazy(() => import('./pages/MyPerformance'))
@@ -103,7 +102,6 @@ function Gate() {
           <Route path="/shop/:id" element={isAdmin ? <ShopDetail /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/staff-performance" element={isAdmin ? <StaffPerformance /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/staff-daily-report" element={isAdmin ? <StaffDailyReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
-          <Route path="/weekly-report" element={isAdmin ? <WeeklyReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/commission" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <Commission /> : <Navigate to="/" replace />} />
           <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
           <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />

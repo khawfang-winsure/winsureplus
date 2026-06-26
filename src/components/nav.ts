@@ -99,7 +99,6 @@ export const NAV: NavItem[] = [
       { to: '/shop-report', label: 'รายงานร้านค้า' },
       { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้' },
       { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน' },
-      { to: '/weekly-report', label: 'รายงานประจำสัปดาห์' },
       { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true },
       { to: '/debtflow', label: 'ติดตามหนี้ (DEBTFLOW)', adminOnly: true },
     ],
