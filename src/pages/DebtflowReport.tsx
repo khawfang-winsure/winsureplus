@@ -50,6 +50,215 @@ function statusTone(s: string | null): 'green' | 'amber' | 'neutral' {
   return 'neutral'
 }
 
+// ===== การตามเครื่อง (จาก snapshot DEBTFLOW) =====
+
+const DEVICE_UNSPEC = '(ยังไม่ระบุ)'
+// สถานะที่ถือว่า "ตามคืนได้แล้ว"
+const DEVICE_RECOVERED = 'ลูกค้าคืนเครื่องแล้ว'
+// สถานะที่ถือว่า "ล็อค/กดดัน"
+const DEVICE_LOCK_STATUSES = ['ล็อคเครื่อง', 'จำกัดการใช้แอพ', 'ล็อคภาพหน้าจอ']
+const DEVICE_WITH_CUSTOMER = 'เครื่องอยู่กับลูกค้า'
+// ลำดับการแสดงสถานะที่รู้จัก (ที่เหลือ + (ยังไม่ระบุ) ต่อท้าย)
+const DEVICE_STATUS_ORDER = [
+  DEVICE_RECOVERED,
+  'ล็อคเครื่อง',
+  'จำกัดการใช้แอพ',
+  'ล็อคภาพหน้าจอ',
+  DEVICE_WITH_CUSTOMER,
+  'ใช้งานปกติ',
+]
+
+function deviceLabel(status: string | null): string {
+  const s = (status ?? '').trim()
+  return s === '' ? DEVICE_UNSPEC : s
+}
+
+interface DeviceBucket {
+  label: string
+  n: number
+}
+
+interface DeviceEmployeeRow {
+  employee: string
+  cases: number
+  recovered: number
+  locked: number
+  withCustomer: number
+  unspecified: number
+}
+
+interface DeviceAgg {
+  recovered: number
+  locked: number
+  withCustomer: number
+  unspecified: number
+  total: number
+  buckets: DeviceBucket[]
+  byEmployee: DeviceEmployeeRow[]
+}
+
+function buildDeviceAgg(cases: DebtflowCase[]): DeviceAgg {
+  const counts = new Map<string, number>()
+  const empMap = new Map<string, DeviceEmployeeRow>()
+  let recovered = 0
+  let locked = 0
+  let withCustomer = 0
+  let unspecified = 0
+
+  for (const c of cases) {
+    const label = deviceLabel(c.deviceStatus)
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+
+    const isRecovered = label === DEVICE_RECOVERED
+    const isLocked = DEVICE_LOCK_STATUSES.includes(label)
+    const isWithCustomer = label === DEVICE_WITH_CUSTOMER
+    const isUnspec = label === DEVICE_UNSPEC
+
+    if (isRecovered) recovered++
+    if (isLocked) locked++
+    if (isWithCustomer) withCustomer++
+    if (isUnspec) unspecified++
+
+    const emp = (c.assignedEmployee ?? '').trim() || '(ไม่ระบุ)'
+    let row = empMap.get(emp)
+    if (!row) {
+      row = { employee: emp, cases: 0, recovered: 0, locked: 0, withCustomer: 0, unspecified: 0 }
+      empMap.set(emp, row)
+    }
+    row.cases++
+    if (isRecovered) row.recovered++
+    if (isLocked) row.locked++
+    if (isWithCustomer) row.withCustomer++
+    if (isUnspec) row.unspecified++
+  }
+
+  // buckets: known statuses ตามลำดับ แล้วต่อด้วยสถานะอื่นๆ ที่ไม่อยู่ในลิสต์ (ยกเว้น unspec) แล้วปิดท้ายด้วย unspec
+  const buckets: DeviceBucket[] = []
+  const seen = new Set<string>()
+  for (const label of DEVICE_STATUS_ORDER) {
+    if (counts.has(label)) {
+      buckets.push({ label, n: counts.get(label) ?? 0 })
+      seen.add(label)
+    }
+  }
+  for (const [label, n] of counts) {
+    if (label === DEVICE_UNSPEC || seen.has(label)) continue
+    buckets.push({ label, n })
+  }
+  if (counts.has(DEVICE_UNSPEC)) {
+    buckets.push({ label: DEVICE_UNSPEC, n: counts.get(DEVICE_UNSPEC) ?? 0 })
+  }
+
+  const byEmployee = [...empMap.values()].sort(
+    (a, b) => b.recovered - a.recovered || b.cases - a.cases,
+  )
+
+  return {
+    recovered,
+    locked,
+    withCustomer,
+    unspecified,
+    total: cases.length,
+    buckets,
+    byEmployee,
+  }
+}
+
+function DeviceSection({ cases }: { cases: DebtflowCase[] }) {
+  const agg = useMemo(() => buildDeviceAgg(cases), [cases])
+  if (agg.total === 0) return null
+
+  return (
+    <Card>
+      <h2 className="mb-1 text-sm font-semibold text-ink">การตามเครื่อง</h2>
+      <p className="mb-3 text-xs text-ink-soft">สถานะการตามเครื่องจากข้อมูล DEBTFLOW (snapshot)</p>
+
+      {/* KPI */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-center">
+          <p className="text-xs text-green-700 mb-1">ตามคืนได้แล้ว</p>
+          <p className="text-xl font-bold text-green-700">{agg.recovered.toLocaleString()}</p>
+          <p className="text-xs text-green-700/80">เครื่อง</p>
+        </div>
+        <div className="rounded-xl border border-peach bg-cream p-4 text-center">
+          <p className="text-xs text-ink-soft mb-1">กำลังล็อคกดดัน</p>
+          <p className="text-xl font-bold text-ink">{agg.locked.toLocaleString()}</p>
+          <p className="text-xs text-ink-soft">เครื่อง</p>
+        </div>
+        <div className="rounded-xl border border-peach bg-cream p-4 text-center">
+          <p className="text-xs text-ink-soft mb-1">เครื่องอยู่กับลูกค้า</p>
+          <p className="text-xl font-bold text-ink">{agg.withCustomer.toLocaleString()}</p>
+          <p className="text-xs text-ink-soft">เครื่อง</p>
+        </div>
+        <div className="rounded-xl border border-peach bg-cream p-4 text-center">
+          <p className="text-xs text-ink-soft mb-1">ยังไม่ระบุสถานะ</p>
+          <p className="text-xl font-bold text-ink">{agg.unspecified.toLocaleString()}</p>
+          <p className="text-xs text-ink-soft">เครื่อง</p>
+        </div>
+      </div>
+
+      {/* แยกตามสถานะเครื่อง + แถบสัดส่วน */}
+      <div className="mb-4 space-y-2">
+        {agg.buckets.map((b) => {
+          const isRecovered = b.label === DEVICE_RECOVERED
+          const barWidth = agg.total > 0 ? Math.round((b.n / agg.total) * 100) : 0
+          return (
+            <div key={b.label} className="flex items-center gap-3 text-sm">
+              <span className={`w-40 shrink-0 ${isRecovered ? 'font-semibold text-green-700' : 'text-ink'}`}>
+                {b.label}
+              </span>
+              <div className="h-2 flex-1 overflow-hidden rounded-full bg-peach-light">
+                <div
+                  className={`h-full rounded-full ${isRecovered ? 'bg-green-500' : 'bg-salmon'}`}
+                  style={{ width: `${barWidth}%` }}
+                />
+              </div>
+              <span className={`w-16 shrink-0 text-right ${isRecovered ? 'font-semibold text-green-700' : 'text-ink-soft'}`}>
+                {b.n.toLocaleString()}
+              </span>
+              <span className="w-12 shrink-0 text-right text-xs text-ink-soft">
+                {pct(b.n, agg.total)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* ตารางแยกพนักงาน */}
+      {agg.byEmployee.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 font-medium">พนักงาน</th>
+                <th className="pb-2 text-right font-medium">จำนวนเคส</th>
+                <th className="pb-2 text-right font-medium">คืนเครื่องแล้ว</th>
+                <th className="pb-2 text-right font-medium">ล็อค/กดดัน</th>
+                <th className="pb-2 text-right font-medium">อยู่กับลูกค้า</th>
+                <th className="pb-2 text-right font-medium">ยังไม่ระบุ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agg.byEmployee.map((row) => (
+                <tr key={row.employee} className="border-b border-peach/40 last:border-0">
+                  <td className="py-2 font-medium text-ink">{row.employee}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.cases}</td>
+                  <td className="py-2 text-right font-semibold text-green-700">
+                    {row.recovered > 0 ? row.recovered : '—'}
+                  </td>
+                  <td className="py-2 text-right text-ink-soft">{row.locked > 0 ? row.locked : '—'}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.withCustomer > 0 ? row.withCustomer : '—'}</td>
+                  <td className="py-2 text-right text-ink-soft">{row.unspecified > 0 ? row.unspecified : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ===== KPI cards =====
 function KpiCards({ s }: { s: DebtflowSummary }) {
   const closeRate = pct(s.closedCases, s.totalCases)
@@ -400,6 +609,9 @@ export default function DebtflowReport() {
           <StatusSection s={summary} />
         </div>
       </div>
+
+      {/* การตามเครื่อง */}
+      <DeviceSection cases={cases} />
 
       {/* รายเคส */}
       <CaseTable cases={cases} />
