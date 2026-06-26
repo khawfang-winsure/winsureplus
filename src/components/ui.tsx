@@ -5,6 +5,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from 'react'
+import { X } from 'lucide-react'
 
 // ===== ชิ้นส่วน UI ที่ใช้ซ้ำทั้งเว็บ =====
 
@@ -130,7 +131,17 @@ export function Modal({
         className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="mb-4 text-lg font-bold text-ink">{title}</h3>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <h3 className="text-lg font-bold text-ink">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="ปิด"
+            className="-mr-1 shrink-0 rounded-lg p-1 text-ink-soft transition hover:bg-peach-light/50 hover:text-ink"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
         {children}
       </div>
     </div>

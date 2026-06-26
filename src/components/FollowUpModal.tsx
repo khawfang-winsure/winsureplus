@@ -65,6 +65,8 @@ interface ContractSummary {
 interface Props {
   contract: ContractSummary
   onClose: () => void
+  /** เรียกเมื่อบันทึกการติดตามสำเร็จ (ให้ parent reload คิวเฉพาะตอนที่ข้อมูลเปลี่ยนจริง) */
+  onSaved?: () => void
   /** Set ของวันหยุดราชการ (yyyy-mm-dd) รับจาก parent เพื่อกัน duplicate query */
   publicHolidays?: Set<string>
   /** Admin can record follow-ups outside contact hours (DB trigger also exempts admin) */
@@ -112,7 +114,7 @@ function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneA
   return { ...BASE_FORM, phoneDialed: phone ?? phoneAlt1 ?? phoneAlt2 ?? '' }
 }
 
-export default function FollowUpModal({ contract, onClose, publicHolidays = new Set(), adminOverride = false }: Props) {
+export default function FollowUpModal({ contract, onClose, onSaved, publicHolidays = new Set(), adminOverride = false }: Props) {
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
   const [form, setForm] = useState<FormState>(() => makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
@@ -204,6 +206,7 @@ export default function FollowUpModal({ contract, onClose, publicHolidays = new 
       setCustomPhoneDialed('')
       setSaved(true)
       await loadHistory()
+      onSaved?.()
     } catch (e) {
       // แปล compliance error P0001 → ภาษาไทย ถ้าไม่ใช่ compliance error → fallback ข้อความเดิม
       const complianceMsg = getComplianceErrorMessage(e)

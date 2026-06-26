@@ -627,10 +627,9 @@ export default function FreelancerWorkspace() {
     setSelectedContract(r)
   }
 
-  // หลังปิด modal → reload เพื่อ sync contactedToday + myLastTouchAt
+  // ปิด modal เฉยๆ — ไม่ reload (เปิด-ปิดโดยไม่บันทึก = ปิดทันที ไม่กระพริบ)
   function handleModalClose() {
     setSelectedContract(null)
-    if (selectedGrades.length > 0) void loadQueue(selectedGrades)
   }
 
   return (
@@ -1352,6 +1351,9 @@ export default function FreelancerWorkspace() {
           publicHolidays={publicHolidays}
           adminOverride={role === 'admin'}
           onClose={handleModalClose}
+          onSaved={() => {
+            if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+          }}
         />
       )}
     </div>
