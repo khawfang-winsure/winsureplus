@@ -65,7 +65,7 @@ function DocRow({
 
   return (
     <tr className="border-t border-peach-light/60 hover:bg-peach-light/20">
-      <td className="py-2 pr-3 text-sm">
+      <td className="py-2 pl-3 pr-3 text-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           <Link
             to={`/contract/${contract.id}`}
@@ -99,7 +99,7 @@ function DocRow({
           </div>
         )}
       </td>
-      <td className="py-2">
+      <td className="py-2 pr-3">
         {!boxRequired(contract) ? (
           <span className="text-xs text-ink-soft">—</span>
         ) : contract.phoneBoxReceived ? (
@@ -323,10 +323,10 @@ export default function DocTracking() {
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-peach-light/60 text-xs text-ink-soft">
-                      <th className="py-2 pr-3 font-medium">ลูกค้า / สัญญา</th>
+                      <th className="py-2 pl-3 pr-3 font-medium">ลูกค้า / สัญญา</th>
                       <th className="py-2 pr-3 font-medium">วันค้าง</th>
                       <th className="py-2 pr-3 font-medium">เอกสารตัวจริง</th>
-                      <th className="py-2 font-medium">กล่องเครื่อง</th>
+                      <th className="py-2 pr-3 font-medium">กล่องเครื่อง</th>
                     </tr>
                   </thead>
                   <tbody>
