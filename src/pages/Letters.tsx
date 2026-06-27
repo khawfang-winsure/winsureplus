@@ -1,6 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Copy, MapPin, Printer, Search } from 'lucide-react'
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Bold,
+  Copy,
+  Italic,
+  MapPin,
+  Printer,
+  Search,
+  Underline,
+} from 'lucide-react'
 import { Badge, Button, Card, Loading, Modal, PageTitle } from '../components/ui'
 import { AddressFields } from '../components/AddressFields'
 import Pagination from '../components/Pagination'
@@ -534,16 +545,86 @@ function RowView({
   )
 }
 
+// แปลง plain text เดิม → HTML (แต่ละบรรทัด wrap ด้วย <div>, บรรทัดว่าง = <div><br></div>)
+function plainTextToHtml(text: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => (line.trim() === '' ? '<div><br></div>' : `<div>${esc(line)}</div>`))
+    .join('')
+}
+
+// template ใน DB เป็น HTML แล้วหรือยัง (มี tag จริง)
+function looksLikeHtml(s: string): boolean {
+  return /<[a-z][\s\S]*>/i.test(s)
+}
+
+const TPL_VARS: { token: string; label: string }[] = [
+  { token: '{{name}}', label: 'ชื่อลูกค้า' },
+  { token: '{{date}}', label: 'วันที่' },
+  { token: '{{amount}}', label: 'ยอดค้าง' },
+  { token: '{{contractNo}}', label: 'เลขสัญญา' },
+  { token: '{{address}}', label: 'ที่อยู่' },
+  { token: '{{daysLate}}', label: 'วันที่ค้าง' },
+]
+
+function ToolbarButton({
+  onClick,
+  title,
+  children,
+}: {
+  onClick: () => void
+  title: string
+  children: React.ReactNode
+}) {
+  // ใช้ onMouseDown + preventDefault กัน contentEditable เสีย selection ก่อน execCommand
+  return (
+    <button
+      type="button"
+      title={title}
+      onMouseDown={(e) => {
+        e.preventDefault()
+        onClick()
+      }}
+      className="flex h-8 min-w-8 items-center justify-center rounded-lg border border-peach bg-white px-2 text-sm text-ink transition hover:bg-peach-light"
+    >
+      {children}
+    </button>
+  )
+}
+
 function TemplateEditor({ template, onSaved }: { template: string; onSaved: (t: string) => void }) {
-  const [text, setText] = useState(template)
+  const editorRef = useRef<HTMLDivElement>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+
+  // โหลดค่าเริ่มต้นเข้า contentEditable ครั้งเดียว (uncontrolled — React ไม่ยุ่งกับ DOM ภายใน)
+  useEffect(() => {
+    if (!editorRef.current) return
+    editorRef.current.innerHTML = looksLikeHtml(template) ? template : plainTextToHtml(template)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function exec(command: string, value?: string) {
+    editorRef.current?.focus()
+    document.execCommand(command, false, value)
+  }
+
+  // แทรกข้อความ literal ณ ตำแหน่ง cursor (สำหรับปุ่มตัวแปร)
+  function insertVar(token: string) {
+    editorRef.current?.focus()
+    document.execCommand('insertText', false, token)
+  }
+
   async function save() {
+    const html = editorRef.current?.innerHTML ?? ''
     setBusy(true)
     setMsg(null)
     try {
-      await saveLetterTemplate(text)
-      onSaved(text)
+      await saveLetterTemplate(html)
+      onSaved(html)
       setMsg('บันทึกแล้ว ✅')
     } catch (e) {
       setMsg('บันทึกไม่สำเร็จ: ' + (e instanceof Error ? e.message : String(e)))
@@ -551,17 +632,77 @@ function TemplateEditor({ template, onSaved }: { template: string; onSaved: (t: 
       setBusy(false)
     }
   }
+
   return (
     <div className="mt-3">
       <p className="mb-2 text-xs text-ink-soft">
-        ใช้ตัวแปร: {'{{name}} {{address}} {{contractNo}} {{amount}} {{daysLate}} {{date}}'}
+        จัดรูปแบบด้วยปุ่มด้านล่าง แล้วกดบันทึก — ปุ่มตัวแปรจะแทรกค่าจริงตอนปริ้น
       </p>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={9}
-        className="w-full rounded-xl border border-peach bg-white p-3 text-sm leading-7 text-ink"
+
+      {/* แถบเครื่องมือจัดอักษร */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-peach bg-peach-light/40 p-2">
+        <ToolbarButton onClick={() => exec('bold')} title="ตัวหนา">
+          <Bold size={15} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => exec('italic')} title="ตัวเอียง">
+          <Italic size={15} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => exec('underline')} title="ขีดเส้นใต้">
+          <Underline size={15} />
+        </ToolbarButton>
+
+        <span className="mx-1 h-5 w-px bg-peach" />
+
+        <ToolbarButton onClick={() => exec('fontSize', '2')} title="ตัวเล็ก">
+          <span className="text-xs font-semibold">เล็ก</span>
+        </ToolbarButton>
+        <ToolbarButton onClick={() => exec('fontSize', '3')} title="ตัวปกติ">
+          <span className="text-sm font-semibold">ปกติ</span>
+        </ToolbarButton>
+        <ToolbarButton onClick={() => exec('fontSize', '5')} title="ตัวใหญ่">
+          <span className="text-base font-semibold">ใหญ่</span>
+        </ToolbarButton>
+
+        <span className="mx-1 h-5 w-px bg-peach" />
+
+        <ToolbarButton onClick={() => exec('justifyLeft')} title="ชิดซ้าย">
+          <AlignLeft size={15} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => exec('justifyCenter')} title="กึ่งกลาง">
+          <AlignCenter size={15} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => exec('justifyRight')} title="ชิดขวา">
+          <AlignRight size={15} />
+        </ToolbarButton>
+      </div>
+
+      {/* ปุ่มแทรกตัวแปร */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-xs text-ink-soft">แทรกตัวแปร:</span>
+        {TPL_VARS.map((v) => (
+          <button
+            key={v.token}
+            type="button"
+            title={v.token}
+            onMouseDown={(e) => {
+              e.preventDefault()
+              insertVar(v.token)
+            }}
+            className="rounded-lg border border-peach bg-white px-2 py-1 text-xs text-salmon-deep transition hover:bg-peach-light"
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {/* กล่องแก้ไข rich text */}
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        className="min-h-[220px] w-full rounded-xl border border-peach bg-white p-3 text-sm leading-7 text-ink focus:outline-none focus:ring-2 focus:ring-salmon-deep/40"
       />
+
       <div className="mt-2 flex items-center gap-3">
         <Button onClick={save} disabled={busy}>{busy ? 'กำลังบันทึก...' : 'บันทึกข้อความ'}</Button>
         {msg && <span className="text-sm text-ink-soft">{msg}</span>}

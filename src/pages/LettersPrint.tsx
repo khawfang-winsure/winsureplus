@@ -28,6 +28,78 @@ function loadItems(): PrintItem[] {
   }
 }
 
+// template เป็น HTML แล้วหรือยัง (มี tag จริง) → ใช้ HTML render; ถ้าไม่ → fallback line-classification
+function looksLikeHtml(s: string): boolean {
+  return /<[a-z][\s\S]*>/i.test(s)
+}
+
+// sanitize เบื้องต้น (admin-only tool): อนุญาตเฉพาะ tag จัดรูปแบบ + style จำกัด, ตัด script/handler ออก
+const ALLOWED_TAGS = new Set([
+  'b', 'strong', 'i', 'em', 'u', 'br', 'div', 'p', 'span', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'font',
+])
+const ALLOWED_STYLE_PROPS = new Set([
+  'text-align', 'font-weight', 'font-style', 'text-decoration', 'font-size',
+])
+
+function sanitizeStyle(raw: string): string {
+  return raw
+    .split(';')
+    .map((d) => d.trim())
+    .filter(Boolean)
+    .map((d) => {
+      const idx = d.indexOf(':')
+      if (idx < 0) return ''
+      const prop = d.slice(0, idx).trim().toLowerCase()
+      const val = d.slice(idx + 1).trim()
+      if (!ALLOWED_STYLE_PROPS.has(prop)) return ''
+      // กัน url()/expression()/javascript: ใน value
+      if (/url\s*\(|expression\s*\(|javascript:/i.test(val)) return ''
+      return `${prop}: ${val}`
+    })
+    .filter(Boolean)
+    .join('; ')
+}
+
+function sanitizeLetterHtml(html: string): string {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    // SSR/edge fallback: ตัด script + on*= แบบหยาบ
+    return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+  }
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
+  const root = doc.body.firstElementChild
+  if (!root) return ''
+
+  const walk = (node: Element) => {
+    // วนสำเนา children เพราะจะมีการ replace/remove ระหว่างทาง
+    Array.from(node.children).forEach((child) => {
+      const tag = child.tagName.toLowerCase()
+      if (tag === 'script' || tag === 'style' || !ALLOWED_TAGS.has(tag)) {
+        // ตัด tag ที่ไม่อนุญาต แต่ดึงข้อความข้างในขึ้นมาแทน (unwrap)
+        const text = doc.createTextNode(child.textContent ?? '')
+        child.replaceWith(text)
+        return
+      }
+      // ลบ attribute ทั้งหมดยกเว้น style ที่ผ่าน whitelist
+      Array.from(child.attributes).forEach((attr) => {
+        const name = attr.name.toLowerCase()
+        if (name === 'style') {
+          const clean = sanitizeStyle(attr.value)
+          if (clean) child.setAttribute('style', clean)
+          else child.removeAttribute('style')
+        } else if (name === 'size' && tag === 'font') {
+          // <font size="N"> จาก execCommand('fontSize') — เก็บไว้ render ขนาด
+          if (!/^[1-7]$/.test(attr.value)) child.removeAttribute('size')
+        } else {
+          child.removeAttribute(attr.name)
+        }
+      })
+      walk(child)
+    })
+  }
+  walk(root)
+  return root.innerHTML
+}
+
 // จัด alignment รายบรรทัดของเนื้อจดหมาย โดยไม่พึ่ง leading space ในเทมเพลต
 type LineKind = 'title' | 'right' | 'sign' | 'list' | 'normal'
 
@@ -85,6 +157,12 @@ function LetterBody({ body }: { body: string }) {
   )
 }
 
+// เรนเดอร์เนื้อจดหมายแบบ HTML (เทมเพลตที่ Pete จัดรูปแบบไว้) — sanitize ก่อนเสมอ
+function LetterHtml({ body }: { body: string }) {
+  const safe = sanitizeLetterHtml(body)
+  return <div className="letter-body letter-html" dangerouslySetInnerHTML={{ __html: safe }} />
+}
+
 // หน้าปริ้นจดหมาย + ซอง (route นอก Layout — ไม่มี sidebar เพื่อปริ้นสะอาด)
 export default function LettersPrint() {
   const navigate = useNavigate()
@@ -124,6 +202,14 @@ export default function LettersPrint() {
           font-family: 'Sarabun', 'TH Sarabun New', 'Noto Sans Thai', system-ui, sans-serif;
         }
         .letter-body { font-size: 15.5px; }
+        /* เนื้อจดหมายที่ render จาก HTML (เทมเพลตที่จัดรูปแบบไว้) */
+        .letter-html { line-height: 1.8; text-align: justify; }
+        .letter-html div, .letter-html p { margin: 0; min-height: 1.2em; }
+        .letter-html p { margin-bottom: 6px; }
+        .letter-html ul, .letter-html ol { padding-left: 24px; margin: 4px 0; }
+        .letter-html h1 { font-size: 20px; font-weight: 700; }
+        .letter-html h2 { font-size: 18px; font-weight: 700; }
+        .letter-html h3 { font-size: 16px; font-weight: 700; }
         .letter-line { margin: 0; }
         .letter-blank { height: 12px; }
         .letter-title {
@@ -188,7 +274,7 @@ export default function LettersPrint() {
           {/* จดหมาย */}
           {items.map((it, i) => (
             <div key={`L${i}`} className="print-page letter-page">
-              <LetterBody body={it.body} />
+              {looksLikeHtml(it.body) ? <LetterHtml body={it.body} /> : <LetterBody body={it.body} />}
             </div>
           ))}
           {/* ซอง */}
@@ -202,7 +288,7 @@ export default function LettersPrint() {
               </div>
               <div className="env-recipient">
                 <p className="text-ink-soft">เรียน</p>
-                <p className="font-semibold">คุณ{it.customerName}</p>
+                <p className="font-semibold">{it.customerName}</p>
                 <p className="whitespace-pre-line">{it.addressLines}</p>
                 {it.primaryPhone ? <p>โทร. {it.primaryPhone}</p> : null}
               </div>
