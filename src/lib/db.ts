@@ -25,6 +25,9 @@ import type {
   OverdueBucket,
   OverduePromiseContract,
   PjDaysLateBucket,
+  LetterOutcome,
+  LetterOutcomeByRound,
+  LetterOutcomeSummary,
   PjRecoveryEmployee,
   PjRecoveryMonth,
   PjRecoveryOutcomeMonth,
@@ -5228,4 +5231,105 @@ export async function getPjRecoveryOutcomeSummary(): Promise<PjRecoveryOutcomeSu
     outstandingInstallments: Number(r.outstanding_installments ?? 0),
     outstandingBaht: Number(r.outstanding_baht ?? 0),
   }
+}
+
+// ---------- Letter outcome report — วัดผลจดหมายติดตามหนี้ (migration 0069) ----------
+// อ่านจาก 3 aggregate views: 1 แถวสรุปรวม / รายรอบ / รายฉบับ (drill-down)
+// outcome คำนวณ auto ใน view (paid/returned/no_response) — ไม่มี trigger
+// aggregate ฝั่ง DB → ไม่ติด PAGE_CAP; รองรับ isSupabaseConfigured=false
+
+interface LetterOutcomeSummaryRow {
+  total_letters: string | number | null
+  paid_count: string | number | null
+  returned_count: string | number | null
+  no_response_count: string | number | null
+  effective_count: string | number | null
+  effectiveness_pct: string | number | null
+  avg_days_to_outcome: string | number | null
+}
+
+interface LetterOutcomeByRoundRow {
+  round: string | number | null
+  paid_count: string | number | null
+  returned_count: string | number | null
+  no_response_count: string | number | null
+  effective_count: string | number | null
+  effectiveness_pct: string | number | null
+  avg_days_to_outcome: string | number | null
+}
+
+interface LetterOutcomeRow {
+  letter_id: string
+  contract_id: string
+  contract_no: string | null
+  customer_name: string | null
+  round: string | number | null
+  printed_at: string
+  outcome: string
+  responded_at: string | null
+  days_to_outcome: string | number | null
+}
+
+/**
+ * สรุปรวมวัดผลจดหมายติดตามหนี้ (v_letter_outcome_summary — 1 แถว)
+ * คืนค่าศูนย์ทั้งหมดถ้าไม่ได้ตั้ง Supabase หรือยังไม่มีจดหมาย
+ */
+export async function getLetterOutcomeSummary(): Promise<LetterOutcomeSummary | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('v_letter_outcome_summary')
+    .select('total_letters, paid_count, returned_count, no_response_count, effective_count, effectiveness_pct, avg_days_to_outcome')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return null
+  const r = data as LetterOutcomeSummaryRow
+  return {
+    totalLetters: Number(r.total_letters ?? 0),
+    paidCount: Number(r.paid_count ?? 0),
+    returnedCount: Number(r.returned_count ?? 0),
+    noResponseCount: Number(r.no_response_count ?? 0),
+    effectiveCount: Number(r.effective_count ?? 0),
+    effectivenessPct: Number(r.effectiveness_pct ?? 0),
+    avgDaysToOutcome: Number(r.avg_days_to_outcome ?? 0),
+  }
+}
+
+/** วัดผลจดหมายแยกตามรอบ (v_letter_outcome_by_round — เรียงตาม round) */
+export async function getLetterOutcomeByRound(): Promise<LetterOutcomeByRound[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_letter_outcome_by_round')
+    .select('round, paid_count, returned_count, no_response_count, effective_count, effectiveness_pct, avg_days_to_outcome')
+    .order('round')
+  if (error) throw error
+  return ((data ?? []) as LetterOutcomeByRoundRow[]).map(r => ({
+    round: Number(r.round ?? 0),
+    paidCount: Number(r.paid_count ?? 0),
+    returnedCount: Number(r.returned_count ?? 0),
+    noResponseCount: Number(r.no_response_count ?? 0),
+    effectiveCount: Number(r.effective_count ?? 0),
+    effectivenessPct: Number(r.effectiveness_pct ?? 0),
+    avgDaysToOutcome: Number(r.avg_days_to_outcome ?? 0),
+  }))
+}
+
+/** ผลลัพธ์รายจดหมาย สำหรับ drill-down (v_letter_outcomes — เรียง printed_at ล่าสุดก่อน) */
+export async function getLetterOutcomes(): Promise<LetterOutcome[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_letter_outcomes')
+    .select('letter_id, contract_id, contract_no, customer_name, round, printed_at, outcome, responded_at, days_to_outcome')
+    .order('printed_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as LetterOutcomeRow[]).map(r => ({
+    letterId: r.letter_id,
+    contractId: r.contract_id,
+    contractNo: r.contract_no ?? '',
+    customerName: r.customer_name ?? '',
+    round: Number(r.round ?? 0),
+    printedAt: r.printed_at,
+    outcome: (r.outcome as LetterOutcome['outcome']),
+    respondedAt: r.responded_at,
+    daysToOutcome: r.days_to_outcome === null ? null : Number(r.days_to_outcome),
+  }))
 }

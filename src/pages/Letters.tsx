@@ -7,6 +7,7 @@ import {
   Bold,
   Copy,
   Italic,
+  MailCheck,
   MapPin,
   Printer,
   Search,
@@ -15,11 +16,14 @@ import {
 import { Badge, Button, Card, Loading, Modal, PageTitle } from '../components/ui'
 import { AddressFields } from '../components/AddressFields'
 import Pagination from '../components/Pagination'
+import { useAuth } from '../lib/auth'
 import {
   getAllAddresses,
   getAllLetters,
   getAllStatuses,
   getContracts,
+  getLetterOutcomeByRound,
+  getLetterOutcomeSummary,
   getLetterTemplate,
   insertLetter,
   saveAddress,
@@ -40,7 +44,12 @@ import {
   type LetterStage,
 } from '../lib/letters'
 import type { FieldItem } from './FieldVisitPrint'
-import type { Contract, ContractStatusRow } from '../lib/types'
+import type {
+  Contract,
+  ContractStatusRow,
+  LetterOutcomeByRound,
+  LetterOutcomeSummary,
+} from '../lib/types'
 
 const baht = (n: number) => n.toLocaleString('th-TH')
 function thaiDateFull(): string {
@@ -63,11 +72,15 @@ interface Row {
 
 export default function Letters() {
   const navigate = useNavigate()
+  const { role } = useAuth()
+  const isAdmin = role === 'admin'
   const [statuses, setStatuses] = useState<ContractStatusRow[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
   const [letters, setLetters] = useState<LetterRecord[]>([])
   const [addresses, setAddresses] = useState<Record<string, ContractAddresses>>({})
   const [template, setTemplate] = useState('')
+  const [outcomeSummary, setOutcomeSummary] = useState<LetterOutcomeSummary | null>(null)
+  const [outcomeByRound, setOutcomeByRound] = useState<LetterOutcomeByRound[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [registryFor, setRegistryFor] = useState<Row | null>(null)
@@ -81,25 +94,30 @@ export default function Letters() {
   async function load() {
     setLoading(true)
     try {
-      const [st, c, lt, ad, tpl] = await Promise.all([
+      const [st, c, lt, ad, tpl, outSum, outRound] = await Promise.all([
         getAllStatuses(),
         getContracts(),
         getAllLetters(),
         getAllAddresses(),
         getLetterTemplate(),
+        isAdmin ? getLetterOutcomeSummary() : Promise.resolve(null),
+        isAdmin ? getLetterOutcomeByRound() : Promise.resolve([]),
       ])
       setStatuses(st)
       setContracts(c)
       setLetters(lt)
       setAddresses(ad)
       setTemplate(tpl)
+      setOutcomeSummary(outSum)
+      setOutcomeByRound(outRound)
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => {
     load()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin])
 
   const rows = useMemo<Row[]>(() => {
     const cById = new Map(contracts.map((c) => [c.id, c]))
@@ -308,6 +326,9 @@ export default function Letters() {
     <div className="space-y-4 pb-20">
       <PageTitle sub="ส่งจดหมายตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)" count={loading ? undefined : { shown: visibleRows.length, total: rows.length }}>ส่งจดหมาย</PageTitle>
 
+      {/* วัดผลจดหมาย (ผู้บริหารเท่านั้น) */}
+      {isAdmin && <LetterOutcomeSection summary={outcomeSummary} byRound={outcomeByRound} />}
+
       {/* แท็บสเตจ + ตัวนับ */}
       <div className="flex flex-wrap gap-2">
         {TABS.map((t) => {
@@ -451,6 +472,117 @@ export default function Letters() {
         />
       )}
     </div>
+  )
+}
+
+// ===== วัดผลจดหมาย — จดหมายได้ผลแค่ไหน =====
+function LetterOutcomeSection({
+  summary,
+  byRound,
+}: {
+  summary: LetterOutcomeSummary | null
+  byRound: LetterOutcomeByRound[]
+}) {
+  const empty = !summary || summary.totalLetters === 0
+
+  return (
+    <Card>
+      <div className="mb-4 flex items-start gap-2">
+        <MailCheck size={18} className="mt-0.5 shrink-0 text-salmon-deep" />
+        <div>
+          <h2 className="text-base font-bold text-ink">วัดผลจดหมาย — จดหมายได้ผลแค่ไหน</h2>
+          <p className="text-sm text-ink-soft">
+            หลังส่งจดหมายแต่ละฉบับ ลูกค้ากลับมาจ่ายหรือคืนเครื่องก่อนถึงจดหมายฉบับถัดไปหรือไม่
+          </p>
+        </div>
+      </div>
+
+      {empty ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูล — รายงานจะแสดงเมื่อเริ่มบันทึกการส่งจดหมายในระบบ
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {/* การ์ดสรุป */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="rounded-xl border border-peach bg-peach-light/40 px-4 py-3 text-center sm:col-span-3 lg:col-span-1">
+              <div className="text-3xl font-bold text-salmon-deep">
+                {summary.effectivenessPct.toLocaleString('th-TH')}%
+              </div>
+              <div className="mt-1 text-xs text-ink-soft">จดหมายได้ผล</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">
+                {summary.totalLetters.toLocaleString('th-TH')}
+              </div>
+              <div className="mt-1 text-xs text-ink-soft">✉️ ส่งทั้งหมด</div>
+            </div>
+            <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-green-700">
+                {summary.paidCount.toLocaleString('th-TH')}
+              </div>
+              <div className="mt-1 text-xs text-green-700/80">✅ ลูกค้าจ่าย</div>
+            </div>
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-blue-700">
+                {summary.returnedCount.toLocaleString('th-TH')}
+              </div>
+              <div className="mt-1 text-xs text-blue-700/80">📦 คืนเครื่อง</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink-soft">
+                {summary.noResponseCount.toLocaleString('th-TH')}
+              </div>
+              <div className="mt-1 text-xs text-ink-soft">ไม่ตอบ</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="text-2xl font-bold text-ink">
+                {summary.avgDaysToOutcome.toLocaleString('th-TH')}
+              </div>
+              <div className="mt-1 text-xs text-ink-soft">เฉลี่ย (วัน)</div>
+            </div>
+          </div>
+
+          {/* ตารางแยกครั้งที่ส่ง */}
+          {byRound.length > 0 && (
+            <div>
+              <h3 className="mb-2 text-sm font-bold text-ink">แยกตามครั้งที่ส่ง</h3>
+              <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+                <table className="w-full min-w-[520px] text-sm">
+                  <thead>
+                    <tr className="bg-peach-light text-left text-ink">
+                      <th className="px-3 py-2.5 font-semibold">ครั้งที่</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">ส่ง</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">จ่าย</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">คืนเครื่อง</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">ไม่ตอบ</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">ได้ผล %</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">เฉลี่ย (วัน)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {byRound.map((r) => {
+                      const sent = r.paidCount + r.returnedCount + r.noResponseCount
+                      return (
+                        <tr key={r.round} className="border-t border-peach/60">
+                          <td className="px-3 py-2.5 font-medium text-ink">ครั้งที่ {r.round}</td>
+                          <td className="px-3 py-2.5 text-right text-ink">{sent.toLocaleString('th-TH')}</td>
+                          <td className="px-3 py-2.5 text-right text-green-700">{r.paidCount.toLocaleString('th-TH')}</td>
+                          <td className="px-3 py-2.5 text-right text-blue-700">{r.returnedCount.toLocaleString('th-TH')}</td>
+                          <td className="px-3 py-2.5 text-right text-ink-soft">{r.noResponseCount.toLocaleString('th-TH')}</td>
+                          <td className="px-3 py-2.5 text-right font-semibold text-salmon-deep">{r.effectivenessPct.toLocaleString('th-TH')}%</td>
+                          <td className="px-3 py-2.5 text-right text-ink">{r.avgDaysToOutcome.toLocaleString('th-TH')}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   )
 }
 

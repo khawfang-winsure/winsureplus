@@ -441,6 +441,45 @@ export interface PjRecoveryOutcomeSummary {
   outstandingBaht: number
 }
 
+// ---------- Letter outcome report — วัดผลจดหมายติดตามหนี้ (migration 0069) ----------
+// คำนวณ auto ว่าส่งจดหมายแล้วลูกค้าจ่าย/คืนเครื่องกี่ % — attribution ให้จดหมาย
+// ฉบับล่าสุดก่อนจ่าย (จ่าย/คืนต้องเกิดก่อนจดหมายฉบับถัดไป). อ่านจาก 3 aggregate views
+
+/** ผลลัพธ์ต่อจดหมาย 1 ฉบับ (จาก v_letter_outcomes — drill-down) */
+export interface LetterOutcome {
+  letterId: string
+  contractId: string
+  contractNo: string
+  customerName: string
+  round: number
+  printedAt: string
+  outcome: 'paid' | 'returned' | 'no_response'
+  respondedAt: string | null
+  daysToOutcome: number | null
+}
+
+/** สรุปรวมวัดผลจดหมาย (1 แถว จาก v_letter_outcome_summary) */
+export interface LetterOutcomeSummary {
+  totalLetters: number
+  paidCount: number
+  returnedCount: number
+  noResponseCount: number
+  effectiveCount: number
+  effectivenessPct: number
+  avgDaysToOutcome: number
+}
+
+/** วัดผลจดหมายแยกตามรอบ (จาก v_letter_outcome_by_round — 1 แถว/round 1,2,3) */
+export interface LetterOutcomeByRound {
+  round: number
+  paidCount: number
+  returnedCount: number
+  noResponseCount: number
+  effectiveCount: number
+  effectivenessPct: number
+  avgDaysToOutcome: number
+}
+
 // ---------- Collector call & promise outcomes — per คนติดตามหนี้ (migration 0068) ----------
 // 1 row ต่อ author (freelancer active) จาก RPC get_collector_call_outcomes(p_start, p_end)
 // รองรับภาพรวมทีม (รวมทุกแถว) + รายคน. promisesKept + promisesBroken + promisesPending = promisesMade
