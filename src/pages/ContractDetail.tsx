@@ -318,11 +318,12 @@ export default function ContractDetail() {
   const downPayment = _summary ? Math.round(contract.devicePrice - _summary.afterDown) : 0
   const downPlusDoc = downPayment + contract.docFee
   const downRowDate = contract.transactionDate ?? installments[0]?.dueDate
-  // ยอดคงค้างหลังคืนเครื่อง (แสดงแทน totalOutstanding เมื่อ status='returned')
+  // ยอดคงค้างหลังคืนเครื่อง (แสดงแทน totalOutstanding เมื่อคืนเครื่อง — ทั้งยังตามเก็บ + ปิดเคสแล้ว)
+  const isReturned = contract.status === 'returned' || contract.status === 'returned_closed'
   const returnedOutstanding: OutstandingAfterReturnResult | null =
-    contract.status === 'returned'
-      ? outstandingAfterReturn(installments, extraCharges)
-      : null
+    isReturned ? outstandingAfterReturn(installments, extraCharges) : null
+  // เลขงวดค้างเก่าสุด = งวดเดียวที่ยังตามเก็บตามกฎคืนเครื่อง
+  const oldestUnpaidNo = returnedOutstanding?.details?.installmentNo ?? null
 
   // จัดกลุ่มประวัติการชำระตามงวด + แยกรายการที่งวดถูกลบไปแล้ว (installmentId หลุดเป็น null หลังขยายเวลา)
   const liveInsIds = new Set(installments.map((i) => i.id))
@@ -1057,6 +1058,13 @@ export default function ContractDetail() {
               {installments.map((i, idx) => {
                 const remaining = Math.max(0, i.amount - i.paidAmount)
                 const partial = !i.paidAt && i.paidAmount > 0
+                // ป้ายสถานะกรณีคืนเครื่อง (เรียง else-if ก่อน logic เดิม)
+                const returnedClosedUnpaid = contract.status === 'returned_closed' && !i.paidAt
+                const returnPendingOldest =
+                  contract.status === 'returned' && !i.paidAt && i.installmentNo === oldestUnpaidNo
+                const returnNotCollect =
+                  (contract.status === 'returned' && !i.paidAt && i.installmentNo !== oldestUnpaidNo) ||
+                  returnedClosedUnpaid
                 return (
                   <tr key={i.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5">{i.installmentNo}</td>
@@ -1093,8 +1101,16 @@ export default function ContractDetail() {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {partial ? (
+                      {i.paidAt ? (
+                        <Badge tone="green">{installmentLabel(i.status)}</Badge>
+                      ) : partial ? (
                         <Badge tone="amber">ชำระบางส่วน</Badge>
+                      ) : returnedClosedUnpaid ? (
+                        <Badge tone="neutral">ไม่เก็บแล้ว (ปิดเคสคืนเครื่อง)</Badge>
+                      ) : returnPendingOldest ? (
+                        <Badge tone="amber">ค้างชำระ</Badge>
+                      ) : returnNotCollect ? (
+                        <Badge tone="neutral">ไม่เก็บแล้ว (คืนเครื่อง)</Badge>
                       ) : (
                         <Badge tone={i.status === 'paid' ? 'green' : i.status === 'late' ? 'red' : 'amber'}>
                           {installmentLabel(i.status)}
@@ -1107,6 +1123,7 @@ export default function ContractDetail() {
                         hasLog={logByIns.has(i.id)}
                         logCount={logByIns.get(i.id)?.length ?? 0}
                         canStaff={canStaff}
+                        notCollectible={returnNotCollect}
                         onPay={() => setPayTarget({ ins: i, mode: 'pay' })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
                         onCancel={() => setCancelTarget(i)}
@@ -1695,6 +1712,7 @@ function RowActions({
   hasLog,
   logCount,
   canStaff,
+  notCollectible = false,
   onPay,
   onEdit,
   onCancel,
@@ -1704,6 +1722,7 @@ function RowActions({
   hasLog: boolean
   logCount: number
   canStaff: boolean
+  notCollectible?: boolean
   onPay: () => void
   onEdit: () => void
   onCancel: () => void
@@ -1749,8 +1768,8 @@ function RowActions({
 
   return (
     <div className="relative flex flex-wrap items-center gap-1.5">
-      {/* รับชำระ — primary, โชว์เฉพาะ admin+staff ถ้างวดยังไม่ปิด (#5) */}
-      {canStaff && !ins.paidAt && (
+      {/* รับชำระ — primary, โชว์เฉพาะ admin+staff ถ้างวดยังไม่ปิด (#5) + ซ่อนถ้างวด "ไม่เก็บแล้ว" (คืนเครื่อง) */}
+      {canStaff && !ins.paidAt && !notCollectible && (
         <button
           onClick={onPay}
           className="rounded-lg bg-salmon-deep px-3 py-1 text-xs font-semibold text-white hover:brightness-105"

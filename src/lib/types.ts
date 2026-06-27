@@ -132,7 +132,8 @@ export interface DeviceReturnReportRow {
   totalInstallments: number
   paidInstallments: number          // นับงวดที่ paid_at not null
   everPaid: boolean                 // paidInstallments > 0
-  principalRemaining: number        // sum(greatest(amount - paid_amount, 0)) เงินต้นค้าง
+  principalRemaining: number        // sum(greatest(amount - paid_amount, 0)) เงินต้นค้าง (Σทุกงวด = ความเสี่ยง)
+  collectibleRemaining: number      // งวดค้างเก่าสุด + ค่าปรับงวดนั้น + ค่าซ่อม = ยอดตามเก็บตามกฎคืนเครื่อง
   repairCost: number                // repair_cost ?? repair_fee ?? 0
   resale: number                    // sale_price ?? 0
   devicePrice: number               // contracts.device_price

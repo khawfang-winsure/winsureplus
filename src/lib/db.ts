@@ -5552,6 +5552,7 @@ interface DeviceReturnReportViewRow {
   paid_installments: string | number | null
   ever_paid: boolean | null
   principal_remaining: string | number | null
+  collectible_remaining: string | number | null
   repair_cost: string | number | null
   resale: string | number | null
   device_price: string | number | null
@@ -5568,7 +5569,7 @@ export async function getDeviceReturnReportRows(): Promise<DeviceReturnReportRow
   if (!supabase) return []
   const { data, error } = await supabase
     .from('v_device_return_report')
-    .select('contract_id, contract_no, customer_name, shop_id, shop_name, grade, status, return_date, case_no, device_status, return_method, total_installments, paid_installments, ever_paid, principal_remaining, repair_cost, resale, device_price')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, grade, status, return_date, case_no, device_status, return_method, total_installments, paid_installments, ever_paid, principal_remaining, collectible_remaining, repair_cost, resale, device_price')
     .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as DeviceReturnReportViewRow[]).map(r => ({
@@ -5587,6 +5588,7 @@ export async function getDeviceReturnReportRows(): Promise<DeviceReturnReportRow
     paidInstallments: Number(r.paid_installments ?? 0),
     everPaid: r.ever_paid === true,
     principalRemaining: Number(r.principal_remaining ?? 0),
+    collectibleRemaining: Number(r.collectible_remaining) || 0,
     repairCost: Number(r.repair_cost ?? 0),
     resale: Number(r.resale ?? 0),
     devicePrice: Number(r.device_price ?? 0),

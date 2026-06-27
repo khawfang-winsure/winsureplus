@@ -25,7 +25,8 @@ export interface ReturnKpi {
   open: number               // status = 'returned'
   closed: number             // status = 'returned_closed'
   closeRatePct: number       // closed / total × 100 (0 ถ้า total=0)
-  sumPrincipalRemaining: number // รวมเงินต้นค้าง เฉพาะเคส open
+  sumPrincipalRemaining: number // รวมเงินต้นค้าง (Σทุกงวด=ความเสี่ยง) เฉพาะเคส open
+  sumCollectible: number        // รวมยอดตามเก็บ (1งวด+ปรับ+ซ่อม) เฉพาะเคส open
   sumRepair: number
   sumResale: number
   netDamage: number          // sumPrincipalRemaining(open) + sumRepair − sumResale
@@ -42,6 +43,7 @@ export interface ReturnByShop {
   shopName: string
   count: number
   principalRemaining: number
+  collectibleRemaining: number     // รวมยอดตามเก็บ (1งวด+ปรับ+ซ่อม) ต่อร้าน
   netDamage: number
 }
 
@@ -126,6 +128,7 @@ export function buildReturnReport(
 
   // ---- 1) KPI ----
   const sumPrincipalRemaining = round0(openRows.reduce((s, r) => s + r.principalRemaining, 0))
+  const sumCollectible = round0(openRows.reduce((s, r) => s + r.collectibleRemaining, 0))
   const sumRepair = round0(rows.reduce((s, r) => s + r.repairCost, 0))
   const sumResale = round0(rows.reduce((s, r) => s + r.resale, 0))
   const closeRatePct = total > 0 ? round1((closedRows.length / total) * 100) : 0
@@ -135,6 +138,7 @@ export function buildReturnReport(
     closed: closedRows.length,
     closeRatePct,
     sumPrincipalRemaining,
+    sumCollectible,
     sumRepair,
     sumResale,
     netDamage: sumPrincipalRemaining + sumRepair - sumResale,
@@ -155,14 +159,15 @@ export function buildReturnReport(
     .sort((a, b) => a.month.localeCompare(b.month))
 
   // ---- 3) byShop + 7) damageByShop ----
-  const shopMap = new Map<string, { shopName: string; count: number; principalRemaining: number; netDamage: number }>()
+  const shopMap = new Map<string, { shopName: string; count: number; principalRemaining: number; collectibleRemaining: number; netDamage: number }>()
   for (const r of rows) {
     const key = r.shopId ?? '__none__'
     const cur = shopMap.get(key) ?? {
-      shopName: r.shopName ?? UNKNOWN_SHOP, count: 0, principalRemaining: 0, netDamage: 0,
+      shopName: r.shopName ?? UNKNOWN_SHOP, count: 0, principalRemaining: 0, collectibleRemaining: 0, netDamage: 0,
     }
     cur.count += 1
     cur.principalRemaining += r.principalRemaining
+    cur.collectibleRemaining += r.collectibleRemaining
     cur.netDamage += rowNetDamage(r)
     shopMap.set(key, cur)
   }
@@ -172,6 +177,7 @@ export function buildReturnReport(
       shopName: v.shopName,
       count: v.count,
       principalRemaining: round0(v.principalRemaining),
+      collectibleRemaining: round0(v.collectibleRemaining),
       netDamage: round0(v.netDamage),
     }))
     .sort((a, b) => b.count - a.count)
@@ -265,26 +271,26 @@ export function buildReturnReport(
 // ]
 //
 // rows = [
-//   // R1: open, เคยจ่าย 3 งวด, เงินต้นค้าง 5000, ซ่อม 1000, ขาย 4000, pipeline=checked, ร้าน S1, มี.ค.
+//   // R1: open, เคยจ่าย 3 งวด, เงินต้นค้าง 5000, ตามเก็บ 1800, ซ่อม 1000, ขาย 4000, pipeline=checked, ร้าน S1, มี.ค.
 //   { contractId:'a', contractNo:'C1', customerName:'A', shopId:'S1', shopName:'S1',
 //     grade:'A', status:'returned', returnDate:'2026-03-10T00:00:00Z', caseNo:1,
 //     deviceStatus:'checked', returnMethod:'shipped', totalInstallments:12, paidInstallments:3,
-//     everPaid:true, principalRemaining:5000, repairCost:1000, resale:4000, devicePrice:30000 },
+//     everPaid:true, principalRemaining:5000, collectibleRemaining:1800, repairCost:1000, resale:4000, devicePrice:30000 },
 //
-//   // R2: closed, เคยจ่าย 6 งวด, เงินต้นค้าง 0, ซ่อม 0, ขาย 8000, pipeline=shipped, ร้าน S1, มี.ค.
+//   // R2: closed, เคยจ่าย 6 งวด, เงินต้นค้าง 0, ตามเก็บ 0, ซ่อม 0, ขาย 8000, pipeline=shipped, ร้าน S1, มี.ค.
 //   { ... status:'returned_closed', returnDate:'2026-03-20...', deviceStatus:'shipped',
-//     paidInstallments:6, everPaid:true, principalRemaining:0, repairCost:0, resale:8000 }  // shopId S1
+//     paidInstallments:6, everPaid:true, principalRemaining:0, collectibleRemaining:0, repairCost:0, resale:8000 }  // shopId S1
 //
-//   // R3: open, never-paid (paidInstallments 0), เงินต้นค้าง 9000, ไม่มี device_returns (returnDate null,
+//   // R3: open, never-paid (paidInstallments 0), เงินต้นค้าง 9000, ตามเก็บ 1600, ไม่มี device_returns (returnDate null,
 //   //     deviceStatus null) → ข้าม byMonth + ข้าม pipeline, ร้าน S2
 //   { ... shopId:'S2', shopName:'S2', status:'returned', returnDate:null, deviceStatus:null,
-//     paidInstallments:0, everPaid:false, principalRemaining:9000, repairCost:0, resale:0 }
+//     paidInstallments:0, everPaid:false, principalRemaining:9000, collectibleRemaining:1600, repairCost:0, resale:0 }
 //
-//   // R4: open, paidInstallments 1 (เสี่ยง low-pay แต่ everPaid=true), เงินต้นค้าง 2000,
+//   // R4: open, paidInstallments 1 (เสี่ยง low-pay แต่ everPaid=true), เงินต้นค้าง 2000, ตามเก็บ 2000,
 //   //     pipeline=in_transit, ไม่มีร้าน (shopId null), เม.ย.
 //   { ... shopId:null, shopName:null, status:'returned', returnDate:'2026-04-01...',
 //     deviceStatus:'in_transit', paidInstallments:1, everPaid:true, principalRemaining:2000,
-//     repairCost:500, resale:0 }
+//     collectibleRemaining:2000, repairCost:500, resale:0 }
 // ]
 //
 // EXPECTED buildReturnReport(rows, shopTotals):
@@ -292,7 +298,8 @@ export function buildReturnReport(
 // 1) kpi:
 //    total=4, open=3 (R1,R3,R4), closed=1 (R2)
 //    closeRatePct = 1/4*100 = 25.0
-//    sumPrincipalRemaining (open only) = 5000+9000+2000 = 16000
+//    sumPrincipalRemaining (open only: R1,R3,R4) = 5000+9000+2000 = 16000
+//    sumCollectible (open only: R1,R3,R4) = 1800+1600+2000 = 5400
 //    sumRepair (all) = 1000+0+0+500 = 1500
 //    sumResale (all) = 4000+8000+0+0 = 12000
 //    netDamage = 16000 + 1500 − 12000 = 5500
@@ -301,9 +308,9 @@ export function buildReturnReport(
 //    เรียง: ['2026-03','2026-04']
 //
 // 3) byShop (เรียง count desc):
-//    S1: count 2, principal 5000+0=5000, netDamage (5000+1000−4000)+(0+0−8000)= 2000+(−8000)= −6000
-//    S2: count 1, principal 9000, netDamage 9000+0−0 = 9000
-//    '' (no shop): count 1, principal 2000, netDamage 2000+500−0 = 2500
+//    S1: count 2, principal 5000+0=5000, collectible 1800+0=1800, netDamage (5000+1000−4000)+(0+0−8000)= 2000+(−8000)= −6000
+//    S2: count 1, principal 9000, collectible 1600, netDamage 9000+0−0 = 9000
+//    '' (no shop): count 1, principal 2000, collectible 2000, netDamage 2000+500−0 = 2500
 //    → [S1(2), S2(1), ''(1)] (S2 ก่อน '' เพราะ insertion order เมื่อ count เท่ากัน — stable sort)
 //
 // 7) damageByShop (เรียง netDamage desc): [S2(9000), ''(2500), S1(−6000)]

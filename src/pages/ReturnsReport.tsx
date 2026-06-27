@@ -82,8 +82,14 @@ function KpiCards({ r }: { r: ReturnReport }) {
         <p className="text-xs text-ink-soft">ของทั้งหมด</p>
       </Card>
       <Card className="p-4 text-center">
-        <p className="mb-1 text-xs text-ink-soft">เงินต้นคงค้าง (ยังตามเก็บ)</p>
-        <p className="text-lg font-bold text-amber-700">{fmtBaht(kpi.sumPrincipalRemaining)}</p>
+        <p className="mb-1 text-xs text-ink-soft">ยอดที่ต้องตามเก็บ</p>
+        <p className="text-lg font-bold text-amber-700">{fmtBaht(kpi.sumCollectible)}</p>
+        <p className="mt-1 text-[10px] leading-tight text-ink-soft">ตามกฎคืนเครื่อง = ค้าง 1 งวด + ค่าปรับ + ค่าซ่อม</p>
+      </Card>
+      <Card className="p-4 text-center">
+        <p className="mb-1 text-xs text-ink-soft">มูลค่าหนี้คงเหลือ (ความเสี่ยง)</p>
+        <p className="text-lg font-bold text-ink">{fmtBaht(kpi.sumPrincipalRemaining)}</p>
+        <p className="mt-1 text-[10px] leading-tight text-ink-soft">เงินต้นที่ปล่อยไปยังไม่ได้คืนทั้งหมด</p>
       </Card>
       <Card className="p-4 text-center">
         <p className="mb-1 text-xs text-ink-soft">ค่าซ่อมรวม</p>
@@ -154,7 +160,7 @@ function MonthSection({ byMonth }: { byMonth: ReturnByMonth[] }) {
               onClick={() => setMode('baht')}
               className={`px-3 py-1.5 ${mode === 'baht' ? 'bg-salmon text-white' : 'bg-cream text-ink-soft'}`}
             >
-              เงินต้นคงค้าง
+              มูลค่าหนี้คงเหลือ
             </button>
           </div>
           {/* เลือกปี */}
@@ -218,7 +224,8 @@ function ByShopTable({ rows }: { rows: ReturnByShop[] }) {
               <tr className="border-b border-peach text-left text-xs text-ink-soft">
                 <th className="pb-2 font-medium">ร้าน</th>
                 <th className="pb-2 text-right font-medium">จำนวนคืน</th>
-                <th className="pb-2 text-right font-medium">เงินต้นคงค้าง</th>
+                <th className="pb-2 text-right font-medium">ยอดตามเก็บ</th>
+                <th className="pb-2 text-right font-medium">มูลค่าหนี้คงเหลือ</th>
                 <th className="pb-2 text-right font-medium">ความเสียหายสุทธิ</th>
               </tr>
             </thead>
@@ -227,7 +234,8 @@ function ByShopTable({ rows }: { rows: ReturnByShop[] }) {
                 <tr key={row.shopId || `none-${i}`} className="border-b border-peach/40 last:border-0">
                   <td className="py-2 font-medium text-ink">{row.shopName}</td>
                   <td className="py-2 text-right text-ink-soft">{row.count}</td>
-                  <td className="py-2 text-right text-amber-700">{fmtBaht(row.principalRemaining)}</td>
+                  <td className="py-2 text-right text-amber-700">{fmtBaht(row.collectibleRemaining)}</td>
+                  <td className="py-2 text-right text-ink-soft">{fmtBaht(row.principalRemaining)}</td>
                   <td className={`py-2 text-right font-semibold ${row.netDamage > 0 ? 'text-red-600' : 'text-green-700'}`}>
                     {fmtBaht(row.netDamage)}
                   </td>
@@ -257,7 +265,7 @@ function NeverPaidTable({ rows }: { rows: NeverPaidReturned[] }) {
               <tr className="border-b border-peach text-left text-xs text-ink-soft">
                 <th className="pb-2 font-medium">ลูกค้า</th>
                 <th className="pb-2 font-medium">ร้าน</th>
-                <th className="pb-2 text-right font-medium">เงินต้นคงค้าง</th>
+                <th className="pb-2 text-right font-medium">มูลค่าหนี้คงเหลือ</th>
                 <th className="pb-2 text-right font-medium">วันคืน</th>
               </tr>
             </thead>
@@ -369,7 +377,7 @@ function PayBeforeSection({ r }: { r: ReturnReport }) {
               <tr className="border-b border-peach text-left text-xs text-ink-soft">
                 <th className="pb-2 font-medium">ลูกค้า</th>
                 <th className="pb-2 font-medium">ร้าน</th>
-                <th className="pb-2 text-right font-medium">เงินต้นคงค้าง</th>
+                <th className="pb-2 text-right font-medium">มูลค่าหนี้คงเหลือ</th>
                 <th className="pb-2 text-right font-medium">วันคืน</th>
               </tr>
             </thead>
@@ -403,7 +411,7 @@ function DamageByShopTable({ rows }: { rows: ReturnByShop[] }) {
   return (
     <Card>
       <h2 className="mb-1 text-sm font-semibold text-ink">ความเสียหายแยกร้าน</h2>
-      <p className="mb-3 text-xs text-ink-soft">ความเสียหายสุทธิ = เงินต้นคงค้าง + ค่าซ่อม − ราคาขายเครื่องคืน (เรียงเสียหายมากสุด)</p>
+      <p className="mb-3 text-xs text-ink-soft">ความเสียหายสุทธิ = มูลค่าหนี้คงเหลือ + ค่าซ่อม − ราคาขายเครื่องคืน (เรียงเสียหายมากสุด)</p>
       {rows.length === 0 ? (
         <p className="py-6 text-center text-ink-soft">ไม่มีข้อมูล</p>
       ) : (
@@ -413,7 +421,7 @@ function DamageByShopTable({ rows }: { rows: ReturnByShop[] }) {
               <tr className="border-b border-peach text-left text-xs text-ink-soft">
                 <th className="pb-2 font-medium">ร้าน</th>
                 <th className="pb-2 text-right font-medium">จำนวนคืน</th>
-                <th className="pb-2 text-right font-medium">เงินต้นคงค้าง</th>
+                <th className="pb-2 text-right font-medium">มูลค่าหนี้คงเหลือ</th>
                 <th className="pb-2 text-right font-medium">ความเสียหายสุทธิ</th>
               </tr>
             </thead>
