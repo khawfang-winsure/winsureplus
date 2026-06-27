@@ -181,6 +181,7 @@ export default function Letters() {
           round: st.round,
           addressKindLabel: ADDRESS_KIND_LABEL[st.addressKind],
           addressLines: lines,
+          primaryPhone: r.contract?.phone || '',
           body: fillLetterTemplate(template, {
             name: r.status.customerName,
             address: lines,
