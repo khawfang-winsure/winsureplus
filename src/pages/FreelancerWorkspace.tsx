@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFilter } from '../lib/useFilter'
-import { AlarmClock, AlertTriangle, CalendarClock, Search } from 'lucide-react'
+import { AlarmClock, AlertTriangle, CalendarClock, PackageCheck, Search } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht } from '../lib/format'
@@ -156,6 +156,18 @@ function PromiseAlertBadge({ promiseToPayDate }: { promiseToPayDate: string | nu
   return null
 }
 
+// ===== ป้าย "คืนเครื่องแล้ว" + ยอดปิดที่ต้องตามเก็บ =====
+// แสดงเฉพาะเคส isReturned (status='returned' ที่ยังค้างยอดปิด) — โทนม่วง/indigo แยกจากป้ายวันนัด
+function ReturnedClosingBadge({ row }: { row: FreelancerQueueRow }) {
+  if (!row.isReturned) return null
+  return (
+    <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+      <PackageCheck size={12} />
+      คืนเครื่องแล้ว · ยอดปิด {baht(row.returnClosingAmount)} ฿
+    </span>
+  )
+}
+
 // ===== Row ใน Tab 1 =====
 function QueueRow({
   sr,
@@ -259,6 +271,8 @@ function QueueRow({
         )}
         {/* ป้ายเตือนวันนัด (เลยนัด/วันนี้/พรุ่งนี้) */}
         <PromiseAlertBadge promiseToPayDate={r.promiseToPayDate} />
+        {/* ป้ายคืนเครื่องแล้ว + ยอดปิด */}
+        {r.isReturned && <div><ReturnedClosingBadge row={r} /></div>}
       </td>
       {/* ร้าน */}
       <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
@@ -396,6 +410,8 @@ function QueueCardMobile({
           )}
           {/* ป้ายเตือนวันนัด (เลยนัด/วันนี้/พรุ่งนี้) */}
           <PromiseAlertBadge promiseToPayDate={r.promiseToPayDate} />
+          {/* ป้ายคืนเครื่องแล้ว + ยอดปิด */}
+          {r.isReturned && <div><ReturnedClosingBadge row={r} /></div>}
         </div>
         <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
           {TIER_EMOJI[sr.tier]} {sr.score}

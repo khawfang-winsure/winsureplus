@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Package, Pencil } from 'lucide-react'
+import { AlertCircle, FileText, Package, Pencil } from 'lucide-react'
 import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
 import { getReturns, updateDefectNotes, updateReturnWorkflow, updateSalePrice } from '../lib/db'
@@ -185,6 +185,77 @@ function EditSalePriceModal({
   )
 }
 
+// ===== Modal ดูรายละเอียด/ตำหนิเครื่อง (อ่านอย่างเดียว) =====
+function DeviceDetailModal({
+  row,
+  onClose,
+}: {
+  row: DeviceReturnRow
+  onClose: () => void
+}) {
+  const status = resolveStatus(row)
+  const hasDefect = !!row.defectNotes && row.defectNotes.trim().length > 0
+  const repair = row.repairCost ?? 0
+
+  return (
+    <Modal title={`รายละเอียดเครื่อง — ${row.customerName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        {/* ข้อมูลเครื่อง */}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+          <span className="text-ink-soft">สัญญา</span>
+          <span className="text-ink">{row.contractNo}</span>
+          <span className="text-ink-soft">รุ่นเครื่อง</span>
+          <span className="text-ink">{row.deviceModel ?? '—'}</span>
+          <span className="text-ink-soft">สถานะเครื่อง</span>
+          <span>
+            <Badge tone={STATUS_TONE[status]}>{DEVICE_STATUS_LABEL[status]}</Badge>
+          </span>
+          {repair > 0 && (
+            <>
+              <span className="text-ink-soft">ค่าซ่อม</span>
+              <span className="text-ink">{baht(repair)} ฿</span>
+            </>
+          )}
+          {row.returnMethod === 'walk_in' ? (
+            <>
+              <span className="text-ink-soft">วิธีคืน</span>
+              <span className="text-ink">คืนที่ร้าน{row.returnLocation ? `: ${row.returnLocation}` : ''}</span>
+            </>
+          ) : row.trackingNumber ? (
+            <>
+              <span className="text-ink-soft">ขนส่ง / เลขพัสดุ</span>
+              <span className="text-ink">
+                {row.courier ? `${row.courier} · ` : ''}{row.trackingNumber}
+              </span>
+            </>
+          ) : null}
+        </div>
+
+        {/* ตำหนิเครื่อง */}
+        <div>
+          <p className="mb-1 flex items-center gap-1.5 text-sm font-medium text-ink">
+            <AlertCircle size={15} className="text-salmon-deep" />
+            ตำหนิตัวเครื่อง
+          </p>
+          {hasDefect ? (
+            <div className="whitespace-pre-line rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink">
+              {row.defectNotes}
+            </div>
+          ) : (
+            <p className="rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink-soft">
+              ยังไม่มีบันทึกตำหนิ
+            </p>
+          )}
+        </div>
+
+        <div className="flex justify-end">
+          <Button variant="ghost" onClick={onClose}>ปิด</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ===== หน้าหลัก =====
 export default function DevicePipeline() {
   const { role, configured } = useAuth()
@@ -195,6 +266,7 @@ export default function DevicePipeline() {
   const [filter, setFilter] = useState<DeviceStatus | 'all' | 'active'>('active')
   const [selected, setSelected] = useState<DeviceReturnRow | null>(null)
   const [editPriceTarget, setEditPriceTarget] = useState<DeviceReturnRow | null>(null)
+  const [detailTarget, setDetailTarget] = useState<DeviceReturnRow | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -318,13 +390,23 @@ export default function DevicePipeline() {
                       {r.deviceStatusBy ?? '-'}
                     </td>
                     <td className="py-3">
-                      {nexts.length > 0 ? (
-                        <Button variant="ghost" onClick={() => setSelected(r)}>
-                          เปลี่ยนสถานะ
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          onClick={() => setDetailTarget(r)}
+                          aria-label="ดูรายละเอียด/ตำหนิเครื่อง"
+                        >
+                          <FileText size={13} />
+                          ดูตำหนิ
                         </Button>
-                      ) : (
-                        <span className="text-xs text-ink-soft">สิ้นสุดแล้ว</span>
-                      )}
+                        {nexts.length > 0 ? (
+                          <Button variant="ghost" onClick={() => setSelected(r)}>
+                            เปลี่ยนสถานะ
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-ink-soft">สิ้นสุดแล้ว</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )
@@ -353,6 +435,13 @@ export default function DevicePipeline() {
             setEditPriceTarget(null)
             await load()
           }}
+        />
+      )}
+
+      {detailTarget && (
+        <DeviceDetailModal
+          row={detailTarget}
+          onClose={() => setDetailTarget(null)}
         />
       )}
     </div>

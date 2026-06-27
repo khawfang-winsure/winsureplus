@@ -23,6 +23,7 @@ import {
   adjustPayment,
   cancelPayment,
   restructureContract,
+  closeReturnedContract,
   submitReturn,
   setContractFlags,
   getMyPrivateNote,
@@ -161,6 +162,10 @@ export default function ContractDetail() {
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
+  // ปิดสัญญา (คืนเครื่อง): modal ยืนยัน + loading guard + error
+  const [closeReturnOpen, setCloseReturnOpen] = useState(false)
+  const [closeReturnBusy, setCloseReturnBusy] = useState(false)
+  const [closeReturnErr, setCloseReturnErr] = useState<string | null>(null)
   const [flagsOpen, setFlagsOpen] = useState(false)
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
@@ -381,6 +386,22 @@ export default function ContractDetail() {
     }
   }
 
+  // ยืนยันรับชำระยอดปิดครบ → flip สถานะ returned → returned_closed
+  async function handleCloseReturned() {
+    if (!contract) return
+    setCloseReturnBusy(true)
+    setCloseReturnErr(null)
+    try {
+      await closeReturnedContract(contract.id, userName ?? 'ไม่ทราบ')
+      setCloseReturnOpen(false)
+      await load()
+    } catch (e) {
+      setCloseReturnErr(errMsg(e))
+    } finally {
+      setCloseReturnBusy(false)
+    }
+  }
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -505,9 +526,17 @@ export default function ContractDetail() {
               <p className="font-semibold text-ink">{baht(returnedOutstanding.otherExtras)} ฿</p>
             </div>
           </div>
-          <div className="mt-2 border-t border-amber-200 pt-2">
-            <p className="text-xs text-ink-soft">ยอดรวมที่ต้องชำระ</p>
-            <p className="text-xl font-bold text-amber-700">{baht(returnedOutstanding.total)} ฿</p>
+          <div className="mt-2 flex flex-wrap items-end justify-between gap-2 border-t border-amber-200 pt-2">
+            <div>
+              <p className="text-xs text-ink-soft">ยอดรวมที่ต้องชำระ</p>
+              <p className="text-xl font-bold text-amber-700">{baht(returnedOutstanding.total)} ฿</p>
+            </div>
+            {/* ปิดสัญญา (คืนเครื่อง) — admin + staff: ยืนยันว่ารับชำระยอดปิดครบแล้ว */}
+            {canStaff && (
+              <Button onClick={() => { setCloseReturnErr(null); setCloseReturnOpen(true) }}>
+                <FileCheck size={15} /> ปิดสัญญา (คืนเครื่อง)
+              </Button>
+            )}
           </div>
         </Card>
       )}
@@ -1386,6 +1415,53 @@ export default function ContractDetail() {
           }}
           contractId={contract.id}
         />
+      )}
+
+      {/* ปิดสัญญา (คืนเครื่อง) — confirm modal สรุปยอดปิดให้ตรวจก่อนกดยืนยัน */}
+      {closeReturnOpen && returnedOutstanding !== null && (
+        <Modal title="ปิดสัญญา (คืนเครื่อง)" onClose={() => !closeReturnBusy && setCloseReturnOpen(false)}>
+          <p className="mb-3 text-sm text-ink">
+            ตรวจยอดปิดที่รับชำระจากลูกค้าก่อนปิดสัญญา
+          </p>
+          <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
+            <div className="flex justify-between py-0.5">
+              <span className="text-ink-soft">
+                ค่างวด{returnedOutstanding.details ? ` (งวด ${returnedOutstanding.details.installmentNo})` : ''}
+              </span>
+              <span className="font-semibold text-ink">{baht(returnedOutstanding.installmentAmount)} ฿</span>
+            </div>
+            <div className="flex justify-between py-0.5">
+              <span className="text-ink-soft">ค่าปรับ</span>
+              <span className="font-semibold text-ink">{baht(returnedOutstanding.penaltyAmount)} ฿</span>
+            </div>
+            <div className="flex justify-between py-0.5">
+              <span className="text-ink-soft">ค่าซ่อม</span>
+              <span className="font-semibold text-ink">{baht(returnedOutstanding.repairCost)} ฿</span>
+            </div>
+            <div className="flex justify-between py-0.5">
+              <span className="text-ink-soft">ค่าใช้จ่ายอื่น</span>
+              <span className="font-semibold text-ink">{baht(returnedOutstanding.otherExtras)} ฿</span>
+            </div>
+            <div className="mt-1 flex justify-between border-t border-amber-200 pt-1.5">
+              <span className="font-semibold text-amber-800">ยอดรวม</span>
+              <span className="text-lg font-bold text-amber-700">{baht(returnedOutstanding.total)} ฿</span>
+            </div>
+          </div>
+          <p className="mb-4 text-sm text-ink">
+            ยืนยันว่ารับชำระยอดปิดครบแล้ว และต้องการปิดสัญญา (คืนเครื่อง)?
+          </p>
+          {closeReturnErr && (
+            <p className="mb-3 text-sm text-red-600">{closeReturnErr}</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={closeReturnBusy} onClick={() => setCloseReturnOpen(false)}>
+              ยกเลิก
+            </Button>
+            <Button disabled={closeReturnBusy} onClick={() => void handleCloseReturned()}>
+              {closeReturnBusy ? 'กำลังปิดสัญญา...' : 'ยืนยันปิดสัญญา'}
+            </Button>
+          </div>
+        </Modal>
       )}
 
       {flagsOpen && (

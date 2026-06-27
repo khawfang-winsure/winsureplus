@@ -50,6 +50,7 @@ import {
 import { DEFAULT_RATE_SETS, type RateSet } from './rates'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 import type { DeviceStatus } from './returnWorkflow'
+import { outstandingAfterReturn } from './outstandingExtras'
 
 export type OptionKind =
   | 'phone_model'
@@ -714,6 +715,19 @@ export async function getDocRejectLog(contractId: string): Promise<DocRejectEntr
   return (data ?? []).map((r) => mapDocRejectEntry(r as DocRejectLogRow))
 }
 
+/** ปิดสัญญาเคสคืนเครื่องเมื่อรับเงินครบ: status returned → returned_closed
+ *  RPC guard: admin/staff เท่านั้น + flip เฉพาะสัญญาที่ยังเป็น 'returned'
+ *  @param contractId  id ของสัญญา
+ *  @param byName      ชื่อผู้กดปิด (useAuth().name) */
+export async function closeReturnedContract(contractId: string, byName: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('close_returned_contract', {
+    p_contract_id: contractId,
+    p_by: byName,
+  })
+  if (error) throw error
+}
+
 export async function getContract(id: string): Promise<Contract | null> {
   if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
   const { data, error } = await supabase.from('contracts').select('*').eq('id', id).maybeSingle()
@@ -792,6 +806,7 @@ export async function updateContract(id: string, c: Omit<Contract, 'id'>): Promi
 // ---------- งวดผ่อน + สถานะล่าช้า (Phase 3/4) ----------
 interface InstallmentRow {
   id: string
+  contract_id?: string   // มีเฉพาะตอน select cross-contract (เช่น คิวเคสคืนเครื่อง)
   installment_no: number
   due_date: string
   amount: number
@@ -2305,6 +2320,9 @@ export interface FreelancerQueueRow {
   latestOtherAuthorAt: string | null  // MAX created_at ของ follow_up ที่ author ≠ ตัวเอง (ใน 90-day window)
   myLastTouchAt: string | null        // MAX(queue_case_seen.last_seen_at, MAX created_at ที่ author = ตัวเอง)
   latestNote: string | null           // note_text ของ follow_up ล่าสุดสุด (ทุก author, ใน window)
+  // --- เคสคืนเครื่องแล้วแต่ยังค้างยอด (returned-unpaid) ---
+  isReturned: boolean                 // true = status='returned' (UI badge "คืนเครื่องแล้ว")
+  returnClosingAmount: number         // ยอดปิดเคสคืนเครื่อง (outstandingAfterReturn.total); 0 สำหรับ active
 }
 
 interface QueueStatusRow {
@@ -2317,6 +2335,7 @@ interface QueueStatusRow {
   penalty_due: number
   grade: string | null
   remaining_installments: number
+  status: string   // 'active' | 'returned' — แยกเคสคืนเครื่องที่ยังค้างยอด
 }
 
 interface QueueContractRow {
@@ -2345,19 +2364,91 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   } = await supabase.auth.getUser()
   const myUid = currentUser?.id ?? null
 
-  // ดึงจาก v_contract_status (status=active, bucket != normal)
+  // ดึงจาก v_contract_status:
+  //  - status='active' + bucket != normal (คิวลูกหนี้ปกติเดิม)
+  //  - status='returned' (เคสคืนเครื่องแล้วแต่ยังค้างยอด → เด้งเข้าคิวตามเกรดเดิม)
+  // RLS เกรดยังกรองให้เอง: freelancer เห็นเฉพาะเกรดตัวเอง (ทั้ง active + returned)
+  // ไม่รวม returned_closed / closed / online (ปิดแล้ว ไม่ต้องตามเก็บ)
   const { data: statusData, error: statusError } = await supabase
     .from('v_contract_status')
-    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments')
-    .eq('status', 'active')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status')
+    .in('status', ['active', 'returned'])
     .neq('bucket', 'normal')
     .in('grade', grades)
     .order('days_late', { ascending: false })
     .range(0, PAGE_CAP)
   if (statusError) throw statusError
 
-  const statusRows = (statusData ?? []) as QueueStatusRow[]
+  // กรอง bucket: เดิม view ตัด bucket='normal' ออกอยู่แล้ว แต่เคส returned
+  // อาจมี bucket='normal' (จ่ายตรงเวลาก่อนคืนเครื่อง) — ต้องคงไว้ ไม่ตัดทิ้ง
+  // .neq('bucket','normal') ด้านบนตัด returned ที่ normal ทิ้งไปด้วย จึงต้อง re-include
+  // ด้วย query ที่สอง เฉพาะ returned (เลี่ยงทำ logic ฝั่ง SQL ซับซ้อน)
+  const { data: returnedNormalData, error: returnedNormalErr } = await supabase
+    .from('v_contract_status')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status')
+    .eq('status', 'returned')
+    .eq('bucket', 'normal')
+    .in('grade', grades)
+    .range(0, PAGE_CAP)
+  if (returnedNormalErr) throw returnedNormalErr
+
+  const seenIds = new Set<string>()
+  const statusRows: QueueStatusRow[] = []
+  for (const r of [...((statusData ?? []) as QueueStatusRow[]), ...((returnedNormalData ?? []) as QueueStatusRow[])]) {
+    if (seenIds.has(r.contract_id)) continue
+    seenIds.add(r.contract_id)
+    statusRows.push(r)
+  }
   if (statusRows.length === 0) return []
+
+  // --- ยอดปิดเคสคืนเครื่อง (returnClosingAmount) ---
+  // เฉพาะแถว status='returned': คำนวณยอดปิดด้วย outstandingAfterReturn
+  //  = งวดค้างเก่าสุด 1 งวด + ค่าปรับงวดนั้น + ค่าซ่อม + extras อื่น
+  // โหลด installments + extra_charges เฉพาะสัญญา returned (จำนวนน้อย) แบบ batch in-filter
+  // → ไม่ N+1; ถ้าไม่มี returned เลย ข้ามทั้งสอง query
+  const returnedIds = statusRows.filter((r) => r.status === 'returned').map((r) => r.contract_id)
+  const returnClosingMap = new Map<string, number>()
+  if (returnedIds.length > 0) {
+    const [{ data: retInstData, error: retInstErr }, { data: retExtraData, error: retExtraErr }] =
+      await Promise.all([
+        supabase
+          .from('installments')
+          .select('contract_id, id, installment_no, due_date, amount, paid_at, paid_amount, paid_by_name, penalty_days, penalty_amount, status')
+          .in('contract_id', returnedIds)
+          .range(0, PAGE_CAP),
+        supabase
+          .from('extra_charges')
+          .select('id, contract_id, amount, reason, created_at, created_by')
+          .in('contract_id', returnedIds)
+          .range(0, PAGE_CAP),
+      ])
+    if (retInstErr) throw retInstErr
+    if (retExtraErr) throw retExtraErr
+
+    // group installments per contract → domain Installment (ผ่าน mapInstallment)
+    const instByContract = new Map<string, Installment[]>()
+    for (const row of (retInstData ?? []) as InstallmentRow[]) {
+      const cid = row.contract_id
+      if (!cid) continue
+      const arr = instByContract.get(cid) ?? []
+      arr.push(mapInstallment(row))
+      instByContract.set(cid, arr)
+    }
+    // group extra_charges per contract → domain ExtraCharge (ผ่าน mapExtraCharge)
+    const extraByContract = new Map<string, ExtraCharge[]>()
+    for (const row of (retExtraData ?? []) as ExtraChargeRow[]) {
+      const arr = extraByContract.get(row.contract_id) ?? []
+      arr.push(mapExtraCharge(row))
+      extraByContract.set(row.contract_id, arr)
+    }
+    for (const cid of returnedIds) {
+      const result = outstandingAfterReturn(
+        instByContract.get(cid) ?? [],
+        extraByContract.get(cid) ?? [],
+      )
+      returnClosingMap.set(cid, result.total)
+    }
+  }
 
   // ดึง phone + model + monthly_payment + promise fields จาก contracts
   const ids = statusRows.map((r) => r.contract_id)
@@ -2515,8 +2606,16 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     fuMap.set(fu.contract_id, agg)
   }
 
-  return statusRows.map((r): FreelancerQueueRow => {
+  // กรองทิ้งเคส returned ที่ยอดปิด ≤ 0 (ไม่มีอะไรต้องเก็บ = ไม่ต้องเด้งคิว)
+  // เคส active คงเดิมทุกแถว
+  const visibleRows = statusRows.filter((r) => {
+    if (r.status !== 'returned') return true
+    return (returnClosingMap.get(r.contract_id) ?? 0) > 0
+  })
+
+  return visibleRows.map((r): FreelancerQueueRow => {
     const c = contractMap.get(r.contract_id)
+    const isReturned = r.status === 'returned'
     const agg = fuMap.get(r.contract_id) ?? {
       totalAttempts: 0,
       successfulAttempts: 0,
@@ -2577,6 +2676,8 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       latestOtherAuthorAt: agg.latestOtherAuthorAt,
       myLastTouchAt,
       latestNote: agg.latestNote,
+      isReturned,
+      returnClosingAmount: isReturned ? (returnClosingMap.get(r.contract_id) ?? 0) : 0,
     }
   })
 }
