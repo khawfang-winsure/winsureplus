@@ -4669,19 +4669,35 @@ export interface InboxCase {
   latestNoteByName: string
   promiseToPayDate: string | null
   pinned: boolean
+  // --- ขยาย inbox 2026-06-27: แหล่งเด้งเคส + คืนเครื่อง ---
+  hasDeviceReturn: boolean // มี device_returns ที่ยังไม่จบ (non-terminal) ของสัญญานี้หรือไม่
+  deviceReturnStatus: string | null // device_status ล่าสุดที่ non-terminal (null ถ้าไม่มี)
+  deviceReturnAt: string | null // created_at ของ return ล่าสุดที่ non-terminal (null ถ้าไม่มี)
+  sources: string[] // เหตุที่อยู่ใน inbox: 'pinned' | 'line_pending' | 'promise' | 'return' (มีได้หลายเหตุ)
 }
 
 /**
  * ดึงเคสในกล่องรับงาน (Inbox) ของ admin/staff:
- * membership = (follow_up ล่าสุดของสัญญา result='line_pending') OR (มี row ใน inbox_pins)
- * เฉพาะสัญญา status='active', เรียง daysLate DESC
+ * membership = union ของ 4 แหล่ง (เฉพาะสัญญา status='active'):
+ *   (1) pinned        — มี row ใน inbox_pins
+ *   (2) line_pending  — follow_up ล่าสุด result='line_pending'
+ *   (3) promise       — contracts.promise_to_pay_date IS NOT NULL (ทุกเคสที่มีวันนัด — Pete 2026-06-27)
+ *   (4) return        — มี device_returns ที่ยัง non-terminal (ยังไม่ 'shipped')
+ * เรียง daysLate DESC
+ *
+ * Device-return non-terminal set ที่นับเข้า inbox (ยังอยู่ในขั้นจัดการ):
+ *   in_transit, pending_check, checked, pending_sale, priced, transferred
+ *   — terminal = 'shipped' (จัดส่งคืนร้านเรียบร้อย) ไม่นับ; device_status = null ก็ไม่นับ
+ *   (อ้างอิง DeviceStatus enum + ALLOWED_TRANSITIONS ใน returnWorkflow.ts: 'shipped' = terminal)
  *
  * การดึงข้อมูล:
- *   Step 1: inbox_pins ทั้งหมด (pinned contracts + metadata)
- *   Step 2: follow_ups ล่าสุดต่อสัญญา (ทุก active contract) ที่ last_result = 'line_pending'
- *           — ใช้ v_follow_up_stats_90d.last_result เพื่อลด round-trip
- *   Step 3: ดึง contract details + status สำหรับ union ของ ids
- *   Step 4: ดึง note ล่าสุดต่อสัญญา (follow_ups 1 แถวต่อ contract)
+ *   Step 1: inbox_pins ทั้งหมด
+ *   Step 2: v_follow_up_stats_90d.last_result = 'line_pending'
+ *   Step 2b: contracts.promise_to_pay_date IS NOT NULL (id เท่านั้น เพื่อ union)
+ *   Step 2c: device_returns ที่ device_status non-terminal (เก็บ status + created_at ล่าสุดต่อ contract)
+ *   Step 3: ดึง status + details จาก v_contract_status (active เท่านั้น) สำหรับ union ของ ids
+ *   Step 4: ดึง phone + promise fields จาก contracts
+ *   Step 5: ดึง note ล่าสุดต่อสัญญา (follow_ups 1 แถวต่อ contract)
  */
 export async function getInboxCases(): Promise<InboxCase[]> {
   if (!supabase) return []
@@ -4709,8 +4725,47 @@ export async function getInboxCases(): Promise<InboxCase[]> {
     ((statsData ?? []) as { contract_id: string }[]).map((r) => r.contract_id),
   )
 
-  // union: pinned OR line_pending
-  const allIds = Array.from(new Set([...pinnedIds, ...linePendingIds]))
+  // Step 2b: contract ที่มีวันนัดชำระ (promise_to_pay_date IS NOT NULL) → เด้งเข้า inbox
+  // filter ฝั่ง DB (.not is null) เพื่อไม่ดึงทุกสัญญา — เคสที่มีวันนัดไม่น่าเกิน cap
+  const { data: promiseData, error: promiseErr } = await supabase
+    .from('contracts')
+    .select('id')
+    .not('promise_to_pay_date', 'is', null)
+    .range(0, PAGE_CAP)
+  if (promiseErr) throw promiseErr
+
+  const promiseIds = new Set(
+    ((promiseData ?? []) as { id: string }[]).map((c) => c.id),
+  )
+
+  // Step 2c: device_returns ที่ยัง non-terminal (ยังไม่ 'shipped') — เด้งเข้า inbox
+  // non-terminal = ทุกค่า ยกเว้น 'shipped'; null ไม่นับ. filter ฝั่ง DB (.neq shipped + not null)
+  // เก็บ created_at ล่าสุดต่อ contract (order desc + client dedupe เก็บแถวแรก)
+  const { data: returnData, error: returnErr } = await supabase
+    .from('device_returns')
+    .select('contract_id, device_status, created_at')
+    .not('device_status', 'is', null)
+    .neq('device_status', 'shipped')
+    .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (returnErr) throw returnErr
+
+  const returnMap = new Map<string, { device_status: string; created_at: string }>()
+  for (const r of (returnData ?? []) as {
+    contract_id: string
+    device_status: string
+    created_at: string
+  }[]) {
+    if (!returnMap.has(r.contract_id)) {
+      returnMap.set(r.contract_id, { device_status: r.device_status, created_at: r.created_at })
+    }
+  }
+  const returnIds = new Set(returnMap.keys())
+
+  // union: pinned OR line_pending OR promise OR return
+  const allIds = Array.from(
+    new Set([...pinnedIds, ...linePendingIds, ...promiseIds, ...returnIds]),
+  )
   if (allIds.length === 0) return []
 
   // Step 3: ดึง status + details จาก v_contract_status (active เท่านั้น)
@@ -4778,6 +4833,16 @@ export async function getInboxCases(): Promise<InboxCase[]> {
   }[]).map((r): InboxCase => {
     const c = contractMap.get(r.contract_id)
     const note = latestNoteMap.get(r.contract_id)
+    const ret = returnMap.get(r.contract_id)
+    const promiseToPayDate = c?.promise_to_pay_date ?? null
+
+    // สร้าง sources[] — เหตุที่เคสอยู่ใน inbox (1 เคสมีได้หลายเหตุ)
+    const sources: string[] = []
+    if (pinnedIds.has(r.contract_id)) sources.push('pinned')
+    if (linePendingIds.has(r.contract_id)) sources.push('line_pending')
+    if (promiseToPayDate !== null) sources.push('promise')
+    if (ret !== undefined) sources.push('return')
+
     return {
       contractId: r.contract_id,
       contractNo: r.contract_no,
@@ -4788,8 +4853,12 @@ export async function getInboxCases(): Promise<InboxCase[]> {
       latestNote: note?.note_text ?? '',
       latestNoteAt: note?.created_at ?? '',
       latestNoteByName: note?.author_name ?? '',
-      promiseToPayDate: c?.promise_to_pay_date ?? null,
+      promiseToPayDate,
       pinned: pinnedIds.has(r.contract_id),
+      hasDeviceReturn: ret !== undefined,
+      deviceReturnStatus: ret?.device_status ?? null,
+      deviceReturnAt: ret?.created_at ?? null,
+      sources,
     }
   })
 }

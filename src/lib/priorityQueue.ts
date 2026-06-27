@@ -394,3 +394,63 @@ export function sortQueue<
 
   return [...p1, ...p2, ...p3]
 }
+
+// ===== Function 3: getPromiseDateStatus — สัญลักษณ์เตือนวันนัดชำระ (เพิ่ม 2026-06-27) =====
+// pure fn — UI (Inbox / queue / customer detail) เอาไปแสดงป้ายเตือนวันนัด
+
+export type PromiseDateStatus =
+  | 'overdue' // เลยวันนัดมาแล้ว (days < 0)
+  | 'due_today' // นัดวันนี้ (days === 0)
+  | 'due_tomorrow' // นัดพรุ่งนี้ (days === 1)
+  | 'upcoming' // นัดในอนาคต > 1 วัน (days > 1)
+  | 'none' // ไม่มีวันนัด
+
+/**
+ * แปลงวันนัดชำระ → สถานะ + จำนวนวันห่างจากวันนี้ (date-only, เขต Asia/Bangkok)
+ *
+ * @param promiseToPayDate - วันนัด 'yyyy-mm-dd' (หรือ null/undefined ถ้าไม่มี)
+ * @param today            - วันนี้ 'yyyy-mm-dd'; ถ้าไม่ส่ง = วันนี้ตามเครื่อง (local time,
+ *                           ใช้ toLocalDateString เดียวกับ withinDays/sortQueue กัน off-by-one TH UTC+7)
+ * @returns { status, days } — days = (promise - today) เป็นจำนวนวันเต็ม
+ *                             (ติดลบ = เลยมาแล้ว, 0 = วันนี้, 1 = พรุ่งนี้); null ถ้าไม่มีวันนัด
+ *
+ * ⚠️ ทำไมต้อง parse แบบ 'yyyy-mm-ddT00:00:00' (ไม่ใส่ Z):
+ *    new Date('2026-06-27') ถูก parse เป็น UTC midnight → ใน TH (UTC+7) กลายเป็น 07:00 ของวันเดียวกัน
+ *    แต่บางเคส (เวลาเครื่องคนละ tz) อาจเพี้ยนเป็นคนละวัน. การเติม 'T00:00:00' บังคับ parse เป็น local midnight
+ *    → diff เป็น whole-day ตรงเสมอ (pattern เดียวกับ sortQueue บรรทัด 354)
+ *
+ * ---- Trace tests (today สมมติ = '2026-06-27') ----------------------------------
+ * // overdue:      getPromiseDateStatus('2026-06-25', '2026-06-27') → { status:'overdue',      days:-2 }
+ * // due_today:    getPromiseDateStatus('2026-06-27', '2026-06-27') → { status:'due_today',    days:0  }
+ * // due_tomorrow: getPromiseDateStatus('2026-06-28', '2026-06-27') → { status:'due_tomorrow', days:1  }
+ * // upcoming:     getPromiseDateStatus('2026-07-05', '2026-06-27') → { status:'upcoming',     days:8  }
+ * // none (null):  getPromiseDateStatus(null,         '2026-06-27') → { status:'none',         days:null }
+ * // none (undef): getPromiseDateStatus(undefined,    '2026-06-27') → { status:'none',         days:null }
+ * // ข้ามเดือน:    getPromiseDateStatus('2026-07-01', '2026-06-27') → { status:'upcoming',     days:4  }
+ */
+export function getPromiseDateStatus(
+  promiseToPayDate: string | null | undefined,
+  today?: string,
+): { status: PromiseDateStatus; days: number | null } {
+  if (!promiseToPayDate) return { status: 'none', days: null }
+
+  const todayStr = today ?? toLocalDateString(new Date())
+
+  // parse เป็น local midnight (เติม T00:00:00) → diff เป็น whole-day ไม่เพี้ยนข้าม tz
+  const promiseMs = new Date(`${promiseToPayDate}T00:00:00`).getTime()
+  const todayMs = new Date(`${todayStr}T00:00:00`).getTime()
+
+  // NaN guard: รูปแบบวันที่ผิด → ถือว่าไม่มีวันนัด (safe default)
+  if (isNaN(promiseMs) || isNaN(todayMs)) return { status: 'none', days: null }
+
+  const MS_PER_DAY = 86_400_000
+  const days = Math.round((promiseMs - todayMs) / MS_PER_DAY)
+
+  let status: PromiseDateStatus
+  if (days < 0) status = 'overdue'
+  else if (days === 0) status = 'due_today'
+  else if (days === 1) status = 'due_tomorrow'
+  else status = 'upcoming'
+
+  return { status, days }
+}
