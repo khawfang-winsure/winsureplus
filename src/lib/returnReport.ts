@@ -7,8 +7,9 @@
 //                        (ไม่รวมดอก/ค่าปรับสะสม)
 //   repairCost         = ค่าซ่อม (repair_cost ?? repair_fee ?? 0)
 //   resale             = เงินขายเครื่องคืน (sale_price ?? 0)
-//   netDamage          = principalRemaining + repairCost − resale
-//                        = "ความเสียหายสุทธิ" เงินที่ยังเสียจริงหลังหักขายเครื่องได้
+//   netDamage          = "ความเสียหายสุทธิ" — คิด "ต่อเคส" max(0, principalRemaining + repairCost − resale)
+//                        แล้วค่อยรวม. floor ที่ 0 ต่อเคส = เคสที่ขายเครื่องคืนคุ้มหนี้แล้วนับเป็น 0
+//                        (ไม่เอาส่วนที่ขายเกินหนี้ไปกลบเคสอื่น → ยอดรวม/ยอดต่อร้านไม่ติดลบ)
 //
 // status:
 //   returned        = คืนเครื่องแล้ว ยังไม่ปิด (= "เปิด" / open)
@@ -29,7 +30,7 @@ export interface ReturnKpi {
   sumCollectible: number        // รวมยอดตามเก็บ (1งวด+ปรับ+ซ่อม) เฉพาะเคส open
   sumRepair: number
   sumResale: number
-  netDamage: number          // sumPrincipalRemaining(open) + sumRepair − sumResale
+  netDamage: number          // Σ max(0, principalRemaining + repairCost − resale) ต่อเคส (ไม่ติดลบ)
 }
 
 export interface ReturnByMonth {
@@ -101,7 +102,7 @@ export interface ReturnReport {
 const round1 = (x: number): number => Math.round(x * 10) / 10
 const round0 = (x: number): number => Math.round(x)
 
-/** netDamage ของ 1 แถว = เงินต้นค้าง + ค่าซ่อม − เงินขายคืน */
+/** netDamage ดิบของ 1 แถว = เงินต้นค้าง + ค่าซ่อม − เงินขายคืน (อาจติดลบ — ผู้เรียก floor ที่ 0 ต่อเคสก่อนรวม) */
 function rowNetDamage(r: DeviceReturnReportRow): number {
   return r.principalRemaining + r.repairCost - r.resale
 }
@@ -141,7 +142,7 @@ export function buildReturnReport(
     sumCollectible,
     sumRepair,
     sumResale,
-    netDamage: sumPrincipalRemaining + sumRepair - sumResale,
+    netDamage: round0(rows.reduce((s, r) => s + Math.max(0, rowNetDamage(r)), 0)),
   }
 
   // ---- 2) byMonth (จาก returnDate; ข้าม null) ----
@@ -168,7 +169,7 @@ export function buildReturnReport(
     cur.count += 1
     cur.principalRemaining += r.principalRemaining
     cur.collectibleRemaining += r.collectibleRemaining
-    cur.netDamage += rowNetDamage(r)
+    cur.netDamage += Math.max(0, rowNetDamage(r))
     shopMap.set(key, cur)
   }
   const byShop: ReturnByShop[] = [...shopMap.entries()]
@@ -302,18 +303,19 @@ export function buildReturnReport(
 //    sumCollectible (open only: R1,R3,R4) = 1800+1600+2000 = 5400
 //    sumRepair (all) = 1000+0+0+500 = 1500
 //    sumResale (all) = 4000+8000+0+0 = 12000
-//    netDamage = 16000 + 1500 − 12000 = 5500
+//    netDamage = Σ max(0, perCase): R1=max(0,5000+1000−4000)=2000, R2=max(0,0+0−8000)=0,
+//                R3=max(0,9000+0−0)=9000, R4=max(0,2000+500−0)=2500 → 2000+0+9000+2500 = 13500
 //
 // 2) byMonth (skip R3 null): '2026-03' {count:2, principal:5000+0=5000}, '2026-04' {count:1, principal:2000}
 //    เรียง: ['2026-03','2026-04']
 //
-// 3) byShop (เรียง count desc):
-//    S1: count 2, principal 5000+0=5000, collectible 1800+0=1800, netDamage (5000+1000−4000)+(0+0−8000)= 2000+(−8000)= −6000
-//    S2: count 1, principal 9000, collectible 1600, netDamage 9000+0−0 = 9000
-//    '' (no shop): count 1, principal 2000, collectible 2000, netDamage 2000+500−0 = 2500
+// 3) byShop (เรียง count desc) — netDamage floor ต่อเคสก่อนรวม (max(0,·)):
+//    S1: count 2, principal 5000+0=5000, collectible 1800+0=1800, netDamage max(0,2000)+max(0,−8000)= 2000+0= 2000
+//    S2: count 1, principal 9000, collectible 1600, netDamage max(0,9000) = 9000
+//    '' (no shop): count 1, principal 2000, collectible 2000, netDamage max(0,2500) = 2500
 //    → [S1(2), S2(1), ''(1)] (S2 ก่อน '' เพราะ insertion order เมื่อ count เท่ากัน — stable sort)
 //
-// 7) damageByShop (เรียง netDamage desc): [S2(9000), ''(2500), S1(−6000)]
+// 7) damageByShop (เรียง netDamage desc): [S2(9000), ''(2500), S1(2000)]
 //
 // 4) neverPaidReturned: เฉพาะ R3 (everPaid=false) → [{C3, principal 9000, returnDate null}]
 //
