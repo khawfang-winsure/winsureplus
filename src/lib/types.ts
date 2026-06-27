@@ -229,6 +229,11 @@ export interface Contract {
   phoneBoxReceived?: boolean           // รับกล่องโทรศัพท์แล้ว
   phoneBoxReceivedAt?: string | null   // timestamp ที่รับกล่อง
   phoneBoxReceivedBy?: string | null   // ชื่อผู้รับกล่อง
+  // --- ธง "รับแล้ว แต่ไม่ครบ/ต้องแก้ไข" (0070) — ไม่กระทบ isDocComplete ---
+  docsIncomplete?: boolean             // ติดธงเอกสารไม่ครบ/ต้องแก้ไข
+  docsIncompleteItems?: string[]       // คีย์เอกสารที่ขาด เช่น ["contract","receipt"]
+  docsIncompleteAt?: string | null     // timestamp ที่ติดธง
+  docsIncompleteBy?: string | null     // ชื่อผู้ติดธง
   // --- system timestamp (กฎมือหนึ่งต้องมีกล่อง — ใช้เปรียบเทียบกับ DOC_BOX_RULE_CUTOFF) ---
   createdAt?: string // ISO timestamptz ที่บันทึกสัญญาเข้า DB (ไม่ backdatable)
 }

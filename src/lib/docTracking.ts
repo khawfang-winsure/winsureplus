@@ -9,6 +9,31 @@ import type { Contract } from './types'
 // ---------------------------------------------------------------------------
 export const DOC_BOX_RULE_CUTOFF = '2026-06-21' // วันที่ deploy กฎนี้ (Pete sign-off)
 
+// ---------------------------------------------------------------------------
+// ธง "รับเอกสารแล้ว แต่ไม่ครบ/ต้องแก้ไข" (0070)
+// 3 ชนิดเอกสารที่ขาดได้ — คีย์คงที่ (เก็บใน docs_incomplete_items)
+// ไม่กระทบ isDocComplete (เคสยังถือว่ารับแล้ว) แค่ติดธงเตือน
+// ---------------------------------------------------------------------------
+export const DOC_ITEM_KEYS = ['contract', 'consent', 'receipt'] as const
+
+export const DOC_ITEM_LABELS: Record<string, string> = {
+  contract: 'เอกสารสัญญา',
+  consent: 'เอกสารยินยอม',
+  receipt: 'ใบเสร็จ',
+}
+
+/**
+ * แปลง array ของคีย์เอกสารที่ขาด → ป้ายภาษาไทยคั่นด้วย ", "
+ * เรียงตามลำดับ DOC_ITEM_KEYS เสมอ (ไม่อิงลำดับใน input)
+ * @example formatIncompleteItems(['receipt','contract']) === 'เอกสารสัญญา, ใบเสร็จ'
+ * @example formatIncompleteItems([]) === ''
+ */
+export function formatIncompleteItems(items: string[]): string {
+  return DOC_ITEM_KEYS.filter((k) => items.includes(k))
+    .map((k) => DOC_ITEM_LABELS[k])
+    .join(', ')
+}
+
 export interface ShopDocStats {
   shopId: string
   pendingDocsCount: number   // สัญญาที่ originalDocsReceived=false

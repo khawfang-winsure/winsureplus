@@ -135,6 +135,10 @@ interface ContractRow {
   phone_box_received_at: string | null
   phone_box_received_by: string | null
   pending_doc_items: string[] | null  // jsonb array (0053)
+  docs_incomplete: boolean | null
+  docs_incomplete_items: string[] | null  // jsonb array (0070)
+  docs_incomplete_at: string | null
+  docs_incomplete_by: string | null
   created_at: string
 }
 
@@ -203,6 +207,10 @@ function mapContract(r: ContractRow): Contract {
     phoneBoxReceived: r.phone_box_received ?? false,
     phoneBoxReceivedAt: r.phone_box_received_at ?? null,
     phoneBoxReceivedBy: r.phone_box_received_by ?? null,
+    docsIncomplete: r.docs_incomplete ?? false,
+    docsIncompleteItems: Array.isArray(r.docs_incomplete_items) ? r.docs_incomplete_items : [],
+    docsIncompleteAt: r.docs_incomplete_at ?? null,
+    docsIncompleteBy: r.docs_incomplete_by ?? null,
     createdAt: r.created_at,
   }
 }
@@ -614,6 +622,26 @@ export async function markBoxReceived(contractId: string, receiverName?: string)
       phone_box_received: true,
       phone_box_received_at: now,
       phone_box_received_by: receiverName ?? null,
+    })
+    .eq('id', contractId)
+  if (error) throw error
+}
+
+/** ตั้งธง "รับเอกสารแล้ว แต่ไม่ครบ/ต้องแก้ไข" (0070)
+ *  เคสยังถือว่ารับเอกสารแล้ว (ไม่กระทบ originalDocsReceived / isDocComplete) แค่ติดธงเตือน
+ *  @param contractId id ของสัญญา
+ *  @param items คีย์เอกสารที่ขาด เช่น ["contract","receipt"] — array ว่าง = เคลียร์ธง
+ *  @param byName ชื่อผู้ติดธง (useAuth().name) */
+export async function setDocsIncomplete(contractId: string, items: string[], byName: string): Promise<void> {
+  if (!supabase) return
+  const flagged = items.length > 0
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      docs_incomplete: flagged,
+      docs_incomplete_items: items,
+      docs_incomplete_at: flagged ? new Date().toISOString() : null,
+      docs_incomplete_by: flagged ? byName : null,
     })
     .eq('id', contractId)
   if (error) throw error

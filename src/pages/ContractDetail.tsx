@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -36,6 +36,7 @@ import {
   markDocsReceived,
   markBoxReceived,
   revertDocReceipt,
+  setDocsIncomplete,
   getDocRejectLog,
   type DocRejectEntry,
   type ContractFlagPatch,
@@ -58,7 +59,7 @@ import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
 import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
-import { boxRequired, DOC_BOX_RULE_CUTOFF } from '../lib/docTracking'
+import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
@@ -195,6 +196,11 @@ export default function ContractDetail() {
   // ===== ตีกลับเอกสาร/กล่อง =====
   const [revertTarget, setRevertTarget] = useState<'docs' | 'box' | null>(null)
   const [docRejectLog, setDocRejectLog] = useState<DocRejectEntry[]>([])
+
+  // ===== ธงเอกสารไม่ครบ/ต้องแก้ไข =====
+  const [docsIncompleteEditing, setDocsIncompleteEditing] = useState(false) // เปิดส่วนเลือก checkbox
+  const [docsIncompleteDraft, setDocsIncompleteDraft] = useState<string[]>([]) // คีย์ที่เลือกอยู่
+  const [docsIncompleteSaving, setDocsIncompleteSaving] = useState(false)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -651,6 +657,137 @@ export default function ContractDetail() {
                   </Button>
                 </div>
               )}
+
+              {/* ===== ธงเอกสารไม่ครบ/ต้องแก้ไข (แสดงเฉพาะเมื่อรับเอกสารแล้ว) ===== */}
+              {contract.originalDocsReceived === true && (() => {
+                const isFlagged = contract.docsIncomplete === true
+                const flaggedItems = contract.docsIncompleteItems ?? []
+
+                async function saveFlag(items: string[]) {
+                  if (!contract) return
+                  setDocsIncompleteSaving(true)
+                  try {
+                    await setDocsIncomplete(contract.id, items, userName ?? 'ไม่ทราบ')
+                    const now = new Date().toISOString()
+                    const hasItems = items.length > 0
+                    setContract((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            docsIncomplete: hasItems,
+                            docsIncompleteItems: items,
+                            docsIncompleteAt: hasItems ? now : null,
+                            docsIncompleteBy: hasItems ? (userName ?? null) : null,
+                          }
+                        : prev,
+                    )
+                    setDocsIncompleteEditing(false)
+                  } finally {
+                    setDocsIncompleteSaving(false)
+                  }
+                }
+
+                function openEditor() {
+                  setDocsIncompleteDraft(isFlagged ? [...flaggedItems] : [])
+                  setDocsIncompleteEditing(true)
+                }
+
+                function toggleDraft(key: string) {
+                  setDocsIncompleteDraft((prev) =>
+                    prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+                  )
+                }
+
+                return (
+                  <div className="mt-2">
+                    {/* แถบเตือนเมื่อติดธงอยู่ */}
+                    {isFlagged && (
+                      <div className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2">
+                        <p className="flex items-center gap-1.5 text-sm font-medium text-amber-800">
+                          <AlertTriangle size={14} />
+                          เอกสารไม่ครบ: {formatIncompleteItems(flaggedItems) || '—'}
+                        </p>
+                        {(contract.docsIncompleteBy || contract.docsIncompleteAt) && (
+                          <p className="mt-0.5 text-xs text-amber-700">
+                            {`โดย ${contract.docsIncompleteBy ?? 'ไม่ทราบ'}`}
+                            {contract.docsIncompleteAt
+                              ? ` · ${thaiDate(contract.docsIncompleteAt.slice(0, 10))}`
+                              : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ส่วนเลือก checkbox (inline) */}
+                    {docsIncompleteEditing ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2.5">
+                        <p className="mb-1.5 text-xs font-medium text-ink-soft">
+                          เลือกเอกสารที่ขาด/ต้องแก้ไข
+                        </p>
+                        <div className="flex flex-col gap-1.5">
+                          {DOC_ITEM_KEYS.map((key) => (
+                            <label
+                              key={key}
+                              className="flex cursor-pointer items-center gap-1.5 text-sm text-ink"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={docsIncompleteDraft.includes(key)}
+                                onChange={() => toggleDraft(key)}
+                                className="h-3.5 w-3.5 accent-salmon-deep"
+                              />
+                              {DOC_ITEM_LABELS[key]}
+                            </label>
+                          ))}
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                          <Button
+                            onClick={() => void saveFlag(docsIncompleteDraft)}
+                            disabled={docsIncompleteDraft.length === 0 || docsIncompleteSaving}
+                            className="px-3 py-1.5 text-xs"
+                          >
+                            บันทึก
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setDocsIncompleteEditing(false)}
+                            disabled={docsIncompleteSaving}
+                            className="px-3 py-1.5 text-xs"
+                          >
+                            ยกเลิก
+                          </Button>
+                        </div>
+                      </div>
+                    ) : isFlagged ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          onClick={openEditor}
+                          className="px-3 py-1.5 text-xs"
+                        >
+                          แก้รายการ
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          onClick={() => void saveFlag([])}
+                          disabled={docsIncompleteSaving}
+                          className="px-3 py-1.5 text-xs text-green-700 hover:bg-green-50"
+                        >
+                          <FileCheck size={13} /> แก้ครบแล้ว / เคลียร์ธง
+                        </Button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={openEditor}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-800 hover:underline"
+                      >
+                        <AlertTriangle size={13} /> เอกสารไม่ครบ / ต้องแก้ไข
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
             {/* ===== กล่องเครื่อง ===== */}
             <div>

@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FileBox, FileCheck } from 'lucide-react'
+import { FileBox, FileCheck, AlertTriangle } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import { thaiDate } from '../lib/format'
 import { getContracts, getShops, markDocsReceived, markBoxReceived } from '../lib/db'
-import { boxRequired, isDocComplete, shopDocStats } from '../lib/docTracking'
+import { boxRequired, isDocComplete, shopDocStats, formatIncompleteItems } from '../lib/docTracking'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
 import type { Contract, Shop } from '../lib/types'
@@ -75,6 +75,11 @@ function DocRow({
           </Link>
           {boxRequired(contract) && contract.phoneBoxReceived !== true && (
             <Badge tone="red">📦 มือหนึ่ง ต้องมีกล่อง</Badge>
+          )}
+          {contract.docsIncomplete === true && (
+            <Badge tone="amber">
+              ⚠️ ไม่ครบ: {formatIncompleteItems(contract.docsIncompleteItems ?? []) || '—'}
+            </Badge>
           )}
         </div>
         <p className="text-xs text-ink-soft">{contract.contractNo}</p>
@@ -169,6 +174,27 @@ export default function DocTracking() {
   const pending = useMemo(
     () => activeOnline.filter((c) => !isDocComplete(c)),
     [activeOnline],
+  )
+
+  // ===== เคสที่ติดธง "เอกสารไม่ครบ/ต้องแก้ไข" — รับแล้วแต่ติดธง =====
+  // ดึงจาก active/online ทั้งหมด (ไม่อิง isDocComplete เพราะเคสติดธงอาจ complete แล้ว)
+  // จัดกลุ่มตามร้าน เรียงร้านที่มีเคสมาก→น้อย
+  const incompleteGroups = useMemo(() => {
+    const flagged = activeOnline.filter((c) => c.docsIncomplete === true)
+    const map = new Map<string, Contract[]>()
+    flagged.forEach((c) => {
+      if (!map.has(c.shopId)) map.set(c.shopId, [])
+      map.get(c.shopId)!.push(c)
+    })
+    const shopOf = (id: string) => data.shops.find((s) => s.id === id)
+    return Array.from(map.entries())
+      .map(([shopId, rows]) => ({ shopId, shop: shopOf(shopId), rows }))
+      .sort((a, b) => b.rows.length - a.rows.length)
+  }, [activeOnline, data.shops])
+
+  const incompleteTotal = useMemo(
+    () => incompleteGroups.reduce((s, g) => s + g.rows.length, 0),
+    [incompleteGroups],
   )
 
   // รวบรวมเดือนที่มีในลิสต์ (YYYY-MM จาก transactionDate) เรียงล่าสุดก่อน
@@ -299,6 +325,62 @@ export default function DocTracking() {
           ))}
         </Select>
       </div>
+
+      {/* ===== เอกสารต้องแก้ไข (ติดธง) — ซ่อนถ้าไม่มีเคส ===== */}
+      {incompleteTotal > 0 && (
+        <div className="mb-6 rounded-2xl border border-amber-300 bg-amber-50/60 p-4">
+          <p className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-amber-800">
+            <AlertTriangle size={16} /> เอกสารต้องแก้ไข ({incompleteTotal} รายการ)
+          </p>
+          <div className="flex flex-col gap-4">
+            {incompleteGroups.map(({ shopId, shop, rows }) => (
+              <div key={shopId}>
+                <p className="mb-1.5 text-sm font-medium text-ink">
+                  {shop ? `${shop.code} ${shop.name}` : shopId}
+                </p>
+                <div className="overflow-x-auto rounded-xl border border-amber-200 bg-white">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-amber-200 text-xs text-ink-soft">
+                        <th className="py-2 pl-3 pr-3 font-medium">ลูกค้า / สัญญา</th>
+                        <th className="py-2 pr-3 font-medium">รายการที่ขาด</th>
+                        <th className="py-2 pr-3 font-medium">ติดธงโดย</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((c) => (
+                        <tr
+                          key={c.id}
+                          className="border-t border-amber-100 hover:bg-amber-50/50"
+                        >
+                          <td className="py-2 pl-3 pr-3">
+                            <Link
+                              to={`/contract/${c.id}`}
+                              className="font-medium text-ink hover:text-salmon-deep hover:underline"
+                            >
+                              {c.customerName}
+                            </Link>
+                            <p className="text-xs text-ink-soft">{c.contractNo}</p>
+                          </td>
+                          <td className="py-2 pr-3 text-sm text-amber-800">
+                            {formatIncompleteItems(c.docsIncompleteItems ?? []) || '—'}
+                          </td>
+                          <td className="py-2 pr-3 text-xs text-ink-soft">
+                            {c.docsIncompleteBy ?? 'ไม่ทราบ'}
+                            {c.docsIncompleteAt
+                              ? ` · ${thaiDate(c.docsIncompleteAt.slice(0, 10))}`
+                              : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {groups.length === 0 ? (
         <EmptyState title="ไม่มีรายการค้าง" hint="ทุกสัญญาได้รับเอกสาร/กล่องครบแล้ว" />
