@@ -15,6 +15,8 @@ import type {
   DebtflowCase,
   DebtflowSummary,
   DeviceReturnRow,
+  DeviceReturnReportRow,
+  ShopContractTotal,
   ExtraCharge,
   GradeChangeType,
   GradeMonthlyChange,
@@ -5529,5 +5531,79 @@ export async function getLetterOutcomes(): Promise<LetterOutcome[]> {
     outcome: (r.outcome as LetterOutcome['outcome']),
     respondedAt: r.responded_at,
     daysToOutcome: r.days_to_outcome === null ? null : Number(r.days_to_outcome),
+  }))
+}
+
+// ===== รายงานการคืนเครื่อง (admin) — view 0073 =====
+
+interface DeviceReturnReportViewRow {
+  contract_id: string
+  contract_no: string | null
+  customer_name: string | null
+  shop_id: string | null
+  shop_name: string | null
+  grade: string | null
+  status: string
+  return_date: string | null
+  case_no: number | null
+  device_status: string | null
+  return_method: string | null
+  total_installments: string | number | null
+  paid_installments: string | number | null
+  ever_paid: boolean | null
+  principal_remaining: string | number | null
+  repair_cost: string | number | null
+  resale: string | number | null
+  device_price: string | number | null
+}
+
+interface ShopContractTotalRow {
+  shop_id: string
+  total_contracts: string | number | null
+}
+
+/** ดึงทุกสัญญาคืนเครื่อง (returned + returned_closed) สำหรับ buildReturnReport()
+ *  ใช้ .range กัน PostgREST cap (เคสน้อยแต่กันไว้) + coerce ตัวเลขด้วย Number() */
+export async function getDeviceReturnReportRows(): Promise<DeviceReturnReportRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_device_return_report')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, grade, status, return_date, case_no, device_status, return_method, total_installments, paid_installments, ever_paid, principal_remaining, repair_cost, resale, device_price')
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as DeviceReturnReportViewRow[]).map(r => ({
+    contractId: r.contract_id,
+    contractNo: r.contract_no ?? '-',
+    customerName: r.customer_name ?? '-',
+    shopId: r.shop_id,
+    shopName: r.shop_name,
+    grade: r.grade,
+    status: (r.status as DeviceReturnReportRow['status']),
+    returnDate: r.return_date,
+    caseNo: r.case_no,
+    deviceStatus: r.device_status,
+    returnMethod: r.return_method,
+    totalInstallments: Number(r.total_installments ?? 0),
+    paidInstallments: Number(r.paid_installments ?? 0),
+    everPaid: r.ever_paid === true,
+    principalRemaining: Number(r.principal_remaining ?? 0),
+    repairCost: Number(r.repair_cost ?? 0),
+    resale: Number(r.resale ?? 0),
+    devicePrice: Number(r.device_price ?? 0),
+  }))
+}
+
+/** นับสัญญาทั้งหมดต่อร้าน (ทุก status) — ตัวหารของอัตราคืนเครื่องต่อร้าน
+ *  group by ทำที่ DB ผ่าน view v_shop_contract_totals (ไม่ดึงทุก contract มานับ client) */
+export async function getShopContractTotals(): Promise<ShopContractTotal[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_shop_contract_totals')
+    .select('shop_id, total_contracts')
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as ShopContractTotalRow[]).map(r => ({
+    shopId: r.shop_id,
+    total: Number(r.total_contracts ?? 0),
   }))
 }

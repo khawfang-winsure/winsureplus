@@ -114,6 +114,35 @@ export interface DeviceReturnRow {
   returnLocation?: string | null  // สถานที่/รหัสที่คืน (walk_in เท่านั้น)
 }
 
+// ===== รายงานการคืนเครื่อง (admin) — ตรงกับ view v_device_return_report (0073) =====
+// 1 แถวต่อ 1 สัญญาที่ status IN ('returned','returned_closed')
+// 18 เคสเก่าไม่มีแถว device_returns → return_date/caseNo/deviceStatus/returnMethod = null
+export interface DeviceReturnReportRow {
+  contractId: string
+  contractNo: string
+  customerName: string
+  shopId: string | null
+  shopName: string | null
+  grade: string | null              // contracts.current_grade
+  status: 'returned' | 'returned_closed'
+  returnDate: string | null         // device_returns.created_at ล่าสุด (null = 18 เคสเก่า)
+  caseNo: number | null
+  deviceStatus: string | null       // สถานะเครื่องในมือ (pipeline); null = ไม่มี device_returns
+  returnMethod: string | null
+  totalInstallments: number
+  paidInstallments: number          // นับงวดที่ paid_at not null
+  everPaid: boolean                 // paidInstallments > 0
+  principalRemaining: number        // sum(greatest(amount - paid_amount, 0)) เงินต้นค้าง
+  repairCost: number                // repair_cost ?? repair_fee ?? 0
+  resale: number                    // sale_price ?? 0
+  devicePrice: number               // contracts.device_price
+}
+
+export interface ShopContractTotal {
+  shopId: string
+  total: number                     // จำนวนสัญญาทั้งหมดต่อร้าน (ทุก status) — ตัวหารอัตราคืน
+}
+
 export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'
 
 export interface ShopReportRow {

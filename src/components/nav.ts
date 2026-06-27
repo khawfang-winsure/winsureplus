@@ -97,6 +97,7 @@ export const NAV: NavItem[] = [
     children: [
       { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
       { to: '/shop-report', label: 'รายงานร้านค้า' },
+      { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
       { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้' },
       { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน' },
       { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true },
