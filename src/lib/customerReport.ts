@@ -8,7 +8,7 @@ export const BAD_DAYS = 60
 export const BUCKETS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90', '91-120', '120+']
 const BAD_BUCKETS = new Set<OverdueBucket>(['61-90', '91-120', '120+'])
 
-export type CustomerCategory = 'normal' | 'late' | 'bad' | 'closed'
+export type CustomerCategory = 'normal' | 'late' | 'bad' | 'closed' | 'returned'
 
 export interface CustomerRow {
   contractId: string
@@ -78,7 +78,8 @@ export function enrichCustomers(
     const active = c.status === 'active'
 
     let category: CustomerCategory
-    if (!active) category = 'closed'
+    if (c.status === 'returned') category = 'returned' // คืนเครื่องแต่ยังตามเก็บอยู่ — ยังไม่จบ
+    else if (!active) category = 'closed' // ปิดจบจริง (รวม returned_closed)
     else if (daysLate >= BAD_DAYS) category = 'bad'
     else if (daysLate >= 1) category = 'late'
     else category = 'normal'
@@ -122,13 +123,15 @@ export interface CustomerSummary {
   late: number
   bad: number
   closed: number
+  returned: number
   firstDefault: number
 }
 
 export function customerSummary(rows: CustomerRow[]): CustomerSummary {
-  const s: CustomerSummary = { total: rows.length, active: 0, normal: 0, late: 0, bad: 0, closed: 0, firstDefault: 0 }
+  const s: CustomerSummary = { total: rows.length, active: 0, normal: 0, late: 0, bad: 0, closed: 0, returned: 0, firstDefault: 0 }
   for (const r of rows) {
     if (r.category === 'closed') s.closed++
+    else if (r.category === 'returned') s.returned++ // คืนเครื่องยังตามเก็บ — แยกจาก active/closed
     else {
       s.active++
       if (r.category === 'normal') s.normal++

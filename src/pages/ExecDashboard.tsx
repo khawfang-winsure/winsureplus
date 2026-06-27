@@ -31,6 +31,7 @@ import {
   getForecastByGrade,
   getClawbackAggregates,
   getOverdueMonthSnapshot,
+  getDeviceReturnReportRows,
   type EscalateContract,
   type ForecastByGradeRow,
 } from '../lib/db'
@@ -149,6 +150,12 @@ export default function ExecDashboard() {
     // เฟส B: ใช้ getForecastByGrade() แทน getAllInstallments() — ไม่ติด PAGE_CAP
     return getForecastByGrade()
   }, null)
+
+  // ยอดตามเก็บจากเคสคืนเครื่อง (status='returned') ทั้งหมด — ไม่อิงช่วงวันที่ที่เลือก
+  const { data: returnedCollectible } = useAsync<number>(async () => {
+    const rows = await getDeviceReturnReportRows()
+    return rows.filter((r) => r.status === 'returned').reduce((s, r) => s + r.collectibleRemaining, 0)
+  }, 0)
 
   if (loading || !data) {
     return (
@@ -360,10 +367,11 @@ export default function ExecDashboard() {
       {/* ===== แถว 5: สัญญาณเตือน ===== */}
       <Card>
         <h3 className="mb-3 font-semibold text-ink">สัญญาณเตือนล่วงหน้า</h3>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <Kpi label="ไม่จ่ายงวดแรก" value={`${d.earlyDefault.count} ราย`} sub={`฿${money(d.earlyDefault.value)}`} tone="text-red-600" small snapshot />
           <Kpi label="ขอขยายในช่วง" value={`${d.extensionsThisMonth} ราย`} onClick={() => navigate('/extended')} tone="text-amber-600" small />
           <Kpi label="คืนเครื่องในช่วง" value={`${d.returnsThisMonth.count} ราย`} sub={`฿${money(d.returnsThisMonth.value)}`} onClick={() => navigate('/returns')} small />
+          <Kpi label="ยอดตามเก็บจากเคสคืนเครื่อง" value={`฿${money(returnedCollectible)}`} sub="เงินที่ยังตามเก็บได้ (1 งวด+ปรับ+ซ่อม) — ค้างทั้งหมด ไม่อิงช่วงวันที่" tone="text-orange-600" small snapshot />
           <Kpi label="เคสใหม่ในช่วง" value={`${d.newContractsThisMonth} ราย`} tone="text-green-600" small />
           <Kpi label="ร้านใหม่ในช่วง" value={`${d.newShopsThisMonth} ร้าน`} tone="text-green-600" small />
         </div>

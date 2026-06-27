@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, Clock, PackageX, ShieldAlert } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, PackageX, RotateCcw, ShieldAlert } from 'lucide-react'
 import { Card, Loading, PageTitle } from '../components/ui'
 import { ListPager, ListToolbar } from '../components/ManagedList'
 import { LineChart } from '../components/LineChart'
@@ -141,11 +141,12 @@ export default function CustomerOverview() {
       ) : (
         <>
           {/* ===== การ์ดสถานะ ===== */}
-          <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <StatCard icon={<CheckCircle2 size={22} className="text-green-600" />} iconBg="bg-green-100" label="ปกติ" value={summary.normal} sub={`${pct(summary.normal)}% ของที่ผ่อนอยู่`} tone="text-green-600" />
             <StatCard icon={<Clock size={22} className="text-amber-600" />} iconBg="bg-amber-100" label="ล่าช้า (1-59 วัน)" value={summary.late} sub={`${pct(summary.late)}%`} tone="text-amber-600" />
             <StatCard icon={<AlertTriangle size={22} className="text-red-600" />} iconBg="bg-red-100" label="หนี้เสีย (60 วัน+)" value={summary.bad} sub={`${pct(summary.bad)}%`} tone="text-red-600" />
             <StatCard icon={<ShieldAlert size={22} className="text-red-500" />} iconBg="bg-red-100" label="ไม่จ่ายตั้งแต่งวดแรก" value={summary.firstDefault} sub="ดูรายการด้านล่าง" tone="text-red-600" />
+            <StatCard icon={<RotateCcw size={22} className="text-orange-600" />} iconBg="bg-orange-100" label="คืนเครื่อง (ยังตามเก็บ)" value={summary.returned} sub="คืนเครื่องแล้วแต่ยังมียอดต้องตามเก็บ" tone="text-orange-600" />
             <StatCard icon={<PackageX size={22} className="text-ink-soft" />} iconBg="bg-peach-light" label="ปิด/จบสัญญา" value={summary.closed} sub={`ทั้งหมด ${summary.total} สัญญา`} tone="text-ink" />
           </div>
 
