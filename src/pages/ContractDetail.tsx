@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -325,15 +325,21 @@ export default function ContractDetail() {
   // เลขงวดค้างเก่าสุด = งวดเดียวที่ยังตามเก็บตามกฎคืนเครื่อง
   const oldestUnpaidNo = returnedOutstanding?.details?.installmentNo ?? null
 
-  // จัดกลุ่มประวัติการชำระตามงวด + แยกรายการที่งวดถูกลบไปแล้ว (installmentId หลุดเป็น null หลังขยายเวลา)
+  // จัดกลุ่มประวัติการชำระตามงวด + แยก 3 ทาง:
+  // - logByIns: ผูกกับงวดปัจจุบัน
+  // - orphanLogs: งวดถูกลบตอนขยายเวลา (installmentId != null แต่ไม่อยู่ใน live)
+  // - downLogs: เงินดาวน์ (installmentId == null — ไม่เคยผูกกับงวด)
   const liveInsIds = new Set(installments.map((i) => i.id))
   const logByIns = new Map<string, PaymentLogEntry[]>()
   const orphanLogs: PaymentLogEntry[] = []
+  const downLogs: PaymentLogEntry[] = []
   for (const e of log) {
     if (e.installmentId && liveInsIds.has(e.installmentId)) {
       const arr = logByIns.get(e.installmentId)
       if (arr) arr.push(e)
       else logByIns.set(e.installmentId, [e])
+    } else if (e.installmentId == null) {
+      downLogs.push(e)
     } else {
       orphanLogs.push(e)
     }
@@ -1328,6 +1334,38 @@ export default function ContractDetail() {
               </thead>
               <tbody>
                 {orphanLogs.map((e, idx) => (
+                  <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
+                    <td className="px-3 py-2.5"><Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge></td>
+                    <td className="px-3 py-2.5">{e.action === 'cancel' ? '-' : `${baht(e.amount)} ฿`}</td>
+                    <td className="px-3 py-2.5">{baht(e.paidAmountAfter)} ฿</td>
+                    <td className="px-3 py-2.5">{e.byName || '—'}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{e.note || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* ประวัติการชำระเงินดาวน์ (payment_log ที่ไม่ผูกกับงวด — installmentId = null) */}
+      {downLogs.length > 0 && (
+        <>
+          <h3 className="mb-2 mt-6 flex items-center gap-1.5 font-semibold text-ink">
+            <Wallet size={16} /> เงินดาวน์
+          </h3>
+          <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  {['เวลา', 'รายการ', 'จำนวน', 'ยอดสะสมหลังทำ', 'ผู้ทำรายการ', 'หมายเหตุ'].map((h) => (
+                    <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {downLogs.map((e, idx) => (
                   <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
                     <td className="px-3 py-2.5"><Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge></td>

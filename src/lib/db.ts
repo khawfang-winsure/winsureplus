@@ -4414,15 +4414,18 @@ export async function updateRepairCost(returnId: string, repairCost: number): Pr
 
 /**
  * ข้อมูล raw สำหรับ sale history (เครื่องที่ขายแล้ว: device_status IN ('shipped','transferred'))
- * Return type ตั้งชื่อว่า SaleHistoryInput เพื่อรอ reconcile กับ src/lib/saleHistory.ts ที่แบมจะเขียน
+ * Return type ตั้งชื่อว่า SaleHistoryInput — mirror กับ src/lib/saleHistory.ts
  *
- * NOTE netTransfer = contracts.net_transfer (generated column) = ยอดโอนให้ร้านสุทธิ
- * (afterDown + commission − docFee) — ใช้ค่าจริงจาก DB ตรงๆ
+ * NOTE commission = finance_amount × commission_percent / 100 (ปัดเศษ Math.round)
+ *      finance_amount == afterDown เป๊ะทุกเคส → ใช้เป็นฐานคูณ commission ได้
  *
- * NOTE downPayment = device_price * down_percent / 100 (คำนวณจาก 2 columns, ไม่มี down_payment column)
- * ถ้าแบมต้องการสูตรอื่น → แก้ที่ saleHistory.ts ได้โดยไม่ต้องแตะ helper นี้
+ * NOTE แยกเงินที่ลูกค้าจ่ายเป็น 2 ก้อน (payment_log action='pay'):
+ *      downPaid        = Σ rows ที่ installment_id IS NULL (เงินดาวน์)
+ *      installmentPaid = Σ rows ที่ installment_id NOT NULL (งวดจริง)
+ *      installmentCount = count DISTINCT installment_id (จำนวนงวดที่ผ่อนจริง)
+ *      ทุกก้อน floor Math.max(0, amount − penalty_paid_amount) ต่อแถว (ไม่นับค่าปรับ)
  *
- * NOTE ถ้า saleHistory.ts ของแบมมี type SaleHistoryInput ที่ต่างจากนี้ → ครีมต้อง reconcile field names
+ * NOTE โอนให้ร้าน (transferToShop) คิดที่ saleHistory.ts (= deviceListPrice + commission)
  */
 export interface SaleHistoryInput {
   contractId: string
@@ -4432,9 +4435,11 @@ export interface SaleHistoryInput {
   shopName: string
   deviceModel: string         // model + storage รวม เช่น "iPhone 15 Pro 256GB"
   deviceListPrice: number     // finance_amount (ยอดจัดไฟแนนซ์)
-  netTransfer: number         // ยอดโอนให้ร้านสุทธิ จาก contracts.net_transfer (afterDown + commission − docFee)
-  downPayment: number         // device_price * down_percent / 100
-  customerPaidPrincipal: number  // sum(amount - coalesce(penalty_paid_amount,0)) จาก payment_log action='pay'
+  commissionPercent: number   // contracts.commission_percent
+  commission: number          // Math.round(deviceListPrice × commissionPercent / 100)
+  downPaid: number            // Σ pay where installment_id IS NULL, floor 0 ต่อแถว (เงินดาวน์)
+  installmentPaid: number     // Σ pay where installment_id NOT NULL, floor 0 ต่อแถว (งวดจริง)
+  installmentCount: number    // count DISTINCT installment_id ของ pay rows ที่ installment_id NOT NULL
   resalePrice: number | null  // device_returns.sale_price
   returnedAt: string | null   // device_returns.transferred_at ?? shipped_at (วันที่ขาย/โอน)
 }
@@ -4458,7 +4463,7 @@ interface SaleHistoryContractRow {
   finance_amount: number | null
   device_price: number
   down_percent: number
-  net_transfer: number | null
+  commission_percent: number | null
 }
 
 interface SaleHistoryShopRow {
@@ -4490,7 +4495,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
   // Step 2: contracts ที่เกี่ยวข้อง
   const { data: contractData, error: contractErr } = await supabase
     .from('contracts')
-    .select('id, contract_no, customer_name, shop_id, model, storage, finance_amount, device_price, down_percent, net_transfer')
+    .select('id, contract_no, customer_name, shop_id, model, storage, finance_amount, device_price, down_percent, commission_percent')
     .in('id', contractIds)
   if (contractErr) throw contractErr
 
@@ -4518,34 +4523,47 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
     }
   }
 
-  // Step 4: payment_log — sum principal paid per contract
-  // principal = amount - coalesce(penalty_paid_amount, 0) (migration 0034)
+  // Step 4: payment_log — แยกเงินดาวน์ vs งวดจริง per contract
+  // เงินดาวน์ = installment_id IS NULL | งวดจริง = installment_id NOT NULL
+  // principal ต่อแถว = max(0, amount - coalesce(penalty_paid_amount, 0)) (ไม่นับค่าปรับ, migration 0034)
   // รวมเฉพาะ action='pay'
   const { data: payData, error: payErr } = await supabase
     .from('payment_log')
-    .select('contract_id, amount, penalty_paid_amount')
+    .select('contract_id, amount, penalty_paid_amount, installment_id')
     .in('contract_id', contractIds)
     .eq('action', 'pay')
     .range(0, PAGE_CAP)
   if (payErr) throw payErr
 
-  // Client-side aggregate: sum(amount - coalesce(penalty_paid_amount,0)) per contract_id
-  const principalMap = new Map<string, number>()
+  // Client-side aggregate:
+  //   downMap     = Σ principal where installment_id IS NULL (เงินดาวน์)
+  //   instMap     = Σ principal where installment_id NOT NULL (งวดจริง)
+  //   instIdSet   = Set<installment_id> ต่อ contract → count distinct = จำนวนงวดที่ผ่อนจริง
+  const downMap = new Map<string, number>()
+  const instMap = new Map<string, number>()
+  const instIdSet = new Map<string, Set<string>>()
   for (const row of (payData ?? []) as {
     contract_id: string
     amount: number | null
     penalty_paid_amount: number | null
+    installment_id: string | null
   }[]) {
-    const prev = principalMap.get(row.contract_id) ?? 0
-    const principal = Number(row.amount ?? 0) - Number(row.penalty_paid_amount ?? 0)
-    principalMap.set(row.contract_id, prev + Math.max(0, principal))
+    const principal = Math.max(0, Number(row.amount ?? 0) - Number(row.penalty_paid_amount ?? 0))
+    if (row.installment_id == null) {
+      downMap.set(row.contract_id, (downMap.get(row.contract_id) ?? 0) + principal)
+    } else {
+      instMap.set(row.contract_id, (instMap.get(row.contract_id) ?? 0) + principal)
+      let set = instIdSet.get(row.contract_id)
+      if (!set) { set = new Set<string>(); instIdSet.set(row.contract_id, set) }
+      set.add(row.installment_id)
+    }
   }
 
   // Step 5: assemble
   return returns.map((ret): SaleHistoryInput => {
     const c = contractMap.get(ret.contract_id)
-    const devicePrice = Number(c?.device_price ?? 0)
-    const downPercent = Number(c?.down_percent ?? 0)
+    const financeAmount = Number(c?.finance_amount ?? 0)
+    const commissionPercent = Number(c?.commission_percent ?? 0)
     const modelParts = [c?.model, c?.storage].filter(Boolean)
     return {
       contractId: ret.contract_id,
@@ -4554,10 +4572,12 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
       shopId: c?.shop_id ?? '',
       shopName: c?.shop_id ? (shopNameMap.get(c.shop_id) ?? '-') : '-',
       deviceModel: modelParts.join(' '),
-      deviceListPrice: Number(c?.finance_amount ?? 0),
-      netTransfer: Number(c?.net_transfer ?? 0), // ยอดโอนให้ร้านสุทธิ จาก contracts.net_transfer
-      downPayment: Math.round((devicePrice * downPercent) / 100),
-      customerPaidPrincipal: principalMap.get(ret.contract_id) ?? 0,
+      deviceListPrice: financeAmount,
+      commissionPercent,
+      commission: Math.round((financeAmount * commissionPercent) / 100),
+      downPaid: downMap.get(ret.contract_id) ?? 0,
+      installmentPaid: instMap.get(ret.contract_id) ?? 0,
+      installmentCount: instIdSet.get(ret.contract_id)?.size ?? 0,
       resalePrice: ret.sale_price == null ? null : Number(ret.sale_price),
       returnedAt: ret.transferred_at ?? ret.shipped_at ?? null,
     }

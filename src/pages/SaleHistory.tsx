@@ -21,12 +21,13 @@ function adaptRaw(raw: RawInput): Parameters<typeof buildSaleHistory>[0][number]
     customerName: raw.customerName,
     shopName: raw.shopName,
     deviceListPrice: raw.deviceListPrice,
-    netTransfer: raw.netTransfer,
-    downPayment: raw.downPayment,
-    customerPaidPrincipal: raw.customerPaidPrincipal,
+    commissionPercent: raw.commissionPercent,
+    commission: raw.commission,
+    downPaid: raw.downPaid,
+    installmentPaid: raw.installmentPaid,
+    installmentCount: raw.installmentCount,
     resalePrice: raw.resalePrice ?? 0,        // null → 0 (ยังไม่ขาย)
     returnedAt: raw.returnedAt ?? '',          // null → '' (ไม่มีวันที่)
-    shippedAt: null,                           // db ยังไม่ expose — ⚠️ flag น้องชีส
   }
 }
 
@@ -174,16 +175,36 @@ export default function SaleHistory() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
+                {/* แถวบน: ป้ายกลุ่ม 2 ฝั่ง (ต้นทุน / เก็บเงินคืน) คร่อมด้วย colspan */}
+                <tr className="text-left text-ink-soft">
+                  <th className="py-2 pr-4" colSpan={3}></th>
+                  <th
+                    className="py-1.5 px-2 text-center text-xs font-semibold uppercase tracking-wide text-ink-soft bg-peach-light/40 border-l border-r border-peach rounded-t"
+                    colSpan={3}
+                  >
+                    ต้นทุน (จ่ายให้ร้าน)
+                  </th>
+                  <th
+                    className="py-1.5 px-2 text-center text-xs font-semibold uppercase tracking-wide text-ink-soft bg-salmon/10 border-r border-peach rounded-t"
+                    colSpan={3}
+                  >
+                    เก็บเงินคืน
+                  </th>
+                  <th className="py-2 pr-4" colSpan={3}></th>
+                </tr>
                 <tr className="border-b border-peach text-left text-ink-soft">
                   <th className="py-2 pr-4 font-medium">วันที่ขาย/โอน</th>
                   <th className="py-2 pr-4 font-medium">สัญญา / ลูกค้า</th>
                   <th className="py-2 pr-4 font-medium">ร้าน</th>
-                  <th className="py-2 pr-4 font-medium text-right">ราคาเครื่อง</th>
-                  <th className="py-2 pr-4 font-medium text-right">โอนให้ร้าน</th>
-                  <th className="py-2 pr-4 font-medium text-right">เงินดาวน์</th>
-                  <th className="py-2 pr-4 font-medium text-right">ลูกค้าผ่อน</th>
-                  <th className="py-2 pr-4 font-medium text-right">ขายได้</th>
-                  <th className="py-2 pr-4 font-medium">ผู้ติดตาม (ฟรีแลนซ์)</th>
+                  {/* กลุ่มต้นทุน */}
+                  <th className="py-2 px-3 font-medium text-right bg-peach-light/40 border-l border-peach">ราคาเครื่อง</th>
+                  <th className="py-2 px-3 font-medium text-right bg-peach-light/40">ค่าคอม</th>
+                  <th className="py-2 px-3 font-medium text-right bg-peach-light/40 border-r border-peach">โอนให้ร้าน</th>
+                  {/* กลุ่มเก็บเงินคืน */}
+                  <th className="py-2 px-3 font-medium text-right bg-salmon/10">เงินดาวน์</th>
+                  <th className="py-2 px-3 font-medium text-right bg-salmon/10">ลูกค้าผ่อน</th>
+                  <th className="py-2 px-3 font-medium text-right bg-salmon/10 border-r border-peach">ขายเครื่องคืน</th>
+                  <th className="py-2 pr-4 pl-4 font-medium">ผู้ติดตาม (ฟรีแลนซ์)</th>
                   <th className="py-2 pr-4 font-medium text-right">ค่าคอมฟรีแลนซ์</th>
                   <th className="py-2 font-medium text-right">กำไร/ขาดทุน</th>
                 </tr>
@@ -207,14 +228,20 @@ export default function SaleHistory() {
                         <p className="text-xs text-ink-soft">{r.contractNo}</p>
                       </td>
                       <td className="py-3 pr-4 text-ink">{r.shopName}</td>
-                      <td className="py-3 pr-4 text-right text-ink">{baht(r.deviceListPrice)} ฿</td>
-                      <td className="py-3 pr-4 text-right text-ink">{baht(r.netTransfer)} ฿</td>
-                      <td className="py-3 pr-4 text-right text-ink">{baht(r.downPayment)} ฿</td>
-                      <td className="py-3 pr-4 text-right text-ink">{baht(r.customerPaidPrincipal)} ฿</td>
-                      <td className="py-3 pr-4 text-right text-ink">
+                      {/* กลุ่มต้นทุน */}
+                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 border-l border-peach/50">{baht(r.deviceListPrice)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20">{baht(r.commission)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 border-r border-peach/50">{baht(r.transferToShop)} ฿</td>
+                      {/* กลุ่มเก็บเงินคืน */}
+                      <td className="py-3 px-3 text-right text-ink bg-salmon/5">{baht(r.downPaid)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-salmon/5">
+                        {baht(r.installmentPaid)} ฿
+                        <span className="block text-xs text-ink-soft/70">({r.installmentCount} งวด)</span>
+                      </td>
+                      <td className="py-3 px-3 text-right text-ink bg-salmon/5 border-r border-peach/50">
                         {r.resalePrice > 0 ? `${baht(r.resalePrice)} ฿` : <span className="text-ink-soft">-</span>}
                       </td>
-                      <td className="py-3 pr-4 text-ink">
+                      <td className="py-3 pr-4 pl-4 text-ink">
                         {freelancerName ?? <span className="text-ink-soft">—</span>}
                       </td>
                       <td className="py-3 pr-4 text-right text-ink">
