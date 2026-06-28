@@ -115,6 +115,10 @@ interface ContractRow {
   notes: string | null
   summary_sent_at: string | null
   summary_sent_by: string | null
+  summary_shop_sent_at: string | null
+  summary_shop_sent_by: string | null
+  summary_accounting_sent_at: string | null
+  summary_accounting_sent_by: string | null
   email_sent_at: string | null
   email_sent_by: string | null
   current_grade: string | null
@@ -187,6 +191,10 @@ function mapContract(r: ContractRow): Contract {
     notes: r.notes ?? undefined,
     summarySentAt: r.summary_sent_at,
     summarySentBy: r.summary_sent_by,
+    summaryShopSentAt: r.summary_shop_sent_at,
+    summaryShopSentBy: r.summary_shop_sent_by,
+    summaryAccountingSentAt: r.summary_accounting_sent_at,
+    summaryAccountingSentBy: r.summary_accounting_sent_by,
     emailSentAt: r.email_sent_at,
     emailSentBy: r.email_sent_by,
     currentGrade: r.current_grade ?? null,
@@ -571,6 +579,46 @@ export async function markSummarySent(ids: string[], senderName?: string): Promi
       pending_documents: false,
       documents_confirmed_at: now,
       documents_confirmed_by: senderName ?? null,
+    })
+    .in('id', ids)
+  if (error) throw error
+}
+
+/** สรุปยอด 2 ด่าน รอบ 1 — ส่งร้าน (0075)
+ *  set summary_shop_sent_at/by + mirror summary_sent_at/by (กัน audit log เดิมที่อ่าน summary_sent_at พัง)
+ *  คง auto-clear รอเอกสาร เหมือน markSummarySent เดิม (รอบ 1 = ยืนยันเอกสารครบ + ส่งร้าน)
+ *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat */
+export async function markSummaryShopSent(ids: string[], senderName?: string): Promise<void> {
+  if (!supabase || ids.length === 0) return
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      summary_shop_sent_at: now,
+      summary_shop_sent_by: senderName ?? null,
+      // mirror สถานะรวมเดิม — audit log อ่าน summary_sent_at จึงต้องตั้งให้ด้วย
+      summary_sent_at: now,
+      summary_sent_by: senderName ?? null,
+      // auto-clear รอเอกสาร เมื่อยืนยันสรุปยอด (confirm-gate model 0049)
+      pending_documents: false,
+      documents_confirmed_at: now,
+      documents_confirmed_by: senderName ?? null,
+    })
+    .in('id', ids)
+  if (error) throw error
+}
+
+/** สรุปยอด 2 ด่าน รอบ 2 — ส่งบัญชี (0075)
+ *  set summary_accounting_sent_at/by เท่านั้น (ไม่แตะ pending_documents / summary_sent_at)
+ *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat */
+export async function markSummaryAccountingSent(ids: string[], senderName?: string): Promise<void> {
+  if (!supabase || ids.length === 0) return
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      summary_accounting_sent_at: now,
+      summary_accounting_sent_by: senderName ?? null,
     })
     .in('id', ids)
   if (error) throw error
@@ -2726,6 +2774,11 @@ export async function setContractFlags(
       upd.email_sent_by = null
       upd.summary_sent_at = null
       upd.summary_sent_by = null
+      // 2 ด่านสรุปยอด (0075) — เด้งกลับรอบ 1 ครบ
+      upd.summary_shop_sent_at = null
+      upd.summary_shop_sent_by = null
+      upd.summary_accounting_sent_at = null
+      upd.summary_accounting_sent_by = null
       upd.documents_confirmed_at = null
       upd.documents_confirmed_by = null
     }

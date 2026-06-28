@@ -232,6 +232,11 @@ export interface Contract {
   // --- flag กันส่งซ้ำ + audit ว่าใครส่ง ---
   summarySentAt?: string | null
   summarySentBy?: string | null // ชื่อผู้ส่ง (useAuth().name = full_name) snapshot ณ เวลาที่ส่ง
+  // --- สรุปยอด 2 ด่าน (0075): รอบ 1 ส่งร้าน / รอบ 2 ส่งบัญชี ---
+  summaryShopSentAt?: string | null
+  summaryShopSentBy?: string | null       // ผู้ส่งสรุปยอดให้ร้าน (รอบ 1)
+  summaryAccountingSentAt?: string | null
+  summaryAccountingSentBy?: string | null // ผู้ส่งสรุปยอดให้บัญชี (รอบ 2)
   emailSentAt?: string | null
   emailSentBy?: string | null   // ชื่อผู้ส่ง (useAuth().name = full_name) snapshot ณ เวลาที่ส่ง
   // --- เกรดปัจจุบัน (คำนวณจาก days_late, เก็บใน DB — เพิ่มใน 0018) ---
