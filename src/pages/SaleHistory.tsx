@@ -21,7 +21,7 @@ function adaptRaw(raw: RawInput): Parameters<typeof buildSaleHistory>[0][number]
     customerName: raw.customerName,
     shopName: raw.shopName,
     deviceListPrice: raw.deviceListPrice,
-    commissionPaid: raw.commissionPaid,
+    netTransfer: raw.netTransfer,
     downPayment: raw.downPayment,
     customerPaidPrincipal: raw.customerPaidPrincipal,
     resalePrice: raw.resalePrice ?? 0,        // null → 0 (ยังไม่ขาย)
@@ -179,7 +179,7 @@ export default function SaleHistory() {
                   <th className="py-2 pr-4 font-medium">สัญญา / ลูกค้า</th>
                   <th className="py-2 pr-4 font-medium">ร้าน</th>
                   <th className="py-2 pr-4 font-medium text-right">ราคาเครื่อง</th>
-                  <th className="py-2 pr-4 font-medium text-right">ค่าคอม</th>
+                  <th className="py-2 pr-4 font-medium text-right">โอนให้ร้าน</th>
                   <th className="py-2 pr-4 font-medium text-right">เงินดาวน์</th>
                   <th className="py-2 pr-4 font-medium text-right">ลูกค้าผ่อน</th>
                   <th className="py-2 pr-4 font-medium text-right">ขายได้</th>
@@ -208,9 +208,7 @@ export default function SaleHistory() {
                       </td>
                       <td className="py-3 pr-4 text-ink">{r.shopName}</td>
                       <td className="py-3 pr-4 text-right text-ink">{baht(r.deviceListPrice)} ฿</td>
-                      <td className="py-3 pr-4 text-right text-ink">
-                        {r.commissionPaid > 0 ? `${baht(r.commissionPaid)} ฿` : <span className="text-ink-soft">-</span>}
-                      </td>
+                      <td className="py-3 pr-4 text-right text-ink">{baht(r.netTransfer)} ฿</td>
                       <td className="py-3 pr-4 text-right text-ink">{baht(r.downPayment)} ฿</td>
                       <td className="py-3 pr-4 text-right text-ink">{baht(r.customerPaidPrincipal)} ฿</td>
                       <td className="py-3 pr-4 text-right text-ink">

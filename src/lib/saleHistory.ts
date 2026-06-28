@@ -9,10 +9,10 @@ export interface SaleHistoryInput {
   // ราคาเครื่อง (จาก contracts.financeAmount หรือ device price ที่บันทึก)
   deviceListPrice: number
 
-  // ค่าคอม (จาก commission สำหรับ contract นี้ — admin/staff โอนให้ร้านแล้ว)
-  commissionPaid: number
+  // ยอดโอนให้ร้านสุทธิ = ต้นทุนเงินสดบริษัทต่อเครื่อง (contracts.net_transfer)
+  netTransfer: number
 
-  // เงินดาวน์ (contracts.down_payment)
+  // เงินดาวน์ (contracts.down_payment) — ใช้แสดงคอลัมน์เท่านั้น ไม่ใช้ใน P&L
   downPayment: number
 
   // เงินที่ลูกค้าผ่อนรวม (ไม่รวมค่าปรับ)
@@ -33,25 +33,22 @@ export interface SaleHistoryRow extends SaleHistoryInput {
 }
 
 // สูตรผลกำไร/ขาดทุน per Pete's P&L view:
-//   cost     = ราคาเครื่อง + ค่าคอม
-//   recovery = เงินดาวน์ + เงินผ่อน (ไม่รวมค่าปรับ) + เงินขายเครื่องคืน
-//   profitLoss = recovery - cost
+//   cost     = ยอดโอนร้านสุทธิ (net_transfer) — เงินสดบริษัทจ่ายออกต่อเครื่อง
+//   recovery = เงินลูกค้าผ่อน (ไม่รวมค่าปรับ) + เงินขายเครื่องคืน
+//   profitLoss = recovery - cost   (บวก = กำไร, ลบ = ขาดทุน)
 //
-// หมายเหตุ: Pete ระบุสูตรเดิมว่า cost − recovery ("บวก = ขาดทุน")
-// แต่ที่นี่ใช้ recovery − cost เพื่อให้ profitLoss เป็น conventional P&L sign
-// (บวก = กำไร, ลบ = ขาดทุน) — ตรงกับ profitLossLabel ทุกเคส
+// หมายเหตุ: ไม่นับเงินดาวน์ใน recovery เพราะลูกค้าจ่ายดาวน์ให้ร้านตรง ไม่เข้าบริษัท
+// และไม่บวกค่าคอมแยกใน cost เพราะค่าคอมรวมอยู่ใน net_transfer แล้ว
 // ⚠️ ผู้ wire ข้อมูลนี้เข้า report ต้องใช้ convention นี้ (positive = profit)
 //
-// Trace 1 (ขาดทุน): price=20000 comm=2000 → cost=22000
-//                    down=3000 paid=5000 resale=8000 → recovery=16000
-//                    profitLoss=-6000 → "ขาดทุน"
-// Trace 2 (กำไร):   price=15000 comm=1500 → cost=16500
-//                    down=4000 paid=10000 resale=5000 → recovery=19000
-//                    profitLoss=+2500 → "กำไร"
+// Trace จริง S00017PNQ95: netTransfer=38,338 · customerPaid=14,071 · resale=35,000
+//                          recovery=49,071 − cost 38,338 = +10,733 → "กำไร"
+// Trace 2 (ขาดทุน): netTransfer=40,000 · customerPaid=5,000 · resale=20,000
+//                    recovery=25,000 − cost 40,000 = -15,000 → "ขาดทุน"
 // Trace 3 (คุ้มทุน): profitLoss=0 → "คุ้มทุน"
 export function buildSaleHistoryRow(input: SaleHistoryInput): SaleHistoryRow {
-  const cost = input.deviceListPrice + input.commissionPaid
-  const recovery = input.downPayment + input.customerPaidPrincipal + input.resalePrice
+  const cost = input.netTransfer
+  const recovery = input.customerPaidPrincipal + input.resalePrice
   const profitLoss = recovery - cost
 
   let profitLossLabel: string

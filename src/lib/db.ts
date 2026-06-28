@@ -4416,8 +4416,8 @@ export async function updateRepairCost(returnId: string, repairCost: number): Pr
  * ข้อมูล raw สำหรับ sale history (เครื่องที่ขายแล้ว: device_status IN ('shipped','transferred'))
  * Return type ตั้งชื่อว่า SaleHistoryInput เพื่อรอ reconcile กับ src/lib/saleHistory.ts ที่แบมจะเขียน
  *
- * NOTE commissionPaid = 0 เสมอ — ไม่มีตาราง commission_disbursements ใน DB
- * commission คำนวณจาก commission.ts (แบม pure function) ไม่ใช่จาก DB column
+ * NOTE netTransfer = contracts.net_transfer (generated column) = ยอดโอนให้ร้านสุทธิ
+ * (afterDown + commission − docFee) — ใช้ค่าจริงจาก DB ตรงๆ
  *
  * NOTE downPayment = device_price * down_percent / 100 (คำนวณจาก 2 columns, ไม่มี down_payment column)
  * ถ้าแบมต้องการสูตรอื่น → แก้ที่ saleHistory.ts ได้โดยไม่ต้องแตะ helper นี้
@@ -4432,7 +4432,7 @@ export interface SaleHistoryInput {
   shopName: string
   deviceModel: string         // model + storage รวม เช่น "iPhone 15 Pro 256GB"
   deviceListPrice: number     // finance_amount (ยอดจัดไฟแนนซ์)
-  commissionPaid: number      // 0 เสมอ — ไม่มี disbursement table (ดู NOTE ด้านบน)
+  netTransfer: number         // ยอดโอนให้ร้านสุทธิ จาก contracts.net_transfer (afterDown + commission − docFee)
   downPayment: number         // device_price * down_percent / 100
   customerPaidPrincipal: number  // sum(amount - coalesce(penalty_paid_amount,0)) จาก payment_log action='pay'
   resalePrice: number | null  // device_returns.sale_price
@@ -4458,6 +4458,7 @@ interface SaleHistoryContractRow {
   finance_amount: number | null
   device_price: number
   down_percent: number
+  net_transfer: number | null
 }
 
 interface SaleHistoryShopRow {
@@ -4489,7 +4490,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
   // Step 2: contracts ที่เกี่ยวข้อง
   const { data: contractData, error: contractErr } = await supabase
     .from('contracts')
-    .select('id, contract_no, customer_name, shop_id, model, storage, finance_amount, device_price, down_percent')
+    .select('id, contract_no, customer_name, shop_id, model, storage, finance_amount, device_price, down_percent, net_transfer')
     .in('id', contractIds)
   if (contractErr) throw contractErr
 
@@ -4554,7 +4555,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
       shopName: c?.shop_id ? (shopNameMap.get(c.shop_id) ?? '-') : '-',
       deviceModel: modelParts.join(' '),
       deviceListPrice: Number(c?.finance_amount ?? 0),
-      commissionPaid: 0, // ไม่มีตาราง disbursement — แบมคำนวณจาก commission.ts
+      netTransfer: Number(c?.net_transfer ?? 0), // ยอดโอนให้ร้านสุทธิ จาก contracts.net_transfer
       downPayment: Math.round((devicePrice * downPercent) / 100),
       customerPaidPrincipal: principalMap.get(ret.contract_id) ?? 0,
       resalePrice: ret.sale_price == null ? null : Number(ret.sale_price),
