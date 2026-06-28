@@ -72,11 +72,18 @@ export default function WaitingSummary() {
     [data.contracts, locallySent],
   )
 
-  // ร้านที่เลือกได้ (เรียงตามชื่อ)
-  const sortedShops = useMemo(
-    () => [...data.shops].sort((a, b) => a.name.localeCompare(b.name, 'th')),
-    [data.shops],
-  )
+  // ร้านที่เลือกได้ (เฉพาะร้านที่มีเคสค้างในลิสต์ หลังกรองวันที่)
+  const shopOptions = useMemo(() => {
+    const dateFiltered = base.filter((c) => {
+      if (fromDate && c.transactionDate < fromDate) return false
+      if (toDate && c.transactionDate > toDate) return false
+      return true
+    })
+    const ids = new Set(dateFiltered.map((c) => c.shopId))
+    return [...data.shops]
+      .filter((s) => ids.has(s.id))
+      .sort((a, b) => a.name.localeCompare(b.name, 'th'))
+  }, [base, data.shops, fromDate, toDate])
 
   const hasFilter = !!(fromDate || toDate || shopFilter)
   const clearFilter = () => {
@@ -209,7 +216,7 @@ export default function WaitingSummary() {
                 className="!w-auto min-w-[140px] text-sm"
               >
                 <option value="">ทุกร้าน</option>
-                {sortedShops.map((s) => (
+                {shopOptions.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </Select>
