@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Receipt, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
@@ -42,6 +42,8 @@ function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[]
 }
 
 const today = new Date().toISOString().slice(0, 10)
+const SEL_KEY = 'waiting-summary:selected'
+const DATE_KEY = 'waiting-summary:date'
 const netOf = (c: Contract) =>
   calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
 
@@ -56,9 +58,23 @@ export default function WaitingSummary() {
   )
 
   const [locallySent, setLocallySent] = useState<Set<string>>(new Set())
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [date, setDate] = useState(today)
-  const [output, setOutput] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(SEL_KEY)
+      if (!raw) return new Set<string>()
+      const arr = JSON.parse(raw) as string[]
+      return new Set<string>(arr)
+    } catch {
+      return new Set<string>()
+    }
+  })
+  const [date, setDate] = useState<string>(() => {
+    try {
+      return localStorage.getItem(DATE_KEY) || today
+    } catch {
+      return today
+    }
+  })
   const [sortOpt, setSortOpt] = useState<`${SortKey}_${SortDir}`>('transactionDate_desc')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
@@ -66,11 +82,37 @@ export default function WaitingSummary() {
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
 
+  // จำสิ่งที่ติ๊กไว้ + วันที่สรุป ข้าม reload
+  useEffect(() => {
+    try {
+      localStorage.setItem(SEL_KEY, JSON.stringify([...selected]))
+    } catch {
+      /* ignore quota/private-mode errors */
+    }
+  }, [selected])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DATE_KEY, date)
+    } catch {
+      /* ignore quota/private-mode errors */
+    }
+  }, [date])
+
   // เคสที่ยังไม่ส่ง (ก่อนกรอง) — ใช้แยก empty-state
   const base = useMemo(
     () => data.contracts.filter((c) => !c.summarySentAt && !locallySent.has(c.id)),
     [data.contracts, locallySent],
   )
+
+  // ตัด id ที่ค้างใน localStorage แต่ถูกส่งไปแล้ว (ไม่อยู่ใน base) ออก หลังโหลดข้อมูลเสร็จ
+  useEffect(() => {
+    if (loading) return
+    const valid = new Set(base.map((c) => c.id))
+    const next = new Set([...selected].filter((id) => valid.has(id)))
+    if (next.size !== selected.size) setSelected(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, base])
 
   // ร้านที่เลือกได้ (เฉพาะร้านที่มีเคสค้างในลิสต์ หลังกรองวันที่)
   const shopOptions = useMemo(() => {
@@ -133,10 +175,11 @@ export default function WaitingSummary() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, selected])
 
-  function generate() {
-    if (groups.length === 0) return
-    setOutput(buildBulkSummary(groups, date))
-  }
+  // ข้อความสรุปยอด — derived อัตโนมัติจากเคสที่เลือก + วันที่สรุป (ไม่ต้องกดปุ่ม)
+  const output = useMemo(
+    () => (groups.length === 0 ? '' : buildBulkSummary(groups, date)),
+    [groups, date],
+  )
 
   async function markSent() {
     const ids = [...selected]
@@ -151,7 +194,6 @@ export default function WaitingSummary() {
     await markSummarySent(ids, name ?? undefined) // บันทึกลง DB จริง (กันส่งซ้ำ)
     setLocallySent((prev) => new Set([...prev, ...ids]))
     setSelected(new Set())
-    setOutput('')
   }
 
   const selectedNet = groups.flatMap((g) => g.items).reduce((sum, c) => sum + netOf(c), 0)
@@ -270,14 +312,11 @@ export default function WaitingSummary() {
 
           {/* ฝั่งขวา: ผลลัพธ์ */}
           <div className="flex flex-col gap-3 lg:sticky lg:top-4 lg:self-start">
-            <div className="flex flex-wrap items-center gap-3">
-              <Button onClick={generate} disabled={selected.size === 0}>
-                <Receipt size={16} /> สร้างข้อความสรุปยอด
-              </Button>
-              {selected.size > 0 && (
+            {selected.size > 0 && (
+              <div className="flex flex-wrap items-center gap-3">
                 <Badge tone="green">รวม <span className="whitespace-nowrap">{baht(selectedNet)} ฿</span> · {groups.length} ร้าน</Badge>
-              )}
-            </div>
+              </div>
+            )}
 
             {output ? (
               <>
@@ -287,7 +326,7 @@ export default function WaitingSummary() {
                 </Button>
               </>
             ) : (
-              <EmptyState title="ยังไม่มีข้อความ" hint="เลือกเคสทางซ้าย แล้วกด 'สร้างข้อความสรุปยอด'" />
+              <EmptyState title="ยังไม่มีข้อความ" hint="เลือกเคสทางซ้าย ระบบจะสร้างข้อความให้อัตโนมัติ" />
             )}
           </div>
         </div>
