@@ -644,8 +644,8 @@ export default function ContractDetail() {
         </Card>
       )}
 
-      {/* ===== รับเอกสารตัวจริง + กล่องเครื่อง (admin + staff; ซ่อนเมื่อ closed/returned_closed) ===== */}
-      {canStaff && contract.status !== 'closed' && contract.status !== 'returned' && (
+      {/* ===== รับเอกสารตัวจริง + กล่องเครื่อง (admin + staff; ซ่อนเฉพาะ closed; เคส returned/returned_closed เห็นได้ — ต้องเช็คเอกสารคืนจากร้าน) ===== */}
+      {canStaff && contract.status !== 'closed' && (
         <Card className="mb-4 py-3">
           <p className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-ink">
             <FileBox size={15} /> รับเอกสาร/กล่อง (ร้านส่งคืน)
