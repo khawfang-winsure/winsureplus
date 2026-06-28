@@ -81,7 +81,7 @@ export default function Returns() {
                   <Badge tone={r.caseNo === 3 ? 'green' : 'amber'}>
                     {r.caseNo === 3 ? 'ปิดสัญญา' : 'รอดำเนินการ'}
                   </Badge>
-                  <span className="text-sm text-ink-soft">
+                  <span className="text-sm text-ink-soft whitespace-nowrap">
                     ค่าซ่อม {r.repairFee > 0 ? `${baht(r.repairFee)} ฿` : '-'}
                   </span>
                   <Button variant="ghost" onClick={() => setDetailTarget(r)} aria-label="ดูรายละเอียด/ตำหนิเครื่อง">
@@ -141,7 +141,7 @@ function DeviceDetailModal({
           {repair > 0 && (
             <>
               <span className="text-ink-soft">ค่าซ่อม</span>
-              <span className="text-ink">{baht(repair)} ฿</span>
+              <span className="text-ink whitespace-nowrap">{baht(repair)} ฿</span>
             </>
           )}
           {row.returnMethod === 'walk_in' ? (

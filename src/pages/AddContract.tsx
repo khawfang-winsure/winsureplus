@@ -910,7 +910,7 @@ export default function AddContract() {
             <div className="mt-3 grid grid-cols-2 gap-3 rounded-xl bg-white p-3 text-sm sm:grid-cols-4">
               <div>
                 <p className="text-ink-soft">ยอดเงินดาวน์</p>
-                <p className="font-semibold text-ink">
+                <p className="font-semibold text-ink whitespace-nowrap">
                   {num(f.devicePrice) && num(f.downPercent)
                     ? `${baht(Math.round(num(f.devicePrice) * num(f.downPercent) / 100))} ฿`
                     : '—'}
@@ -918,15 +918,15 @@ export default function AddContract() {
               </div>
               <div>
                 <p className="text-ink-soft">หลังหักดาวน์</p>
-                <p className="font-semibold text-ink">{baht(summary.afterDown)} ฿</p>
+                <p className="font-semibold text-ink whitespace-nowrap">{baht(summary.afterDown)} ฿</p>
               </div>
               <div>
                 <p className="text-ink-soft">ค่าคอมมิชชั่น</p>
-                <p className="font-semibold text-ink">{baht(summary.commission)} ฿</p>
+                <p className="font-semibold text-ink whitespace-nowrap">{baht(summary.commission)} ฿</p>
               </div>
               <div>
                 <p className="text-ink-soft">สุทธิ (โอนให้ร้าน)</p>
-                <p className="font-bold text-salmon-deep">{baht(summary.net)} ฿</p>
+                <p className="font-bold text-salmon-deep whitespace-nowrap">{baht(summary.net)} ฿</p>
               </div>
             </div>
           </Card>
@@ -984,8 +984,8 @@ export default function AddContract() {
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span className="text-ink-soft">
                     ยอดต้น {baht(principal)} × {rateMult ?? '—'} ={' '}
-                    <b className="text-ink">ยอด {baht(rateFinance)} ฿</b> · งวดละ{' '}
-                    <b className="text-salmon-deep">{baht(rateMonthly)} ฿</b>
+                    <b className="text-ink whitespace-nowrap">ยอด {baht(rateFinance)} ฿</b> · งวดละ{' '}
+                    <b className="text-salmon-deep whitespace-nowrap">{baht(rateMonthly)} ฿</b>
                   </span>
                   <Button variant="ghost" onClick={applyRate} disabled={rateMult == null}>
                     ใช้เรตนี้

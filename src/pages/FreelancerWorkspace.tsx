@@ -161,7 +161,7 @@ function PromiseAlertBadge({ promiseToPayDate }: { promiseToPayDate: string | nu
 function ReturnedClosingBadge({ row }: { row: FreelancerQueueRow }) {
   if (!row.isReturned) return null
   return (
-    <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+    <span className="mt-0.5 inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-700">
       <PackageCheck size={12} />
       คืนเครื่องแล้ว · ยอดปิด {baht(row.returnClosingAmount)} ฿
     </span>
@@ -299,9 +299,9 @@ function QueueRow({
       </td>
       {/* ค่างวด + ค่าปรับ */}
       <td className="px-4 py-3 text-right">
-        <p className="text-sm text-ink">{baht(r.monthlyPayment)} ฿</p>
+        <p className="text-sm text-ink whitespace-nowrap">{baht(r.monthlyPayment)} ฿</p>
         {r.outstanding > 0 ? (
-          <p className="text-xs font-semibold text-red-600">{baht(r.outstanding)} ฿ ค่าปรับ</p>
+          <p className="text-xs font-semibold text-red-600 whitespace-nowrap">{baht(r.outstanding)} ฿ ค่าปรับ</p>
         ) : (
           <p className="text-xs text-ink-soft">-</p>
         )}
@@ -309,7 +309,7 @@ function QueueRow({
       {/* เงินต้นค้าง */}
       <td className="px-4 py-3 text-right">
         {r.principalDue > 0 ? (
-          <span className="font-semibold text-red-600">{baht(r.principalDue)} ฿</span>
+          <span className="font-semibold text-red-600 whitespace-nowrap">{baht(r.principalDue)} ฿</span>
         ) : (
           <span className="text-ink-soft">-</span>
         )}
@@ -422,9 +422,9 @@ function QueueCardMobile({
         <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
         <span>ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></span>
         {r.installmentsTotal > 0 && <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
-        <span>ค่างวด {baht(r.monthlyPayment)} ฿</span>
-        {r.outstanding > 0 && <span className="font-semibold text-red-600">ค่าปรับ {baht(r.outstanding)} ฿</span>}
-        {r.principalDue > 0 && <span className="font-semibold text-red-600">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
+        <span className="whitespace-nowrap">ค่างวด {baht(r.monthlyPayment)} ฿</span>
+        {r.outstanding > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">ค่าปรับ {baht(r.outstanding)} ฿</span>}
+        {r.principalDue > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
       </div>
       {/* ปุ่มบันทึก */}
       <button
@@ -817,7 +817,7 @@ export default function FreelancerWorkspace() {
                 <AlarmClock size={16} />
                 ผิดนัด: {activeOverdueIds.size} รายการ
                 {totalPromised > 0 && (
-                  <span>· รวม {baht(totalPromised)} ฿</span>
+                  <span className="whitespace-nowrap">· รวม {baht(totalPromised)} ฿</span>
                 )}
               </button>
               {overdueFilter && (

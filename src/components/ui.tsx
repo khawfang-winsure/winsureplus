@@ -107,7 +107,7 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
     red: 'bg-red-100 text-red-700',
   }
   return (
-    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${tones[tone]}`}>
+    <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${tones[tone]}`}>
       {children}
     </span>
   )

@@ -110,10 +110,10 @@ function ContractRow({
             {item.shopName && <span>ร้าน: {item.shopName}</span>}
             <span>งวด {progress}</span>
             {item.monthlyPayment > 0 && (
-              <span>{baht(item.monthlyPayment)} ฿/เดือน</span>
+              <span className="whitespace-nowrap">{baht(item.monthlyPayment)} ฿/เดือน</span>
             )}
             {item.status === 'active' && item.outstanding > 0 && (
-              <span className="text-red-600">ค้างอยู่ {baht(item.outstanding)} ฿</span>
+              <span className="text-red-600 whitespace-nowrap">ค้างอยู่ {baht(item.outstanding)} ฿</span>
             )}
           </div>
         </div>
@@ -335,7 +335,7 @@ export default function CustomerDetail() {
                     <span className="inline-flex flex-wrap items-center gap-2">
                       <Badge tone={ACTION_TONE[p.action]}>{ACTION_LABEL[p.action]}</Badge>
                       {p.action !== 'cancel' && (
-                        <span className="font-semibold text-ink tabular-nums">
+                        <span className="font-semibold text-ink tabular-nums whitespace-nowrap">
                           {baht(p.amount)} ฿
                         </span>
                       )}
@@ -417,7 +417,7 @@ export default function CustomerDetail() {
                     </Link>
                     {f.noteText && <span>· {f.noteText}</span>}
                     {f.followUpResult === 'promised' && f.promisedAmount != null && (
-                      <span className="text-green-700">
+                      <span className="text-green-700 whitespace-nowrap">
                         · สัญญาจะจ่าย {baht(f.promisedAmount)} ฿
                       </span>
                     )}
@@ -450,7 +450,7 @@ function StatBox({
     <div className="rounded-xl border border-peach bg-peach-light/30 p-3 text-center">
       <p className="text-xs text-ink-soft">{label}</p>
       <p
-        className={`mt-1 text-lg font-bold tabular-nums ${
+        className={`mt-1 text-lg font-bold tabular-nums whitespace-nowrap ${
           red ? 'text-red-600' : highlight ? 'text-salmon-deep' : 'text-ink'
         }`}
       >

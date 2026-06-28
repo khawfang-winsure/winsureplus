@@ -504,7 +504,7 @@ export default function ContractDetail() {
         ].map((x) => (
           <Card key={x.l} className="py-3">
             <p className="text-xs text-ink-soft">{x.l}</p>
-            <p className="text-lg font-bold text-ink">{x.v}</p>
+            <p className="text-lg font-bold text-ink whitespace-nowrap">{x.v}</p>
           </Card>
         ))}
       </div>
@@ -518,25 +518,25 @@ export default function ContractDetail() {
               <p className="text-xs text-ink-soft">
                 ค่างวด{returnedOutstanding.details ? ` (งวด ${returnedOutstanding.details.installmentNo})` : ''}
               </p>
-              <p className="font-semibold text-ink">{baht(returnedOutstanding.installmentAmount)} ฿</p>
+              <p className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.installmentAmount)} ฿</p>
             </div>
             <div>
               <p className="text-xs text-ink-soft">ค่าปรับ</p>
-              <p className="font-semibold text-ink">{baht(returnedOutstanding.penaltyAmount)} ฿</p>
+              <p className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.penaltyAmount)} ฿</p>
             </div>
             <div>
               <p className="text-xs text-ink-soft">ค่าซ่อม</p>
-              <p className="font-semibold text-ink">{baht(returnedOutstanding.repairCost)} ฿</p>
+              <p className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.repairCost)} ฿</p>
             </div>
             <div>
               <p className="text-xs text-ink-soft">ค่าใช้จ่ายอื่น</p>
-              <p className="font-semibold text-ink">{baht(returnedOutstanding.otherExtras)} ฿</p>
+              <p className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.otherExtras)} ฿</p>
             </div>
           </div>
           <div className="mt-2 flex flex-wrap items-end justify-between gap-2 border-t border-amber-200 pt-2">
             <div>
               <p className="text-xs text-ink-soft">ยอดรวมที่ต้องชำระ</p>
-              <p className="text-xl font-bold text-amber-700">{baht(returnedOutstanding.total)} ฿</p>
+              <p className="text-xl font-bold text-amber-700 whitespace-nowrap">{baht(returnedOutstanding.total)} ฿</p>
             </div>
             {/* ปิดสัญญา (คืนเครื่อง) — admin + staff: ยืนยันว่ารับชำระยอดปิดครบแล้ว */}
             {canStaff && (
@@ -1174,7 +1174,7 @@ export default function ContractDetail() {
                   <tr key={ec.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(ec.createdAt.slice(0, 10))}</td>
                     <td className="px-3 py-2.5">{ec.reason}</td>
-                    <td className="px-3 py-2.5 font-semibold text-red-600">{baht(ec.amount)} ฿</td>
+                    <td className="px-3 py-2.5 font-semibold text-red-600 whitespace-nowrap">{baht(ec.amount)} ฿</td>
                     <td className="px-3 py-2.5 text-ink-soft">{ec.createdBy || '—'}</td>
                     <td className="px-3 py-2.5">
                       {/* admin เท่านั้นที่ลบได้ — ใช้ soft-undo 5 วินาที */}
@@ -1213,7 +1213,7 @@ export default function ContractDetail() {
         )}
         {extraCharges.length > 0 && (
           <p className="mt-2 text-right text-sm text-ink-soft">
-            รวมค่าใช้จ่ายอื่นๆ <b className="text-ink">{baht(extraChargesSum)} ฿</b>
+            รวมค่าใช้จ่ายอื่นๆ <b className="text-ink whitespace-nowrap">{baht(extraChargesSum)} ฿</b>
           </p>
         )}
       </div>
@@ -1248,7 +1248,7 @@ export default function ContractDetail() {
                   <tr key={oi.id} className={idx % 2 ? 'bg-white' : 'bg-green-50/30'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(oi.receivedAt)}</td>
                     <td className="px-3 py-2.5">{oi.category}</td>
-                    <td className="px-3 py-2.5 font-semibold text-green-600">{baht(oi.amount)} ฿</td>
+                    <td className="px-3 py-2.5 font-semibold text-green-600 whitespace-nowrap">{baht(oi.amount)} ฿</td>
                     <td className="px-3 py-2.5 text-ink-soft">{oi.note || '—'}</td>
                     <td className="px-3 py-2.5 text-ink-soft">{oi.recordedBy || '—'}</td>
                     <td className="px-3 py-2.5">
@@ -1278,7 +1278,7 @@ export default function ContractDetail() {
         {otherIncomeItems.length > 0 && (
           <p className="mt-2 text-right text-sm text-ink-soft">
             รวมรายได้อื่นๆ{' '}
-            <b className="text-green-600">
+            <b className="text-green-600 whitespace-nowrap">
               {baht(otherIncomeItems.reduce((s, oi) => s + oi.amount, 0))} ฿
             </b>
           </p>
@@ -1305,8 +1305,8 @@ export default function ContractDetail() {
                   <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(e.createdAt.slice(0, 10))}</td>
                     <td className="px-3 py-2.5">{e.installmentNo != null ? `งวดที่ ${e.installmentNo}` : '—'}</td>
-                    <td className="px-3 py-2.5">{e.oldAmount != null ? `${baht(e.oldAmount)} ฿` : '—'}</td>
-                    <td className="px-3 py-2.5 font-semibold text-amber-700">{baht(e.newAmount)} ฿</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{e.oldAmount != null ? `${baht(e.oldAmount)} ฿` : '—'}</td>
+                    <td className="px-3 py-2.5 font-semibold text-amber-700 whitespace-nowrap">{baht(e.newAmount)} ฿</td>
                     <td className="px-3 py-2.5">{e.reason || '—'}</td>
                     <td className="px-3 py-2.5 text-ink-soft">{e.byName || '—'}</td>
                   </tr>
@@ -1337,8 +1337,8 @@ export default function ContractDetail() {
                   <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
                     <td className="px-3 py-2.5"><Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge></td>
-                    <td className="px-3 py-2.5">{e.action === 'cancel' ? '-' : `${baht(e.amount)} ฿`}</td>
-                    <td className="px-3 py-2.5">{baht(e.paidAmountAfter)} ฿</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{e.action === 'cancel' ? '-' : `${baht(e.amount)} ฿`}</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{baht(e.paidAmountAfter)} ฿</td>
                     <td className="px-3 py-2.5">{e.byName || '—'}</td>
                     <td className="px-3 py-2.5 text-ink-soft">{e.note || '—'}</td>
                   </tr>
@@ -1369,8 +1369,8 @@ export default function ContractDetail() {
                   <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
                     <td className="px-3 py-2.5"><Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge></td>
-                    <td className="px-3 py-2.5">{e.action === 'cancel' ? '-' : `${baht(e.amount)} ฿`}</td>
-                    <td className="px-3 py-2.5">{baht(e.paidAmountAfter)} ฿</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{e.action === 'cancel' ? '-' : `${baht(e.amount)} ฿`}</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{baht(e.paidAmountAfter)} ฿</td>
                     <td className="px-3 py-2.5">{e.byName || '—'}</td>
                     <td className="px-3 py-2.5 text-ink-soft">{e.note || '—'}</td>
                   </tr>
@@ -1483,23 +1483,23 @@ export default function ContractDetail() {
               <span className="text-ink-soft">
                 ค่างวด{returnedOutstanding.details ? ` (งวด ${returnedOutstanding.details.installmentNo})` : ''}
               </span>
-              <span className="font-semibold text-ink">{baht(returnedOutstanding.installmentAmount)} ฿</span>
+              <span className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.installmentAmount)} ฿</span>
             </div>
             <div className="flex justify-between py-0.5">
               <span className="text-ink-soft">ค่าปรับ</span>
-              <span className="font-semibold text-ink">{baht(returnedOutstanding.penaltyAmount)} ฿</span>
+              <span className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.penaltyAmount)} ฿</span>
             </div>
             <div className="flex justify-between py-0.5">
               <span className="text-ink-soft">ค่าซ่อม</span>
-              <span className="font-semibold text-ink">{baht(returnedOutstanding.repairCost)} ฿</span>
+              <span className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.repairCost)} ฿</span>
             </div>
             <div className="flex justify-between py-0.5">
               <span className="text-ink-soft">ค่าใช้จ่ายอื่น</span>
-              <span className="font-semibold text-ink">{baht(returnedOutstanding.otherExtras)} ฿</span>
+              <span className="font-semibold text-ink whitespace-nowrap">{baht(returnedOutstanding.otherExtras)} ฿</span>
             </div>
             <div className="mt-1 flex justify-between border-t border-amber-200 pt-1.5">
               <span className="font-semibold text-amber-800">ยอดรวม</span>
-              <span className="text-lg font-bold text-amber-700">{baht(returnedOutstanding.total)} ฿</span>
+              <span className="text-lg font-bold text-amber-700 whitespace-nowrap">{baht(returnedOutstanding.total)} ฿</span>
             </div>
           </div>
           <p className="mb-4 text-sm text-ink">
@@ -1707,7 +1707,7 @@ function FollowHistory({
                 )}
                 {/* บรรทัด 3: ยอดสัญญาจะจ่าย (เฉพาะ promised) */}
                 {e.followUpResult === 'promised' && e.promisedAmount != null && (
-                  <p className="mt-0.5 text-xs text-green-700">
+                  <p className="mt-0.5 text-xs text-green-700 whitespace-nowrap">
                     สัญญาจะจ่าย {baht(e.promisedAmount)} ฿
                   </p>
                 )}
@@ -1943,7 +1943,7 @@ function PaymentHistoryModal({
     <Modal title={`ประวัติการชำระ — งวดที่ ${ins.installmentNo}`} onClose={onClose}>
       <div className="flex flex-col gap-2">
         <p className="text-sm text-ink-soft">
-          ครบกำหนด {thaiDate(ins.dueDate)} · ค่างวด {baht(ins.amount)} ฿ · ชำระแล้ว {baht(ins.paidAmount)} ฿
+          ครบกำหนด {thaiDate(ins.dueDate)} · ค่างวด <span className="whitespace-nowrap">{baht(ins.amount)} ฿</span> · ชำระแล้ว <span className="whitespace-nowrap">{baht(ins.paidAmount)} ฿</span>
         </p>
         {entries.length === 0 ? (
           <p className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">ยังไม่มีรายการ</p>
@@ -1954,12 +1954,12 @@ function PaymentHistoryModal({
                 <div className="flex items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5">
                     <Badge tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Badge>
-                    {e.action !== 'cancel' && <b className="text-ink">{baht(e.amount)} ฿</b>}
+                    {e.action !== 'cancel' && <b className="text-ink whitespace-nowrap">{baht(e.amount)} ฿</b>}
                   </span>
                   <span className="text-xs text-ink-soft">{thaiDateTime(e.createdAt)}</span>
                 </div>
                 <p className="mt-1 text-xs text-ink-soft">
-                  ยอดสะสมหลังทำ {baht(e.paidAmountAfter)} ฿ · โดย {e.byName || '—'}
+                  ยอดสะสมหลังทำ <span className="whitespace-nowrap">{baht(e.paidAmountAfter)} ฿</span> · โดย {e.byName || '—'}
                   {e.note ? ` · ${e.note}` : ''}
                 </p>
               </li>
@@ -2057,15 +2057,15 @@ function PaymentModal({
         <div className="grid grid-cols-3 gap-2 rounded-xl bg-peach-light/40 p-3 text-sm">
           <div>
             <p className="text-xs text-ink-soft">ค่างวด</p>
-            <p className="font-semibold text-ink">{baht(ins.amount)} ฿</p>
+            <p className="font-semibold text-ink whitespace-nowrap">{baht(ins.amount)} ฿</p>
           </div>
           <div>
             <p className="text-xs text-ink-soft">ชำระแล้ว</p>
-            <p className="font-semibold text-ink">{baht(ins.paidAmount)} ฿</p>
+            <p className="font-semibold text-ink whitespace-nowrap">{baht(ins.paidAmount)} ฿</p>
           </div>
           <div>
             <p className="text-xs text-ink-soft">ค้าง</p>
-            <p className="font-semibold text-red-600">{baht(remaining)} ฿</p>
+            <p className="font-semibold text-red-600 whitespace-nowrap">{baht(remaining)} ฿</p>
           </div>
         </div>
 
@@ -2107,15 +2107,15 @@ function PaymentModal({
             <div className="flex flex-col gap-1 text-ink-soft">
               <div className="flex justify-between">
                 <span>ค่างวดที่รับครั้งนี้</span>
-                <span className="font-semibold text-ink">{baht(amount)} ฿</span>
+                <span className="font-semibold text-ink whitespace-nowrap">{baht(amount)} ฿</span>
               </div>
               <div className="flex justify-between">
                 <span>ค่าปรับที่รับครั้งนี้</span>
-                <span className="font-semibold text-ink">{baht(penaltyPaid)} ฿</span>
+                <span className="font-semibold text-ink whitespace-nowrap">{baht(penaltyPaid)} ฿</span>
               </div>
               <div className="mt-1 flex justify-between border-t border-peach pt-1 font-semibold">
                 <span className="text-ink">รวมรับทั้งหมด</span>
-                <span className="text-ink">{baht(grandTotal)} ฿</span>
+                <span className="text-ink whitespace-nowrap">{baht(grandTotal)} ฿</span>
               </div>
             </div>
           </div>
@@ -2236,7 +2236,7 @@ function PenaltyOverrideModal({
       <div className="flex flex-col gap-3">
         <div className="rounded-xl bg-peach-light/40 px-3 py-2.5 text-sm">
           <p className="text-ink-soft">ค่าปรับปัจจุบัน</p>
-          <p className="font-semibold text-ink">{baht(ins.penaltyAmount)} ฿ ({ins.penaltyDays} วัน)</p>
+          <p className="font-semibold text-ink whitespace-nowrap">{baht(ins.penaltyAmount)} ฿ ({ins.penaltyDays} วัน)</p>
         </div>
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
           การแก้ไขค่าปรับจะล็อกค่านี้ไว้ — ระบบอัตโนมัติจะไม่คำนวณค่าปรับซ้ำสำหรับงวดนี้อีก
@@ -2565,7 +2565,7 @@ function ExtendModal({
               {paidInstallments.map((i) => (
                 <li key={i.id} className="flex items-center gap-2">
                   <span className="shrink-0 font-semibold text-green-600">งวด {i.installmentNo} ✓</span>
-                  <span>{baht(i.paidAmount)} ฿</span>
+                  <span className="whitespace-nowrap">{baht(i.paidAmount)} ฿</span>
                   {i.paidAt && (
                     <span className="text-ink-soft">(จ่ายเมื่อ {thaiDate(i.paidAt.slice(0, 10))})</span>
                   )}
@@ -2573,7 +2573,7 @@ function ExtendModal({
               ))}
             </ol>
             <p className="mt-2 border-t border-peach pt-2 text-xs">
-              เงินต้นคงค้าง: <b className="text-ink">{baht(calc?.principalRemaining ?? outstanding)} ฿</b>
+              เงินต้นคงค้าง: <b className="text-ink whitespace-nowrap">{baht(calc?.principalRemaining ?? outstanding)} ฿</b>
             </p>
           </div>
         )}
@@ -2592,10 +2592,10 @@ function ExtendModal({
         </Field>
 
         <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
-          ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b> · ยอดคงค้าง <b className="text-ink">{baht(outstanding)} ฿</b>
+          ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b> · ยอดคงค้าง <b className="text-ink whitespace-nowrap">{baht(outstanding)} ฿</b>
           {partialPaid > 0 && (
             <span className="mt-1 block rounded-lg bg-green-50 px-2 py-1 text-green-700">
-              หักยอดที่จ่ายบางส่วน {baht(partialPaid)} ฿ ออกจากเงินต้นค้างให้ลูกค้าแล้ว
+              หักยอดที่จ่ายบางส่วน <span className="whitespace-nowrap">{baht(partialPaid)} ฿</span> ออกจากเงินต้นค้างให้ลูกค้าแล้ว
             </span>
           )}
         </div>
@@ -2621,7 +2621,7 @@ function ExtendModal({
               </Field>
             </div>
             <p className="mt-2 text-xs text-ink-soft">
-              เรต: <b className="text-ink">{rateMult ?? '—'}</b> · เงินต้นแท้: <b className="text-ink">{baht(afterDown)} ฿</b> · งวดที่ยังไม่ชำระ: <b className="text-ink">{unpaidCount}</b> งวด
+              เรต: <b className="text-ink">{rateMult ?? '—'}</b> · เงินต้นแท้: <b className="text-ink whitespace-nowrap">{baht(afterDown)} ฿</b> · งวดที่ยังไม่ชำระ: <b className="text-ink">{unpaidCount}</b> งวด
             </p>
           </div>
         )}
@@ -2633,31 +2633,31 @@ function ExtendModal({
             <div className="flex flex-col gap-1">
               <div className="flex justify-between text-ink-soft">
                 <span>ยอดคงค้างรวม (ไม่รวมค่าปรับ)</span>
-                <b className="text-ink">{baht(outstanding)} ฿</b>
+                <b className="text-ink whitespace-nowrap">{baht(outstanding)} ฿</b>
               </div>
               <div className="flex justify-between pl-4 text-ink-soft">
                 <span>เงินต้นค้าง</span>
-                <span className="font-semibold text-ink">{baht(calc.principalRemaining)} ฿</span>
+                <span className="font-semibold text-ink whitespace-nowrap">{baht(calc.principalRemaining)} ฿</span>
               </div>
               <div className="flex justify-between pl-4 text-ink-soft">
                 <span>ดอกเบี้ยเก่า (ลูกค้าจ่ายผ่านงวดใหม่)</span>
-                <span>{baht(Math.max(0, oldInterest))} ฿</span>
+                <span className="whitespace-nowrap">{baht(Math.max(0, oldInterest))} ฿</span>
               </div>
               {penaltyDue > 0 && (
                 <div className="flex justify-between text-ink-soft">
                   <span>ค่าปรับสะสม (จ่ายแยก)</span>
-                  <span className="text-red-600">{baht(penaltyDue)} ฿</span>
+                  <span className="text-red-600 whitespace-nowrap">{baht(penaltyDue)} ฿</span>
                 </div>
               )}
               <div className="mt-1 flex justify-between border-t border-peach pt-1 font-semibold">
                 <span className="text-ink">รวมทั้งสิ้น</span>
-                <span className="text-ink">{baht(totalOutstandingLocal)} ฿</span>
+                <span className="text-ink whitespace-nowrap">{baht(totalOutstandingLocal)} ฿</span>
               </div>
             </div>
             <div className="mt-3 rounded-lg bg-peach-light/60 px-3 py-2 text-sm">
               ขยาย <b className="text-ink">{rateTerm}</b> งวด × เรต <b className="text-ink">{rateMult}</b>{' '}
-              → ค่างวดใหม่: <b className="text-salmon-deep">{baht(calc.newMonthly)} ฿/เดือน</b>
-              {' '}(ยอดจัดไฟแนนซ์ {baht(calc.newFinance)} ฿)
+              → ค่างวดใหม่: <b className="text-salmon-deep whitespace-nowrap">{baht(calc.newMonthly)} ฿/เดือน</b>
+              {' '}(ยอดจัดไฟแนนซ์ <span className="whitespace-nowrap">{baht(calc.newFinance)} ฿</span>)
             </div>
           </div>
         )}
@@ -2675,7 +2675,7 @@ function ExtendModal({
         <div className="rounded-xl border border-peach bg-white px-3 py-2.5 text-sm">
           <p className="font-semibold text-ink">สรุปงวดใหม่</p>
           <p className="text-ink-soft">
-            ค่างวดใหม่ <b className="text-ink">{baht(activeMonthly)} ฿/เดือน</b> · งวดเลขที่{' '}
+            ค่างวดใหม่ <b className="text-ink whitespace-nowrap">{baht(activeMonthly)} ฿/เดือน</b> · งวดเลขที่{' '}
             <b className="text-ink">{firstNo}–{lastNo}</b> ({activeTerm} งวด · รวมทั้งสัญญา {totalTerm} งวด)
           </p>
           <p className="text-ink-soft">

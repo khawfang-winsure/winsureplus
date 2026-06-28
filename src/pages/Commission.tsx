@@ -268,7 +268,7 @@ function CommissionReport({ canEdit }: { canEdit: boolean }) {
                   <td className="px-3 py-2.5">รวมทั้งหมด</td>
                   <td className="px-3 py-2.5 text-right">{baht(totalCaseNet)}</td>
                   <td className="px-3 py-2.5 text-right text-amber-700">{baht(totalRecruit)}</td>
-                  <td className="px-3 py-2.5 text-right">{baht(totalGrand)} ฿</td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap">{baht(totalGrand)} ฿</td>
                   <td></td>
                 </tr>
               </tfoot>

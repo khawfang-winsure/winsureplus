@@ -196,7 +196,7 @@ export default function WaitingSummary() {
                         {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
                       </p>
                     </div>
-                    <span className="font-semibold text-salmon-deep">{baht(netOf(c))} ฿</span>
+                    <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
                   </li>
                 )
               })}
@@ -210,7 +210,7 @@ export default function WaitingSummary() {
                 <Receipt size={16} /> สร้างข้อความสรุปยอด
               </Button>
               {selected.size > 0 && (
-                <Badge tone="green">รวม {baht(selectedNet)} ฿ · {groups.length} ร้าน</Badge>
+                <Badge tone="green">รวม <span className="whitespace-nowrap">{baht(selectedNet)} ฿</span> · {groups.length} ร้าน</Badge>
               )}
             </div>
 

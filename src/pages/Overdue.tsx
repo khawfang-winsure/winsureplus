@@ -65,7 +65,7 @@ export default function Overdue() {
                 </div>
                 <div className="text-right">
                   <Badge tone="red">ล่าช้า {r.daysLate} วัน</Badge>
-                  {r.penaltyDue > 0 && <p className="mt-1 text-sm text-ink-soft">ค่าปรับ {baht(r.penaltyDue)} ฿</p>}
+                  {r.penaltyDue > 0 && <p className="mt-1 text-sm text-ink-soft whitespace-nowrap">ค่าปรับ {baht(r.penaltyDue)} ฿</p>}
                 </div>
               </li>
             ))}

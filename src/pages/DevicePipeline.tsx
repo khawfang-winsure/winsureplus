@@ -213,7 +213,7 @@ function DeviceDetailModal({
           {repair > 0 && (
             <>
               <span className="text-ink-soft">ค่าซ่อม</span>
-              <span className="text-ink">{baht(repair)} ฿</span>
+              <span className="text-ink whitespace-nowrap">{baht(repair)} ฿</span>
             </>
           )}
           {row.returnMethod === 'walk_in' ? (
@@ -364,10 +364,10 @@ export default function DevicePipeline() {
                         <span className="text-ink-soft">-</span>
                       )}
                     </td>
-                    <td className="py-3 pr-4 text-ink">
+                    <td className="py-3 pr-4 text-ink whitespace-nowrap">
                       {status === 'priced' && isAdmin ? (
                         <div className="flex items-center gap-1.5">
-                          <span>{r.salePrice != null ? `${baht(r.salePrice)} ฿` : <span className="text-ink-soft">-</span>}</span>
+                          <span className="whitespace-nowrap">{r.salePrice != null ? `${baht(r.salePrice)} ฿` : <span className="text-ink-soft">-</span>}</span>
                           <Button
                             variant="ghost"
                             onClick={() => setEditPriceTarget(r)}

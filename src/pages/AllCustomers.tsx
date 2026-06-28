@@ -377,7 +377,7 @@ export default function AllCustomers() {
                       </p>
                       {/* ความคืบหน้า + ค่างวด */}
                       <div className="mb-3 flex items-center gap-3">
-                        <span className="text-sm font-semibold text-ink">{baht(c.monthlyPayment)} ฿</span>
+                        <span className="text-sm font-semibold text-ink whitespace-nowrap">{baht(c.monthlyPayment)} ฿</span>
                         <span className="text-xs text-ink-soft">งวด {pr.paid}/{pr.total}</span>
                         <span className="flex-1">
                           <span className="block h-1.5 overflow-hidden rounded-full bg-peach-light">

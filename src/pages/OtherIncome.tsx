@@ -214,7 +214,7 @@ export default function OtherIncomePage() {
       {rows.length > 0 && (
         <p className="mb-3 text-sm text-ink-soft">
           ยอดรวมทั้งหมด{' '}
-          <span className="font-semibold text-green-600">{baht(grandTotal)} ฿</span>
+          <span className="font-semibold text-green-600 whitespace-nowrap">{baht(grandTotal)} ฿</span>
         </p>
       )}
 
@@ -239,7 +239,7 @@ export default function OtherIncomePage() {
                   <tr key={r.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="whitespace-nowrap px-3 py-2.5">{thaiDate(r.receivedAt)}</td>
                     <td className="px-3 py-2.5">{r.category}</td>
-                    <td className="px-3 py-2.5 font-semibold text-green-600">{baht(r.amount)} ฿</td>
+                    <td className="px-3 py-2.5 font-semibold text-green-600 whitespace-nowrap">{baht(r.amount)} ฿</td>
                     <td className="px-3 py-2.5">
                       {r.contractId ? (
                         <Link

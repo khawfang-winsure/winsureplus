@@ -55,15 +55,15 @@ function Summary({ rows }: { rows: SaleHistoryRow[] }) {
     <div className="mb-6 grid grid-cols-3 gap-3">
       <Card className="p-4 text-center">
         <p className="text-xs text-ink-soft mb-1">กำไรสะสม</p>
-        <p className="text-lg font-semibold text-green-600">{totalProfit > 0 ? `+${baht(totalProfit)} ฿` : '0 ฿'}</p>
+        <p className="text-lg font-semibold text-green-600 whitespace-nowrap">{totalProfit > 0 ? `+${baht(totalProfit)} ฿` : '0 ฿'}</p>
       </Card>
       <Card className="p-4 text-center">
         <p className="text-xs text-ink-soft mb-1">ขาดทุนสะสม</p>
-        <p className="text-lg font-semibold text-red-600">{totalLoss < 0 ? `${baht(totalLoss)} ฿` : '0 ฿'}</p>
+        <p className="text-lg font-semibold text-red-600 whitespace-nowrap">{totalLoss < 0 ? `${baht(totalLoss)} ฿` : '0 ฿'}</p>
       </Card>
       <Card className="p-4 text-center">
         <p className="text-xs text-ink-soft mb-1">Net</p>
-        <p className={`text-lg font-semibold ${net > 0 ? 'text-green-600' : net < 0 ? 'text-red-600' : 'text-ink-soft'}`}>
+        <p className={`text-lg font-semibold whitespace-nowrap ${net > 0 ? 'text-green-600' : net < 0 ? 'text-red-600' : 'text-ink-soft'}`}>
           {net > 0 ? `+${baht(net)} ฿` : net < 0 ? `${baht(net)} ฿` : '0 ฿'}
         </p>
       </Card>
@@ -229,22 +229,22 @@ export default function SaleHistory() {
                       </td>
                       <td className="py-3 pr-4 text-ink">{r.shopName}</td>
                       {/* กลุ่มต้นทุน */}
-                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 border-l border-peach/50">{baht(r.deviceListPrice)} ฿</td>
-                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20">{baht(r.commission)} ฿</td>
-                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 border-r border-peach/50">{baht(r.transferToShop)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 border-l border-peach/50 whitespace-nowrap">{baht(r.deviceListPrice)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 whitespace-nowrap">{baht(r.commission)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-peach-light/20 border-r border-peach/50 whitespace-nowrap">{baht(r.transferToShop)} ฿</td>
                       {/* กลุ่มเก็บเงินคืน */}
-                      <td className="py-3 px-3 text-right text-ink bg-salmon/5">{baht(r.downPaid)} ฿</td>
+                      <td className="py-3 px-3 text-right text-ink bg-salmon/5 whitespace-nowrap">{baht(r.downPaid)} ฿</td>
                       <td className="py-3 px-3 text-right text-ink bg-salmon/5">
-                        {baht(r.installmentPaid)} ฿
+                        <span className="whitespace-nowrap">{baht(r.installmentPaid)} ฿</span>
                         <span className="block text-xs text-ink-soft/70">({r.installmentCount} งวด)</span>
                       </td>
-                      <td className="py-3 px-3 text-right text-ink bg-salmon/5 border-r border-peach/50">
+                      <td className="py-3 px-3 text-right text-ink bg-salmon/5 border-r border-peach/50 whitespace-nowrap">
                         {r.resalePrice > 0 ? `${baht(r.resalePrice)} ฿` : <span className="text-ink-soft">-</span>}
                       </td>
                       <td className="py-3 pr-4 pl-4 text-ink">
                         {freelancerName ?? <span className="text-ink-soft">—</span>}
                       </td>
-                      <td className="py-3 pr-4 text-right text-ink">
+                      <td className="py-3 pr-4 text-right text-ink whitespace-nowrap">
                         {freelancerName && freelancerCommission > 0
                           ? `${baht(freelancerCommission)} ฿`
                           : <span className="text-ink-soft">—</span>}

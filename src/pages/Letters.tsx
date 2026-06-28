@@ -640,7 +640,7 @@ function RowView({
           )}
         </td>
       )}
-      {tab === 'send' && <td className="px-3 py-2.5 text-right">{baht(r.amount)} ฿</td>}
+      {tab === 'send' && <td className="px-3 py-2.5 text-right whitespace-nowrap">{baht(r.amount)} ฿</td>}
 
       {tab === 'wait' && (
         <td className="px-3 py-2.5 text-ink-soft">
@@ -653,7 +653,7 @@ function RowView({
           <span className="ml-1 text-xs text-ink-soft">({r.addresses ? Object.values(r.addresses).filter((x) => !isAddressEmpty(x)).length : 0} ที่อยู่)</span>
         </td>
       )}
-      {tab === 'field' && <td className="px-3 py-2.5 text-right">{baht(r.amount)} ฿</td>}
+      {tab === 'field' && <td className="px-3 py-2.5 text-right whitespace-nowrap">{baht(r.amount)} ฿</td>}
 
       <td className="px-3 py-2.5 text-right">
         {tab === 'send' && (
