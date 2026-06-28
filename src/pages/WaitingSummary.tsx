@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Receipt } from 'lucide-react'
+import { Receipt, X } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
@@ -60,14 +60,41 @@ export default function WaitingSummary() {
   const [date, setDate] = useState(today)
   const [output, setOutput] = useState('')
   const [sortOpt, setSortOpt] = useState<`${SortKey}_${SortDir}`>('transactionDate_desc')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [shopFilter, setShopFilter] = useState('')
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
 
+  // เคสที่ยังไม่ส่ง (ก่อนกรอง) — ใช้แยก empty-state
+  const base = useMemo(
+    () => data.contracts.filter((c) => !c.summarySentAt && !locallySent.has(c.id)),
+    [data.contracts, locallySent],
+  )
+
+  // ร้านที่เลือกได้ (เรียงตามชื่อ)
+  const sortedShops = useMemo(
+    () => [...data.shops].sort((a, b) => a.name.localeCompare(b.name, 'th')),
+    [data.shops],
+  )
+
+  const hasFilter = !!(fromDate || toDate || shopFilter)
+  const clearFilter = () => {
+    setFromDate('')
+    setToDate('')
+    setShopFilter('')
+  }
+
   const pending = useMemo(() => {
     const [key, dir] = sortOpt.split('_') as [SortKey, SortDir]
-    const unsorted = data.contracts.filter((c) => !c.summarySentAt && !locallySent.has(c.id))
-    return sortContracts(unsorted, key, dir)
-  }, [data.contracts, locallySent, sortOpt])
+    const filtered = base.filter((c) => {
+      if (fromDate && c.transactionDate < fromDate) return false
+      if (toDate && c.transactionDate > toDate) return false
+      if (shopFilter && c.shopId !== shopFilter) return false
+      return true
+    })
+    return sortContracts(filtered, key, dir)
+  }, [base, sortOpt, fromDate, toDate, shopFilter])
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -140,7 +167,7 @@ export default function WaitingSummary() {
         รอสรุปยอด
       </PageTitle>
 
-      {pending.length === 0 ? (
+      {base.length === 0 ? (
         <EmptyState title="ไม่มีเคสค้างสรุปยอด" hint="เคสที่ทำเครื่องหมายว่าส่งแล้วจะถูกซ่อน" />
       ) : (
         <div className="grid gap-5 lg:grid-cols-2">
@@ -166,6 +193,36 @@ export default function WaitingSummary() {
               <span className="text-sm text-ink-soft">เลือกแล้ว {selected.size} เคส</span>
             </div>
 
+            {/* ตัวกรอง: ช่วงวันที่ทำรายการ + ร้าน */}
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-ink">
+                ตั้งแต่
+                <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-auto" />
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink">
+                ถึง
+                <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-auto" />
+              </label>
+              <Select
+                value={shopFilter}
+                onChange={(e) => setShopFilter(e.target.value)}
+                className="!w-auto min-w-[140px] text-sm"
+              >
+                <option value="">ทุกร้าน</option>
+                {sortedShops.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </Select>
+              {hasFilter && (
+                <Button variant="ghost" onClick={clearFilter} className="text-sm">
+                  <X size={13} /> ล้างตัวกรอง
+                </Button>
+              )}
+            </div>
+
+            {pending.length === 0 ? (
+              <EmptyState title="ไม่มีเคสตรงตัวกรอง" hint="ลองปรับช่วงวันหรือร้าน" />
+            ) : (
             <ul className="flex flex-col gap-2">
               {pending.map((c) => {
                 const checked = selected.has(c.id)
@@ -201,6 +258,7 @@ export default function WaitingSummary() {
                 )
               })}
             </ul>
+            )}
           </div>
 
           {/* ฝั่งขวา: ผลลัพธ์ */}

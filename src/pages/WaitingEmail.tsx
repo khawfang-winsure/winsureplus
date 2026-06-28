@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Mail } from 'lucide-react'
-import { Badge, Button, EmptyState, Loading, Modal, PageTitle, Select } from '../components/ui'
+import { Mail, X } from 'lucide-react'
+import { Badge, Button, EmptyState, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { thaiDate } from '../lib/format'
 import { buildEmailText } from '../lib/messages'
@@ -52,14 +52,41 @@ export default function WaitingEmail() {
   const [sentIds, setSentIds] = useState<Set<string>>(new Set())
   const [view, setView] = useState<Contract | null>(null)
   const [sortOpt, setSortOpt] = useState<`${SortKey}_${SortDir}`>('transactionDate_desc')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [shopFilter, setShopFilter] = useState('')
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
 
+  // เคสที่ยังไม่ส่ง (ก่อนกรอง) — ใช้แยก empty-state
+  const base = useMemo(
+    () => data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id)),
+    [data.contracts, sentIds],
+  )
+
+  // ร้านที่เลือกได้ (เรียงตามชื่อ)
+  const sortedShops = useMemo(
+    () => [...data.shops].sort((a, b) => a.name.localeCompare(b.name, 'th')),
+    [data.shops],
+  )
+
+  const hasFilter = !!(fromDate || toDate || shopFilter)
+  const clearFilter = () => {
+    setFromDate('')
+    setToDate('')
+    setShopFilter('')
+  }
+
   const pending = useMemo(() => {
     const [key, dir] = sortOpt.split('_') as [SortKey, SortDir]
-    const unsorted = data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id))
-    return sortContracts(unsorted, key, dir)
-  }, [data.contracts, sentIds, sortOpt])
+    const filtered = base.filter((c) => {
+      if (fromDate && c.transactionDate < fromDate) return false
+      if (toDate && c.transactionDate > toDate) return false
+      if (shopFilter && c.shopId !== shopFilter) return false
+      return true
+    })
+    return sortContracts(filtered, key, dir)
+  }, [base, sortOpt, fromDate, toDate, shopFilter])
 
   async function doMarkSent(c: Contract) {
     if (c.pendingDocuments) {
@@ -83,11 +110,11 @@ export default function WaitingEmail() {
       </PageTitle>
       {loading ? (
         <Loading />
-      ) : pending.length === 0 ? (
+      ) : base.length === 0 ? (
         <EmptyState title="ไม่มีเคสค้างส่งอีเมล" hint="เคสที่ส่งแล้วจะถูกซ่อนอัตโนมัติ" />
       ) : (
         <>
-          <div className="mb-3 flex items-center gap-3">
+          <div className="mb-3 flex flex-wrap items-center gap-3">
             <Select
               value={sortOpt}
               onChange={(e) => setSortOpt(e.target.value as `${SortKey}_${SortDir}`)}
@@ -97,7 +124,33 @@ export default function WaitingEmail() {
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </Select>
+            <label className="flex items-center gap-2 text-sm text-ink">
+              ตั้งแต่
+              <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-auto" />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-ink">
+              ถึง
+              <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-auto" />
+            </label>
+            <Select
+              value={shopFilter}
+              onChange={(e) => setShopFilter(e.target.value)}
+              className="!w-auto min-w-[140px] text-sm"
+            >
+              <option value="">ทุกร้าน</option>
+              {sortedShops.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </Select>
+            {hasFilter && (
+              <Button variant="ghost" onClick={clearFilter} className="text-sm">
+                <X size={13} /> ล้างตัวกรอง
+              </Button>
+            )}
           </div>
+          {pending.length === 0 ? (
+            <EmptyState title="ไม่มีเคสตรงตัวกรอง" hint="ลองปรับช่วงวันหรือร้าน" />
+          ) : (
           <ul className="flex flex-col gap-2">
           {pending.map((c) => (
             <li key={c.id} className="flex items-center justify-between rounded-xl border border-peach bg-white px-4 py-3">
@@ -120,6 +173,7 @@ export default function WaitingEmail() {
             </li>
           ))}
           </ul>
+          )}
         </>
       )}
 
