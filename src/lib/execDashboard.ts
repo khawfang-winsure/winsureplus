@@ -688,7 +688,7 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
 
   // ----- ร้านค้า -----
   const shopRows = buildShopReport(shops, contracts, statuses, todayISO)
-  const GRADES: ShopGrade[] = ['A', 'B', 'C', 'D']
+  const GRADES: ShopGrade[] = ['A', 'B', 'C', 'E']
   const gradeDist = GRADES.map((grade) => {
     const rs = shopRows.filter((r) => r.grade === grade)
     return { grade, count: rs.length, value: rs.reduce((s, r) => s + r.totalSales, 0) }

@@ -77,7 +77,7 @@ const GRADE_COLOR: Record<ShopGrade, string> = {
   A: '#16a34a',
   B: '#65a30d',
   C: '#f59e0b',
-  D: '#dc2626',
+  E: '#dc2626',
   '-': '#9ca3af',
 }
 

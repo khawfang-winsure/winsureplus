@@ -144,7 +144,7 @@ export interface ShopContractTotal {
   total: number                     // จำนวนสัญญาทั้งหมดต่อร้าน (ทุก status) — ตัวหารอัตราคืน
 }
 
-export type ShopGrade = 'A' | 'B' | 'C' | 'D' | '-'
+export type ShopGrade = 'A' | 'B' | 'C' | 'E' | '-'
 
 export interface ShopReportRow {
   shopId: string
@@ -169,7 +169,7 @@ export interface ShopReportSummary {
   activePercent: number // % ร้านที่ยังเคลื่อนไหว (0-100)
   inactiveShops: number // ร้านที่เคยส่งเคสแต่เงียบ >30 วัน
   gradeA: number
-  gradeD: number
+  gradeE: number
 }
 
 export interface NotificationItem {

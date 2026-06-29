@@ -24,13 +24,13 @@ function daysBetween(fromISO: string, toISO: string): number {
 /** เกรดจาก % ลูกค้าเสี่ยง */
 export function gradeFor(riskyRate: number, totalContracts: number): ShopGrade {
   if (totalContracts === 0) return '-'
-  if (riskyRate < 5) return 'A'
-  if (riskyRate < 15) return 'B'
-  if (riskyRate < 30) return 'C'
-  return 'D'
+  if (riskyRate <= 3) return 'A'
+  if (riskyRate <= 8) return 'B'
+  if (riskyRate <= 12) return 'C'
+  return 'E'
 }
 
-const GRADE_ORDER: Record<ShopGrade, number> = { A: 0, B: 1, C: 2, D: 3, '-': 4 }
+const GRADE_ORDER: Record<ShopGrade, number> = { A: 0, B: 1, C: 2, E: 3, '-': 4 }
 
 export function buildShopReport(
   shops: Shop[],
@@ -99,7 +99,7 @@ export function shopReportSummary(rows: ShopReportRow[]): ShopReportSummary {
     activePercent,
     inactiveShops,
     gradeA: rows.filter((r) => r.grade === 'A').length,
-    gradeD: rows.filter((r) => r.grade === 'D').length,
+    gradeE: rows.filter((r) => r.grade === 'E').length,
   }
 }
 
