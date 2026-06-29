@@ -96,12 +96,6 @@ export default function WaitingEmail() {
   }, [base, sortOpt, fromDate, toDate, shopFilter])
 
   async function doMarkSent(c: Contract) {
-    if (c.pendingDocuments) {
-      const ok = window.confirm(
-        `เอกสารของ ${c.customerName} ครบแล้วใช่ไหม?\n\nยืนยัน = ส่งอีเมล + เคลียร์สถานะรอเอกสาร`,
-      )
-      if (!ok) return
-    }
     await markEmailSent(c.id, name ?? undefined)
     setSentIds((prev) => new Set([...prev, c.id]))
     setView(null)

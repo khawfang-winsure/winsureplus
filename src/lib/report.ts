@@ -47,11 +47,26 @@ export function buildShopReport(
 
     let risky = 0
     let lastActivity: string | null = null
+    // ทิ้งงวดแรก = สัญญาที่ยังไม่เคยจ่ายสักงวด (remainingInstallments === termMonths)
+    let firstDefaultHolding = 0
+    let firstDefaultReturned = 0
+    let firstDefaultHoldingValue = 0
     for (const c of shopContracts) {
       const st = statusByContract.get(c.id)
       if (st && st.status === 'active' && RISKY_BUCKETS.has(st.bucket)) risky++
       // เคสล่าสุด = วันที่ทำรายการมากสุด
       if (!lastActivity || c.transactionDate > lastActivity) lastActivity = c.transactionDate
+      // ทิ้งงวดแรก: ไม่เคยจ่ายสักงวด (งวดเหลือครบ = ไม่เคยจ่าย) — ใช้นิยามเดียวกับ earlyDefault ใน execDashboard
+      const neverPaid = st != null && st.remainingInstallments === c.termMonths
+      if (neverPaid) {
+        if (c.status === 'active' && st.daysLate > 0) {
+          // ยังถือเครื่อง + งวดแรกเลยกำหนดแล้ว (เสียทั้งเงินทั้งเครื่อง)
+          firstDefaultHolding++
+          firstDefaultHoldingValue += c.financeAmount // เงินเสี่ยง = ยอดจัดไฟแนนซ์
+        } else if (c.status === 'returned' || c.status === 'returned_closed') {
+          firstDefaultReturned++
+        }
+      }
     }
     const good = total - risky
     const riskyRate = total > 0 ? (risky / total) * 100 : 0
@@ -71,6 +86,11 @@ export function buildShopReport(
       lastActivity,
       daysSinceActivity,
       active,
+      firstDefaultHolding,
+      firstDefaultReturned,
+      firstDefaultHoldingValue,
+      firstDefaultHoldingRate: total > 0 ? (firstDefaultHolding / total) * 100 : 0,
+      firstDefaultReturnedRate: total > 0 ? (firstDefaultReturned / total) * 100 : 0,
     }
   })
 

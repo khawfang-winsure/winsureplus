@@ -159,6 +159,12 @@ export interface ShopReportRow {
   lastActivity: string | null // วันที่ส่งเคสล่าสุด (ISO) — null = ยังไม่เคยส่ง
   daysSinceActivity: number | null // ผ่านมากี่วันจากเคสล่าสุด
   active: boolean // ยังเคลื่อนไหว (ส่งเคสใหม่ภายใน 30 วัน)
+  // --- ทิ้งงวดแรก (ไม่เคยจ่ายสักงวด) — แยก 2 กลุ่ม ---
+  firstDefaultHolding: number // active + ไม่เคยจ่าย + งวดแรกเลยกำหนด (daysLate>0) — ยังถือเครื่อง (ตัวร้ายสุด)
+  firstDefaultReturned: number // returned/returned_closed + ไม่เคยจ่าย — คืนเครื่องแล้ว
+  firstDefaultHoldingValue: number // เงินเสี่ยงของกลุ่มถือเครื่อง (Σ financeAmount)
+  firstDefaultHoldingRate: number // % holding ของสัญญาทั้งร้าน (0-100)
+  firstDefaultReturnedRate: number // % returned ของสัญญาทั้งร้าน (0-100)
 }
 
 /** สรุปภาพรวมรายงานร้านค้า (การ์ด dashboard) */

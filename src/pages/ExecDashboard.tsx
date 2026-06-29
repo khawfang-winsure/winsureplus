@@ -35,7 +35,7 @@ import {
   type EscalateContract,
   type ForecastByGradeRow,
 } from '../lib/db'
-import { buildExecDashboard, buildGradeMovement, buildOverdueTrend, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult, type OverdueTrendResult } from '../lib/execDashboard'
+import { buildExecDashboard, buildGradeMovement, buildOverdueTrend, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult, type OverdueTrendResult, type ExpenseSummary, type FirstDefaultSummary } from '../lib/execDashboard'
 import { buildCashflowForecast, type CashflowForecastResult } from '../lib/cashflowForecast'
 import { detectBottlenecks, type BottleneckAlert } from '../lib/bottleneck'
 import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
@@ -377,6 +377,12 @@ export default function ExecDashboard() {
         </div>
       </Card>
 
+      {/* ===== แถว 5b: เงินจ่ายออกให้ร้าน + ทิ้งงวดแรก (ทั้งพอร์ต) ===== */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ExpenseSummaryCard summary={d.expenseSummary} />
+        <FirstDefaultCard summary={d.firstDefaultSummary} shopRows={d.shopRows} navigate={navigate} isExec={isExec} />
+      </div>
+
       {/* ===== แถว 6: แนวโน้ม 12 เดือน ===== */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -660,6 +666,91 @@ function ShopMini({ rows, navigate, metric, mask }: { rows: import('../lib/types
         </li>
       ))}
     </ul>
+  )
+}
+
+// ---------- การ์ดเงินจ่ายออกให้ร้าน (ทั้งพอร์ต) ----------
+function ExpenseSummaryCard({ summary }: { summary: ExpenseSummary }) {
+  return (
+    <Card>
+      <h3 className="mb-1 font-semibold text-ink">เงินจ่ายออกให้ร้าน (ทั้งพอร์ต)</h3>
+      <p className="mb-3 text-xs text-ink-soft">สุทธิที่โอนให้ร้านทั้งหมด — รวมทุกสัญญา ไม่อิงช่วงวันที่</p>
+      <p className="whitespace-nowrap text-3xl font-bold text-amber-600">฿{money(summary.netTransferTotal)}</p>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-xl bg-peach-light/40 py-2">
+          <p className="text-xs text-ink-soft">ราคาเครื่องรวม</p>
+          <p className="whitespace-nowrap font-semibold text-ink">฿{money(summary.deviceTotal)}</p>
+        </div>
+        <div className="rounded-xl bg-peach-light/40 py-2">
+          <p className="text-xs text-ink-soft">ค่าคอมรวม</p>
+          <p className="whitespace-nowrap font-semibold text-ink">฿{money(summary.commissionTotal)}</p>
+        </div>
+        <div className="rounded-xl bg-peach-light/40 py-2">
+          <p className="text-xs text-ink-soft">ค่าเอกสารรวม (หัก)</p>
+          <p className="whitespace-nowrap font-semibold text-green-600">−฿{money(summary.docFeeTotal)}</p>
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-ink-soft">สุทธิ = ราคาเครื่องหลังหักดาวน์ + ค่าคอม − ค่าเอกสาร</p>
+    </Card>
+  )
+}
+
+// ---------- การ์ดทิ้งงวดแรก (ทั้งพอร์ต) + Top 5 ร้านถือเครื่อง ----------
+function FirstDefaultCard({
+  summary,
+  shopRows,
+  navigate,
+  isExec,
+}: {
+  summary: FirstDefaultSummary
+  shopRows: import('../lib/types').ShopReportRow[]
+  navigate: (to: string) => void
+  isExec: boolean
+}) {
+  const top5 = [...shopRows]
+    .filter((r) => r.firstDefaultHolding > 0)
+    .sort((a, b) => b.firstDefaultHoldingRate - a.firstDefaultHoldingRate || b.firstDefaultHolding - a.firstDefaultHolding)
+    .slice(0, 5)
+  return (
+    <Card>
+      <h3 className="mb-1 font-semibold text-ink">ทิ้งงวดแรก (ทั้งพอร์ต)</h3>
+      <p className="mb-3 text-xs text-ink-soft">สัญญาที่ยังไม่เคยจ่ายค่างวดสักงวด — รวมทุกสัญญา ไม่อิงช่วงวันที่</p>
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <div className="rounded-xl border border-red-200 bg-red-50 py-2.5">
+          <p className="text-xs text-ink-soft">ยังถือเครื่อง</p>
+          <p className="text-2xl font-bold text-red-600">{summary.holdingCount} ราย</p>
+          <p className="whitespace-nowrap text-xs text-red-500">เงินเสี่ยง ฿{money(summary.holdingValue)}</p>
+        </div>
+        <div className="rounded-xl border border-peach bg-peach-light/40 py-2.5">
+          <p className="text-xs text-ink-soft">คืนเครื่องแล้ว</p>
+          <p className="text-2xl font-bold text-ink">{summary.returnedCount} ราย</p>
+          <p className="text-xs text-ink-soft">ไม่เคยจ่ายแต่คืนเครื่อง</p>
+        </div>
+      </div>
+
+      <p className="mb-2 mt-4 text-xs font-semibold text-ink-soft">Top 5 ร้านทิ้งงวดแรก · ยังถือเครื่อง (เรียงตาม %)</p>
+      {top5.length === 0 ? (
+        <p className="text-sm text-green-600">— ไม่มีร้านที่มีเคสทิ้งงวดแรกแบบถือเครื่อง</p>
+      ) : (
+        <ul className="flex flex-col gap-2 text-sm">
+          {top5.map((s, i) => (
+            <li key={s.shopId} className="flex items-center justify-between gap-2">
+              {isExec ? (
+                <span className="truncate text-ink">{maskName(s.name || s.code, i, true)}</span>
+              ) : (
+                <button onClick={() => navigate(`/shop/${s.shopId}`)} className="truncate text-left text-salmon-deep hover:underline">
+                  {s.name || s.code}
+                </button>
+              )}
+              <span className="flex shrink-0 items-center gap-2">
+                <Badge tone="red">{s.firstDefaultHoldingRate.toFixed(0)}%</Badge>
+                <b className="whitespace-nowrap text-ink">{s.firstDefaultHolding} ราย</b>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   )
 }
 

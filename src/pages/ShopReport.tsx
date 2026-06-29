@@ -290,10 +290,10 @@ export default function ShopReport() {
           {/* ===== ตารางร้านค้า (ค้นหา/เรียง/แบ่งหน้า + กดเข้าร้าน) ===== */}
           <ListToolbar controls={c} searchPlaceholder="ค้นหาร้านค้า (ชื่อ / รหัส)..." />
           <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
-            <table className="w-full min-w-[860px] text-sm">
+            <table className="w-full min-w-[980px] text-sm">
               <thead>
                 <tr className="bg-peach-light text-left text-ink">
-                  {['ร้านค้า', 'สัญญา', 'ยอดขายรวม', 'เสี่ยง (31วัน+)', '% เสี่ยง', 'ส่งเคสล่าสุด', 'สถานะ', 'เกรด'].map((h) => (
+                  {['ร้านค้า', 'สัญญา', 'ยอดขายรวม', 'เสี่ยง (31วัน+)', '% เสี่ยง', 'ทิ้งงวดแรก', 'ส่งเคสล่าสุด', 'สถานะ', 'เกรด'].map((h) => (
                     <th key={h} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
                   ))}
                 </tr>
@@ -313,6 +313,20 @@ export default function ShopReport() {
                     <td className="px-3 py-2.5 text-right">{baht(r.totalSales)}</td>
                     <td className="px-3 py-2.5 text-center font-medium text-red-600">{r.risky}</td>
                     <td className="px-3 py-2.5 text-center">{r.riskyRate.toFixed(0)}%</td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-center">
+                      {r.firstDefaultHolding === 0 && r.firstDefaultReturned === 0 ? (
+                        <span className="text-ink-soft/40">—</span>
+                      ) : (
+                        <>
+                          <span className="font-medium text-red-600">
+                            ถือเครื่อง {r.firstDefaultHolding} ({r.firstDefaultHoldingRate.toFixed(0)}%)
+                          </span>
+                          {r.firstDefaultReturned > 0 && (
+                            <span className="block text-xs text-ink-soft">คืนแล้ว {r.firstDefaultReturned}</span>
+                          )}
+                        </>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-center text-ink-soft">
                       {r.daysSinceActivity == null ? '—' : r.daysSinceActivity === 0 ? 'วันนี้' : `${r.daysSinceActivity} วันก่อน`}
                     </td>
@@ -326,7 +340,7 @@ export default function ShopReport() {
           <ListPager controls={c} />
 
           <p className="mt-4 text-xs text-ink-soft">
-            เกณฑ์เกรด: A &lt;5% · B 5-15% · C 15-30% · D &gt;30% (ของลูกค้าเสี่ยง) ·
+            เกณฑ์เกรด: A ≤3% · B &gt;3–8% · C &gt;8–12% · E &gt;12% (% ลูกค้าค้างเกิน 30 วัน) ·
             กดที่ร้านเพื่อดูรายชื่อลูกค้าของร้านนั้น
           </p>
         </>

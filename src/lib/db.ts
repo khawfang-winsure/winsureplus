@@ -635,10 +635,6 @@ export async function markEmailSent(id: string, senderName?: string): Promise<vo
     .update({
       email_sent_at: now,
       email_sent_by: senderName ?? null,
-      // auto-clear รอเอกสาร เมื่อยืนยันส่งเมล (confirm-gate model 0049)
-      pending_documents: false,
-      documents_confirmed_at: now,
-      documents_confirmed_by: senderName ?? null,
     })
     .eq('id', id)
   if (error) throw error

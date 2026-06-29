@@ -40,6 +40,20 @@ export interface ExecInput {
 
 export interface StatusGroup { count: number; value: number }
 export interface AgingRow { bucket: string; label: string; count: number; value: number }
+/** สรุปเงินจ่ายออกให้ร้าน ทั้งพอร์ต (ทุกสัญญา ไม่อิงช่วงเวลา) */
+export interface ExpenseSummary {
+  deviceTotal: number      // Σ ราคาเครื่อง
+  commissionTotal: number  // Σ ค่าคอม (afterDown × commissionPercent/100)
+  docFeeTotal: number      // Σ ค่าเอกสาร
+  netTransferTotal: number // Σ เงินโอนสุทธิให้ร้าน (afterDown + commission − docFee)
+}
+/** สรุปทิ้งงวดแรกทั้งพอร์ต (รวมจากทุกร้าน) */
+export interface FirstDefaultSummary {
+  holdingCount: number   // ยังถือเครื่อง (ไม่เคยจ่าย + active + เลยกำหนด)
+  holdingValue: number   // เงินเสี่ยงของกลุ่มถือเครื่อง (Σ financeAmount)
+  returnedCount: number  // คืนเครื่องแล้ว (ไม่เคยจ่าย)
+  total: number          // holdingCount + returnedCount
+}
 export interface RiskGroup { key: string; total: number; badDebt: number; rate: number }
 export interface TrendPoint { label: string }
 
@@ -102,6 +116,9 @@ export interface ExecDashboard {
   expectedNextMonth: number
   penaltyTotal: number
   grossMarginEstimate: number
+  // สรุปทั้งพอร์ต (ไม่อิงช่วงเวลา)
+  expenseSummary: ExpenseSummary
+  firstDefaultSummary: FirstDefaultSummary
   // ร้านค้า
   shopRows: ShopReportRow[]
   gradeDist: { grade: ShopGrade; count: number; value: number }[]
@@ -700,6 +717,31 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     .sort((a, b) => b.riskyRate - a.riskyRate)
     .slice(0, 5)
 
+  // ----- สรุปเงินจ่ายออกให้ร้าน (ทั้งพอร์ต — ทุกสัญญา ไม่อิงช่วงเวลา) -----
+  const expenseSummary: ExpenseSummary = { deviceTotal: 0, commissionTotal: 0, docFeeTotal: 0, netTransferTotal: 0 }
+  for (const c of contracts) {
+    const afterDown = c.devicePrice * (1 - (c.downPercent || 0) / 100)
+    const commission = afterDown * ((c.commissionPercent || 0) / 100)
+    expenseSummary.deviceTotal += c.devicePrice
+    expenseSummary.commissionTotal += commission
+    expenseSummary.docFeeTotal += c.docFee || 0
+    expenseSummary.netTransferTotal += netTransferOf(c)
+  }
+  expenseSummary.deviceTotal = r0(expenseSummary.deviceTotal)
+  expenseSummary.commissionTotal = r0(expenseSummary.commissionTotal)
+  expenseSummary.docFeeTotal = r0(expenseSummary.docFeeTotal)
+  expenseSummary.netTransferTotal = r0(expenseSummary.netTransferTotal)
+
+  // ----- สรุปทิ้งงวดแรก (ทั้งพอร์ต — รวมจาก shopRows) -----
+  const firstDefaultSummary: FirstDefaultSummary = { holdingCount: 0, holdingValue: 0, returnedCount: 0, total: 0 }
+  for (const r of shopRows) {
+    firstDefaultSummary.holdingCount += r.firstDefaultHolding
+    firstDefaultSummary.holdingValue += r.firstDefaultHoldingValue
+    firstDefaultSummary.returnedCount += r.firstDefaultReturned
+  }
+  firstDefaultSummary.holdingValue = r0(firstDefaultSummary.holdingValue)
+  firstDefaultSummary.total = firstDefaultSummary.holdingCount + firstDefaultSummary.returnedCount
+
   // ----- สัญญาณเตือน -----
   const earlyDefault: StatusGroup = { count: 0, value: 0 }
   for (const c of active) {
@@ -835,6 +877,8 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     expectedNextMonth: r0(expectedNextMonth),
     penaltyTotal: r0(penaltyTotal),
     grossMarginEstimate: r0(grossMarginEstimate),
+    expenseSummary,
+    firstDefaultSummary,
     shopRows,
     gradeDist,
     topShops,
