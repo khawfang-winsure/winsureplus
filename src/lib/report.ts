@@ -69,7 +69,11 @@ export function buildShopReport(
       }
     }
     const good = total - risky
-    const riskyRate = total > 0 ? (risky / total) * 100 : 0
+    // % เสี่ยงตัดเคสคืนเครื่องออกจากตัวหาร (เหลือเฉพาะสัญญาที่ยังถือเครื่อง)
+    const nonReturned = shopContracts.filter(
+      (c) => c.status !== 'returned' && c.status !== 'returned_closed',
+    ).length
+    const riskyRate = nonReturned > 0 ? (risky / nonReturned) * 100 : 0
     const daysSinceActivity = lastActivity ? daysBetween(lastActivity, todayISO) : null
     const active = daysSinceActivity != null && daysSinceActivity <= ACTIVE_WINDOW_DAYS
 
@@ -82,7 +86,7 @@ export function buildShopReport(
       good,
       risky,
       riskyRate,
-      grade: gradeFor(riskyRate, total),
+      grade: gradeFor(riskyRate, nonReturned),
       lastActivity,
       daysSinceActivity,
       active,

@@ -322,7 +322,9 @@ export default function ShopReport() {
                             ถือเครื่อง {r.firstDefaultHolding} ({r.firstDefaultHoldingRate.toFixed(0)}%)
                           </span>
                           {r.firstDefaultReturned > 0 && (
-                            <span className="block text-xs text-ink-soft">คืนแล้ว {r.firstDefaultReturned}</span>
+                            <span className="block text-xs text-ink-soft">
+                              คืนแล้ว {r.firstDefaultReturned}
+                            </span>
                           )}
                         </>
                       )}
@@ -340,7 +342,7 @@ export default function ShopReport() {
           <ListPager controls={c} />
 
           <p className="mt-4 text-xs text-ink-soft">
-            เกณฑ์เกรด: A ≤3% · B &gt;3–8% · C &gt;8–12% · E &gt;12% (% ลูกค้าค้างเกิน 30 วัน) ·
+            เกณฑ์เกรด: A ≤3% · B &gt;3–8% · C &gt;8–12% · E &gt;12% (% ลูกค้าค้างเกิน 30 วัน ไม่รวมเคสคืนเครื่อง) ·
             กดที่ร้านเพื่อดูรายชื่อลูกค้าของร้านนั้น
           </p>
         </>
