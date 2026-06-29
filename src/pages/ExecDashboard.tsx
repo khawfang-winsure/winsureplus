@@ -713,7 +713,7 @@ function FirstDefaultCard({
     .slice(0, 5)
   return (
     <Card>
-      <h3 className="mb-1 font-semibold text-ink">ทิ้งงวดแรก (ทั้งพอร์ต)</h3>
+      <h3 className="mb-1 font-semibold text-ink">ลูกค้าไม่ชำระงวดแรก (ทั้งพอร์ต)</h3>
       <p className="mb-3 text-xs text-ink-soft">สัญญาที่ยังไม่เคยจ่ายค่างวดสักงวด — รวมทุกสัญญา ไม่อิงช่วงวันที่</p>
       <div className="grid grid-cols-2 gap-2 text-center">
         <div className="rounded-xl border border-red-200 bg-red-50 py-2.5">
@@ -728,9 +728,9 @@ function FirstDefaultCard({
         </div>
       </div>
 
-      <p className="mb-2 mt-4 text-xs font-semibold text-ink-soft">Top 5 ร้านทิ้งงวดแรก · ยังถือเครื่อง (เรียงตาม %)</p>
+      <p className="mb-2 mt-4 text-xs font-semibold text-ink-soft">Top 5 ร้านลูกค้าไม่ชำระงวดแรก · ยังถือเครื่อง (เรียงตาม %)</p>
       {top5.length === 0 ? (
-        <p className="text-sm text-green-600">— ไม่มีร้านที่มีเคสทิ้งงวดแรกแบบถือเครื่อง</p>
+        <p className="text-sm text-green-600">— ไม่มีร้านที่มีเคสลูกค้าไม่ชำระงวดแรกแบบถือเครื่อง</p>
       ) : (
         <ul className="flex flex-col gap-2 text-sm">
           {top5.map((s, i) => (

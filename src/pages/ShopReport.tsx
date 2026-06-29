@@ -293,7 +293,7 @@ export default function ShopReport() {
             <table className="w-full min-w-[980px] text-sm">
               <thead>
                 <tr className="bg-peach-light text-left text-ink">
-                  {['ร้านค้า', 'สัญญา', 'ยอดขายรวม', 'เสี่ยง (31วัน+)', '% เสี่ยง', 'ทิ้งงวดแรก', 'ส่งเคสล่าสุด', 'สถานะ', 'เกรด'].map((h) => (
+                  {['ร้านค้า', 'สัญญา', 'ยอดขายรวม', 'เสี่ยง (31วัน+)', '% เสี่ยง', 'ลูกค้าไม่ชำระงวดแรก', 'ส่งเคสล่าสุด', 'สถานะ', 'เกรด'].map((h) => (
                     <th key={h} className="whitespace-nowrap px-3 py-2.5 font-semibold">{h}</th>
                   ))}
                 </tr>
