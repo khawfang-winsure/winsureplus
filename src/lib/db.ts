@@ -230,7 +230,7 @@ function mapContract(r: ContractRow): Contract {
 function toInsert(c: Omit<Contract, 'id'>) {
   return {
     contract_no: c.contractNo,
-    inv_no: c.invNo || null,
+    inv_no: c.invNo?.trim() || null,   // trim กันช่องว่างหลุดเข้า (unique index 0076)
     sn: c.sn || null,
     imei: c.imei || null,
     customer_name: c.customerName,
@@ -803,13 +803,60 @@ export async function contractNoExists(contractNo: string, exceptId?: string): P
   return (data ?? []).length > 0
 }
 
+/** หาสัญญาที่ใช้เลขใบ PJ (inv_no) นี้แล้ว — ใช้บล็อกตอนบันทึก กันคีย์ใบเดิมซ้ำ
+ *  คืน null ถ้ายังไม่มีใครใช้. invNo ถูก trim ก่อนเทียบ (ตรงกับ unique index 0076) */
+export async function findContractByInvNo(
+  invNo: string,
+): Promise<{ id: string; contractNo: string; customerName: string } | null> {
+  const norm = invNo.trim()
+  if (!norm) return null
+  if (!supabase) {
+    const m = mock.contracts.find((c) => (c.invNo ?? '').trim() === norm)
+    return m ? { id: m.id, contractNo: m.contractNo, customerName: m.customerName } : null
+  }
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('id, contract_no, customer_name')
+    .eq('inv_no', norm)
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data
+    ? { id: data.id as string, contractNo: data.contract_no as string, customerName: data.customer_name as string }
+    : null
+}
+
+/** หาสัญญาทั้งหมดที่ใช้เลขบัตรประชาชนนี้ — ใช้เตือน (ไม่บล็อก) ตอนบันทึกลูกค้าซ้ำ
+ *  คืน [] ถ้าไม่มี. select เฉพาะ contract_no + customer_name (ไม่ดึง PII เกินจำเป็น) */
+export async function findContractsByNationalId(
+  nationalId: string,
+): Promise<{ contractNo: string; customerName: string }[]> {
+  const norm = nationalId.trim()
+  if (!norm) return []
+  if (!supabase) {
+    return mock.contracts
+      .filter((c) => (c.nationalId ?? '').trim() === norm)
+      .map((c) => ({ contractNo: c.contractNo, customerName: c.customerName }))
+  }
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('contract_no, customer_name')
+    .eq('national_id', norm)
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return (data ?? []).map((r) => ({
+    contractNo: r.contract_no as string,
+    customerName: r.customer_name as string,
+  }))
+}
+
 /** payload สำหรับ UPDATE — ตรงกับ toInsert แต่ไม่มี doc-tracking fields
  *  (original_docs_received, has_phone_box, pending_documents)
  *  เพื่อกันการรีเซ็ตสถานะรับเอกสาร/กล่องทุกครั้งที่กดแก้ไขสัญญา */
 function toUpdate(c: Omit<Contract, 'id'>) {
   return {
     contract_no: c.contractNo,
-    inv_no: c.invNo || null,
+    inv_no: c.invNo?.trim() || null,   // trim กันช่องว่างหลุดเข้า (unique index 0076)
     sn: c.sn || null,
     imei: c.imei || null,
     customer_name: c.customerName,

@@ -8,6 +8,8 @@ import { derivePrefix, nextContractNo } from '../lib/contractNo'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
 import {
   contractNoExists,
+  findContractByInvNo,
+  findContractsByNationalId,
   getContract,
   getContractAddresses,
   getContractExtensionIds,
@@ -218,6 +220,7 @@ export default function AddContract() {
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
   const [confirmed, setConfirmed] = useState(false) // ยืนยันแล้ว (emailSentAt && summarySentAt)
   const [dupWarning, setDupWarning] = useState(false) // เลขสัญญาซ้ำ (ตรวจสดจาก DB)
+  const [dupCustomers, setDupCustomers] = useState<{ contractNo: string }[]>([]) // ลูกค้าบัตรนี้มีสัญญาแล้ว (เตือนนุ่ม)
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
   const shopChangedRef = useRef(false) // true = เปลี่ยนร้านระหว่างแก้ไข (ต้องบังคับ prefix ใหม่)
   const origDocsRef = useRef<{ pendingDocuments: boolean; pendingDocItems: string[] }>({
@@ -589,6 +592,15 @@ export default function AddContract() {
         await doEditSave(id, preview, saveAddresses)
         return
       } else {
+        // ===== ชั้น 1: บล็อกเลขใบ PJ (inv_no) ซ้ำ — สร้างใหม่เท่านั้น =====
+        const invDup = await findContractByInvNo(f.invNo)
+        if (invDup) {
+          setSaveError(
+            `เลขใบ PJ "${f.invNo}" นี้มีสัญญาอยู่แล้ว: ${invDup.contractNo} (${invDup.customerName}) — ตรวจสอบก่อนบันทึกซ้ำ`,
+          )
+          setSaving(false)
+          return
+        }
         const newId = await insertContract(preview)
         await saveAddresses(newId)
         if (isSupabaseConfigured) {
@@ -600,7 +612,13 @@ export default function AddContract() {
         }
       }
     } catch (e) {
-      alert('บันทึกไม่สำเร็จ: ' + (e instanceof Error ? e.message : String(e)))
+      const raw = e instanceof Error ? e.message : String(e)
+      // เผื่อหลุดถึง insert แล้วชน unique index ของเลขใบ PJ (23505) — แสดงข้อความเดียวกับชั้น 1
+      if (raw.includes('23505') && raw.toLowerCase().includes('inv')) {
+        setSaveError(`เลขใบ PJ "${f.invNo}" นี้มีสัญญาอยู่แล้ว — ตรวจสอบก่อนบันทึกซ้ำ`)
+      } else {
+        alert('บันทึกไม่สำเร็จ: ' + raw)
+      }
     } finally {
       setSaving(false)
     }
@@ -805,7 +823,28 @@ export default function AddContract() {
                 {errors.customerName && <p className="mt-1 text-xs text-red-600">{errors.customerName}</p>}
               </Field>
               <Field label="เลขบัตรประชาชน">
-                <Input value={f.nationalId} onChange={(e) => set('nationalId', e.target.value)} placeholder="เลขบัตร 13 หลัก" />
+                <Input
+                  value={f.nationalId}
+                  onChange={(e) => {
+                    set('nationalId', e.target.value)
+                    if (dupCustomers.length) setDupCustomers([])
+                  }}
+                  onBlur={() => {
+                    // เตือนนุ่ม: บัตรนี้มีสัญญาแล้วไหม — เฉพาะตอนสร้างใหม่ + กรอกครบพอ
+                    if (isEdit) return
+                    const norm = f.nationalId.trim()
+                    if (norm.length < 13) { setDupCustomers([]); return }
+                    findContractsByNationalId(norm)
+                      .then((rows) => setDupCustomers(rows.map((r) => ({ contractNo: r.contractNo }))))
+                      .catch(() => {})
+                  }}
+                  placeholder="เลขบัตร 13 หลัก"
+                />
+                {!isEdit && dupCustomers.length > 0 && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    ⚠️ ลูกค้าบัตรนี้มีสัญญาแล้ว: {dupCustomers.map((d) => d.contractNo).join(', ')} — ตรวจสอบก่อนบันทึก (ผ่อนเครื่อง 2 ได้)
+                  </p>
+                )}
               </Field>
               <Field label="เบอร์โทรลูกค้า">
                 <Input value={f.phone} onChange={(e) => set('phone', e.target.value)} />
