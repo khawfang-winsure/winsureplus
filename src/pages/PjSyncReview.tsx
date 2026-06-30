@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink, SkipForward, Wallet } from '
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
 import { applyPjReviewPayment, getPjReviewContext, getPjSyncReview, getPjSyncRuns, resolvePjReviewItem } from '../lib/db'
+import { spreadPayment } from '../lib/paymentSpread'
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow, PjSyncRunRow } from '../lib/types'
 import { useAuth } from '../lib/auth'
 
@@ -367,6 +368,9 @@ function ApplyModal({
 
   const nextUnpaid = ctx?.nextUnpaid ?? null
 
+  // พรีวิวสด: เงินต้นที่กรอกจะถูกตัดเข้างวดไหนบ้าง (ตรงกับ RPC record_payment_spread)
+  const spreadPreview = spreadPayment(ctx?.unpaidInstallments ?? [], Number(principal) || 0)
+
   async function confirm() {
     if (!nextUnpaid || !paidDate) return
     setBusy(true)
@@ -374,7 +378,7 @@ function ApplyModal({
     try {
       await applyPjReviewPayment({
         reviewId: row.id,
-        installmentId: nextUnpaid.id,
+        contractId: row.contractId!,
         principal: Number(principal) || 0,
         penalty: Number(penalty) || 0,
         paidDate,
@@ -495,6 +499,26 @@ function ApplyModal({
                 {!paidDate && <p className="mt-1 text-xs text-salmon">กรุณาระบุวันที่จ่าย</p>}
               </div>
             </div>
+
+            {/* พรีวิวการตัดงวด — อัปเดตตามเงินต้นที่กรอก */}
+            {spreadPreview.length > 0 && (
+              <div className="rounded-xl border border-peach bg-peach-light/30 px-4 py-3 text-sm">
+                <p className="mb-1.5 font-medium text-ink-soft">เงินนี้จะตัดเข้า</p>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-ink">
+                  {spreadPreview.map((s, i) => (
+                    <span key={s.no} className="whitespace-nowrap">
+                      {i > 0 && <span className="mr-2 text-ink-soft">·</span>}
+                      งวด {s.no}: {baht(s.applied)} ฿{' '}
+                      {s.fullyPaid ? (
+                        <span className="text-emerald-600">✓ครบ</span>
+                      ) : (
+                        <span className="text-amber-600">(บางส่วน)</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         ) : null}
 

@@ -581,6 +581,10 @@ export interface PjReviewContext {
     byName: string
     installmentNo: number | null     // join installments.installment_no
   }[]
+  unpaidInstallments: {              // งวดที่ยังไม่จ่ายเรียง installment_no — ไว้พรีวิวการตัด record_payment_spread
+    no: number
+    remaining: number                // max(amount - paid_amount, 0)
+  }[]
 }
 
 /** 1 รอบการรัน auto-sync (จาก pj_sync_runs) */

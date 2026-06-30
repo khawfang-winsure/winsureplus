@@ -6000,6 +6000,7 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     totalPaid: 0,
     totalDue: 0,
     recentPayments: [],
+    unpaidInstallments: [],
   }
   if (!supabase) return empty
 
@@ -6054,24 +6055,36 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     installmentNo: r.installment_id ? instNoById.get(r.installment_id) ?? null : null,
   }))
 
+  // งวดที่ยังไม่จ่าย เรียง installment_no — ไว้พรีวิวการตัดของ record_payment_spread
+  const unpaidInstallments = instRows
+    .filter(r => r.status === 'pending' || r.status === 'late')
+    .map(r => ({
+      no: r.installment_no,
+      remaining: Math.max(parsePjAmount(r.amount) - parsePjAmount(r.paid_amount), 0),
+    }))
+
   return {
     monthly: parsePjAmount((contractRes.data as { monthly_payment: string | number | null } | null)?.monthly_payment),
     nextUnpaid,
     totalPaid,
     totalDue,
     recentPayments,
+    unpaidInstallments,
   }
 }
 
 /**
- * ลงยอดจากกล่องรอตรวจ PJ — บันทึกชำระงวด แล้ว resolve เคสในกล่อง
+ * ลงยอดจากกล่องรอตรวจ PJ — กระจายชำระหลายงวด แล้ว resolve เคสในกล่อง
+ * ใช้ record_payment_spread (0079) แทน record_payment_with_penalty (0040)
+ * เพื่อรองรับยอดโอนที่ครอบคลุมมากกว่า 1 งวด
+ *
  * ⚠️ p_paid_at = paidDate + 'T00:00:00.000Z' (UTC midnight, ลงท้าย Z เสมอ)
  *    ห้ามใช้ +07:00 — timestamptz เก็บ UTC, +07:00 จะเลื่อนเป็นวันก่อนหน้า พัง idempotency
  * rpc error → throw ก่อน resolve (ไม่ปิดเคสถ้าลงยอดไม่สำเร็จ)
  */
 export async function applyPjReviewPayment(params: {
   reviewId: string
-  installmentId: string
+  contractId: string
   principal: number
   penalty: number
   paidDate: string // 'YYYY-MM-DD'
@@ -6079,14 +6092,14 @@ export async function applyPjReviewPayment(params: {
   note?: string
 }): Promise<void> {
   if (!supabase) return
-  const { reviewId, installmentId, principal, penalty, paidDate, byName, note } = params
+  const { reviewId, contractId, principal, penalty, paidDate, byName, note } = params
 
-  const { error } = await supabase.rpc('record_payment_with_penalty', {
-    p_installment_id:      installmentId,
-    p_paid_amount:         principal,
-    p_paid_at:             `${paidDate}T00:00:00.000Z`,
-    p_by_name:             byName,
-    p_penalty_paid_amount: penalty,
+  const { error } = await supabase.rpc('record_payment_spread', {
+    p_contract_id: contractId,
+    p_principal:   principal,
+    p_penalty:     penalty,
+    p_paid_at:     `${paidDate}T00:00:00.000Z`,
+    p_by_name:     byName,
   })
   if (error) throw error
 
