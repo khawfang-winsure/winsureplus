@@ -501,10 +501,21 @@ export default {
       }
 
       // batch insert review (ไม่ dryRun)
+      // ⚠️ dedup: รัน 96 รอบ/วัน — เคส MULTI/PARTIAL ที่ admin ยังไม่ resolve จะถูก flag ใหม่ทุกรอบ
+      //    → ข้ามเคสที่มี pending review (pj_invoice_no เดียวกัน) อยู่แล้ว กัน review บวมวันละ ~288 แถวซ้ำ
+      //    (ถ้า admin resolve/skip ไปแล้ว แล้วเคสโผล่อีก = flag ใหม่ได้ ถือว่าถูก)
       if (!dryRun && reviewRows.length > 0) {
-        const { error: revErr } = await db.from("pj_sync_review").insert(reviewRows);
-        if (revErr) {
-          return await failRun("error", `db error (review insert): ${revErr.message}`, 500);
+        const { data: existing } = await db
+          .from("pj_sync_review")
+          .select("pj_invoice_no")
+          .eq("status", "pending");
+        const seen = new Set((existing || []).map((r: any) => r.pj_invoice_no));
+        const fresh = reviewRows.filter((r) => !seen.has(r.pj_invoice_no));
+        if (fresh.length > 0) {
+          const { error: revErr } = await db.from("pj_sync_review").insert(fresh);
+          if (revErr) {
+            return await failRun("error", `db error (review insert): ${revErr.message}`, 500);
+          }
         }
       }
 
