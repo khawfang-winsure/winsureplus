@@ -544,7 +544,7 @@ export interface LetterOutcomeByRound {
 export type PjSyncReviewReason = 'MULTI' | 'PARTIAL' | 'UNMATCHED' | 'OTHER' | 'AMOUNT_MISMATCH'
 
 /** สถานะของเคสในกล่องรอตรวจ */
-export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped'
+export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'
 
 /** 1 เคสในกล่องรอตรวจ (จาก pj_sync_review join contracts) */
 export interface PjSyncReviewRow {

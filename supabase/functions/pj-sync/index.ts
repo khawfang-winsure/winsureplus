@@ -428,15 +428,30 @@ export default {
         }
         const allInsts = insts ?? [];
 
-        // ── กันลงซ้ำ (idempotency) — เช็คที่ installments.paid_at::date == receipt.paid_date ──
-        // มีงวดของสัญญานี้ที่ paid_at ตรงวันจ่ายของใบเสร็จแล้ว → ลงไปแล้ว/import แล้ว ข้ามเงียบ
+        // ── กันลงซ้ำ (idempotency) ─────────────────────────────────────────────
+        // (1) เช็ค paid_at เดิม: มีงวดที่ paid_at::date == วันจ่ายของใบเสร็จ → ลงไปแล้ว/import แล้ว
+        // (2) เช็ค ledger: pj_applied_ledger มีแถวของ (contract_id, pj_paid_date) นี้แล้ว
+        //     ครอบเคสจ่ายขาด (PARTIAL) ที่พนักงานกดยืนยันแล้ว → paid_at ยังเป็น null แต่ ledger จดไว้แล้ว
         const targetPaidDate = a.paid_date ?? syncIsoDate;
         const alreadySynced = allInsts.some((it) => {
           if (!it.paid_at) return false;
           const d = toIsoDate(it.paid_at);
           return d != null && targetPaidDate != null && d === targetPaidDate;
         });
-        if (alreadySynced) {
+
+        // ตรวจ ledger (เฉพาะเมื่อ targetPaidDate ไม่เป็น null)
+        let ledgerAlreadyApplied = false;
+        if (targetPaidDate) {
+          const { data: ledgerRow } = await db
+            .from("pj_applied_ledger")
+            .select("inst_amount, pen_amount")
+            .eq("contract_id", contract.id)
+            .eq("pj_paid_date", targetPaidDate)
+            .maybeSingle();
+          if (ledgerRow) ledgerAlreadyApplied = true;
+        }
+
+        if (alreadySynced || ledgerAlreadyApplied) {
           skippedAlreadySynced++;
           continue; // ไม่ลง ไม่ review
         }
@@ -454,50 +469,62 @@ export default {
         const remaining = parseAmount(nextUnpaid.amount) - parseAmount(nextUnpaid.paid_amount);
         const instAmt = a.inst_amt;
 
-        // EXACT = ก้อน installment เดียวต่อ inv AND ตรงเป๊ะถึงบาทกับ remaining
-        const isSingleReceipt = a.installment_receipt_count === 1;
-        if (isSingleReceipt && instAmt === remaining) {
+        // กฎใหม่ (Pete สั่ง):
+        //   instAmt >= remaining (จ่ายครบงวด/เกิน/ข้ามงวด) → ลงอัตโนมัติด้วย spread (ทยอยตัดข้ามงวด)
+        //   instAmt <  remaining (จ่ายขาด ไม่ถึงงวด)       → PARTIAL เข้ากล่องรอตรวจ
+        //   remaining<=0 หรือเคสแปลก                        → AMOUNT_MISMATCH รอตรวจ
+        if (remaining > 0 && instAmt >= remaining) {
+          // จ่ายครบงวด/เกิน → ลงอัตโนมัติด้วย spread
           if (dryRun) {
             autoApplied.push({ contract_no: contractNo, amount: instAmt + a.pen_amt });
             autoAppliedTotal += instAmt + a.pen_amt;
             continue;
           }
-          // apply: principal = instAmt, penalty แยก. paid_at = วันจ่ายจริง
           // ⚠️ ต้องใช้ UTC midnight ("Z") ไม่ใช่ +07:00 — Postgres timestamptz เก็บเป็น UTC
           //    ถ้าใช้ +07:00 → '2026-06-30T00:00:00+07:00' = UTC '2026-06-29 17:00Z'
           //    → paid_at::date (UTC) = 29 ไม่ใช่ 30 → idempotency เช็ค toIsoDate(paid_at)='2026-06-29'
           //    ไม่ match targetPaidDate='2026-06-30' → รอบถัดไปลงซ้ำงวดถัดไป!
           //    UTC midnight → paid_at::date = วันจ่ายจริง ตรงกับ targetPaidDate (เหมือน manual sync เก่า)
           const paidAtTs = (targetPaidDate ?? syncIsoDate) + "T00:00:00.000Z";
-          const { error: rpcErr } = await db.rpc("record_payment_with_penalty", {
-            p_installment_id: nextUnpaid.id,
-            p_paid_amount: instAmt,
+          const { error: rpcErr } = await db.rpc("record_payment_spread", {
+            p_contract_id: contract.id,
+            p_principal: instAmt,
+            p_penalty: a.pen_amt,
             p_paid_at: paidAtTs,
             p_by_name: SYNC_BY_NAME,
-            p_penalty_paid_amount: a.pen_amt,
           });
           if (rpcErr) {
             // ลง RPC ไม่ผ่าน → flag review แทน crash (ไม่หยุดทั้งรอบ)
             queueReview(a, "AMOUNT_MISMATCH", contract.id, "installment", instAmt);
             continue;
           }
+          // จด ledger กันลงซ้ำรอบถัดไป + ปิดเคสรอตรวจ (best-effort — ไม่ crash ทั้งรอบ)
+          try {
+            await db.from("pj_applied_ledger").upsert({
+              contract_id: contract.id,
+              pj_paid_date: targetPaidDate,
+              inst_amount: instAmt,
+              pen_amount: a.pen_amt,
+              source: "auto",
+              applied_at: new Date().toISOString(),
+            }, { onConflict: "contract_id,pj_paid_date" });
+            await db.from("pj_sync_review")
+              .update({ status: "auto_resolved" })
+              .eq("pj_invoice_no", a.invoice_no)
+              .eq("status", "pending");
+          } catch { /* best-effort — ไม่บล็อกทั้งรอบ */ }
           autoApplied.push({ contract_no: contractNo, amount: instAmt + a.pen_amt });
           autoAppliedTotal += instAmt + a.pen_amt;
           continue;
-        }
-
-        // MULTI = จ่ายข้ามงวด (มากกว่า remaining ของงวดถัดไป)
-        if (instAmt > remaining) {
-          queueReview(a, "MULTI", contract.id, "installment", instAmt);
-          continue;
-        }
-        // PARTIAL = น้อยกว่า remaining
-        if (instAmt < remaining) {
+        } else if (instAmt < remaining) {
+          // จ่ายขาด ไม่ถึงงวด → ให้พนักงานยืนยัน
           queueReview(a, "PARTIAL", contract.id, "installment", instAmt);
           continue;
+        } else {
+          // remaining<=0 หรือเคสแปลก
+          queueReview(a, "AMOUNT_MISMATCH", contract.id, "installment", instAmt);
+          continue;
         }
-        // ไม่เข้าเงื่อนไขใด (เช่น หลายใบเสร็จแต่รวมพอดี) → AMOUNT_MISMATCH
-        queueReview(a, "AMOUNT_MISMATCH", contract.id, "installment", instAmt);
       }
 
       // batch insert review (ไม่ dryRun)

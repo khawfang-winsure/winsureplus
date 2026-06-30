@@ -6103,5 +6103,19 @@ export async function applyPjReviewPayment(params: {
   })
   if (error) throw error
 
+  // จด ledger กันลงซ้ำ: cron รอบถัดไปเจอ ledger → ข้าม ไม่ลงซ้ำ (best-effort)
+  if (paidDate) {
+    try {
+      await supabase.from('pj_applied_ledger').upsert({
+        contract_id:  contractId,
+        pj_paid_date: paidDate,
+        inst_amount:  principal,
+        pen_amount:   penalty,
+        source:       'review',
+        applied_at:   new Date().toISOString(),
+      }, { onConflict: 'contract_id,pj_paid_date' })
+    } catch { /* best-effort — ไม่บล็อก flow หลัก */ }
+  }
+
   await resolvePjReviewItem(reviewId, 'resolved', byName, note ?? 'ลงยอดจากกล่องรอตรวจ')
 }
