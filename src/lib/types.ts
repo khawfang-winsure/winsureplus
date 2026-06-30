@@ -530,6 +530,48 @@ export interface LetterOutcomeByRound {
 // 1 row ต่อ author (freelancer active) จาก RPC get_collector_call_outcomes(p_start, p_end)
 // รองรับภาพรวมทีม (รวมทุกแถว) + รายคน. promisesKept + promisesBroken + promisesPending = promisesMade
 
+// ---------- PJ auto-sync review box (migration 0077) ----------
+// กล่องรอตรวจ PJ — เคสที่ระบบ auto-sync (รันทุก 15 นาที) ลงไม่ได้เพราะไม่ตรงเป๊ะ
+// (จ่ายข้ามงวด/บางส่วน/หาสัญญาไม่เจอ/ประเภทอื่น/ยอดไม่ตรง) → admin มาตรวจเอง
+
+/** เหตุผลที่เคสเข้ากล่องรอตรวจ */
+export type PjSyncReviewReason = 'MULTI' | 'PARTIAL' | 'UNMATCHED' | 'OTHER' | 'AMOUNT_MISMATCH'
+
+/** สถานะของเคสในกล่องรอตรวจ */
+export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped'
+
+/** 1 เคสในกล่องรอตรวจ (จาก pj_sync_review join contracts) */
+export interface PjSyncReviewRow {
+  id: string
+  createdAt: string
+  invoiceNo: string
+  paymentType: string | null
+  amount: number
+  paidDate: string | null            // 'YYYY-MM-DD'
+  contractId: string | null          // null = หาสัญญาไม่เจอ
+  contractNo: string | null          // join contracts.contract_no
+  customerName: string | null        // join contracts.customer_name
+  reason: PjSyncReviewReason
+  status: PjSyncReviewStatus
+}
+
+/** 1 รอบการรัน auto-sync (จาก pj_sync_runs) */
+export interface PjSyncRunRow {
+  id: string
+  startedAt: string
+  finishedAt: string | null
+  status: 'running' | 'success' | 'login_failed' | 'error'
+  receiptsFetched: number
+  autoAppliedCount: number
+  autoAppliedAmount: number
+  reviewCount: number
+  errorDetail: string | null
+}
+
+// ---------- Collector call & promise outcomes — per คนติดตามหนี้ (migration 0068) ----------
+// 1 row ต่อ author (freelancer active) จาก RPC get_collector_call_outcomes(p_start, p_end)
+// รองรับภาพรวมทีม (รวมทุกแถว) + รายคน. promisesKept + promisesBroken + promisesPending = promisesMade
+
 /** ผลการโทร + ผลการนัดชำระ ต่อคนติดตามหนี้ ตามช่วงวัน */
 export interface CollectorCallOutcome {
   authorId: string

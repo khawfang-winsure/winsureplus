@@ -2,6 +2,7 @@
 import {
   AlertTriangle,
   BarChart3,
+  ClipboardCheck,
   Gauge,
   Inbox,
   LayoutDashboard,
@@ -50,6 +51,9 @@ export const NAV: NavItem[] = [
       { to: '/other-income', label: 'รายได้อื่นๆ' },
     ],
   },
+
+  // กล่องรอตรวจ PJ — worklist สำหรับ admin (auto-sync ที่ลงไม่ได้)
+  { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ', icon: ClipboardCheck, adminOnly: true },
 
   // กลุ่มพับได้: ลูกค้า & หนี้
   {

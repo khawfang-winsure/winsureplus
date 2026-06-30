@@ -35,6 +35,8 @@ import type {
   PjRecoveryOutcomeMonth,
   PjRecoveryOutcomeSummary,
   PjRecoverySummary,
+  PjSyncReviewRow,
+  PjSyncRunRow,
   PrivateNote,
   Shop,
 } from './types'
@@ -5725,4 +5727,100 @@ export async function getShopContractTotals(): Promise<ShopContractTotal[]> {
     shopId: r.shop_id,
     total: Number(r.total_contracts ?? 0),
   }))
+}
+
+// ===== PJ auto-sync review box (migration 0077) =====
+
+interface PjSyncReviewViewRow {
+  id: string
+  created_at: string
+  pj_invoice_no: string
+  pj_payment_type: string | null
+  pj_amount: string | number | null
+  pj_paid_date: string | null
+  matched_contract_id: string | null
+  reason: string
+  status: string
+  contracts: { contract_no: string | null; customer_name: string | null } | null
+}
+
+interface PjSyncRunViewRow {
+  id: string
+  started_at: string
+  finished_at: string | null
+  status: string
+  receipts_fetched: number | null
+  auto_applied_count: number | null
+  auto_applied_amount: string | number | null
+  review_count: number | null
+  error_detail: string | null
+}
+
+/** กล่องรอตรวจ PJ — เคสที่ auto-sync ลงไม่ได้ (default = pending) join contracts โชว์เลขสัญญา+ชื่อลูกค้า */
+export async function getPjSyncReview(
+  status: PjSyncReviewRow['status'] = 'pending',
+): Promise<PjSyncReviewRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('pj_sync_review')
+    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, contracts(contract_no, customer_name)')
+    .eq('status', status)
+    .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as unknown as PjSyncReviewViewRow[]).map(r => ({
+    id: r.id,
+    createdAt: r.created_at,
+    invoiceNo: r.pj_invoice_no,
+    paymentType: r.pj_payment_type,
+    amount: Number(r.pj_amount ?? 0),
+    paidDate: r.pj_paid_date,
+    contractId: r.matched_contract_id,
+    contractNo: r.contracts?.contract_no ?? null,
+    customerName: r.contracts?.customer_name ?? null,
+    reason: (r.reason as PjSyncReviewRow['reason']),
+    status: (r.status as PjSyncReviewRow['status']),
+  }))
+}
+
+/** รอบการรัน auto-sync ล่าสุด (default 20 รอบ) — โชว์สถานะ + แจ้งเตือนเมื่อรอบล่าสุดพัง */
+export async function getPjSyncRuns(limit = 20): Promise<PjSyncRunRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('pj_sync_runs')
+    .select('id, started_at, finished_at, status, receipts_fetched, auto_applied_count, auto_applied_amount, review_count, error_detail')
+    .order('started_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return ((data ?? []) as PjSyncRunViewRow[]).map(r => ({
+    id: r.id,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at,
+    status: (r.status as PjSyncRunRow['status']),
+    receiptsFetched: Number(r.receipts_fetched ?? 0),
+    autoAppliedCount: Number(r.auto_applied_count ?? 0),
+    autoAppliedAmount: Number(r.auto_applied_amount ?? 0),
+    reviewCount: Number(r.review_count ?? 0),
+    errorDetail: r.error_detail,
+  }))
+}
+
+/** ยืนยัน/ข้ามเคสในกล่องรอตรวจ — set status + resolved_by/at + note (RLS อนุญาตเฉพาะ admin) */
+export async function resolvePjReviewItem(
+  id: string,
+  action: 'resolved' | 'skipped',
+  byName: string,
+  note?: string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('pj_sync_review')
+    .update({
+      status: action,
+      resolved_by: byName,
+      resolved_at: new Date().toISOString(),
+      resolution_note: note ?? null,
+    })
+    .eq('id', id)
+  if (error) throw error
 }
