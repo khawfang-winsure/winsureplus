@@ -39,6 +39,7 @@ const DocTracking = lazy(() => import('./pages/DocTracking'))
 const OtherIncomePage = lazy(() => import('./pages/OtherIncome'))
 const DebtflowReport = lazy(() => import('./pages/DebtflowReport'))
 const ReturnsReport = lazy(() => import('./pages/ReturnsReport'))
+const SettlementReport = lazy(() => import('./pages/SettlementReport'))
 const PjSyncReview = lazy(() => import('./pages/PjSyncReview'))
 
 export default function App() {
@@ -109,6 +110,7 @@ function Gate() {
           <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />
           <Route path="/debtflow" element={isAdmin ? <DebtflowReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/returns-report" element={isAdmin ? <ReturnsReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/settlements" element={isAdmin ? <SettlementReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/pj-sync-review" element={isAdmin ? <PjSyncReview /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/import" element={isAdmin ? <Import /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/inbox" element={isAdminOrStaff ? <InboxPage /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />

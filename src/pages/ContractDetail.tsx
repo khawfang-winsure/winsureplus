@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -24,6 +24,8 @@ import {
   cancelPayment,
   restructureContract,
   closeReturnedContract,
+  getSettlementTiers,
+  settleContractEarly,
   submitReturn,
   setContractFlags,
   getMyPrivateNote,
@@ -57,6 +59,7 @@ import {
   type RateSet,
 } from '../lib/rates'
 import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
+import { computeSettlement, type SettlementTier } from '../lib/settlement'
 import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
@@ -162,6 +165,7 @@ export default function ContractDetail() {
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
+  const [settleOpen, setSettleOpen] = useState(false)
   // ปิดสัญญา (คืนเครื่อง): modal ยืนยัน + loading guard + error
   const [closeReturnOpen, setCloseReturnOpen] = useState(false)
   const [closeReturnBusy, setCloseReturnBusy] = useState(false)
@@ -481,6 +485,12 @@ export default function ContractDetail() {
                 <span className="rounded-xl bg-peach-light/60 px-3 py-1.5 text-xs text-ink-soft">
                   ใช้สิทธิ์ขยายระยะเวลาครบแล้ว
                 </span>
+              )}
+              {/* ปิดสัญญาก่อนกำหนด — แสดงเมื่อยังมีงวดค้าง */}
+              {(principalRemaining > 0 || installments.some((i) => !i.paidAt)) && (
+                <Button variant="ghost" onClick={() => setSettleOpen(true)}>
+                  <BadgePercent size={15} /> ปิดสัญญาก่อนกำหนด
+                </Button>
               )}
               <Button onClick={() => setReturnOpen(true)}>
                 <PackageOpen size={15} /> คืนเครื่อง
@@ -1432,6 +1442,19 @@ export default function ContractDetail() {
           onClose={() => setExtendOpen(false)}
           onDone={async () => {
             setExtendOpen(false)
+            await load()
+          }}
+        />
+      )}
+
+      {settleOpen && (
+        <SettleModal
+          contract={contract}
+          installments={installments}
+          userName={userName ?? 'ไม่ทราบ'}
+          onClose={() => setSettleOpen(false)}
+          onDone={async () => {
+            setSettleOpen(false)
             await load()
           }}
         />
@@ -2690,6 +2713,142 @@ function ExtendModal({
         </Field>
 
         {err && <p className="text-sm text-red-600">{err}</p>}
+      </div>
+    </MobileModal>
+  )
+}
+
+/**
+ * SettleModal: ปิดสัญญาก่อนกำหนด + ส่วนลด
+ * - โหลดชั้นส่วนลด (settlement tiers) จาก settings ตอนเปิด
+ * - คิดยอดด้วย computeSettlement (pure) จากงวดของสัญญา
+ * - ส่วนลดคิดจากเงินต้นที่เหลือเท่านั้น ค่าปรับค้างไม่ลด
+ * - ยืนยันแล้วยกเลิกเองไม่ได้ (ยังไม่มี undo) ต้องแจ้งแอดมิน
+ */
+function SettleModal({
+  contract,
+  installments,
+  userName,
+  onClose,
+  onDone,
+}: {
+  contract: Contract
+  installments: Installment[]
+  userName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [tiers, setTiers] = useState<SettlementTier[]>([])
+  const [tiersLoading, setTiersLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    setTiersLoading(true)
+    getSettlementTiers()
+      .then(setTiers)
+      .catch(() => setTiers([]))
+      .finally(() => setTiersLoading(false))
+  }, [])
+
+  // คิดยอดปิดจากงวดของสัญญา (map → input ที่ computeSettlement ต้องการ)
+  const result = useMemo(
+    () =>
+      computeSettlement({
+        installments: installments.map((i) => ({
+          amount: i.amount,
+          paidAmount: i.paidAmount,
+          penaltyAmount: i.penaltyAmount,
+          paidAt: i.paidAt,
+        })),
+        tiers,
+      }),
+    [installments, tiers],
+  )
+
+  const noRemaining = result.remainingCount === 0
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await settleContractEarly(
+        contract.id,
+        {
+          remaining: result.remainingPrincipal,
+          discount: result.discount,
+          paid: result.customerPays,
+          penalty: result.penaltyDue,
+        },
+        userName,
+      )
+      onDone()
+    } catch (e) {
+      setErr(errMsg(e))
+      setBusy(false)
+    }
+  }
+
+  const footer = (
+    <div className="flex justify-end gap-2">
+      <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+      <Button onClick={save} disabled={busy || tiersLoading || noRemaining}>
+        {busy ? 'กำลังบันทึก...' : 'ยืนยันปิดสัญญา'}
+      </Button>
+    </div>
+  )
+
+  return (
+    <MobileModal title="ปิดสัญญาก่อนกำหนด" onClose={onClose} footer={footer}>
+      <div className="flex flex-col gap-3">
+        {tiersLoading ? (
+          <Loading />
+        ) : noRemaining ? (
+          <div className="rounded-xl bg-green-50 px-3 py-2.5 text-sm text-green-700">
+            สัญญานี้ไม่มีงวดค้าง — ไม่ต้องปิดก่อนกำหนด
+          </div>
+        ) : (
+          <>
+            {/* Breakdown ยอดปิด */}
+            <div className="rounded-xl border border-peach bg-white p-3 text-sm">
+              <p className="mb-2 font-semibold text-ink">รายละเอียดยอดปิดสัญญา</p>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex justify-between text-ink-soft">
+                  <span>ค่างวดที่เหลือ ({result.remainingCount} งวด)</span>
+                  <b className="text-ink whitespace-nowrap">{baht(result.remainingPrincipal)} ฿</b>
+                </div>
+                <div className="flex justify-between text-ink-soft">
+                  <span>ส่วนลด {result.percent}%</span>
+                  <span className="text-green-700 whitespace-nowrap">−{baht(result.discount)} ฿</span>
+                </div>
+                {result.penaltyDue > 0 && (
+                  <div className="flex justify-between text-ink-soft">
+                    <span>ค่าปรับค้าง (ไม่ลด)</span>
+                    <span className="text-red-600 whitespace-nowrap">{baht(result.penaltyDue)} ฿</span>
+                  </div>
+                )}
+                <div className="mt-1 flex items-center justify-between border-t border-peach pt-2">
+                  <span className="text-sm font-semibold text-ink">ลูกค้าจ่ายปิด</span>
+                  <span className="text-2xl font-bold text-salmon-deep whitespace-nowrap">{baht(result.customerPays)} ฿</span>
+                </div>
+              </div>
+              {result.percent === 0 && (
+                <p className="mt-2 rounded-lg bg-peach-light/60 px-2.5 py-1.5 text-xs text-ink-soft">
+                  จำนวนงวดที่เหลือไม่เข้าชั้นส่วนลดใด — ปิดได้แต่ไม่มีส่วนลด (จ่ายเต็ม)
+                </p>
+              )}
+            </div>
+
+            {/* คำเตือน */}
+            <div className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+              <p className="flex items-center gap-1.5 font-medium">
+                <AlertTriangle size={14} /> ปิดแล้วยกเลิกเองไม่ได้ ต้องแจ้งแอดมินแก้
+              </p>
+            </div>
+
+            {err && <p className="text-sm text-red-600">{err}</p>}
+          </>
+        )}
       </div>
     </MobileModal>
   )

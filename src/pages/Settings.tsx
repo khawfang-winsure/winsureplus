@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
-import { Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
+import { BadgePercent, Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone, Store, Tag, type LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
 import { RateSetsEditor } from '../components/RateSetsEditor'
+import { SettlementTiersEditor } from '../components/SettlementTiersEditor'
 import { UsersAdmin } from '../components/UsersAdmin'
 import { useAuth } from '../lib/auth'
 import {
@@ -30,13 +31,14 @@ const OPTION_KINDS: { kind: OptionKind; title: string; hasDetail?: boolean }[] =
 ]
 
 // หมวดตั้งค่า — แยกเป็นหัวข้อย่อย เลือกผ่าน URL /settings/:cat (สลับจาก sidebar submenu หรือปุ่มหน้านี้)
-type CategoryKey = 'shops' | 'device' | 'job' | 'promo' | 'rates' | 'users'
+type CategoryKey = 'shops' | 'device' | 'job' | 'promo' | 'rates' | 'settlement' | 'users'
 const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: OptionKind[]; adminOnly?: boolean }[] = [
   { key: 'shops', label: 'ร้านค้า', icon: Store, kinds: [] },
   { key: 'device', label: 'ตัวเครื่อง', icon: Smartphone, kinds: ['phone_model', 'storage'] },
   { key: 'job', label: 'อาชีพ & หลักฐาน', icon: Briefcase, kinds: ['occupation', 'occupation_proof'] },
   { key: 'promo', label: 'โปรโมชั่น', icon: Tag, kinds: ['promotion'] },
   { key: 'rates', label: 'เรตผ่อน', icon: Percent, kinds: [] },
+  { key: 'settlement', label: 'ส่วนลดปิดสัญญา', icon: BadgePercent, kinds: [], adminOnly: true },
   { key: 'users', label: 'สิทธิ์ผู้ใช้', icon: ShieldCheck, kinds: [], adminOnly: true },
 ]
 
@@ -50,7 +52,7 @@ export default function Settings() {
   const canEdit = !configured || role === 'admin'
   const isAdmin = canEdit
   const { cat: catParam } = useParams<{ cat: CategoryKey }>()
-  if (catParam === 'users' && !isAdmin) return <Navigate to="/settings/shops" replace />
+  if ((catParam === 'users' || catParam === 'settlement') && !isAdmin) return <Navigate to="/settings/shops" replace />
 
   // กรองเฉพาะหมวดที่ user ดูได้ (staff ไม่เห็น 'users')
   const visibleCats = CATEGORIES.filter((c) => !c.adminOnly || isAdmin)
@@ -214,9 +216,11 @@ export default function Settings() {
             {cat === 'shops' && renderShops()}
             {cat === 'users' && <UsersAdmin />}
             {cat === 'rates' && <RateSetsEditor canEdit={canEdit} />}
+            {cat === 'settlement' && <SettlementTiersEditor canEdit={canEdit} />}
             {cat !== 'shops' &&
               cat !== 'users' &&
               cat !== 'rates' &&
+              cat !== 'settlement' &&
               CATEGORIES.find((c) => c.key === cat)!.kinds.map((kind) => renderOption(kind))}
           </div>
         </>

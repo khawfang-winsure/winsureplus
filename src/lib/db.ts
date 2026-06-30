@@ -53,6 +53,7 @@ import {
   type DeviceReturnTier,
 } from './commission'
 import { DEFAULT_RATE_SETS, type RateSet } from './rates'
+import type { SettlementTier } from './settlement'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 import type { DeviceStatus } from './returnWorkflow'
 import { outstandingAfterReturn } from './outstandingExtras'
@@ -149,6 +150,11 @@ interface ContractRow {
   docs_incomplete_items: string[] | null  // jsonb array (0070)
   docs_incomplete_at: string | null
   docs_incomplete_by: string | null
+  settled_at: string | null
+  settlement_discount: number | null
+  settlement_remaining: number | null
+  settlement_paid: number | null
+  settled_by: string | null
   created_at: string
 }
 
@@ -225,6 +231,11 @@ function mapContract(r: ContractRow): Contract {
     docsIncompleteItems: Array.isArray(r.docs_incomplete_items) ? r.docs_incomplete_items : [],
     docsIncompleteAt: r.docs_incomplete_at ?? null,
     docsIncompleteBy: r.docs_incomplete_by ?? null,
+    settledAt: r.settled_at ?? null,
+    settlementDiscount: r.settlement_discount == null ? null : Number(r.settlement_discount),
+    settlementRemaining: r.settlement_remaining == null ? null : Number(r.settlement_remaining),
+    settlementPaid: r.settlement_paid == null ? null : Number(r.settlement_paid),
+    settledBy: r.settled_by ?? null,
     createdAt: r.created_at,
   }
 }
@@ -465,6 +476,114 @@ export async function saveRateSets(sets: RateSet[]): Promise<void> {
     { onConflict: 'key' },
   )
   if (error) throw error
+}
+
+// ---------- ปิดสัญญาก่อนกำหนด + ส่วนลด (0078) ----------
+const SETTLEMENT_TIERS_KEY = 'settlement_tiers'
+
+/** อ่านชั้นส่วนลดปิดสัญญาก่อนกำหนด — ว่าง/พัง → [] */
+export async function getSettlementTiers(): Promise<SettlementTier[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', SETTLEMENT_TIERS_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return []
+  try {
+    const t = JSON.parse(data.value as string)
+    return Array.isArray(t) ? (t as SettlementTier[]) : []
+  } catch {
+    return []
+  }
+}
+
+/** บันทึกชั้นส่วนลด — เฉพาะแอดมิน (ตาม RLS). upsert เผื่อ key ยังไม่มี */
+export async function saveSettlementTiers(tiers: SettlementTier[]): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('app_settings').upsert(
+    {
+      key: SETTLEMENT_TIERS_KEY,
+      value: JSON.stringify(tiers),
+      description: 'ชั้นส่วนลดปิดสัญญาก่อนกำหนด (เหลือกี่งวดขึ้นไป → ส่วนลด %)',
+    },
+    { onConflict: 'key' },
+  )
+  if (error) throw error
+}
+
+/** ปิดสัญญาก่อนกำหนด: ปิดงวดค้างทั้งหมด + บันทึกเงินรับ 1 ก้อน + flip active→closed
+ *  RPC guard: admin/staff เท่านั้น + ทำเฉพาะสัญญาที่ยังเป็น 'active'
+ *  @param contractId  id ของสัญญา
+ *  @param payload     ยอดที่คิดจาก computeSettlement (remaining/discount/paid/penalty)
+ *  @param byName      ชื่อผู้กดปิด (useAuth().name) */
+export async function settleContractEarly(
+  contractId: string,
+  payload: { remaining: number; discount: number; paid: number; penalty: number },
+  byName: string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('settle_contract_early', {
+    p_contract_id: contractId,
+    p_remaining: payload.remaining,
+    p_discount: payload.discount,
+    p_paid: payload.paid,
+    p_penalty: payload.penalty,
+    p_by: byName,
+  })
+  if (error) throw error
+}
+
+export interface SettlementReportRow {
+  contractId: string
+  contractNo: string
+  customerName: string
+  discount: number
+  remaining: number
+  paid: number
+  settledAt: string
+  settledBy: string
+}
+
+/** รายงานสัญญาที่ปิดก่อนกำหนด (settled_at not null) เรียงล่าสุดก่อน
+ *  @param fromDate/toDate  กรองช่วง settled_at (ISO) — ส่งถ้าต้องการช่วง */
+export async function getSettlementReport(
+  fromDate?: string,
+  toDate?: string,
+): Promise<{
+  rows: SettlementReportRow[]
+  totalDiscount: number
+  totalPaid: number
+  count: number
+}> {
+  if (!supabase) return { rows: [], totalDiscount: 0, totalPaid: 0, count: 0 }
+  let q = supabase
+    .from('contracts')
+    .select('id, contract_no, customer_name, settlement_discount, settlement_remaining, settlement_paid, settled_at, settled_by')
+    .not('settled_at', 'is', null)
+    .order('settled_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (fromDate) q = q.gte('settled_at', fromDate)
+  if (toDate) q = q.lte('settled_at', toDate)
+  const { data, error } = await q
+  if (error) throw error
+  const rows: SettlementReportRow[] = (data ?? []).map((r) => ({
+    contractId: r.id as string,
+    contractNo: r.contract_no as string,
+    customerName: r.customer_name as string,
+    discount: Number(r.settlement_discount ?? 0),
+    remaining: Number(r.settlement_remaining ?? 0),
+    paid: Number(r.settlement_paid ?? 0),
+    settledAt: r.settled_at as string,
+    settledBy: (r.settled_by as string) ?? '',
+  }))
+  return {
+    rows,
+    totalDiscount: rows.reduce((s, r) => s + r.discount, 0),
+    totalPaid: rows.reduce((s, r) => s + r.paid, 0),
+    count: rows.length,
+  }
 }
 
 // ---------- ค่าคอมหาร้าน (เก็บใน app_settings เป็น JSON) ----------

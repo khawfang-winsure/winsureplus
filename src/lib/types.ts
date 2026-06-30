@@ -277,6 +277,12 @@ export interface Contract {
   docsIncompleteBy?: string | null     // ชื่อผู้ติดธง
   // --- system timestamp (กฎมือหนึ่งต้องมีกล่อง — ใช้เปรียบเทียบกับ DOC_BOX_RULE_CUTOFF) ---
   createdAt?: string // ISO timestamptz ที่บันทึกสัญญาเข้า DB (ไม่ backdatable)
+  // --- ปิดสัญญาก่อนกำหนด + ส่วนลด (0078) — บันทึกตอน settle_contract_early ---
+  settledAt?: string | null            // timestamp ที่ปิดสัญญาก่อนกำหนด
+  settlementDiscount?: number | null   // ส่วนลดเป็นบาท
+  settlementRemaining?: number | null  // เงินต้นที่เหลือ (ก่อนหักส่วนลด)
+  settlementPaid?: number | null       // ลูกค้าจ่ายปิดจริง
+  settledBy?: string | null            // ชื่อผู้กดปิด
 }
 
 // ---------- Extra Charges (migration 0032) ----------
