@@ -35,6 +35,7 @@ import type {
   PjRecoveryOutcomeMonth,
   PjRecoveryOutcomeSummary,
   PjRecoverySummary,
+  PjReviewContext,
   PjSyncReviewRow,
   PjSyncRunRow,
   PrivateNote,
@@ -5731,6 +5732,14 @@ export async function getShopContractTotals(): Promise<ShopContractTotal[]> {
 
 // ===== PJ auto-sync review box (migration 0077) =====
 
+/** 1 receipt ดิบใน raw_json (array) — field ที่ใช้รวมค่าปรับ */
+interface PjRawReceipt {
+  payment_type?: string | null
+  amount?: string | number | null
+  paid_date?: string | null
+  invoice_no?: string | null
+}
+
 interface PjSyncReviewViewRow {
   id: string
   created_at: string
@@ -5741,7 +5750,24 @@ interface PjSyncReviewViewRow {
   matched_contract_id: string | null
   reason: string
   status: string
+  raw_json: PjRawReceipt[] | null
   contracts: { contract_no: string | null; customer_name: string | null } | null
+}
+
+/** parse จำนวนเงินที่เก็บเป็น string ("4,115.00") → number; ว่าง/พังคืน 0 */
+function parsePjAmount(v: string | number | null | undefined): number {
+  if (v == null) return 0
+  const n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+/** รวม amount ของ receipt ที่ payment_type='penalty' ใน raw_json (ว่าง/พัง = 0) */
+function sumPjPenalty(raw: PjRawReceipt[] | null | undefined): number {
+  if (!Array.isArray(raw)) return 0
+  return raw.reduce(
+    (sum, r) => (r?.payment_type === 'penalty' ? sum + parsePjAmount(r.amount) : sum),
+    0,
+  )
 }
 
 interface PjSyncRunViewRow {
@@ -5763,7 +5789,7 @@ export async function getPjSyncReview(
   if (!supabase) return []
   const { data, error } = await supabase
     .from('pj_sync_review')
-    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, contracts(contract_no, customer_name)')
+    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, raw_json, contracts(contract_no, customer_name)')
     .eq('status', status)
     .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
@@ -5780,6 +5806,7 @@ export async function getPjSyncReview(
     customerName: r.contracts?.customer_name ?? null,
     reason: (r.reason as PjSyncReviewRow['reason']),
     status: (r.status as PjSyncReviewRow['status']),
+    penaltyAmount: sumPjPenalty(r.raw_json),
   }))
 }
 
@@ -5823,4 +5850,126 @@ export async function resolvePjReviewItem(
     })
     .eq('id', id)
   if (error) throw error
+}
+
+// ---- บริบทประกอบการตัดสินใจในกล่องรอตรวจ (งวดถัดไป + ยอดรวม + ประวัติชำระ) ----
+
+interface PjCtxInstallmentRow {
+  id: string
+  installment_no: number
+  amount: string | number | null
+  paid_amount: string | number | null
+  status: string
+}
+
+interface PjCtxPaymentRow {
+  installment_id: string | null
+  amount: string | number | null
+  penalty_paid_amount: string | number | null
+  by_name: string | null
+  created_at: string
+}
+
+/**
+ * บริบทของสัญญาที่ผูกกับเคสในกล่องรอตรวจ — ช่วยให้คนตรวจเห็นงวดถัดไป/ยอดรวม/ประวัติ
+ * ไม่มี supabase → คืนค่าว่าง graceful
+ */
+export async function getPjReviewContext(contractId: string): Promise<PjReviewContext> {
+  const empty: PjReviewContext = {
+    monthly: 0,
+    nextUnpaid: null,
+    totalPaid: 0,
+    totalDue: 0,
+    recentPayments: [],
+  }
+  if (!supabase) return empty
+
+  const [contractRes, instRes, payRes] = await Promise.all([
+    supabase.from('contracts').select('monthly_payment').eq('id', contractId).maybeSingle(),
+    supabase
+      .from('installments')
+      .select('id, installment_no, amount, paid_amount, status')
+      .eq('contract_id', contractId)
+      .order('installment_no'),
+    supabase
+      .from('payment_log')
+      .select('installment_id, amount, penalty_paid_amount, by_name, created_at')
+      .eq('contract_id', contractId)
+      .eq('action', 'pay')
+      .order('created_at', { ascending: false })
+      .limit(8),
+  ])
+  if (contractRes.error) throw contractRes.error
+  if (instRes.error) throw instRes.error
+  if (payRes.error) throw payRes.error
+
+  const instRows = (instRes.data ?? []) as PjCtxInstallmentRow[]
+
+  // งวดแรกที่ยังไม่จ่าย (รายการเรียงตาม installment_no แล้ว)
+  const firstOpen = instRows.find(r => r.status === 'pending' || r.status === 'late')
+  let nextUnpaid: PjReviewContext['nextUnpaid'] = null
+  if (firstOpen) {
+    const amt = parsePjAmount(firstOpen.amount)
+    const paid = parsePjAmount(firstOpen.paid_amount)
+    nextUnpaid = {
+      id: firstOpen.id,
+      no: firstOpen.installment_no,
+      amount: amt,
+      paid,
+      remaining: Math.max(amt - paid, 0),
+    }
+  }
+
+  const totalDue = instRows.reduce((s, r) => s + parsePjAmount(r.amount), 0)
+  const totalPaid = instRows.reduce((s, r) => s + parsePjAmount(r.paid_amount), 0)
+
+  // map installment_id → installment_no สำหรับประวัติชำระ
+  const instNoById = new Map<string, number>()
+  for (const r of instRows) instNoById.set(r.id, r.installment_no)
+
+  const recentPayments = ((payRes.data ?? []) as PjCtxPaymentRow[]).map(r => ({
+    date: (r.created_at ?? '').slice(0, 10),
+    principal: parsePjAmount(r.amount),
+    penalty: parsePjAmount(r.penalty_paid_amount),
+    byName: r.by_name ?? '',
+    installmentNo: r.installment_id ? instNoById.get(r.installment_id) ?? null : null,
+  }))
+
+  return {
+    monthly: parsePjAmount((contractRes.data as { monthly_payment: string | number | null } | null)?.monthly_payment),
+    nextUnpaid,
+    totalPaid,
+    totalDue,
+    recentPayments,
+  }
+}
+
+/**
+ * ลงยอดจากกล่องรอตรวจ PJ — บันทึกชำระงวด แล้ว resolve เคสในกล่อง
+ * ⚠️ p_paid_at = paidDate + 'T00:00:00.000Z' (UTC midnight, ลงท้าย Z เสมอ)
+ *    ห้ามใช้ +07:00 — timestamptz เก็บ UTC, +07:00 จะเลื่อนเป็นวันก่อนหน้า พัง idempotency
+ * rpc error → throw ก่อน resolve (ไม่ปิดเคสถ้าลงยอดไม่สำเร็จ)
+ */
+export async function applyPjReviewPayment(params: {
+  reviewId: string
+  installmentId: string
+  principal: number
+  penalty: number
+  paidDate: string // 'YYYY-MM-DD'
+  byName: string
+  note?: string
+}): Promise<void> {
+  if (!supabase) return
+  const { reviewId, installmentId, principal, penalty, paidDate, byName, note } = params
+
+  const { error } = await supabase.rpc('record_payment_with_penalty', {
+    p_installment_id:      installmentId,
+    p_paid_amount:         principal,
+    p_paid_at:             `${paidDate}T00:00:00.000Z`,
+    p_by_name:             byName,
+    p_penalty_paid_amount: penalty,
+  })
+  if (error) throw error
+
+  await resolvePjReviewItem(reviewId, 'resolved', byName, note ?? 'ลงยอดจากกล่องรอตรวจ')
 }

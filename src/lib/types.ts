@@ -553,6 +553,28 @@ export interface PjSyncReviewRow {
   customerName: string | null        // join contracts.customer_name
   reason: PjSyncReviewReason
   status: PjSyncReviewStatus
+  penaltyAmount: number              // Σ amount ของ raw_json ที่ payment_type='penalty' (ค่าปรับใน batch นี้)
+}
+
+/** บริบทประกอบการตัดสินใจในกล่องรอตรวจ — งวดถัดไป + ยอดรวม + ประวัติชำระล่าสุด */
+export interface PjReviewContext {
+  monthly: number                    // ค่างวดต่อเดือนของสัญญา
+  nextUnpaid: {                      // งวดแรกที่ยังไม่จ่าย (status pending|late) — null = จ่ายครบ/ไม่มีงวด
+    id: string
+    no: number
+    amount: number
+    paid: number
+    remaining: number                // max(amount - paid, 0)
+  } | null
+  totalPaid: number                  // Σ paid_amount ทุกงวด
+  totalDue: number                   // Σ amount ทุกงวด
+  recentPayments: {                  // payment_log action='pay' ล่าสุด 8 รายการ (ใหม่→เก่า)
+    date: string                     // created_at::date (YYYY-MM-DD)
+    principal: number                // amount
+    penalty: number                  // penalty_paid_amount
+    byName: string
+    installmentNo: number | null     // join installments.installment_no
+  }[]
 }
 
 /** 1 รอบการรัน auto-sync (จาก pj_sync_runs) */

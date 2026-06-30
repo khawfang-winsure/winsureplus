@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ExternalLink, SkipForward } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ExternalLink, SkipForward, Wallet } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getPjSyncReview, getPjSyncRuns, resolvePjReviewItem } from '../lib/db'
-import type { PjSyncReviewReason, PjSyncReviewRow, PjSyncRunRow } from '../lib/types'
+import { applyPjReviewPayment, getPjReviewContext, getPjSyncReview, getPjSyncRuns, resolvePjReviewItem } from '../lib/db'
+import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow, PjSyncRunRow } from '../lib/types'
 import { useAuth } from '../lib/auth'
 
 // ===== ป้ายเหตุผล (reason → ไทย + โทนสี) =====
@@ -69,6 +69,7 @@ export default function PjSyncReview() {
   }, [load])
 
   const [target, setTarget] = useState<{ row: PjSyncReviewRow; action: 'resolved' | 'skipped' } | null>(null)
+  const [applyTarget, setApplyTarget] = useState<PjSyncReviewRow | null>(null)
 
   // กันชั้นใน (route ที่ App.tsx guard อยู่แล้ว)
   if (!isAdmin) return <EmptyState title="เฉพาะแอดมินเท่านั้น" />
@@ -177,7 +178,18 @@ export default function PjSyncReview() {
                   <td className="py-3 pr-4">
                     <Badge tone={REASON_TONE[r.reason]}>{REASON_LABEL[r.reason]}</Badge>
                   </td>
-                  <td className="py-3 pr-4 text-right text-ink whitespace-nowrap">{baht(r.amount)} ฿</td>
+                  <td className="py-3 pr-4 text-right text-ink">
+                    {r.penaltyAmount > 0 ? (
+                      <>
+                        <span className="block whitespace-nowrap">ค่างวด {baht(r.amount)} + ค่าปรับ {baht(r.penaltyAmount)} ฿</span>
+                        <span className="block whitespace-nowrap text-xs font-semibold text-ink">
+                          = {baht(r.amount + r.penaltyAmount)} ฿
+                        </span>
+                      </>
+                    ) : (
+                      <span className="whitespace-nowrap">ค่างวด {baht(r.amount)} ฿</span>
+                    )}
+                  </td>
                   <td className="py-3 text-right">
                     <div className="flex items-center justify-end gap-1.5">
                       {r.contractId && (
@@ -192,7 +204,13 @@ export default function PjSyncReview() {
                         <SkipForward size={13} />
                         ข้าม
                       </Button>
-                      <Button onClick={() => setTarget({ row: r, action: 'resolved' })}>
+                      {r.contractId && (
+                        <Button onClick={() => setApplyTarget(r)}>
+                          <Wallet size={13} />
+                          ยืนยันลงยอด
+                        </Button>
+                      )}
+                      <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'resolved' })}>
                         <CheckCircle2 size={13} />
                         ทำเสร็จแล้ว
                       </Button>
@@ -213,6 +231,18 @@ export default function PjSyncReview() {
           onClose={() => setTarget(null)}
           onDone={async () => {
             setTarget(null)
+            await load()
+          }}
+        />
+      )}
+
+      {applyTarget && (
+        <ApplyModal
+          row={applyTarget}
+          byName={userName ?? 'ไม่ทราบ'}
+          onClose={() => setApplyTarget(null)}
+          onDone={async () => {
+            setApplyTarget(null)
             await load()
           }}
         />
@@ -289,6 +319,192 @@ function ResolveModal({
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
           <Button onClick={confirm} disabled={busy}>{busy ? 'กำลังบันทึก...' : `ยืนยัน${title}`}</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ===== Modal ยืนยันลงยอด — โชว์บริบทสัญญา + ฟอร์มลงยอดในกล่องเลย =====
+function ApplyModal({
+  row,
+  byName,
+  onClose,
+  onDone,
+}: {
+  row: PjSyncReviewRow
+  byName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [ctx, setCtx] = useState<PjReviewContext | null>(null)
+  const [ctxLoading, setCtxLoading] = useState(true)
+
+  const [principal, setPrincipal] = useState(String(row.amount))
+  const [penalty, setPenalty] = useState(String(row.penaltyAmount))
+  const [paidDate, setPaidDate] = useState((row.paidDate ?? '').slice(0, 10))
+
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setCtxLoading(true)
+    getPjReviewContext(row.contractId!)
+      .then((c) => {
+        if (alive) setCtx(c)
+      })
+      .catch((e) => {
+        if (alive) setErr(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (alive) setCtxLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [row.contractId])
+
+  const nextUnpaid = ctx?.nextUnpaid ?? null
+
+  async function confirm() {
+    if (!nextUnpaid || !paidDate) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await applyPjReviewPayment({
+        reviewId: row.id,
+        installmentId: nextUnpaid.id,
+        principal: Number(principal) || 0,
+        penalty: Number(penalty) || 0,
+        paidDate,
+        byName,
+      })
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="ยืนยันลงยอด" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        {/* หัว: ลูกค้า / สัญญา / ใบเสร็จ */}
+        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
+          <span className="text-ink-soft">ลูกค้า</span>
+          <span className="text-ink">{row.customerName ?? '—'}</span>
+          <span className="text-ink-soft">สัญญา</span>
+          <span className="text-ink">{row.contractNo ?? '—'}</span>
+          <span className="text-ink-soft">เลขใบเสร็จ</span>
+          <span className="text-ink">{row.invoiceNo}</span>
+        </div>
+
+        {ctxLoading ? (
+          <Loading />
+        ) : ctx ? (
+          <>
+            {/* งวดถัดไปที่ต้องชำระ */}
+            {nextUnpaid ? (
+              <div className="rounded-xl border border-peach bg-cream px-4 py-3 text-sm">
+                <p className="mb-1 font-semibold text-ink">งวดที่ {nextUnpaid.no}</p>
+                <p className="text-ink-soft">
+                  ค่างวด <span className="whitespace-nowrap text-ink">{baht(nextUnpaid.amount)} ฿</span>
+                  {' · '}จ่ายแล้ว <span className="whitespace-nowrap text-ink">{baht(nextUnpaid.paid)} ฿</span>
+                  {' · '}
+                  <span className="font-semibold text-salmon whitespace-nowrap">คงเหลือ {baht(nextUnpaid.remaining)} ฿</span>
+                </p>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <p>ไม่มีงวดค้างให้ลง — สัญญานี้จ่ายครบทุกงวดแล้ว</p>
+              </div>
+            )}
+
+            {/* แถบสรุปจ่ายแล้ว / ทั้งหมด */}
+            <div className="flex items-center justify-between rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
+              <span className="text-ink-soft">จ่ายแล้วรวม</span>
+              <span className="whitespace-nowrap text-ink">
+                {baht(ctx.totalPaid)} / {baht(ctx.totalDue)} ฿
+              </span>
+            </div>
+
+            {/* ประวัติการจ่ายล่าสุด */}
+            {ctx.recentPayments.length > 0 && (
+              <div>
+                <p className="mb-1.5 text-sm font-medium text-ink-soft">ประวัติการจ่ายล่าสุด</p>
+                <div className="overflow-x-auto rounded-xl border border-peach">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-peach text-left text-ink-soft">
+                        <th className="px-3 py-2 font-medium">วันที่</th>
+                        <th className="px-3 py-2 font-medium text-right">ค่างวด</th>
+                        <th className="px-3 py-2 font-medium text-right">ค่าปรับ</th>
+                        <th className="px-3 py-2 font-medium">โดย</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ctx.recentPayments.map((p, i) => (
+                        <tr key={i} className="border-b border-peach/50 last:border-0">
+                          <td className="px-3 py-2 text-ink-soft whitespace-nowrap">
+                            {p.installmentNo != null && <span className="mr-1 text-xs">ง.{p.installmentNo}</span>}
+                            {p.date ? thaiDate(p.date.slice(0, 10)) : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-right text-ink whitespace-nowrap">{baht(p.principal)} ฿</td>
+                          <td className="px-3 py-2 text-right text-ink whitespace-nowrap">{baht(p.penalty)} ฿</td>
+                          <td className="px-3 py-2 text-ink-soft">{p.byName}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ฟอร์มลงยอด */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-sm text-ink-soft">เงินต้น (ค่างวด)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={principal}
+                  onChange={(e) => setPrincipal(e.target.value)}
+                  className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-ink-soft">ค่าปรับ</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={penalty}
+                  onChange={(e) => setPenalty(e.target.value)}
+                  className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-ink-soft">วันที่จ่าย</label>
+                <input
+                  type="date"
+                  value={paidDate}
+                  onChange={(e) => setPaidDate(e.target.value)}
+                  className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+                />
+                {!paidDate && <p className="mt-1 text-xs text-salmon">กรุณาระบุวันที่จ่าย</p>}
+              </div>
+            </div>
+          </>
+        ) : null}
+
+        {err && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{err}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
+          <Button onClick={confirm} disabled={busy || ctxLoading || !nextUnpaid || !paidDate}>
+            {busy ? 'กำลังบันทึก...' : !nextUnpaid && !ctxLoading ? 'ไม่มีงวดค้างให้ลง' : 'ยืนยันลงยอด'}
+          </Button>
         </div>
       </div>
     </Modal>
