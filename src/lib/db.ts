@@ -1093,6 +1093,50 @@ export async function getAllInstallments(): Promise<InstallmentLite[]> {
   }))
 }
 
+/** งวดที่ค้างชำระ ณ วันใดวันหนึ่งในอดีต — ใช้สรุปหนี้เสีย ณ วันสิ้นช่วงของรายงานรายสัปดาห์ */
+export interface OverdueAsOfRow {
+  contractId: string
+  dueDate: string        // 'YYYY-MM-DD'
+  amount: number         // ยอดงวด
+  paidAmount: number     // จ่ายมาแล้วบางส่วน (0 ถ้ายังไม่จ่าย)
+  penaltyDue: number     // ค่าปรับค้างของงวด (คอลัมน์ penalty_amount ของ installments)
+}
+
+/**
+ * ดึงงวดที่ยังค้างชำระ ณ วันที่กำหนด (asOfDate): due_date <= asOfDate
+ * AND (paid_at is null OR paid_at > asOfDate) — กรองที่ฝั่ง SQL ทั้งหมด
+ * ตาราง installments มี 28,000+ แถวรวม (เกิน PAGE_CAP 4,999 แน่นอน) จึงต้อง page วน
+ * ทีละ PAGE_CAP+1 แถว จนกว่าจะได้แถวน้อยกว่าขนาดหน้า (แปลว่าหมดแล้ว)
+ */
+export async function getOverdueInstallmentsAsOf(asOfDate: string): Promise<OverdueAsOfRow[]> {
+  if (!supabase) return []
+  const pageSize = PAGE_CAP + 1 // 5000 แถวต่อหน้า
+  const rows: OverdueAsOfRow[] = []
+  let from = 0
+  for (;;) {
+    const { data, error } = await supabase
+      .from('installments')
+      .select('contract_id, due_date, amount, paid_amount, penalty_amount')
+      .lte('due_date', asOfDate)
+      .or(`paid_at.is.null,paid_at.gt.${asOfDate}`)
+      .range(from, from + pageSize - 1)
+    if (error) throw error
+    const batch = data ?? []
+    for (const r of batch) {
+      rows.push({
+        contractId: r.contract_id as string,
+        dueDate: r.due_date as string,
+        amount: Number(r.amount ?? 0),
+        paidAmount: Number(r.paid_amount ?? 0),
+        penaltyDue: Number(r.penalty_amount ?? 0),
+      })
+    }
+    if (batch.length < pageSize) break
+    from += pageSize
+  }
+  return rows
+}
+
 // ---------- aggregate views (Fix B — รองรับ 2,400+ สัญญา) ----------
 
 /** ยอดรวมต่อสัญญา 1 แถว — คืนจาก view v_contract_aggregates */
