@@ -382,11 +382,25 @@ export default {
       for (const a of aggMap.values()) {
         // เคสไม่มี installment เลย — penalty-only หรือ other-only → review
         if (!a.has_installment) {
+          // lookup contract ด้วย inv_no ก่อน — เหมือน path installment (บรรทัด 399-407)
+          // เพื่อผูก matched_contract_id ให้กล่องรอตรวจแสดงสัญญาได้ถูกต้อง
+          const { data: noInstContracts, error: noInstCErr } = await db
+            .from("contracts")
+            .select("id, contract_no, inv_no")
+            .eq("inv_no", a.invoice_no)
+            .limit(2);
+          if (noInstCErr) {
+            return await failRun("error", `db error (contracts): ${noInstCErr.message}`, 500);
+          }
+          // เจอ ≥1 ตัว → ใช้ตัวแรก (inv ซ้ำ=ผิดปกติ แต่ผูก id ไปก่อนดีกว่า null)
+          const noInstContractId =
+            noInstContracts && noInstContracts.length > 0 ? noInstContracts[0].id : null;
+
           if (a.has_other) {
-            queueReview(a, "OTHER", null, "other", a.other_amt);
+            queueReview(a, "OTHER", noInstContractId, "other", a.other_amt);
           } else if (a.pen_amt > 0) {
             // ค่าปรับล้วน ไม่มีงวด → ให้คนตัดสิน
-            queueReview(a, "AMOUNT_MISMATCH", null, "penalty", a.pen_amt);
+            queueReview(a, "AMOUNT_MISMATCH", noInstContractId, "penalty", a.pen_amt);
           }
           continue;
         }

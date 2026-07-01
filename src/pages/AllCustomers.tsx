@@ -68,6 +68,8 @@ export default function AllCustomers() {
   })
   const [shopFilter, setShopFilter] = useFilter('customers.shop', '')
   const [modelFilter, setModelFilter] = useState('')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
 
   // ----- ดัชนีช่วยค้นหา -----
   const shopName = (id: string) => data.shops.find((s) => s.id === id)?.name ?? '-'
@@ -105,6 +107,8 @@ export default function AllCustomers() {
       }
       if (shopFilter && c.shopId !== shopFilter) return false
       if (modelFilter && c.model !== modelFilter) return false
+      if (fromDate && c.transactionDate < fromDate) return false
+      if (toDate && c.transactionDate > toDate) return false
       if (q) {
         const hay = [
           c.contractNo,
@@ -124,7 +128,7 @@ export default function AllCustomers() {
       return true
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.contracts, query, statusFilter, bucketFilter, shopFilter, modelFilter, statusBy])
+  }, [data.contracts, query, statusFilter, bucketFilter, shopFilter, modelFilter, fromDate, toDate, statusBy])
 
   // state เปิด/ปิดบรรทัดที่ 2 ต่อแถว (Set ของ contractId ที่ขยาย)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
@@ -136,13 +140,15 @@ export default function AllCustomers() {
     })
   }
 
-  const hasFilter = !!(query || statusFilter || bucketFilter || shopFilter || modelFilter)
+  const hasFilter = !!(query || statusFilter || bucketFilter || shopFilter || modelFilter || fromDate || toDate)
   const clearAll = () => {
     setQuery('')
     setStatusFilter('')
     setBucketFilter('')
     setShopFilter('')
     setModelFilter('')
+    setFromDate('')
+    setToDate('')
   }
 
   // ----- Pagination -----
@@ -152,7 +158,7 @@ export default function AllCustomers() {
   // reset to page 1 whenever any filter/search changes
   useEffect(() => {
     setPage(1)
-  }, [query, statusFilter, bucketFilter, shopFilter, modelFilter])
+  }, [query, statusFilter, bucketFilter, shopFilter, modelFilter, fromDate, toDate])
 
   const pagedRows = useMemo(
     () => rows.slice((page - 1) * pageSize, page * pageSize),
@@ -211,6 +217,16 @@ export default function AllCustomers() {
                   <option key={m} value={m}>{m}</option>
                 ))}
               </Select>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2 text-sm text-ink">
+                วันที่ทำรายการ ตั้งแต่
+                <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-auto" />
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink">
+                ถึง
+                <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-auto" />
+              </label>
               {hasFilter && (
                 <button
                   onClick={clearAll}
