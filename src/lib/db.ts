@@ -2604,6 +2604,12 @@ export interface FreelancerQueueRow {
   // --- เคสคืนเครื่องแล้วแต่ยังค้างยอด (returned-unpaid) ---
   isReturned: boolean                 // true = status='returned' (UI badge "คืนเครื่องแล้ว")
   returnClosingAmount: number         // ยอดปิดเคสคืนเครื่อง (outstandingAfterReturn.total); 0 สำหรับ active
+  returnedAt: string | null           // วันที่คืนเครื่อง (yyyy-mm-dd Bangkok) — null ถ้าไม่ใช่เคสคืนเครื่อง
+  // --- anchor fields สำหรับนับ "คืนมากี่วัน" ---
+  // เคสเก่า (returnedAt < 2026-07-02) created_at = วันนำเข้า ไม่ใช่วันคืนจริง → ใช้ overdueDueDate แทน
+  overdueDueDate: string | null       // due_date งวดค้างเก่าสุด (yyyy-mm-dd) — null ถ้าไม่มีงวดค้าง
+  returnAnchorType: 'returned' | 'overdue' | null  // 'returned'=นับจากวันคืน, 'overdue'=นับจากครบงวด, null=ไม่ได้/ไม่ใช่เคสคืน
+  returnAnchorDate: string | null     // วันที่ 1 จริงๆ ที่ frontend ใช้ลบกับวันนี้
   color: string | null               // สีเครื่อง (ดึงตรงจาก contracts)
 }
 
@@ -2690,8 +2696,12 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   //  = งวดค้างเก่าสุด 1 งวด + ค่าปรับงวดนั้น + ค่าซ่อม + extras อื่น
   // โหลด installments + extra_charges เฉพาะสัญญา returned (จำนวนน้อย) แบบ batch in-filter
   // → ไม่ N+1; ถ้าไม่มี returned เลย ข้ามทั้งสอง query
+  // ก่อน 2 ก.ค. 2026 device_returns.created_at = วันนำเข้า/สร้างแถว ไม่ใช่วันคืนจริง
+  // → เคสคืนเก่านับจากวันครบงวดค้างแทน; ตั้งแต่ 2 ก.ค. ไปวันคืนจริงเชื่อถือได้
+  const RETURN_DATE_RELIABLE_FROM = '2026-07-02'
   const returnedIds = statusRows.filter((r) => r.status === 'returned').map((r) => r.contract_id)
   const returnClosingMap = new Map<string, number>()
+  const overdueDueDateMap = new Map<string, string>() // contract_id → due_date งวดค้างเก่าสุด
   if (returnedIds.length > 0) {
     const [{ data: retInstData, error: retInstErr }, { data: retExtraData, error: retExtraErr }] =
       await Promise.all([
@@ -2731,6 +2741,10 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
         extraByContract.get(cid) ?? [],
       )
       returnClosingMap.set(cid, result.total)
+      // ดึง due_date ของงวดค้างเก่าสุดจาก result.details (reuse ผลเดิม ไม่ N+1)
+      if (result.details?.dueDate) {
+        overdueDueDateMap.set(cid, result.details.dueDate)
+      }
     }
   }
 
@@ -2890,6 +2904,33 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     fuMap.set(fu.contract_id, agg)
   }
 
+  // --- วันที่คืนเครื่อง (returnedAt) ---
+  // batch query device_returns เฉพาะ returnedIds — ดึง created_at (วันที่สร้างแถวคืนเครื่อง)
+  // ซึ่งใช้เป็น "วันที่คืน" ตาม pattern เดียวกับ v_device_return_report (mig 0073)
+  // ถ้า 1 สัญญามีหลายแถว device_returns (เคยยกเลิก/คืนซ้ำ) → เอาแถวล่าสุด (order by created_at desc)
+  const returnedAtMap = new Map<string, string>() // contract_id → yyyy-mm-dd (Bangkok)
+  if (returnedIds.length > 0) {
+    // สมมติฐาน cap: เคสคืนเครื่องในคิวจะน้อยกว่า PAGE_CAP (~4999) มาก (ปกติไม่กี่สิบรายต่อครั้ง)
+    // dedup ใน JS ทำงานถูกต้องเพราะ order created_at desc → แถวแรกที่เจอต่อ contract = คืนล่าสุดเสมอ
+    // ถ้า device_returns โตจนใกล้ cap ต้องเปลี่ยนเป็น DISTINCT ON (contract_id) ฝั่ง DB แทน
+    const { data: drData, error: drErr } = await supabase
+      .from('device_returns')
+      .select('contract_id, created_at')
+      .in('contract_id', returnedIds)
+      .order('created_at', { ascending: false })
+      .range(0, PAGE_CAP)
+    if (drErr) throw drErr
+    for (const dr of (drData ?? []) as { contract_id: string; created_at: string }[]) {
+      // เก็บแค่แถวแรก (ล่าสุด) ต่อ contract เพราะ order desc + เราข้ามถ้ามีแล้ว
+      if (returnedAtMap.has(dr.contract_id)) continue
+      // แปลง timestamptz → วันที่ Bangkok (UTC+7) ตัดเวลาออก
+      const bkkDate = new Date(new Date(dr.created_at).getTime() + 7 * 3600 * 1000)
+        .toISOString()
+        .slice(0, 10)
+      returnedAtMap.set(dr.contract_id, bkkDate)
+    }
+  }
+
   // กรองทิ้งเคส returned ที่ยอดปิด ≤ 0 (ไม่มีอะไรต้องเก็บ = ไม่ต้องเด้งคิว)
   // เคส active คงเดิมทุกแถว
   const visibleRows = statusRows.filter((r) => {
@@ -2935,6 +2976,24 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       ? new Date(new Date(caseClosedAt).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10) === todayBkk
       : false
 
+    // --- anchor สำหรับนับ "คืนมากี่วัน" ---
+    // เคสเก่า (returnedAt < RETURN_DATE_RELIABLE_FROM) ใช้ overdueDueDate แทนวันคืน
+    const returnedAt = isReturned ? (returnedAtMap.get(r.contract_id) ?? null) : null
+    const overdueDueDate = isReturned ? (overdueDueDateMap.get(r.contract_id) ?? null) : null
+    let returnAnchorType: 'returned' | 'overdue' | null = null
+    let returnAnchorDate: string | null = null
+    if (isReturned) {
+      const reliable = returnedAt !== null && returnedAt >= RETURN_DATE_RELIABLE_FROM
+      if (reliable) {
+        returnAnchorType = 'returned'
+        returnAnchorDate = returnedAt
+      } else if (overdueDueDate !== null) {
+        returnAnchorType = 'overdue'
+        returnAnchorDate = overdueDueDate
+      }
+      // ถ้าไม่มีทั้งคู่ → null/null (นับไม่ได้)
+    }
+
     return {
       contractId: r.contract_id,
       contractNo: r.contract_no,
@@ -2968,9 +3027,13 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       latestNote: agg.latestNote,
       isReturned,
       returnClosingAmount: isReturned ? (returnClosingMap.get(r.contract_id) ?? 0) : 0,
+      returnedAt,
       caseClosedToday,
       caseClosedAt,
       color: c?.color ?? null,
+      overdueDueDate,
+      returnAnchorType,
+      returnAnchorDate,
     }
   })
 }

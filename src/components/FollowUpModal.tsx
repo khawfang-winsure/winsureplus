@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { PackageCheck } from 'lucide-react'
 import { Badge, Button, Field, Modal, Select, Textarea } from './ui'
-import { thaiDate } from '../lib/format'
+import { baht, thaiDate } from '../lib/format'
 import {
   addFollowUp,
   closeCase,
@@ -64,6 +65,13 @@ interface ContractSummary {
   installmentsTotal?: number
   penaltyDue?: number
   principalDue?: number
+  // เคสคืนเครื่อง
+  isReturned?: boolean
+  returnClosingAmount?: number
+  returnedAt?: string | null
+  returnAnchorType?: 'returned' | 'overdue' | null
+  returnAnchorDate?: string | null
+  overdueDueDate?: string | null
 }
 
 interface Props {
@@ -292,6 +300,37 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
               {contract.principalDue.toLocaleString('th-TH')} ฿
             </span>
           </p>
+        )}
+        {contract.isReturned && (
+          <div className="mt-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">
+              <PackageCheck size={13} />
+              คืนเครื่องแล้ว · ยอดปิด {baht(contract.returnClosingAmount ?? 0)} ฿
+            </span>
+            {contract.returnAnchorDate && (() => {
+              const todayBkk = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+              const [ty, tm, td] = todayBkk.split('-').map(Number)
+              const [ay, am, ad] = contract.returnAnchorDate.split('-').map(Number)
+              const todayMs = Date.UTC(ty, tm - 1, td)
+              const anchorMs = Date.UTC(ay, am - 1, ad)
+              const daysSince = Math.floor((todayMs - anchorMs) / 86400000) + 1
+              if (contract.returnAnchorType === 'returned' && contract.returnedAt) {
+                return (
+                  <p className="mt-1 text-xs text-indigo-600">
+                    คืนเมื่อ {thaiDate(contract.returnedAt)} · คืนมาแล้ว {daysSince} วัน
+                  </p>
+                )
+              }
+              if (contract.returnAnchorType === 'overdue' && contract.overdueDueDate) {
+                return (
+                  <p className="mt-1 text-xs text-indigo-600">
+                    ครบกำหนดงวด {thaiDate(contract.overdueDueDate)} · ค้างมาแล้ว {daysSince} วัน
+                  </p>
+                )
+              }
+              return null
+            })()}
+          </div>
         )}
         <p className="mt-1 text-ink-soft">ร้าน: {contract.shopName}</p>
         {/* เบอร์โทรทั้งหมด */}

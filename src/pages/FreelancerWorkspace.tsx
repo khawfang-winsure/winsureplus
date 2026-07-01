@@ -3,7 +3,7 @@ import { useFilter } from '../lib/useFilter'
 import { AlarmClock, AlertTriangle, CalendarClock, ChevronRight, PackageCheck, Search } from 'lucide-react'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import Pagination from '../components/Pagination'
-import { baht } from '../lib/format'
+import { baht, thaiDate } from '../lib/format'
 import {
   getFreelancerQueue,
   getMyAssignedGrades,
@@ -75,6 +75,16 @@ const SUPPRESS_LABEL: Record<NonNullable<SuppressReason>, string> = {
 // strip dashes/spaces จากเบอร์โทรเพื่อเทียบแบบ normalize
 function stripPhone(p: string): string {
   return p.replace(/[\s-]/g, '')
+}
+
+// นับวันจาก anchorDate (Bangkok) — วันเดียวกับ anchor = วันที่ 1, เมื่อวาน = วันที่ 2
+// todayBkk และ anchorDate ต้องเป็น yyyy-mm-dd (Bangkok date ทั้งคู่)
+function daysSinceAnchor(anchorDate: string, todayBkk: string): number {
+  const [ty, tm, td] = todayBkk.split('-').map(Number)
+  const [ry, rm, rd] = anchorDate.split('-').map(Number)
+  const todayMs = Date.UTC(ty, tm - 1, td)
+  const anchorMs = Date.UTC(ry, rm - 1, rd)
+  return Math.max(1, Math.floor((todayMs - anchorMs) / 86400000) + 1)
 }
 
 // ===== Banner นอกเวลาทวงถาม =====
@@ -427,7 +437,7 @@ export default function FreelancerWorkspace() {
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
   const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
-  const [activeTab, setActiveTab] = useFilter<'todo' | 'done'>('queue.tab', 'todo')
+  const [activeTab, setActiveTab] = useFilter<'todo' | 'returned' | 'done'>('queue.tab', 'todo')
 
   // overdue promise state
   const [overdue, setOverdue] = useState<OverduePromiseContract[]>([])
@@ -545,15 +555,20 @@ export default function FreelancerWorkspace() {
     return rowsBeforeOverdueFilter
   }, [rowsBeforeOverdueFilter, overdueFilter, activeOverdueIds])
 
-  // แบ่ง 2 กลุ่ม: caseClosedToday (Tab 2 "ปิดเคสวันนี้") vs ยังไม่ปิด (Tab 1 "ที่ต้องโทร")
+  // แบ่ง 3 กลุ่ม:
+  // todayRows   = caseClosedToday (Tab 3 "ปิดเคสวันนี้") — ทุกชนิดรวมคืนเครื่อง
+  // returnedRows = isReturned && !caseClosedToday (Tab 2 "คืนเครื่อง")
+  // activeRows  = !isReturned && !caseClosedToday (Tab 1 "ที่ต้องโทร")
   // contactedToday ยังคงอยู่ในข้อมูล — ใช้แสดง team awareness ใน QueueRow ตามปกติ
   const todayRows = useMemo(() => filtered.filter((r) => r.caseClosedToday), [filtered])
   const pendingRows = useMemo(() => filtered.filter((r) => !r.caseClosedToday), [filtered])
+  const returnedRows = useMemo(() => pendingRows.filter((r) => r.isReturned), [pendingRows])
+  const activeRows = useMemo(() => pendingRows.filter((r) => !r.isReturned), [pendingRows])
 
-  // คำนวณ priority สำหรับ Tab 1 — memoized
+  // คำนวณ priority สำหรับ Tab 1 — memoized (เฉพาะ activeRows ไม่รวมคืนเครื่อง)
   const today = useMemo(() => new Date(), [])
   const scoredRows = useMemo((): ScoredRow[] => {
-    return pendingRows.map((r) => {
+    return activeRows.map((r) => {
       const result = computePriorityScore(
         {
           grade: r.grade,
@@ -580,7 +595,7 @@ export default function FreelancerWorkspace() {
         promiseToPayDate: r.promiseToPayDate,
       }
     })
-  }, [pendingRows, today])
+  }, [activeRows, today])
 
   // today string (Bangkok UTC+7) สำหรับ sortQueue + promise badge
   const todayStr = useMemo(
@@ -600,7 +615,24 @@ export default function FreelancerWorkspace() {
     [sortedRows, page, pageSize],
   )
 
-  // === Pagination ของแท็บ "ติดต่อแล้ววันนี้" (ใช้ page/pageSize ชุดเดียวกัน รีเซ็ตตอนสลับแท็บ) ===
+  // === แท็บ "คืนเครื่อง" — เรียงนานสุดก่อน (daysSinceAnchor มากไปน้อย, null ไปท้าย) ===
+  const sortedReturnedRows = useMemo(() => {
+    return [...returnedRows].sort((a, b) => {
+      const dA = a.returnAnchorDate ? daysSinceAnchor(a.returnAnchorDate, todayStr) : null
+      const dB = b.returnAnchorDate ? daysSinceAnchor(b.returnAnchorDate, todayStr) : null
+      if (dA === null && dB === null) return 0
+      if (dA === null) return 1   // null ไปท้าย
+      if (dB === null) return -1
+      return dB - dA
+    })
+  }, [returnedRows, todayStr])
+
+  const pagedReturnedRows = useMemo(
+    () => sortedReturnedRows.slice((page - 1) * pageSize, page * pageSize),
+    [sortedReturnedRows, page, pageSize],
+  )
+
+  // === Pagination ของแท็บ "ปิดเคสวันนี้" (ใช้ page/pageSize ชุดเดียวกัน รีเซ็ตตอนสลับแท็บ) ===
   const pagedTodayRows = useMemo(
     () => todayRows.slice((page - 1) * pageSize, page * pageSize),
     [todayRows, page, pageSize],
@@ -745,7 +777,7 @@ export default function FreelancerWorkspace() {
           )}
 
           {/* === Tab bar === */}
-          <div className="mb-4 flex gap-2">
+          <div className="mb-4 flex flex-wrap gap-2">
             <button
               onClick={() => setActiveTab('todo')}
               className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
@@ -754,7 +786,17 @@ export default function FreelancerWorkspace() {
                   : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
               }`}
             >
-              🎯 ที่ต้องโทร ({pendingRows.length})
+              🎯 ที่ต้องโทร ({activeRows.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('returned')}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === 'returned'
+                  ? 'bg-indigo-600 text-white'
+                  : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              📦 คืนเครื่อง ({returnedRows.length})
             </button>
             <button
               onClick={() => setActiveTab('done')}
@@ -771,7 +813,7 @@ export default function FreelancerWorkspace() {
           {/* === Tab 1: ที่ต้องโทร === */}
           {activeTab === 'todo' && (
             <>
-              {pendingRows.length === 0 ? (
+              {activeRows.length === 0 ? (
                 searchTerm.trim() ? (
                   <EmptyState
                     title="ไม่พบลูกค้าที่ค้นหา"
@@ -845,7 +887,178 @@ export default function FreelancerWorkspace() {
             </>
           )}
 
-          {/* === Tab 2: ปิดเคสวันนี้ === */}
+          {/* === Tab 2: คืนเครื่อง === */}
+          {activeTab === 'returned' && (
+            <>
+              {returnedRows.length === 0 ? (
+                searchTerm.trim() ? (
+                  <EmptyState
+                    title="ไม่พบลูกค้าที่ค้นหา"
+                    hint="ลองเปลี่ยนคำค้นหา หรือล้างช่องค้นหาเพื่อดูทั้งหมด"
+                  />
+                ) : (
+                  <EmptyState
+                    title="ยังไม่มีเคสคืนเครื่องที่ต้องตาม"
+                    hint="เมื่อมีสัญญาที่คืนเครื่องแล้วแต่ยังค้างยอดปิด จะปรากฏที่นี่"
+                  />
+                )
+              ) : (
+                <div className="overflow-hidden rounded-2xl border border-peach bg-white shadow-sm">
+                  {/* ===== Desktop table (≥ md) ===== */}
+                  <div className="hidden overflow-x-auto md:block">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-peach bg-indigo-50 text-left text-xs font-semibold text-ink-soft">
+                          <th className="px-4 py-3">ลูกค้า</th>
+                          <th className="px-4 py-3">ร้าน</th>
+                          <th className="px-4 py-3 text-center">เกรด</th>
+                          <th className="px-4 py-3 text-center">ระยะเวลา</th>
+                          <th className="px-4 py-3 text-right">ยอดปิด</th>
+                          <th className="px-4 py-3" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pagedReturnedRows.map((r) => {
+                          const days = r.returnAnchorDate ? daysSinceAnchor(r.returnAnchorDate, todayStr) : null
+                          return (
+                            <tr
+                              key={r.contractId}
+                              className="border-b border-peach last:border-0 hover:bg-indigo-50/40"
+                            >
+                              <td className="px-4 py-3">
+                                <p className="font-medium text-ink">{r.customerName}</p>
+                                <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                                {r.deviceModel && (
+                                  <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>
+                                )}
+                                {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+                                {(r.phoneAlt1 || r.phoneAlt2) && (
+                                  <p className="text-xs text-ink-soft">
+                                    📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}
+                                  </p>
+                                )}
+                                {r.returnAnchorType === 'returned' && r.returnedAt && (
+                                  <p className="mt-0.5 text-xs text-indigo-600">
+                                    คืนเมื่อ {thaiDate(r.returnedAt)}
+                                  </p>
+                                )}
+                                {r.returnAnchorType === 'overdue' && r.overdueDueDate && (
+                                  <p className="mt-0.5 text-xs text-indigo-600">
+                                    ครบกำหนดงวด {thaiDate(r.overdueDueDate)}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
+                              <td className="px-4 py-3 text-center">
+                                <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {days !== null ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
+                                    <PackageCheck size={12} />
+                                    {r.returnAnchorType === 'overdue' ? `ค้าง ${days} วัน` : `${days} วัน`}
+                                  </span>
+                                ) : (
+                                  <span className="text-ink-soft">—</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <span className="font-semibold text-indigo-700 whitespace-nowrap">
+                                  {baht(r.returnClosingAmount)} ฿
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <button
+                                  onClick={() => handleOpenCase(r)}
+                                  className="whitespace-nowrap rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                                >
+                                  บันทึกติดตาม
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                    <div className="border-t border-peach px-4">
+                      <Pagination
+                        total={sortedReturnedRows.length}
+                        page={page}
+                        pageSize={pageSize}
+                        onPageChange={setPage}
+                        onPageSizeChange={handlePageSizeChange}
+                        pageSizeOptions={[20, 50, 100]}
+                      />
+                    </div>
+                  </div>
+
+                  {/* ===== Mobile card stack (< md) ===== */}
+                  <div className="flex flex-col divide-y divide-peach/60 md:hidden">
+                    {pagedReturnedRows.map((r) => {
+                      const days = r.returnAnchorDate ? daysSinceAnchor(r.returnAnchorDate, todayStr) : null
+                      return (
+                        <div key={r.contractId} className="p-4">
+                          <div className="mb-2 flex items-start gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-ink">{r.customerName}</p>
+                              <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                              {r.deviceModel && <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>}
+                              {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+                              {(r.phoneAlt1 || r.phoneAlt2) && (
+                                <p className="text-xs text-ink-soft">
+                                  📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}
+                                </p>
+                              )}
+                              {r.returnAnchorType === 'returned' && r.returnedAt && (
+                                <p className="mt-0.5 text-xs text-indigo-600">
+                                  คืนเมื่อ {thaiDate(r.returnedAt)}
+                                </p>
+                              )}
+                              {r.returnAnchorType === 'overdue' && r.overdueDueDate && (
+                                <p className="mt-0.5 text-xs text-indigo-600">
+                                  ครบกำหนดงวด {thaiDate(r.overdueDueDate)}
+                                </p>
+                              )}
+                              <div className="mt-1 flex flex-wrap gap-2">
+                                <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                                {days !== null && (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
+                                    <PackageCheck size={12} />
+                                    {r.returnAnchorType === 'overdue' ? `ค้างมาแล้ว ${days} วัน` : `คืนมาแล้ว ${days} วัน`}
+                                  </span>
+                                )}
+                                <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
+                                  ยอดปิด {baht(r.returnClosingAmount)} ฿
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleOpenCase(r)}
+                            className="w-full rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                          >
+                            บันทึกติดตาม
+                          </button>
+                        </div>
+                      )
+                    })}
+                    <div className="border-t border-peach px-4">
+                      <Pagination
+                        total={sortedReturnedRows.length}
+                        page={page}
+                        pageSize={pageSize}
+                        onPageChange={setPage}
+                        onPageSizeChange={handlePageSizeChange}
+                        pageSizeOptions={[20, 50, 100]}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* === Tab 3: ปิดเคสวันนี้ === */}
           {activeTab === 'done' && (
             <>
               {todayRows.length === 0 ? (
@@ -978,6 +1191,12 @@ export default function FreelancerWorkspace() {
             penaltyDue: selectedContract.outstanding,
             principalDue: selectedContract.principalDue,
             color: selectedContract.color,
+            isReturned: selectedContract.isReturned,
+            returnClosingAmount: selectedContract.returnClosingAmount,
+            returnedAt: selectedContract.returnedAt,
+            returnAnchorType: selectedContract.returnAnchorType,
+            returnAnchorDate: selectedContract.returnAnchorDate,
+            overdueDueDate: selectedContract.overdueDueDate,
           }}
           publicHolidays={publicHolidays}
           adminOverride={role === 'admin'}
