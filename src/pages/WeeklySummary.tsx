@@ -154,12 +154,12 @@ function NewCasesSection({ data }: { data: WeeklySummary }) {
 
 // ===== 2. ยอดจ่าย/รับเครื่อง =====
 function TransferSection({ data }: { data: WeeklySummary }) {
-  const { deviceTotal, downTotal, docFeeTotal, netTransferTotal, rows } = data.transferSummary
+  const { deviceTotal, downTotal, docFeeTotal, netTransferTotal, commissionTotal, rows } = data.transferSummary
   return (
     <Card>
       <h3 className="mb-1 font-semibold text-ink">ยอดจ่าย/รับเครื่อง (โอนให้ร้าน)</h3>
       <p className="mb-3 text-xs text-ink-soft">ค่าคอมจ่ายให้ร้าน — ไม่ได้หักออกจากยอดโอน</p>
-      <div className="mb-4 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+      <div className="mb-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
         <div className="rounded-xl bg-peach-light/40 py-2 text-center">
           <p className="text-xs text-ink-soft">ราคาเครื่องจริง (รวมคอม)</p>
           <p className="whitespace-nowrap font-semibold text-ink">฿{baht(deviceTotal)}</p>
@@ -177,6 +177,10 @@ function TransferSection({ data }: { data: WeeklySummary }) {
           <p className="whitespace-nowrap font-bold text-salmon-deep">฿{baht(netTransferTotal)}</p>
         </div>
       </div>
+
+      <p className="mb-4 text-xs text-ink-soft">
+        หมายเหตุ: รวมค่าคอมมิชชั่นในยอดข้างต้น <span className="font-semibold text-ink">฿{baht(commissionTotal)}</span>
+      </p>
 
       {rows.length === 0 ? (
         <p className="text-sm text-ink-soft">— ไม่มีสัญญาใหม่ในช่วงนี้</p>

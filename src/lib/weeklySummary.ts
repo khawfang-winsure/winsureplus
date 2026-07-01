@@ -78,6 +78,7 @@ export interface TransferSummaryResult {
   downTotal: number
   docFeeTotal: number
   netTransferTotal: number
+  commissionTotal: number // Σ ค่าคอมมิชชั่นของสัญญาในช่วง (ข้อมูลประกอบ — รวมอยู่ใน deviceTotal/netTransfer แล้ว ไม่ใช่บรรทัดหัก)
 }
 
 /**
@@ -96,6 +97,7 @@ export function buildTransferSummary(contracts: Contract[], rangeStart: string, 
   let downTotal = 0
   let docFeeTotal = 0
   let netTransferTotal = 0
+  let commissionTotal = 0
   for (const c of contracts) {
     if (!inRange(c.transactionDate, rangeStart, rangeEnd)) continue
     const docFee = c.docFee || 0
@@ -118,6 +120,7 @@ export function buildTransferSummary(contracts: Contract[], rangeStart: string, 
     downTotal += down
     docFeeTotal += docFee
     netTransferTotal += s.net
+    commissionTotal += s.commission
   }
   return {
     rows,
@@ -125,6 +128,7 @@ export function buildTransferSummary(contracts: Contract[], rangeStart: string, 
     downTotal,
     docFeeTotal,
     netTransferTotal,
+    commissionTotal,
   }
 }
 
