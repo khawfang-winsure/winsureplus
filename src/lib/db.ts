@@ -4247,6 +4247,17 @@ interface AuditDeviceRow {
   contracts: ContractsEmbed
 }
 
+// row type สำหรับ getDailyAudit — สรุปยอด 2 ขั้น (mig 0075) แยกร้าน/บัญชี คนละคอลัมน์
+interface AuditSentTwoStageRow {
+  id: string
+  contract_no: string
+  customer_name: string
+  summary_shop_sent_at: string | null
+  summary_shop_sent_by: string | null
+  summary_accounting_sent_at: string | null
+  summary_accounting_sent_by: string | null
+}
+
 /**
  * ดึง audit events จากทุก source แล้วรวมเป็น timeline เดียว เรียง created_at desc
  * @param daysBack จำนวนวันย้อนหลัง (default 30)
@@ -4488,6 +4499,283 @@ export async function getAuditTimeline(daysBack = 30, limit = 200): Promise<Audi
   // union + sort desc + cap
   events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
   return events.slice(0, limit)
+}
+
+/**
+ * ดึง audit events เฉพาะ "วันเดียว" (ตามปฏิทิน Bangkok) — ใช้สำหรับหน้าประวัติรายวัน
+ * reuse AuditEvent shape เดียวกับ getAuditTimeline แต่:
+ *  - filter server-side ด้วยช่วง UTC ที่แปลงจากวัน Bangkok (ไม่ดึงหมดมา slice)
+ *  - แยก event สรุปยอดเป็น 2 ชนิด: summary_shop_sent / summary_accounting_sent
+ *    (แทนที่จะรวมเป็น summary_sent ก้อนเดียวแบบ getAuditTimeline)
+ * อีก 6 แหล่งคงเดิม (payment, grade_change, email_sent, follow_up, extension, device_status)
+ * @param dayISO วันแบบ 'YYYY-MM-DD' ตามเวลา Bangkok
+ */
+export async function getDailyAudit(dayISO: string): Promise<AuditEvent[]> {
+  if (!supabase) return []
+
+  // แปลงวัน Bangkok (UTC+7 คงที่ ไม่มี DST) → ช่วง UTC สำหรับ query
+  // Bangkok YYYY-MM-DD 00:00:00 = UTC (YYYY-MM-DD - 1 วัน) 17:00:00
+  // ใช้ Date.UTC ตรงๆ แล้วลบ 7 ชม. เพื่อเลี่ยงกับดัก '+07:00' suffix (ดู applyPjReviewPayment comment)
+  const [y, m, d] = dayISO.split('-').map(Number)
+  const dayStartUtc = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - 7 * 3600 * 1000)
+  const dayEndUtc = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0) - 7 * 3600 * 1000)
+  const since = dayStartUtc.toISOString()
+  const until = dayEndUtc.toISOString()
+
+  const limit = 1000 // วันเดียว event ไม่เยอะ แต่กันเผื่อไว้ต่ำกว่า PostgREST cap
+
+  // ---- helper: แปลง action ของ payment_log → ข้อความไทย ----
+  const paymentActionText = (action: 'pay' | 'edit' | 'cancel', amount: number | null): string => {
+    if (action === 'pay') {
+      const fmt = amount != null ? amount.toLocaleString('th-TH') + ' ฿' : ''
+      return fmt ? `ยืนยันชำระ ${fmt}` : 'ยืนยันชำระ'
+    }
+    if (action === 'edit') return 'แก้ไขการชำระ'
+    return 'ยกเลิกการชำระ'
+  }
+
+  // ---- helper: แปล follow_up_result → ข้อความไทย ----
+  const followUpResultText = (result: string): string => {
+    const map: Record<string, string> = {
+      no_answer: 'ไม่รับสาย',
+      contacted: 'ติดต่อได้',
+      promised: 'สัญญาจะจ่าย',
+      refused: 'ปฏิเสธ',
+      paid: 'ชำระแล้ว',
+      returned: 'คืนเครื่อง',
+      other: 'อื่นๆ',
+    }
+    return map[result] ?? result
+  }
+
+  // ---- helper: แปล extension_type → ข้อความไทย ----
+  const extTypeText = (extType: string): string => {
+    if (extType === 'due_day') return 'เปลี่ยนวันชำระ'
+    if (extType === 'months') return 'ขยายงวด'
+    if (extType === 'both') return 'เปลี่ยนวันชำระ+ขยายงวด'
+    return extType
+  }
+
+  // ---- 8 parallel queries (7 เดิม + สรุปยอดแยก 2 คอลัมน์ = 1 query คืน 2 event type) ----
+  const [
+    paymentRes,
+    gradeRes,
+    emailRes,
+    summaryRes,
+    followUpRes,
+    extensionRes,
+    deviceRes,
+  ] = await Promise.all([
+    // 1. payment_log + join contracts
+    supabase
+      .from('payment_log')
+      .select('id, contract_id, action, amount, by_name, note, created_at, contracts(contract_no, customer_name)')
+      .gte('created_at', since)
+      .lt('created_at', until)
+      .order('created_at', { ascending: false })
+      .limit(limit),
+
+    // 2. contract_grade_history + join contracts
+    supabase
+      .from('contract_grade_history')
+      .select('id, contract_id, old_grade, new_grade, changed_at, contracts(contract_no, customer_name)')
+      .gte('changed_at', since)
+      .lt('changed_at', until)
+      .order('changed_at', { ascending: false })
+      .limit(limit),
+
+    // 3. contracts ที่ email_sent_at อยู่ในวัน
+    supabase
+      .from('contracts')
+      .select('id, contract_no, customer_name, email_sent_at, email_sent_by')
+      .gte('email_sent_at', since)
+      .lt('email_sent_at', until)
+      .order('email_sent_at', { ascending: false })
+      .limit(limit),
+
+    // 4. contracts ที่ summary_shop_sent_at หรือ summary_accounting_sent_at อยู่ในวัน (mig 0075 — 2 คอลัมน์แยก)
+    //    ดึง row เดียวถ้าเข้าเงื่อนไขข้อใดข้อหนึ่ง แล้วค่อยแยก event ตอน map
+    supabase
+      .from('contracts')
+      .select('id, contract_no, customer_name, summary_shop_sent_at, summary_shop_sent_by, summary_accounting_sent_at, summary_accounting_sent_by')
+      .or(
+        `and(summary_shop_sent_at.gte.${since},summary_shop_sent_at.lt.${until}),` +
+        `and(summary_accounting_sent_at.gte.${since},summary_accounting_sent_at.lt.${until})`
+      )
+      .limit(limit),
+
+    // 5. follow_ups + join contracts (author_name denormalized — ไม่ต้อง join profiles)
+    supabase
+      .from('follow_ups')
+      .select('id, contract_id, author_name, follow_up_result, note_text, created_at, contracts(contract_no, customer_name)')
+      .gte('created_at', since)
+      .lt('created_at', until)
+      .order('created_at', { ascending: false })
+      .limit(limit),
+
+    // 6. contract_extensions + join contracts
+    supabase
+      .from('contract_extensions')
+      .select('id, contract_id, ext_type, recorded_by_name, created_at, contracts(contract_no, customer_name)')
+      .gte('created_at', since)
+      .lt('created_at', until)
+      .order('created_at', { ascending: false })
+      .limit(limit),
+
+    // 7. device_returns ที่ device_status_updated_at อยู่ในวัน
+    supabase
+      .from('device_returns')
+      .select('id, contract_id, device_status, device_status_by, device_status_updated_at, contracts(contract_no, customer_name)')
+      .gte('device_status_updated_at', since)
+      .lt('device_status_updated_at', until)
+      .not('device_status_updated_at', 'is', null)
+      .order('device_status_updated_at', { ascending: false })
+      .limit(limit),
+  ])
+
+  // throw ถ้า query ไหน error
+  if (paymentRes.error) throw paymentRes.error
+  if (gradeRes.error) throw gradeRes.error
+  if (emailRes.error) throw emailRes.error
+  if (summaryRes.error) throw summaryRes.error
+  if (followUpRes.error) throw followUpRes.error
+  if (extensionRes.error) throw extensionRes.error
+  if (deviceRes.error) throw deviceRes.error
+
+  const events: AuditEvent[] = []
+
+  // ---- map payment_log ----
+  for (const r of (paymentRes.data ?? []) as AuditPaymentRow[]) {
+    const c = Array.isArray(r.contracts) ? r.contracts[0] : r.contracts
+    events.push({
+      id: `payment:${r.id}`,
+      eventType: 'payment' as AuditEventType,
+      contractId: r.contract_id,
+      contractNo: c?.contract_no ?? null,
+      customerName: c?.customer_name ?? null,
+      actor: r.by_name ?? 'ระบบ',
+      action: paymentActionText(r.action, r.amount != null ? Number(r.amount) : null),
+      details: r.note ?? null,
+      at: r.created_at,
+    })
+  }
+
+  // ---- map contract_grade_history ----
+  for (const r of (gradeRes.data ?? []) as AuditGradeRow[]) {
+    const c = Array.isArray(r.contracts) ? r.contracts[0] : r.contracts
+    const fromGrade = r.old_grade ?? '-'
+    const toGrade = r.new_grade ?? '-'
+    events.push({
+      id: `grade:${r.id}`,
+      eventType: 'grade_change' as AuditEventType,
+      contractId: r.contract_id,
+      contractNo: c?.contract_no ?? null,
+      customerName: c?.customer_name ?? null,
+      actor: 'ระบบ',
+      action: `เปลี่ยนเกรด ${fromGrade}→${toGrade}`,
+      details: null,
+      at: r.changed_at,
+    })
+  }
+
+  // ---- map email_sent events ----
+  for (const r of (emailRes.data ?? []) as AuditSentRow[]) {
+    if (!r.email_sent_at) continue
+    events.push({
+      id: `email:${r.id}`,
+      eventType: 'email_sent' as AuditEventType,
+      contractId: r.id,
+      contractNo: r.contract_no,
+      customerName: r.customer_name,
+      actor: r.email_sent_by ?? 'ระบบ',
+      action: 'ส่งอีเมล',
+      details: null,
+      at: r.email_sent_at,
+    })
+  }
+
+  // ---- map summary events (แยก 2 ชนิด: ร้าน / บัญชี — แต่ละ row อาจ emit ได้สูงสุด 2 events) ----
+  for (const r of (summaryRes.data ?? []) as AuditSentTwoStageRow[]) {
+    if (r.summary_shop_sent_at && r.summary_shop_sent_at >= since && r.summary_shop_sent_at < until) {
+      events.push({
+        id: `summary_shop:${r.id}`,
+        eventType: 'summary_shop_sent' as AuditEventType,
+        contractId: r.id,
+        contractNo: r.contract_no,
+        customerName: r.customer_name,
+        actor: r.summary_shop_sent_by ?? 'ระบบ',
+        action: 'ส่งสรุปยอดให้ร้าน',
+        details: null,
+        at: r.summary_shop_sent_at,
+      })
+    }
+    if (r.summary_accounting_sent_at && r.summary_accounting_sent_at >= since && r.summary_accounting_sent_at < until) {
+      events.push({
+        id: `summary_accounting:${r.id}`,
+        eventType: 'summary_accounting_sent' as AuditEventType,
+        contractId: r.id,
+        contractNo: r.contract_no,
+        customerName: r.customer_name,
+        actor: r.summary_accounting_sent_by ?? 'ระบบ',
+        action: 'ส่งสรุปยอดให้บัญชี',
+        details: null,
+        at: r.summary_accounting_sent_at,
+      })
+    }
+  }
+
+  // ---- map follow_ups ----
+  for (const r of (followUpRes.data ?? []) as AuditFollowUpRow[]) {
+    const c = Array.isArray(r.contracts) ? r.contracts[0] : r.contracts
+    events.push({
+      id: `followup:${r.id}`,
+      eventType: 'follow_up' as AuditEventType,
+      contractId: r.contract_id,
+      contractNo: c?.contract_no ?? null,
+      customerName: c?.customer_name ?? null,
+      actor: r.author_name || 'ระบบ',
+      action: `ติดตาม: ${followUpResultText(r.follow_up_result)}`,
+      details: r.note_text || null,
+      at: r.created_at,
+    })
+  }
+
+  // ---- map contract_extensions ----
+  for (const r of (extensionRes.data ?? []) as AuditExtensionRow[]) {
+    const c = Array.isArray(r.contracts) ? r.contracts[0] : r.contracts
+    events.push({
+      id: `ext:${r.id}`,
+      eventType: 'extension' as AuditEventType,
+      contractId: r.contract_id,
+      contractNo: c?.contract_no ?? null,
+      customerName: c?.customer_name ?? null,
+      actor: r.recorded_by_name ?? 'ระบบ',
+      action: `ขยายระยะเวลา (${extTypeText(r.ext_type)})`,
+      details: null,
+      at: r.created_at,
+    })
+  }
+
+  // ---- map device_returns (device status changes only) ----
+  for (const r of (deviceRes.data ?? []) as AuditDeviceRow[]) {
+    if (!r.device_status_updated_at || !r.device_status) continue
+    const c = Array.isArray(r.contracts) ? r.contracts[0] : r.contracts
+    events.push({
+      id: `device:${r.id}`,
+      eventType: 'device_status' as AuditEventType,
+      contractId: r.contract_id,
+      contractNo: c?.contract_no ?? null,
+      customerName: c?.customer_name ?? null,
+      actor: r.device_status_by ?? 'ระบบ',
+      action: `เปลี่ยนสถานะเครื่อง: ${r.device_status}`,
+      details: null,
+      at: r.device_status_updated_at,
+    })
+  }
+
+  // union + sort desc (วันเดียว ไม่ต้อง cap ซ้ำ — query แต่ละแหล่งกรองมาแล้ว)
+  events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+  return events
 }
 
 export async function getOverduePromiseContracts(): Promise<OverduePromiseContract[]> {

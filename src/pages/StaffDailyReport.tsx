@@ -3,6 +3,7 @@ import { useFilter } from '../lib/useFilter'
 import {
   CalendarPlus,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CreditCard,
   FileCheck,
@@ -14,9 +15,21 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { Badge, Button, EmptyState, Loading, PageTitle, Select } from '../components/ui'
-import { getAuditTimeline } from '../lib/db'
+import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
+import { getDailyAudit } from '../lib/db'
 import type { AuditEvent, AuditEventType } from '../lib/types'
+
+/** วันนี้ตามเขตเวลากรุงเทพ (UTC+7) รูปแบบ YYYY-MM-DD */
+function todayBangkok(): string {
+  return new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+}
+
+/** วันก่อนหน้า/ถัดไปของวันที่ ISO ที่ระบุ (บวก/ลบวัน) */
+function shiftDay(isoDate: string, delta: number): string {
+  const d = new Date(isoDate + 'T00:00:00')
+  d.setDate(d.getDate() + delta)
+  return d.toLocaleString('en-CA').slice(0, 10)
+}
 
 // ===== ตัวช่วยฟอร์แมตวันเวลา =====
 const MONTH_SHORT: string[] = [
@@ -27,10 +40,19 @@ const MONTH_SHORT: string[] = [
 function fmtDatetime(iso: string): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return '-'
-  const day = d.getDate()
-  const mon = MONTH_SHORT[d.getMonth()]
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Bangkok',
+    day: 'numeric',
+    month: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  const day = get('day')
+  const mon = MONTH_SHORT[Number(get('month')) - 1] ?? ''
+  const hh = get('hour')
+  const mm = get('minute')
   return `${day} ${mon} ${hh}:${mm}`
 }
 
@@ -49,43 +71,41 @@ function fmtDateLabel(isoDate: string): string {
 type IconDef = { icon: LucideIcon; cls: string }
 
 const EVENT_ICON: Record<AuditEventType, IconDef> = {
-  payment:       { icon: CreditCard,   cls: 'text-green-600' },
-  grade_change:  { icon: TrendingDown, cls: 'text-amber-600' },
-  email_sent:    { icon: Mail,         cls: 'text-blue-600' },
-  summary_sent:  { icon: FileCheck,    cls: 'text-purple-600' },
-  follow_up:     { icon: Phone,        cls: 'text-gray-500' },
-  extension:     { icon: CalendarPlus, cls: 'text-indigo-600' },
-  device_status: { icon: Truck,        cls: 'text-orange-600' },
+  payment:                  { icon: CreditCard,   cls: 'text-green-600' },
+  grade_change:             { icon: TrendingDown, cls: 'text-amber-600' },
+  email_sent:               { icon: Mail,         cls: 'text-blue-600' },
+  summary_sent:             { icon: FileCheck,    cls: 'text-purple-600' },
+  summary_shop_sent:        { icon: FileCheck,    cls: 'text-purple-600' },
+  summary_accounting_sent:  { icon: FileCheck,    cls: 'text-fuchsia-600' },
+  follow_up:                { icon: Phone,        cls: 'text-gray-500' },
+  extension:                { icon: CalendarPlus, cls: 'text-indigo-600' },
+  device_status:            { icon: Truck,        cls: 'text-orange-600' },
 }
 
 const EVENT_LABEL: Record<AuditEventType, string> = {
-  payment:       'การชำระ',
-  grade_change:  'เปลี่ยนเกรด',
-  email_sent:    'ส่งอีเมล',
-  summary_sent:  'ส่งสรุปยอด',
-  follow_up:     'บันทึกติดตาม',
-  extension:     'ขยายระยะเวลา',
-  device_status: 'สถานะเครื่อง',
+  payment:                  'การชำระ',
+  grade_change:             'เปลี่ยนเกรด',
+  email_sent:               'ส่งอีเมล',
+  summary_sent:             'ส่งสรุปยอด',
+  summary_shop_sent:        'สรุปยอด · ส่งร้าน',
+  summary_accounting_sent:  'สรุปยอด · ส่งบัญชี',
+  follow_up:                'บันทึกติดตาม',
+  extension:                'ขยายระยะเวลา',
+  device_status:            'สถานะเครื่อง',
 }
 
 // ===== ตัวเลือก filter =====
-type DaysBack = 7 | 30 | 90
-
-const DAYS_OPTIONS: { value: DaysBack; label: string }[] = [
-  { value: 7,  label: '7 วันล่าสุด' },
-  { value: 30, label: '30 วันล่าสุด' },
-  { value: 90, label: '90 วันล่าสุด' },
-]
 
 const EVENT_TYPE_OPTIONS: { value: AuditEventType | 'all'; label: string }[] = [
-  { value: 'all',           label: 'ทุกประเภท' },
-  { value: 'payment',       label: EVENT_LABEL['payment'] },
-  { value: 'grade_change',  label: EVENT_LABEL['grade_change'] },
-  { value: 'email_sent',    label: EVENT_LABEL['email_sent'] },
-  { value: 'summary_sent',  label: EVENT_LABEL['summary_sent'] },
-  { value: 'follow_up',     label: EVENT_LABEL['follow_up'] },
-  { value: 'extension',     label: EVENT_LABEL['extension'] },
-  { value: 'device_status', label: EVENT_LABEL['device_status'] },
+  { value: 'all',                      label: 'ทุกประเภท' },
+  { value: 'payment',                  label: EVENT_LABEL['payment'] },
+  { value: 'grade_change',             label: EVENT_LABEL['grade_change'] },
+  { value: 'email_sent',               label: EVENT_LABEL['email_sent'] },
+  { value: 'summary_shop_sent',        label: EVENT_LABEL['summary_shop_sent'] },
+  { value: 'summary_accounting_sent',  label: EVENT_LABEL['summary_accounting_sent'] },
+  { value: 'follow_up',                label: EVENT_LABEL['follow_up'] },
+  { value: 'extension',                label: EVENT_LABEL['extension'] },
+  { value: 'device_status',            label: EVENT_LABEL['device_status'] },
 ]
 
 // ===== grouping types =====
@@ -108,12 +128,15 @@ type TypeBucket = {
 }
 
 // ===== group events: date → actor → eventType =====
-function groupEvents(events: AuditEvent[]): DateGroup[] {
+// หน้านี้โหลดข้อมูลของ "วันเดียว" (selectedDay ตามเวลาไทย) เสมอ — ใช้ selectedDay
+// เป็น date key ตรงๆ แทนการ derive จาก e.at (ซึ่งเป็น UTC และจะเพี้ยนวันสำหรับ
+// เคสที่เกิดช่วง Bangkok 00:00–06:59)
+function groupEvents(events: AuditEvent[], selectedDay: string): DateGroup[] {
   // date → actor → eventType → events[]
   const dateMap = new Map<string, Map<string, Map<AuditEventType, AuditEvent[]>>>()
+  const date = selectedDay
 
   for (const e of events) {
-    const date = e.at.slice(0, 10)
     if (!dateMap.has(date)) dateMap.set(date, new Map())
     const actorMap = dateMap.get(date)!
     if (!actorMap.has(e.actor)) actorMap.set(e.actor, new Map())
@@ -315,7 +338,7 @@ export default function StaffDailyReport() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const [daysBack, setDaysBack] = useFilter<DaysBack>('staff-daily-report.daysBack', 30)
+  const [selectedDay, setSelectedDay] = useState<string>(() => todayBangkok())
   const [filterType, setFilterType] = useFilter<AuditEventType | 'all'>('staff-daily-report.filterType', 'all')
   const [filterActor, setFilterActor] = useFilter<string>('staff-daily-report.filterActor', 'all')
 
@@ -338,7 +361,7 @@ export default function StaffDailyReport() {
   useEffect(() => {
     if (!loading) setRefreshing(true)
     setError(null)
-    getAuditTimeline(daysBack, 200)
+    getDailyAudit(selectedDay)
       .then((data) => {
         setEvents(data)
         setFilterActor((prev) =>
@@ -353,7 +376,7 @@ export default function StaffDailyReport() {
         setRefreshing(false)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [daysBack, tick])
+  }, [selectedDay, tick])
 
   const actorOptions = useMemo<string[]>(() => {
     const seen = new Set<string>()
@@ -369,7 +392,7 @@ export default function StaffDailyReport() {
     })
   }, [events, filterType, filterActor])
 
-  const grouped = useMemo(() => groupEvents(filtered), [filtered])
+  const grouped = useMemo(() => groupEvents(filtered, selectedDay), [filtered, selectedDay])
 
   if (loading) return <Loading label="กำลังโหลดข้อมูลรายงาน..." />
 
@@ -385,6 +408,34 @@ export default function StaffDailyReport() {
 
         {/* filter row + refresh */}
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              onClick={() => setSelectedDay((d) => shiftDay(d, -1))}
+              disabled={refreshing}
+              aria-label="วันก่อนหน้า"
+              className="!px-2"
+            >
+              <ChevronLeft size={15} />
+            </Button>
+            <Input
+              type="date"
+              value={selectedDay}
+              onChange={(e) => setSelectedDay(e.target.value)}
+              className="w-auto text-sm"
+              disabled={refreshing}
+            />
+            <Button
+              variant="ghost"
+              onClick={() => setSelectedDay((d) => shiftDay(d, 1))}
+              disabled={refreshing || selectedDay >= todayBangkok()}
+              aria-label="วันถัดไป"
+              className="!px-2"
+            >
+              <ChevronRight size={15} />
+            </Button>
+          </div>
+
           <Select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value as AuditEventType | 'all')}
@@ -408,17 +459,6 @@ export default function StaffDailyReport() {
             ))}
           </Select>
 
-          <Select
-            value={daysBack}
-            onChange={(e) => setDaysBack(Number(e.target.value) as DaysBack)}
-            className="w-36 text-sm"
-            disabled={refreshing}
-          >
-            {DAYS_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </Select>
-
           <Button
             variant="ghost"
             onClick={doRefresh}
@@ -439,8 +479,8 @@ export default function StaffDailyReport() {
 
       {!error && grouped.length === 0 ? (
         <EmptyState
-          title="ยังไม่มีกิจกรรมในช่วงนี้"
-          hint="ลองขยายช่วงวัน หรือเปลี่ยนตัวกรอง"
+          title="ยังไม่มีกิจกรรมในวันนี้"
+          hint="ลองเปลี่ยนวันที่ หรือเปลี่ยนตัวกรอง"
         />
       ) : (
         <div>

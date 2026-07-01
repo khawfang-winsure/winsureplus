@@ -106,7 +106,7 @@ function Gate() {
           <Route path="/shop-report" element={isAdmin ? <ShopReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/shop/:id" element={isAdmin ? <ShopDetail /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/staff-performance" element={isAdmin ? <StaffPerformance /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
-          <Route path="/staff-daily-report" element={isAdmin ? <StaffDailyReport /> : <Navigate to={isExecutive ? '/exec' : isFreelancer ? '/queue' : '/'} replace />} />
+          <Route path="/staff-daily-report" element={(isAdmin || isExecutive) ? <StaffDailyReport /> : <Navigate to={isFreelancer ? '/queue' : '/'} replace />} />
           <Route path="/commission" element={isExecutive ? <Navigate to="/exec" replace /> : isAdmin ? <Commission /> : <Navigate to="/" replace />} />
           <Route path="/settings" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Navigate to="/settings/shops" replace />} />
           <Route path="/settings/:cat" element={isExecutive ? <Navigate to="/exec" replace /> : isFreelancer ? <Navigate to="/queue" replace /> : <Settings />} />

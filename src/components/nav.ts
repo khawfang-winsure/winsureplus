@@ -4,6 +4,7 @@ import {
   BarChart3,
   ClipboardCheck,
   Gauge,
+  History,
   Inbox,
   LayoutDashboard,
   Phone,
@@ -38,6 +39,7 @@ export const NAV: NavItem[] = [
   // เมนูหลัก — item เดี่ยวบนสุด
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
+  { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: History, adminOnly: true, executiveVisible: true },
 
   // กลุ่มพับได้: รับเรื่อง/บันทึก
   {
@@ -104,7 +106,6 @@ export const NAV: NavItem[] = [
       { to: '/shop-report', label: 'รายงานร้านค้า' },
       { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
       { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้' },
-      { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน' },
       { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true },
       { to: '/settlements', label: 'ปิดสัญญาก่อนกำหนด', adminOnly: true },
       { to: '/debtflow', label: 'ติดตามหนี้ (DEBTFLOW)', adminOnly: true },

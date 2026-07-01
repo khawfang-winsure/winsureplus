@@ -334,7 +334,9 @@ export type AuditEventType =
   | 'payment'       // pay / edit / cancel จาก payment_log
   | 'grade_change'  // เปลี่ยนเกรดอัตโนมัติ จาก contract_grade_history
   | 'email_sent'    // ส่งอีเมล (contracts.email_sent_at)
-  | 'summary_sent'  // ส่งสรุปยอด (contracts.summary_sent_at)
+  | 'summary_sent'  // ส่งสรุปยอด (contracts.summary_sent_at) — legacy รวม ใช้ใน getAuditTimeline
+  | 'summary_shop_sent'        // ส่งสรุปยอดให้ร้าน (contracts.summary_shop_sent_at) — ใช้ใน getDailyAudit
+  | 'summary_accounting_sent'  // ส่งสรุปยอดให้บัญชี (contracts.summary_accounting_sent_at) — ใช้ใน getDailyAudit
   | 'follow_up'     // บันทึกการติดตาม จาก follow_ups
   | 'extension'     // ขยายระยะเวลา จาก contract_extensions
   | 'device_status' // เปลี่ยนสถานะเครื่อง จาก device_returns
