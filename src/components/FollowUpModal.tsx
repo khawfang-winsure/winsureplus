@@ -75,6 +75,8 @@ interface Props {
   publicHolidays?: Set<string>
   /** Admin can record follow-ups outside contact hours (DB trigger also exempts admin) */
   adminOverride?: boolean
+  /** ซ่อนปุ่ม "ยืนยันปิดเคส" เมื่อเคสนี้ปิดไปแล้ว (เช่น มาจากแท็บ "ปิดเคสวันนี้") */
+  alreadyClosed?: boolean
 }
 
 // ===== ฟอร์มสถานะ =====
@@ -118,7 +120,7 @@ function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneA
   return { ...BASE_FORM, phoneDialed: phone ?? phoneAlt1 ?? phoneAlt2 ?? '' }
 }
 
-export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false }: Props) {
+export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false, alreadyClosed = false }: Props) {
   const { name: authName } = useAuth()
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
@@ -427,7 +429,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           <Button onClick={handleSave} disabled={saving || closingCase || outsideHours}>
             {saving ? 'กำลังบันทึก...' : 'บันทึก'}
           </Button>
-          {onCaseClosed && (
+          {onCaseClosed && !alreadyClosed && (
             <Button
               variant="ghost"
               disabled={saving || closingCase}

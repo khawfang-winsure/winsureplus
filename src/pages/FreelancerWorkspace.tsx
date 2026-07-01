@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFilter } from '../lib/useFilter'
-import { AlarmClock, AlertTriangle, CalendarClock, PackageCheck, Search } from 'lucide-react'
+import { AlarmClock, AlertTriangle, CalendarClock, ChevronRight, PackageCheck, Search } from 'lucide-react'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht } from '../lib/format'
@@ -872,13 +872,15 @@ export default function FreelancerWorkspace() {
                           <th className="px-4 py-3">ผลล่าสุด</th>
                           <th className="px-4 py-3">เวลา</th>
                           <th className="px-4 py-3">โดย</th>
+                          <th className="px-4 py-3"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {pagedTodayRows.map((r) => (
                           <tr
                             key={r.contractId}
-                            className="border-b border-peach last:border-0 hover:bg-peach-light/20"
+                            className="cursor-pointer border-b border-peach last:border-0 hover:bg-peach-light/40 transition-colors"
+                            onClick={() => handleOpenCase(r)}
                           >
                             <td className="px-4 py-3">
                               <p className="font-medium text-ink">{r.customerName}</p>
@@ -897,6 +899,9 @@ export default function FreelancerWorkspace() {
                             </td>
                             <td className="px-4 py-3 text-ink-soft">
                               {r.lastContactedByName ?? '-'}
+                            </td>
+                            <td className="px-4 py-3 text-ink-soft">
+                              <ChevronRight size={16} className="text-ink-soft/60" />
                             </td>
                           </tr>
                         ))}
@@ -919,14 +924,18 @@ export default function FreelancerWorkspace() {
                     {pagedTodayRows.map((r) => (
                       <div
                         key={r.contractId}
-                        className="rounded-2xl border border-peach bg-white p-4 shadow-sm"
+                        className="cursor-pointer rounded-2xl border border-peach bg-white p-4 shadow-sm transition-colors hover:bg-peach-light/40 active:bg-peach-light"
+                        onClick={() => handleOpenCase(r)}
                       >
                         <div className="mb-1 flex items-start justify-between gap-2">
                           <div>
                             <p className="font-semibold text-ink">{r.customerName}</p>
                             <p className="text-xs text-ink-soft">{r.contractNo}</p>
                           </div>
-                          <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                          <div className="flex items-center gap-1.5">
+                            <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                            <ChevronRight size={16} className="text-ink-soft/60" />
+                          </div>
                         </div>
                         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-ink-soft">
                           <span>ผล: <span className="text-ink">{r.lastResult !== null ? RESULT_LABEL[r.lastResult] : '-'}</span></span>
@@ -971,6 +980,7 @@ export default function FreelancerWorkspace() {
           }}
           publicHolidays={publicHolidays}
           adminOverride={role === 'admin'}
+          alreadyClosed={selectedContract.caseClosedToday}
           onClose={handleModalClose}
           onSaved={() => {
             if (selectedGrades.length > 0) void loadQueue(selectedGrades)

@@ -137,8 +137,6 @@ interface ContractRow {
   promise_to_pay_date: string | null
   promised_amount: number | null
   color: string | null
-  district: string | null
-  province: string | null
   pending_documents: boolean | null
   original_docs_received: boolean | null
   original_docs_received_at: string | null
@@ -220,8 +218,6 @@ function mapContract(r: ContractRow): Contract {
     promiseToPayDate: r.promise_to_pay_date ?? null,
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     color: r.color ?? undefined,
-    district: r.district ?? undefined,
-    province: r.province ?? undefined,
     pendingDocuments: r.pending_documents ?? false,
     pendingDocItems: Array.isArray(r.pending_doc_items) ? r.pending_doc_items : [],
     originalDocsReceived: r.original_docs_received ?? false,
@@ -281,8 +277,6 @@ function toInsert(c: Omit<Contract, 'id'>) {
     operator: c.operator || null,
     notes: c.notes || null,
     color: c.color || null,
-    district: c.district || null,
-    province: c.province || null,
     pending_documents: c.pendingDocuments ?? false,
     pending_doc_items: c.pendingDocItems ?? [],   // 0053 — รายการเอกสารที่รอ
     original_docs_received: false, // สัญญาใหม่ = ยังไม่ได้รับเอกสาร เสมอ
@@ -1013,8 +1007,6 @@ function toUpdate(c: Omit<Contract, 'id'>) {
     operator: c.operator || null,
     notes: c.notes || null,
     color: c.color || null,
-    district: c.district || null,
-    province: c.province || null,
     // doc-tracking fields (original_docs_received, has_phone_box, pending_documents,
     //   pending_doc_items) ไม่ถูกส่งใน UPDATE — แก้ผ่าน markDocsReceived / setContractFlags / revertDocReceipt
   }

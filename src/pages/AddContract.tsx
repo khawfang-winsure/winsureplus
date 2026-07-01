@@ -81,8 +81,6 @@ interface FormState {
   pendingDocuments: boolean
   pendingDocItems: string[]
   hasPhoneBox: boolean
-  district: string
-  province: string
 }
 
 type AddrKey = 'current' | 'id_card' | 'work'
@@ -141,8 +139,6 @@ const initial: FormState = {
   pendingDocuments: false,
   pendingDocItems: [],
   hasPhoneBox: false,
-  district: '',
-  province: '',
 }
 
 const num = (s: string) => Number(s) || 0
@@ -187,8 +183,6 @@ function fromContract(c: Contract): FormState {
     pendingDocuments: c.pendingDocuments ?? false,
     pendingDocItems: Array.isArray(c.pendingDocItems) ? c.pendingDocItems : [],
     hasPhoneBox: c.hasPhoneBox ?? false,
-    district: c.district ?? '',
-    province: c.province ?? '',
   }
 }
 
@@ -421,8 +415,6 @@ export default function AddContract() {
     pendingDocuments: f.pendingDocuments,
     pendingDocItems: f.pendingDocuments ? f.pendingDocItems : [],
     hasPhoneBox: f.hasPhoneBox,
-    district: f.district || undefined,
-    province: f.province || undefined,
   }
 
   // ---- helper: บันทึก edit (ไม่ regen) ----
@@ -865,20 +857,6 @@ export default function AddContract() {
               </Field>
               <Field label="ลิงค์เฟสลูกค้า">
                 <Input value={f.facebookLink} onChange={(e) => set('facebookLink', e.target.value)} />
-              </Field>
-              <Field label="อำเภอ / เขต">
-                <Input
-                  value={f.district}
-                  onChange={(e) => set('district', e.target.value)}
-                  placeholder="เช่น เมืองเชียงใหม่"
-                />
-              </Field>
-              <Field label="จังหวัด">
-                <Input
-                  value={f.province}
-                  onChange={(e) => set('province', e.target.value)}
-                  placeholder="เช่น เชียงใหม่"
-                />
               </Field>
               <Field label={`ปีเกิด (ค.ศ.)  ›  อายุ ${ageRange(num(f.birthYear) || undefined, currentYear)}`}>
                 <Input

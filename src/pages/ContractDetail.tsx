@@ -52,6 +52,8 @@ import {
   type FollowUpContactMethod,
   type FollowUpResult,
   type PenaltyOverrideHistoryEntry,
+  getContractAddresses,
+  type ContractAddresses,
 } from '../lib/db'
 import {
   activeRateSets,
@@ -206,6 +208,13 @@ export default function ContractDetail() {
   const [isPinned, setIsPinned] = useState(false)
   const [pinBusy, setPinBusy] = useState(false)
   const [contractShopName, setContractShopName] = useState('')
+
+  // ===== ที่อยู่ (ดึง id_card สำหรับโชว์อำเภอ/จังหวัด) =====
+  const [addresses, setAddresses] = useState<ContractAddresses>({})
+  useEffect(() => {
+    if (!id) return
+    void getContractAddresses(id).then(setAddresses).catch(() => setAddresses({}))
+  }, [id])
 
   // ===== ตีกลับเอกสาร/กล่อง =====
   const [revertTarget, setRevertTarget] = useState<'docs' | 'box' | null>(null)
@@ -630,11 +639,11 @@ export default function ContractDetail() {
           </div>
           <div>
             <p className="text-xs text-ink-soft">อำเภอ / เขต</p>
-            <p className="font-semibold text-ink">{contract.district || '—'}</p>
+            <p className="font-semibold text-ink">{addresses.id_card?.district || '—'}</p>
           </div>
           <div>
             <p className="text-xs text-ink-soft">จังหวัด</p>
-            <p className="font-semibold text-ink">{contract.province || '—'}</p>
+            <p className="font-semibold text-ink">{addresses.id_card?.province || '—'}</p>
           </div>
         </div>
       </Card>
