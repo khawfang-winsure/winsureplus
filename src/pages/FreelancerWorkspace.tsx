@@ -21,6 +21,7 @@ import {
   computePriorityScore,
   getPromiseDateStatus,
   hasUnseenUpdate,
+  isHardBlocked,
   sortQueue,
   type PriorityTier,
   type SuppressReason,
@@ -189,7 +190,7 @@ function QueueRow({
 }) {
   const r = sr.row
   const isBlocked = r.dnc || r.lawyerEngaged
-  const disableButton = outsideHours || !sr.actionableNow
+  const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
 
   let tooltip = ''
   if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
@@ -339,7 +340,7 @@ function QueueCardMobile({
 }) {
   const r = sr.row
   const isBlocked = r.dnc || r.lawyerEngaged
-  const disableButton = outsideHours || !sr.actionableNow
+  const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
   const todayPart = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
   const promiseOverdue = r.promiseToPayDate !== null && r.promiseToPayDate < todayPart
   const [, pMonth, pDay] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
@@ -596,6 +597,12 @@ export default function FreelancerWorkspace() {
       }
     })
   }, [activeRows, today])
+
+  // map contractId → ScoredRow เพื่อหยิบ suppressReason ตอนเปิด modal
+  const scoredRowMap = useMemo(
+    () => new Map(scoredRows.map((sr) => [sr.row.contractId, sr])),
+    [scoredRows],
+  )
 
   // today string (Bangkok UTC+7) สำหรับ sortQueue + promise badge
   const todayStr = useMemo(
@@ -1198,6 +1205,11 @@ export default function FreelancerWorkspace() {
             returnAnchorDate: selectedContract.returnAnchorDate,
             overdueDueDate: selectedContract.overdueDueDate,
           }}
+          softWarnReason={(() => {
+            const sr = scoredRowMap.get(selectedContract.contractId)?.suppressReason ?? null
+            return sr === 'CAP' || sr === 'PROMISE_PENDING' ? sr : null
+          })()}
+          promiseToPayDate={selectedContract.promiseToPayDate ?? null}
           publicHolidays={publicHolidays}
           adminOverride={role === 'admin'}
           alreadyClosed={selectedContract.caseClosedToday}

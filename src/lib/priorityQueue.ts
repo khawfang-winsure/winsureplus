@@ -428,6 +428,24 @@ export type PromiseDateStatus =
  * // none (undef): getPromiseDateStatus(undefined,    '2026-06-27') → { status:'none',         days:null }
  * // ข้ามเดือน:    getPromiseDateStatus('2026-07-01', '2026-06-27') → { status:'upcoming',     days:4  }
  */
+// ===== isHardBlocked — soft-warn migration (เพิ่ม 2026-07-01) =====
+// คืน true เฉพาะเคสที่ต้อง hard-block ปุ่ม "บันทึกติดตาม" (DNC / ทนาย / นอกเวลา)
+// CAP / PROMISE_PENDING → false (soft-warn แทน — โชว์แถบเตือนในป็อปอัพแทนการล็อกปุ่ม)
+//
+// Trace tests:
+//   isHardBlocked(false, 'CAP')            → false
+//   isHardBlocked(false, 'PROMISE_PENDING') → false
+//   isHardBlocked(true, null)              → true
+//   isHardBlocked(false, 'DNC')            → true
+//   isHardBlocked(false, 'LAWYER')         → true
+//   isHardBlocked(false, null)             → false
+export function isHardBlocked(
+  outsideHours: boolean,
+  suppressReason: SuppressReason,
+): boolean {
+  return outsideHours || suppressReason === 'DNC' || suppressReason === 'LAWYER'
+}
+
 export function getPromiseDateStatus(
   promiseToPayDate: string | null | undefined,
   today?: string,

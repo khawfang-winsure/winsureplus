@@ -87,6 +87,10 @@ interface Props {
   adminOverride?: boolean
   /** ซ่อนปุ่ม "ยืนยันปิดเคส" เมื่อเคสนี้ปิดไปแล้ว (เช่น มาจากแท็บ "ปิดเคสวันนี้") */
   alreadyClosed?: boolean
+  /** soft-warn: CAP หรือ PROMISE_PENDING — แสดงแถบเตือนใน modal แต่ไม่ล็อกปุ่ม */
+  softWarnReason?: 'CAP' | 'PROMISE_PENDING' | null
+  /** วันที่ลูกค้าสัญญาจะจ่าย (yyyy-mm-dd) — ใช้แสดงในแถบเตือน PROMISE_PENDING */
+  promiseToPayDate?: string | null
 }
 
 // ===== ฟอร์มสถานะ =====
@@ -130,7 +134,7 @@ function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneA
   return { ...BASE_FORM, phoneDialed: phone ?? phoneAlt1 ?? phoneAlt2 ?? '' }
 }
 
-export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false, alreadyClosed = false }: Props) {
+export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false, alreadyClosed = false, softWarnReason, promiseToPayDate }: Props) {
   const { name: authName } = useAuth()
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
@@ -352,6 +356,20 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
       {outsideHours && (
         <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
           นอกเวลาทวงถามตามกฎหมาย — ไม่สามารถบันทึกการติดต่อได้ขณะนี้
+        </div>
+      )}
+
+      {/* soft-warn: CAP */}
+      {softWarnReason === 'CAP' && !outsideHours && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+          ติดต่อลูกค้ารายนี้ไปแล้ว 1 ครั้งวันนี้ — หากบันทึกเพิ่ม ระบบจะแจ้งข้อผิดพลาดขณะบันทึก
+        </div>
+      )}
+
+      {/* soft-warn: PROMISE_PENDING */}
+      {softWarnReason === 'PROMISE_PENDING' && !outsideHours && promiseToPayDate && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+          ลูกค้าสัญญาจะจ่ายวันที่ {thaiDate(promiseToPayDate)} — หากติดต่อไม่สำเร็จหรือมีการเปลี่ยนแปลง สามารถบันทึกได้ตามปกติ
         </div>
       )}
 
