@@ -57,6 +57,7 @@ import type { SettlementTier } from './settlement'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 import type { DeviceStatus } from './returnWorkflow'
 import { outstandingAfterReturn } from './outstandingExtras'
+import { calcSummary } from './calc'
 
 export type OptionKind =
   | 'phone_model'
@@ -2072,7 +2073,7 @@ export async function markNotificationRead(id: string): Promise<void> {
 }
 
 // ---------- สิทธิ์ผู้ใช้ ----------
-export type Role = 'admin' | 'staff' | 'freelancer' | 'executive'
+export type Role = 'admin' | 'staff' | 'freelancer' | 'executive' | 'accounting'
 
 export async function getMyProfile(): Promise<{ role: Role; fullName: string } | null> {
   if (!supabase) return { role: 'admin', fullName: 'ผู้ดูแลระบบ (ทดลอง)' } // โหมด mock เปิดสิทธิ์เต็มเพื่อทดลอง UI
@@ -2162,6 +2163,176 @@ export async function updateAdminUser(input: { id: string; fullName?: string; ro
 
 export async function setAdminUserActive(id: string, active: boolean): Promise<void> {
   await callAdminUsers({ action: 'setActive', id, active })
+}
+
+// ---------- โอนรายวันให้ร้าน (บัญชี) — mig 0083 shop_transfer + bucket transfer-slips ----------
+// role 'accounting' เห็นเฉพาะหน้านี้ + จัดการโอน ไม่ยุ่งสัญญา (RLS คุมที่ mig 0083)
+// ยอดโอน "ไม่คีย์ซ้ำ" — reuse calcSummary (calc.ts) ต่อสัญญาแบบเดียวกับ weeklySummary.ts buildTransferSummary
+// เพื่อให้ยอดตรงกันทุกหน้า (ไม่มีสูตรคำนวณยอดโอนสองที่ในระบบ)
+
+interface ShopTransferRow {
+  id: string
+  shop_id: string
+  transfer_date: string
+  amount: number
+  transferred: boolean
+  slip_path: string | null
+  transferred_by: string | null
+  transferred_at: string | null
+  note: string | null
+  created_at: string
+}
+
+/** 1 บรรทัด/ร้าน สำหรับหน้าโอนรายวัน — ยอด = Σ netTransfer (calcSummary) ของสัญญาร้านนั้นที่ transaction_date = dateISO */
+export interface DailyTransferShopRow {
+  shopId: string
+  shopName: string
+  shopCode: string
+  amount: number // Σ netTransfer ของสัญญาวันนี้ (คำนวณสด ไม่ได้อ่านจาก shop_transfer.amount)
+  contractCount: number
+  transferred: boolean // จาก shop_transfer.transferred (false ถ้ายังไม่มีแถว)
+  slipPath: string | null
+  transferredBy: string | null
+  transferredAt: string | null
+  note: string | null
+}
+
+/** รายสัญญาต่อร้าน (drill-down) — ใช้เมื่อ accounting กดดูรายละเอียดยอดของร้านวันนั้น */
+export interface DailyTransferContractRow {
+  contractId: string
+  contractNo: string
+  customerName: string
+  devicePrice: number
+  netTransfer: number
+}
+
+interface DailyTransferContractQueryRow {
+  id: string
+  contract_no: string
+  customer_name: string
+  shop_id: string
+  device_price: number
+  down_percent: number
+  commission_percent: number
+  doc_fee: number
+}
+
+/** สรุปยอดโอนรายวัน ต่อร้าน (สำหรับหน้าบัญชี) — LEFT JOIN สถานะโอนจาก shop_transfer
+ *  รวมทุกร้านที่มีสัญญาเข้าวันนั้น (ไม่กรอง active — ร้านปิดไปแล้วแต่มีสัญญาเก่าวันนั้นยังต้องเห็น) */
+export async function getDailyTransferByShop(dateISO: string): Promise<DailyTransferShopRow[]> {
+  if (!supabase) return []
+
+  const { data: contractRows, error: cErr } = await supabase
+    .from('contracts')
+    .select('id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee')
+    .eq('transaction_date', dateISO)
+    .range(0, PAGE_CAP)
+  if (cErr) throw cErr
+
+  const rows = (contractRows ?? []) as DailyTransferContractQueryRow[]
+  const shopIds = [...new Set(rows.map((r) => r.shop_id))]
+
+  // ยอดรวม + จำนวนสัญญา ต่อร้าน — reuse calcSummary ต่อเคส (ตรงสูตรเดียวกับ weeklySummary.ts)
+  const totalByShop = new Map<string, { amount: number; count: number }>()
+  for (const r of rows) {
+    const s = calcSummary(Number(r.device_price), Number(r.down_percent), Number(r.commission_percent), Number(r.doc_fee))
+    const cur = totalByShop.get(r.shop_id) ?? { amount: 0, count: 0 }
+    cur.amount += s.net
+    cur.count += 1
+    totalByShop.set(r.shop_id, cur)
+  }
+
+  if (shopIds.length === 0) return []
+
+  const [{ data: shopData, error: sErr }, { data: transferData, error: tErr }] = await Promise.all([
+    supabase.from('shops').select('id, code, name').in('id', shopIds).range(0, PAGE_CAP),
+    supabase.from('shop_transfer').select('*').eq('transfer_date', dateISO).in('shop_id', shopIds).range(0, PAGE_CAP),
+  ])
+  if (sErr) throw sErr
+  if (tErr) throw tErr
+
+  const shopNameById = new Map((shopData ?? []).map((s) => [s.id as string, { name: s.name as string, code: s.code as string }]))
+  const transferByShop = new Map((((transferData ?? []) as ShopTransferRow[])).map((t) => [t.shop_id, t]))
+
+  const out: DailyTransferShopRow[] = shopIds.map((shopId) => {
+    const totals = totalByShop.get(shopId)!
+    const shopInfo = shopNameById.get(shopId)
+    const t = transferByShop.get(shopId)
+    return {
+      shopId,
+      shopName: shopInfo?.name ?? '(ไม่พบชื่อร้าน)',
+      shopCode: shopInfo?.code ?? '',
+      amount: totals.amount,
+      contractCount: totals.count,
+      transferred: t?.transferred ?? false,
+      slipPath: t?.slip_path ?? null,
+      transferredBy: t?.transferred_by ?? null,
+      transferredAt: t?.transferred_at ?? null,
+      note: t?.note ?? null,
+    }
+  })
+  out.sort((a, b) => a.shopCode.localeCompare(b.shopCode))
+  return out
+}
+
+/** รายสัญญาของร้านหนึ่ง ในวันหนึ่ง — สำหรับ drill-down ใต้แถวสรุป */
+export async function getDailyTransferContracts(shopId: string, dateISO: string): Promise<DailyTransferContractRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee')
+    .eq('transaction_date', dateISO)
+    .eq('shop_id', shopId)
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as DailyTransferContractQueryRow[]).map((r) => {
+    const s = calcSummary(Number(r.device_price), Number(r.down_percent), Number(r.commission_percent), Number(r.doc_fee))
+    return {
+      contractId: r.id,
+      contractNo: r.contract_no,
+      customerName: r.customer_name,
+      devicePrice: Number(r.device_price),
+      netTransfer: s.net,
+    }
+  })
+}
+
+/** บันทึกว่าร้านนี้โอนแล้ว (วันนั้น) — upsert ตาม unique(shop_id, transfer_date) จึง idempotent
+ *  amount = snapshot ยอด ณ ตอนกดโอน (คำนวณจาก getDailyTransferByShop ฝั่งเรียกใช้ ไม่ derive ในฟังก์ชันนี้)
+ *  accounting เรียกได้ (RLS mig 0083 อนุญาต insert/update) — ไม่มี export สำหรับ un-transfer/ลบ slip
+ *  ให้ accounting เรียก (กันหลักฐานหาย ตาม Pete lock) */
+export async function markShopTransferred(
+  shopId: string,
+  dateISO: string,
+  amount: number,
+  slipPath: string | null,
+  byName: string,
+  note?: string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('shop_transfer').upsert(
+    {
+      shop_id: shopId,
+      transfer_date: dateISO,
+      amount,
+      transferred: true,
+      slip_path: slipPath,
+      transferred_by: byName,
+      transferred_at: new Date().toISOString(),
+      note: note ?? null,
+    },
+    { onConflict: 'shop_id,transfer_date' },
+  )
+  if (error) throw error
+}
+
+/** signed URL ชั่วคราว (60 วิ) สำหรับเปิดดูสลิปที่เก็บแบบ private ใน bucket transfer-slips
+ *  path มาจาก DailyTransferShopRow.slipPath — คืน null ถ้ายังไม่มีสลิป/ไม่ได้เชื่อม Supabase */
+export async function getSlipSignedUrl(slipPath: string): Promise<string | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase.storage.from('transfer-slips').createSignedUrl(slipPath, 60)
+  if (error) throw error
+  return data?.signedUrl ?? null
 }
 
 // ---------- จัดการร้านค้า (เฉพาะแอดมิน ตาม RLS) ----------

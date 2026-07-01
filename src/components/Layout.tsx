@@ -80,7 +80,7 @@ export default function Layout() {
                 <p className="hidden text-sm font-medium text-ink sm:block">{email}</p>
                 {role && (
                   <Badge tone={role === 'admin' ? 'green' : 'neutral'}>
-                    {role === 'admin' ? 'แอดมิน' : role === 'executive' ? 'ผู้บริหาร' : role === 'freelancer' ? 'ผู้ติดตามหนี้' : 'พนักงาน'}
+                    {role === 'admin' ? 'แอดมิน' : role === 'executive' ? 'ผู้บริหาร' : role === 'freelancer' ? 'ผู้ติดตามหนี้' : role === 'accounting' ? 'บัญชี' : 'พนักงาน'}
                   </Badge>
                 )}
               </div>

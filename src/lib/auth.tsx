@@ -10,6 +10,7 @@ interface AuthState {
   role: Role | null
   email: string | null
   name: string | null // ชื่อผู้ใช้ที่ล็อกอิน (จาก profiles.full_name)
+  isAccounting: boolean // role === 'accounting' — เห็นเฉพาะหน้าโอนเงินร้าน
   signIn: (email: string, password: string) => Promise<{ error?: string }>
   signOut: () => Promise<void>
 }
@@ -73,6 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role,
         email: session?.user.email ?? null,
         name,
+        isAccounting: role === 'accounting',
         signIn,
         signOut,
       }}

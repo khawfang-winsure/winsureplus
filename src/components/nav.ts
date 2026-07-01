@@ -7,6 +7,7 @@ import {
   History,
   Inbox,
   LayoutDashboard,
+  Landmark,
   Phone,
   Settings,
   TrendingUp,
@@ -29,12 +30,16 @@ export interface NavItem {
   adminOnly?: boolean // ซ่อนจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
   freelancerOnly?: boolean // เห็นเฉพาะผู้ติดตามหนี้ — ซ่อนจาก admin/staff
   executiveVisible?: boolean // executive เห็นด้วยทั้งที่ adminOnly=true
+  accountingOnly?: boolean // เห็นเฉพาะบัญชี — ซ่อนจาก admin/staff/freelancer/executive
 }
 
 export const NAV: NavItem[] = [
   // กลุ่ม freelancer — แยกออกมา ไม่อยู่ในกลุ่มหลัก
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
   { to: '/my-performance', label: 'ผลงานของฉัน', icon: TrendingUp, freelancerOnly: true },
+
+  // กลุ่ม accounting — แยกออกมา ไม่อยู่ในกลุ่มหลัก (admin เห็นด้วย)
+  { to: '/transfers', label: 'โอนเงินร้าน', icon: Landmark, accountingOnly: true },
 
   // เมนูหลัก — item เดี่ยวบนสุด
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },

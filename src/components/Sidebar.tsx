@@ -171,6 +171,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const isAdmin = !configured || role === 'admin'
   const isFreelancer = configured && role === 'freelancer'
   const isExecutive = configured && role === 'executive'
+  const isAccounting = configured && role === 'accounting'
 
   // state สำหรับ expand/collapse ของแต่ละ group บนมือถือ (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -194,7 +195,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const items = NAV.filter((item) => {
     if (isExecutive) return item.executiveVisible === true
     if (isFreelancer) return item.freelancerOnly === true
+    if (isAccounting) return item.accountingOnly === true
     if (item.freelancerOnly) return false
+    if (item.accountingOnly) return isAdmin
     return !item.adminOnly || isAdmin
   })
 
