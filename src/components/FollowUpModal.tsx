@@ -4,8 +4,10 @@ import { thaiDate } from '../lib/format'
 import {
   addFollowUp,
   closeCase,
+  getContractAddresses,
   getFollowUps,
   type AddFollowUpInput,
+  type ContractAddresses,
   type FollowUpContactMethod,
   type FollowUpEntry,
   type FollowUpResult,
@@ -53,9 +55,9 @@ interface ContractSummary {
   phone: string | null
   shopName: string
   daysLate: number
-  address?: string // เผื่อส่งมาแสดง
   // Wave 1B optional fields (populated once db.ts update lands)
   deviceModel?: string
+  color?: string | null
   phoneAlt1?: string | null
   phoneAlt2?: string | null
   installmentsPaid?: number
@@ -131,10 +133,18 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const [error, setError] = useState<string | null>(null)
   const [closingCase, setClosingCase] = useState(false)
   const [closeError, setCloseError] = useState<string | null>(null)
+  const [addresses, setAddresses] = useState<ContractAddresses>({})
 
   // ตรวจเวลา ณ ตอนที่เปิด modal (render-time check — UX เท่านั้น DB trigger บังคับจริง)
   const contactWindow = isContactWindowOpen(new Date(), publicHolidays)
   const outsideHours = !adminOverride && !contactWindow.ok
+
+  // โหลดที่อยู่ตามบัตรประชาชน เพื่อแสดงอำเภอ/จังหวัดให้คนตามหนี้
+  useEffect(() => {
+    getContractAddresses(contract.contractId)
+      .then(setAddresses)
+      .catch(() => setAddresses({}))
+  }, [contract.contractId])
 
   // โหลดประวัติ
   const loadHistory = async () => {
@@ -250,6 +260,15 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         <p className="font-medium text-ink">{contract.contractNo}</p>
         {contract.deviceModel && (
           <p className="text-ink-soft">รุ่น: {contract.deviceModel}</p>
+        )}
+        {contract.color && (
+          <p className="text-ink-soft">สีเครื่อง: {contract.color}</p>
+        )}
+        {addresses.id_card?.district && (
+          <p className="text-ink-soft">อำเภอ: {addresses.id_card.district}</p>
+        )}
+        {addresses.id_card?.province && (
+          <p className="text-ink-soft">จังหวัด: {addresses.id_card.province}</p>
         )}
         {contract.installmentsPaid !== undefined &&
           contract.installmentsTotal !== undefined &&

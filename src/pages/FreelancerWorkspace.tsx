@@ -977,6 +977,7 @@ export default function FreelancerWorkspace() {
             installmentsTotal: selectedContract.installmentsTotal,
             penaltyDue: selectedContract.outstanding,
             principalDue: selectedContract.principalDue,
+            color: selectedContract.color,
           }}
           publicHolidays={publicHolidays}
           adminOverride={role === 'admin'}

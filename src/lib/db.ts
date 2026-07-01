@@ -2604,6 +2604,7 @@ export interface FreelancerQueueRow {
   // --- เคสคืนเครื่องแล้วแต่ยังค้างยอด (returned-unpaid) ---
   isReturned: boolean                 // true = status='returned' (UI badge "คืนเครื่องแล้ว")
   returnClosingAmount: number         // ยอดปิดเคสคืนเครื่อง (outstandingAfterReturn.total); 0 สำหรับ active
+  color: string | null               // สีเครื่อง (ดึงตรงจาก contracts)
 }
 
 interface QueueStatusRow {
@@ -2626,6 +2627,7 @@ interface QueueContractRow {
   phone_alt2: string | null
   model: string | null
   storage: string | null
+  color: string | null
   monthly_payment: number | null
   term_months: number | null
   current_grade: string | null
@@ -2737,7 +2739,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
     .select(
-      'id, phone, phone_alt1, phone_alt2, model, storage, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at',
+      'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at',
     )
     .in('id', ids)
     .range(0, PAGE_CAP)
@@ -2968,6 +2970,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       returnClosingAmount: isReturned ? (returnClosingMap.get(r.contract_id) ?? 0) : 0,
       caseClosedToday,
       caseClosedAt,
+      color: c?.color ?? null,
     }
   })
 }
