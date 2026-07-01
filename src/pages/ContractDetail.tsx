@@ -595,6 +595,18 @@ export default function ContractDetail() {
             <p className="text-xs text-ink-soft">เลขบัตรประชาชน</p>
             <p className="font-semibold text-ink">{contract.nationalId || '—'}</p>
           </div>
+          <div>
+            <p className="text-xs text-ink-soft">สีเครื่อง</p>
+            <p className="font-semibold text-ink">{contract.color || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">อำเภอ / เขต</p>
+            <p className="font-semibold text-ink">{contract.district || '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-soft">จังหวัด</p>
+            <p className="font-semibold text-ink">{contract.province || '—'}</p>
+          </div>
         </div>
       </Card>
 

@@ -3,6 +3,7 @@ import { Badge, Button, Field, Modal, Select, Textarea } from './ui'
 import { thaiDate } from '../lib/format'
 import {
   addFollowUp,
+  closeCase,
   getFollowUps,
   type AddFollowUpInput,
   type FollowUpContactMethod,
@@ -11,6 +12,7 @@ import {
 } from '../lib/db'
 import { isContactWindowOpen } from '../lib/contactHours'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
+import { useAuth } from '../lib/auth'
 
 // ===== ป้ายกำกับ enum =====
 const METHOD_LABEL: Record<FollowUpContactMethod, string> = {
@@ -67,6 +69,8 @@ interface Props {
   onClose: () => void
   /** เรียกเมื่อบันทึกการติดตามสำเร็จ (ให้ parent reload คิวเฉพาะตอนที่ข้อมูลเปลี่ยนจริง) */
   onSaved?: () => void
+  /** เรียกเมื่อกด "ยืนยันปิดเคส" สำเร็จ (ให้ parent reload คิว + ปิด modal) */
+  onCaseClosed?: () => void
   /** Set ของวันหยุดราชการ (yyyy-mm-dd) รับจาก parent เพื่อกัน duplicate query */
   publicHolidays?: Set<string>
   /** Admin can record follow-ups outside contact hours (DB trigger also exempts admin) */
@@ -114,7 +118,8 @@ function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneA
   return { ...BASE_FORM, phoneDialed: phone ?? phoneAlt1 ?? phoneAlt2 ?? '' }
 }
 
-export default function FollowUpModal({ contract, onClose, onSaved, publicHolidays = new Set(), adminOverride = false }: Props) {
+export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false }: Props) {
+  const { name: authName } = useAuth()
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
   const [form, setForm] = useState<FormState>(() => makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
@@ -122,6 +127,8 @@ export default function FollowUpModal({ contract, onClose, onSaved, publicHolida
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [closingCase, setClosingCase] = useState(false)
+  const [closeError, setCloseError] = useState<string | null>(null)
 
   // ตรวจเวลา ณ ตอนที่เปิด modal (render-time check — UX เท่านั้น DB trigger บังคับจริง)
   const contactWindow = isContactWindowOpen(new Date(), publicHolidays)
@@ -217,6 +224,20 @@ export default function FollowUpModal({ contract, onClose, onSaved, publicHolida
       }
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleCloseCase() {
+    setClosingCase(true)
+    setCloseError(null)
+    try {
+      await closeCase(contract.contractId, authName ?? undefined)
+      onCaseClosed?.()
+      onClose()
+    } catch (e) {
+      setCloseError(e instanceof Error ? e.message : 'ปิดเคสไม่สำเร็จ')
+    } finally {
+      setClosingCase(false)
     }
   }
 
@@ -402,14 +423,25 @@ export default function FollowUpModal({ contract, onClose, onSaved, publicHolida
         {error && <p className="text-sm text-red-600">{error}</p>}
         {saved && <p className="text-sm text-green-700">บันทึกแล้ว</p>}
 
-        <div className="flex gap-2 pt-1">
-          <Button onClick={handleSave} disabled={saving || outsideHours}>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button onClick={handleSave} disabled={saving || closingCase || outsideHours}>
             {saving ? 'กำลังบันทึก...' : 'บันทึก'}
           </Button>
-          <Button variant="ghost" onClick={onClose}>
+          {onCaseClosed && (
+            <Button
+              variant="ghost"
+              disabled={saving || closingCase}
+              onClick={() => void handleCloseCase()}
+              className="border-green-300 text-green-700 hover:bg-green-50"
+            >
+              {closingCase ? 'กำลังปิดเคส...' : '✓ ยืนยันปิดเคส'}
+            </Button>
+          )}
+          <Button variant="ghost" onClick={onClose} disabled={saving || closingCase}>
             ยกเลิก
           </Button>
         </div>
+        {closeError && <p className="mt-1 text-sm text-red-600">{closeError}</p>}
       </div>
 
       {/* ประวัติการติดตาม */}

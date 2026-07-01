@@ -137,6 +137,8 @@ interface ContractRow {
   promise_to_pay_date: string | null
   promised_amount: number | null
   color: string | null
+  district: string | null
+  province: string | null
   pending_documents: boolean | null
   original_docs_received: boolean | null
   original_docs_received_at: string | null
@@ -218,6 +220,8 @@ function mapContract(r: ContractRow): Contract {
     promiseToPayDate: r.promise_to_pay_date ?? null,
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     color: r.color ?? undefined,
+    district: r.district ?? undefined,
+    province: r.province ?? undefined,
     pendingDocuments: r.pending_documents ?? false,
     pendingDocItems: Array.isArray(r.pending_doc_items) ? r.pending_doc_items : [],
     originalDocsReceived: r.original_docs_received ?? false,
@@ -277,6 +281,8 @@ function toInsert(c: Omit<Contract, 'id'>) {
     operator: c.operator || null,
     notes: c.notes || null,
     color: c.color || null,
+    district: c.district || null,
+    province: c.province || null,
     pending_documents: c.pendingDocuments ?? false,
     pending_doc_items: c.pendingDocItems ?? [],   // 0053 — รายการเอกสารที่รอ
     original_docs_received: false, // สัญญาใหม่ = ยังไม่ได้รับเอกสาร เสมอ
@@ -1007,6 +1013,8 @@ function toUpdate(c: Omit<Contract, 'id'>) {
     operator: c.operator || null,
     notes: c.notes || null,
     color: c.color || null,
+    district: c.district || null,
+    province: c.province || null,
     // doc-tracking fields (original_docs_received, has_phone_box, pending_documents,
     //   pending_doc_items) ไม่ถูกส่งใน UPDATE — แก้ผ่าน markDocsReceived / setContractFlags / revertDocReceipt
   }
@@ -2531,6 +2539,8 @@ export interface FreelancerQueueRow {
   lastContactedAt: string | null     // created_at ของรายการล่าสุด (ISO timestamp)
   contactedToday: boolean            // มี follow_up วันนี้ (Bangkok) ที่ result ≠ 'no_answer'
   lastContactedByName: string | null // ชื่อคนโทรล่าสุด สำหรับ team-awareness
+  caseClosedToday: boolean           // พนักงานกด "ปิดเคส" วันนี้ (Bangkok) — ใช้แยกแท็บ แทน contactedToday (0081)
+  caseClosedAt: string | null        // timestamp ที่ปิดเคส (ISO) — ไว้ให้ UI แสดง tooltip (0081)
   // --- Wave 3 (0047 Collaboration Hub) ---
   latestOtherAuthorAt: string | null  // MAX created_at ของ follow_up ที่ author ≠ ตัวเอง (ใน 90-day window)
   myLastTouchAt: string | null        // MAX(queue_case_seen.last_seen_at, MAX created_at ที่ author = ตัวเอง)
@@ -2568,6 +2578,7 @@ interface QueueContractRow {
   disputed: boolean
   promise_to_pay_date: string | null
   promised_amount: number | null
+  case_closed_at: string | null
 }
 
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
@@ -2670,7 +2681,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
     .select(
-      'id, phone, phone_alt1, phone_alt2, model, storage, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount',
+      'id, phone, phone_alt1, phone_alt2, model, storage, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at',
     )
     .in('id', ids)
     .range(0, PAGE_CAP)
@@ -2860,6 +2871,12 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       myLastTouchAt = seenAt ?? agg.myLastFollowUpAt
     }
 
+    // caseClosedToday: เทียบ case_closed_at กับวันนี้ Bangkok (UTC+7) — mirror logic contactedToday
+    const caseClosedAt = c?.case_closed_at ?? null
+    const caseClosedToday = caseClosedAt
+      ? new Date(new Date(caseClosedAt).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10) === todayBkk
+      : false
+
     return {
       contractId: r.contract_id,
       contractNo: r.contract_no,
@@ -2893,8 +2910,26 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       latestNote: agg.latestNote,
       isReturned,
       returnClosingAmount: isReturned ? (returnClosingMap.get(r.contract_id) ?? 0) : 0,
+      caseClosedToday,
+      caseClosedAt,
     }
   })
+}
+
+/** ปิดเคสในคิวโทร — บันทึกว่าพนักงานได้ดำเนินการเสร็จแล้ววันนี้
+ *  เคสจะออกจากแท็บ "ที่ต้องโทร" (caseClosedToday=true) จนถึงเที่ยงคืน Bangkok แล้วกลับมาถ้ายังไม่จ่าย
+ *  @param contractId  id ของสัญญาที่จะปิดเคส
+ *  @param closerName  ชื่อพนักงาน (useAuth().name = full_name) — ส่งมาจาก UI */
+export async function closeCase(contractId: string, closerName?: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      case_closed_at: new Date().toISOString(),
+      case_closed_by: closerName ?? null,
+    })
+    .eq('id', contractId)
+  if (error) throw error
 }
 
 // ---------- Compliance flags ----------

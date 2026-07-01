@@ -205,6 +205,8 @@ export interface Contract {
   birthYear?: number // เก็บปีเกิด แล้วคำนวณช่วงอายุ
   occupation?: string
   occupationProof?: string
+  district?: string // อำเภอ ตามบัตรลูกค้า (0081)
+  province?: string // จังหวัด ตามบัตรลูกค้า (0081)
   // --- เครื่อง ---
   shopId: string
   model: string
