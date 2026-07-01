@@ -1800,6 +1800,70 @@ export async function submitReturn(contractId: string, input: ReturnInput): Prom
   if (e2) throw e2
 }
 
+/**
+ * ยกเลิกการบันทึกคืนเครื่อง (undo submitReturn)
+ * ยกเลิกได้เฉพาะเมื่อยังไม่ดำเนินการลึก:
+ *   - contract.status ต้องเป็น 'returned' เท่านั้น ('returned_closed' = ปิดแล้ว ยกเลิกไม่ได้)
+ *   - device_returns ทุก row ต้อง: sale_price = null (ยังไม่ขาย)
+ *     และ device_status อยู่ใน {null, 'pending_check', 'in_transit'} เท่านั้น
+ *     ('checked' ขึ้นไปถือว่าดำเนินการลึกเกินแล้ว)
+ * ถ้าผ่าน guard: ลบ device_returns ทั้งหมดของ contractId + revert contracts.status → 'active'
+ */
+export async function cancelReturn(contractId: string): Promise<void> {
+  if (!supabase) return
+
+  // ดึงสถานะสัญญา
+  const { data: contractData, error: contractErr } = await supabase
+    .from('contracts')
+    .select('status')
+    .eq('id', contractId)
+    .maybeSingle()
+  if (contractErr) throw contractErr
+
+  if (!contractData) throw new Error('ไม่พบสัญญา')
+  if (contractData.status !== 'returned') {
+    throw new Error('ยกเลิกไม่ได้ — สัญญานี้ปิดจบแล้ว')
+  }
+
+  // ดึง device_returns ทั้งหมดของ contract นี้
+  const { data: returns, error: returnsErr } = await supabase
+    .from('device_returns')
+    .select('id, device_status, sale_price')
+    .eq('contract_id', contractId)
+  if (returnsErr) throw returnsErr
+
+  if (!returns || returns.length === 0) {
+    throw new Error('ไม่พบรายการคืนเครื่อง')
+  }
+
+  // Guard: ตรวจสอบทุก row
+  const CANCELLABLE_STATUSES: Array<DeviceStatus | null> = [null, 'pending_check', 'in_transit']
+  for (const r of returns) {
+    if (r.sale_price != null) {
+      throw new Error('ยกเลิกไม่ได้ — เครื่องขายไปแล้ว')
+    }
+    const ds = r.device_status as DeviceStatus | null
+    if (!CANCELLABLE_STATUSES.includes(ds)) {
+      const label = ds ?? 'ไม่ระบุ'
+      throw new Error(`ยกเลิกไม่ได้ — เครื่องดำเนินการจบแล้ว (สถานะ: ${label})`)
+    }
+  }
+
+  // ลบ device_returns ทั้งหมดของ contract นี้
+  const { error: deleteErr } = await supabase
+    .from('device_returns')
+    .delete()
+    .eq('contract_id', contractId)
+  if (deleteErr) throw deleteErr
+
+  // Revert contract status กลับเป็น active
+  const { error: updateErr } = await supabase
+    .from('contracts')
+    .update({ status: 'active' })
+    .eq('id', contractId)
+  if (updateErr) throw updateErr
+}
+
 /** ใส่/แก้ค่าซ่อมของรายการคืนเครื่องภายหลัง (หลังเช็คเครื่อง) */
 export async function updateReturnRepairFee(returnId: string, repairFee: number): Promise<void> {
   if (!supabase) return

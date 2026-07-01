@@ -27,6 +27,7 @@ import {
   getSettlementTiers,
   settleContractEarly,
   submitReturn,
+  cancelReturn,
   setContractFlags,
   getMyPrivateNote,
   getAllPrivateNotes,
@@ -170,6 +171,10 @@ export default function ContractDetail() {
   const [closeReturnOpen, setCloseReturnOpen] = useState(false)
   const [closeReturnBusy, setCloseReturnBusy] = useState(false)
   const [closeReturnErr, setCloseReturnErr] = useState<string | null>(null)
+  // ยกเลิกการคืนเครื่อง (admin only)
+  const [cancelReturnOpen, setCancelReturnOpen] = useState(false)
+  const [cancelReturnBusy, setCancelReturnBusy] = useState(false)
+  const [cancelReturnErr, setCancelReturnErr] = useState<string | null>(null)
   const [flagsOpen, setFlagsOpen] = useState(false)
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
@@ -413,6 +418,22 @@ export default function ContractDetail() {
     }
   }
 
+  // ยกเลิกการคืนเครื่อง (admin only) — คืน status กลับ active
+  async function handleCancelReturn() {
+    if (!contract) return
+    setCancelReturnBusy(true)
+    setCancelReturnErr(null)
+    try {
+      await cancelReturn(contract.id)
+      setCancelReturnOpen(false)
+      await load()
+    } catch (e) {
+      setCancelReturnErr(errMsg(e))
+    } finally {
+      setCancelReturnBusy(false)
+    }
+  }
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -548,12 +569,20 @@ export default function ContractDetail() {
               <p className="text-xs text-ink-soft">ยอดรวมที่ต้องชำระ</p>
               <p className="text-xl font-bold text-amber-700 whitespace-nowrap">{baht(returnedOutstanding.total)} ฿</p>
             </div>
-            {/* ปิดสัญญา (คืนเครื่อง) — admin + staff: ยืนยันว่ารับชำระยอดปิดครบแล้ว */}
-            {canStaff && (
-              <Button onClick={() => { setCloseReturnErr(null); setCloseReturnOpen(true) }}>
-                <FileCheck size={15} /> ปิดสัญญา (คืนเครื่อง)
-              </Button>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {/* ยกเลิกการคืนเครื่อง — admin only (undo) */}
+              {isAdmin && contract.status === 'returned' && (
+                <Button variant="ghost" onClick={() => { setCancelReturnErr(null); setCancelReturnOpen(true) }}>
+                  <RotateCcw size={15} /> ยกเลิกการคืนเครื่อง
+                </Button>
+              )}
+              {/* ปิดสัญญา (คืนเครื่อง) — admin + staff: ยืนยันว่ารับชำระยอดปิดครบแล้ว */}
+              {canStaff && (
+                <Button onClick={() => { setCloseReturnErr(null); setCloseReturnOpen(true) }}>
+                  <FileCheck size={15} /> ปิดสัญญา (คืนเครื่อง)
+                </Button>
+              )}
+            </div>
           </div>
         </Card>
       )}
@@ -1504,6 +1533,7 @@ export default function ContractDetail() {
             await load()
           }}
           contractId={contract.id}
+          customerName={contract.customerName}
         />
       )}
 
@@ -1549,6 +1579,27 @@ export default function ContractDetail() {
             </Button>
             <Button disabled={closeReturnBusy} onClick={() => void handleCloseReturned()}>
               {closeReturnBusy ? 'กำลังปิดสัญญา...' : 'ยืนยันปิดสัญญา'}
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ยืนยันยกเลิกการคืนเครื่อง — admin only */}
+      {cancelReturnOpen && (
+        <Modal title="ยกเลิกการคืนเครื่อง" onClose={() => !cancelReturnBusy && setCancelReturnOpen(false)}>
+          <p className="mb-4 text-sm text-ink">
+            ยืนยันยกเลิกการคืนเครื่องของ <span className="font-semibold">{contract.customerName}</span>?
+            สัญญาจะกลับมาเป็นผ่อนปกติ
+          </p>
+          {cancelReturnErr && (
+            <p className="mb-3 text-sm text-red-600">{cancelReturnErr}</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={cancelReturnBusy} onClick={() => setCancelReturnOpen(false)}>
+              ยกเลิก
+            </Button>
+            <Button disabled={cancelReturnBusy} onClick={() => void handleCancelReturn()}>
+              {cancelReturnBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกการคืนเครื่อง'}
             </Button>
           </div>
         </Modal>
@@ -2873,10 +2924,12 @@ function SettleModal({
  */
 function ReturnModal({
   contractId,
+  customerName,
   onClose,
   onDone,
 }: {
   contractId: string
+  customerName: string
   onClose: () => void
   onDone: () => void
 }) {
@@ -2892,6 +2945,7 @@ function ReturnModal({
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
   async function save() {
     setBusy(true)
@@ -2901,12 +2955,13 @@ function ReturnModal({
       onDone()
     } catch (e) {
       setErr(errMsg(e))
+      setConfirming(false)
       setBusy(false)
     }
   }
 
   return (
-    <Modal title="บันทึกการคืนเครื่อง" onClose={onClose}>
+    <Modal title={`บันทึกการคืนเครื่อง — ${customerName}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <Field label="กรณีการคืนเครื่อง">
           <Select
@@ -3029,10 +3084,26 @@ function ReturnModal({
         )}
         {err && <p className="text-sm text-red-600">{err}</p>}
 
-        <div className="mt-1 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy}>{busy ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
-        </div>
+        {confirming ? (
+          <div className="mt-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+            <p className="mb-3 text-sm font-semibold text-amber-800">
+              ยืนยันคืนเครื่องของ {customerName}?
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+                กลับแก้ไข
+              </Button>
+              <Button onClick={save} disabled={busy}>
+                {busy ? 'กำลังบันทึก...' : 'ยืนยันบันทึก'}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-1 flex justify-end gap-2">
+            <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
+            <Button onClick={() => setConfirming(true)}>บันทึก</Button>
+          </div>
+        )}
       </div>
     </Modal>
   )
