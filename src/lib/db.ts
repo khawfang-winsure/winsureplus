@@ -1234,6 +1234,28 @@ export async function getAllInstallments(): Promise<InstallmentLite[]> {
   }))
 }
 
+/** งวดแรก (installment_no=1) ทุกสัญญา — ใช้คำนวณอัตราผิดนัดชำระงวดแรก (~2,281 แถว ปลอดภัยใต้ PAGE_CAP) */
+export interface FirstInstallmentRow {
+  contractId: string
+  dueDate: string        // 'YYYY-MM-DD'
+  paidAt: string | null  // 'YYYY-MM-DD' ถ้าจ่ายแล้ว, null ถ้ายังไม่จ่าย
+}
+
+export async function getFirstInstallments(): Promise<FirstInstallmentRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('installments')
+    .select('contract_id, due_date, paid_at')
+    .eq('installment_no', 1)
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return (data ?? []).map((r) => ({
+    contractId: r.contract_id as string,
+    dueDate: (r.due_date as string).slice(0, 10),
+    paidAt: r.paid_at ? (r.paid_at as string).slice(0, 10) : null,
+  }))
+}
+
 /** งวดที่ค้างชำระ ณ วันใดวันหนึ่งในอดีต — ใช้สรุปหนี้เสีย ณ วันสิ้นช่วงของรายงานรายสัปดาห์ */
 export interface OverdueAsOfRow {
   contractId: string

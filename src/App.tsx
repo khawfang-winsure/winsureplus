@@ -20,6 +20,7 @@ const ShopReport = lazy(() => import('./pages/ShopReport'))
 const ShopDetail = lazy(() => import('./pages/ShopDetail'))
 const Commission = lazy(() => import('./pages/Commission'))
 const ExecDashboard = lazy(() => import('./pages/ExecDashboard'))
+const MonthlyReport = lazy(() => import('./pages/MonthlyReport'))
 const WeeklySummary = lazy(() => import('./pages/WeeklySummary'))
 const Letters = lazy(() => import('./pages/Letters'))
 const LettersPrint = lazy(() => import('./pages/LettersPrint'))
@@ -92,6 +93,7 @@ function Gate() {
           {/* admin / staff — ถ้าเป็น freelancer ให้ redirect ไป /queue; executive ไป /exec; บัญชี ไป /transfers */}
           <Route index element={isFreelancer ? <Navigate to="/queue" replace /> : (isExecutive || isAccounting) ? <Navigate to={fallbackTo} replace /> : <Dashboard />} />
           <Route path="/exec" element={(isAdmin || isExecutive) ? <ExecDashboard /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/monthly-report" element={(isAdmin || isExecutive) ? <MonthlyReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/weekly-summary" element={isAdmin ? <WeeklySummary /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/add" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/edit/:id" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />

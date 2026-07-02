@@ -2,6 +2,7 @@
 import {
   AlertTriangle,
   BarChart3,
+  CalendarRange,
   ClipboardCheck,
   Gauge,
   History,
@@ -44,6 +45,7 @@ export const NAV: NavItem[] = [
   // เมนูหลัก — item เดี่ยวบนสุด
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
+  { to: '/monthly-report', label: 'รายงานประจำเดือน', icon: CalendarRange, adminOnly: true, executiveVisible: true },
   { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: History, adminOnly: true, executiveVisible: true },
 
   // กลุ่มพับได้: รับเรื่อง/บันทึก
