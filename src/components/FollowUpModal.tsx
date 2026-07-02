@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
-import { PackageCheck } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { MessageSquare, PackageCheck } from 'lucide-react'
 import { Badge, Button, Field, Modal, Select, Textarea } from './ui'
 import { baht, thaiDate } from '../lib/format'
 import {
   addFollowUp,
   closeCase,
+  getCompanySmsSettings,
   getContractAddresses,
   getFollowUps,
+  getInstallments,
   type AddFollowUpInput,
   type ContractAddresses,
   type FollowUpContactMethod,
@@ -16,6 +18,9 @@ import {
 import { isContactWindowOpen } from '../lib/contactHours'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
+import { paymentRecoveryStatus, type RecoveryInstallmentInput } from '../lib/calc'
+import { followUpStalenessLevel } from '../lib/priorityQueue'
+import { buildDebtSms } from '../lib/messages'
 
 // ===== ป้ายกำกับ enum =====
 const METHOD_LABEL: Record<FollowUpContactMethod, string> = {
@@ -72,6 +77,10 @@ interface ContractSummary {
   returnAnchorType?: 'returned' | 'overdue' | null
   returnAnchorDate?: string | null
   overdueDueDate?: string | null
+  // req8: เวลาติดตามล่าสุด — ใช้คำนวณป้าย "ไม่ได้ติดตามมานาน"
+  lastContactedAt?: string | null
+  // req8: ซ่อนป้ายถ้าสัญญาไม่ active (เคสคืนเครื่องยังนับว่า active สำหรับตามหนี้ — ใช้ isReturned แยกจาก closed)
+  isActive?: boolean
 }
 
 interface Props {
@@ -147,6 +156,14 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const [closeError, setCloseError] = useState<string | null>(null)
   const [addresses, setAddresses] = useState<ContractAddresses>({})
 
+  // req9: งวดของสัญญานี้ — ใช้คำนวณ paymentRecoveryStatus
+  const [recoveryInstallments, setRecoveryInstallments] = useState<RecoveryInstallmentInput[]>([])
+
+  // req10: ตั้งค่า SMS บริษัท (เบอร์บริษัท + ที่อยู่คืนเครื่อง)
+  const [smsSettings, setSmsSettings] = useState({ companyName: '', companyPhone: '', returnAddress: '' })
+  const [smsPhoneChoice, setSmsPhoneChoice] = useState<'phone' | 'phoneAlt1' | 'phoneAlt2'>('phone')
+  const [smsIncludeReturn, setSmsIncludeReturn] = useState(false)
+
   // ตรวจเวลา ณ ตอนที่เปิด modal (render-time check — UX เท่านั้น DB trigger บังคับจริง)
   const contactWindow = isContactWindowOpen(new Date(), publicHolidays)
   const outsideHours = !adminOverride && !contactWindow.ok
@@ -157,6 +174,68 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
       .then(setAddresses)
       .catch(() => setAddresses({}))
   }, [contract.contractId])
+
+  // req9: โหลดงวดของสัญญานี้ — ใช้คำนวณสถานะ "กลับเป็นปกติ"
+  useEffect(() => {
+    getInstallments(contract.contractId)
+      .then((list) => {
+        setRecoveryInstallments(
+          list.map((i) => ({
+            dueDate: i.dueDate,
+            amount: i.amount,
+            paidAmount: i.paidAmount,
+            paidAt: i.paidAt,
+          })),
+        )
+      })
+      .catch(() => setRecoveryInstallments([]))
+  }, [contract.contractId])
+
+  // req10: โหลดตั้งค่าบริษัทสำหรับ SMS (ครั้งเดียวตอนเปิด modal)
+  useEffect(() => {
+    getCompanySmsSettings()
+      .then(setSmsSettings)
+      .catch(() => setSmsSettings({ companyName: '', companyPhone: '', returnAddress: '' }))
+  }, [])
+
+  // req9: สถานะ "กลับเป็นปกติ" — คำนวณจากงวดที่โหลดมา
+  const recoveryStatus = useMemo(
+    () => paymentRecoveryStatus(recoveryInstallments, new Date()),
+    [recoveryInstallments],
+  )
+
+  // req8: ป้าย "ไม่ได้ติดตามมานาน" — ซ่อนถ้าสัญญาไม่ active (default true ถ้าไม่ได้ส่งมา — เพื่อ backward compat)
+  const staleness = useMemo(
+    () => followUpStalenessLevel(contract.lastContactedAt ?? null, new Date()),
+    [contract.lastContactedAt],
+  )
+  const showStalenessBadge = (contract.isActive ?? true) && staleness.level !== 'none'
+
+  // req10: เบอร์ที่เลือกสำหรับส่ง SMS
+  const smsPhoneOptions = [
+    { key: 'phone' as const, value: contract.phone },
+    { key: 'phoneAlt1' as const, value: contract.phoneAlt1 },
+    { key: 'phoneAlt2' as const, value: contract.phoneAlt2 },
+  ].filter((o): o is { key: 'phone' | 'phoneAlt1' | 'phoneAlt2'; value: string } => !!o.value)
+  const smsTargetPhone = smsPhoneOptions.find((o) => o.key === smsPhoneChoice)?.value ?? smsPhoneOptions[0]?.value ?? null
+
+  function handleSendSms() {
+    if (!smsTargetPhone) return
+    try {
+      const body = buildDebtSms({
+        customerName: contract.customerName,
+        overdueAmount: recoveryStatus.overdueAmountRemaining,
+        overdueCount: recoveryStatus.overdueCount,
+        includeReturnInstruction: smsIncludeReturn,
+        companyPhone: smsSettings.companyPhone,
+        returnAddress: smsSettings.returnAddress || undefined,
+      })
+      // iOS ใช้ &body= / Android ใช้ ?body= — "?&body=" ใช้ได้ทั้งคู่ในทางปฏิบัติ
+      window.location.href = `sms:${smsTargetPhone}?&body=${encodeURIComponent(body)}`
+    } catch {
+      // overdueCount=0 หรือ returnAddress ว่าง (ปุ่มถูก disable กันไว้แล้ว แต่กันเผื่อ race)
+    }
+  }
 
   // โหลดประวัติ
   const loadHistory = async () => {
@@ -347,10 +426,64 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         {contract.phoneAlt2 && (
           <p className="text-ink-soft">เบอร์สำรอง 2: {contract.phoneAlt2}</p>
         )}
-        <p className="mt-1">
+        <p className="mt-1 flex flex-wrap items-center gap-1.5">
           <Badge tone="red">ค้าง {contract.daysLate} วัน</Badge>
+          {/* req8: ป้ายเตือนไม่ได้ติดตามมานาน */}
+          {showStalenessBadge && (
+            <Badge tone={staleness.level === 'danger' ? 'red' : 'amber'}>{staleness.badgeText}</Badge>
+          )}
         </p>
+        {/* req9: สถานะ "กลับเป็นปกติ" */}
+        <p className="mt-1 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
       </div>
+
+      {/* req10: ส่ง SMS ทวงหนี้ */}
+      {smsPhoneOptions.length > 0 && (
+        <div className="mb-4 rounded-xl border border-peach bg-white px-4 py-3">
+          <p className="mb-2 text-sm font-semibold text-ink">ส่ง SMS ทวงหนี้</p>
+          <div className="flex flex-col gap-2.5">
+            {smsPhoneOptions.length > 1 && (
+              <Field label="เบอร์ที่จะส่ง">
+                <Select
+                  value={smsPhoneChoice}
+                  onChange={(e) => setSmsPhoneChoice(e.target.value as 'phone' | 'phoneAlt1' | 'phoneAlt2')}
+                >
+                  {smsPhoneOptions.map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.key === 'phone' ? 'หลัก' : o.key === 'phoneAlt1' ? 'สำรอง 1' : 'สำรอง 2'}: {o.value}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
+            <label
+              className={`flex items-center gap-2 text-sm ${smsSettings.returnAddress ? 'text-ink' : 'text-ink-soft'}`}
+              title={smsSettings.returnAddress ? undefined : 'ยังไม่ได้ตั้งค่าที่อยู่คืนเครื่อง'}
+            >
+              <input
+                type="checkbox"
+                checked={smsIncludeReturn}
+                disabled={!smsSettings.returnAddress}
+                onChange={(e) => setSmsIncludeReturn(e.target.checked)}
+                className="h-4 w-4 accent-salmon-deep disabled:cursor-not-allowed"
+              />
+              แนบข้อความให้ส่งเครื่องคืน
+            </label>
+            <Button
+              variant="ghost"
+              onClick={handleSendSms}
+              disabled={recoveryStatus.overdueCount === 0 || !smsTargetPhone}
+              className="self-start"
+            >
+              <MessageSquare size={15} />
+              ส่ง SMS
+            </Button>
+            {recoveryStatus.overdueCount === 0 && (
+              <p className="text-xs text-ink-soft">ไม่มีงวดค้างชำระ — ไม่ต้องส่ง SMS ทวงหนี้</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* banner นอกเวลา */}
       {outsideHours && (

@@ -396,6 +396,41 @@ export default {
           const noInstContractId =
             noInstContracts && noInstContracts.length > 0 ? noInstContracts[0].id : null;
 
+          // ── กันลง review ซ้ำ (idempotency) — เคส penalty/other-only ที่เคย resolved/skipped/auto_resolved ไปแล้ว ─
+          // Bug เดิม: batch-dedup ด้านล่าง (บรรทัด ~548) skip เฉพาะ pj_sync_review ที่ status='pending' ของ
+          // pj_invoice_no เดียวกัน — ไม่ skip แถวที่ resolved/skipped ไปแล้ว → รอบ sync ถัดไปสร้าง pending ใหม่ซ้ำ
+          // แก้: เช็คตรงนี้ก่อน queueReview เลย ด้วย natural key (pj_invoice_no + pj_paid_date) บน pj_sync_review
+          // ที่ status ไม่ใช่ pending (แปลว่าคนจัดการไปแล้ว) + เช็ค pj_applied_ledger (contract_id + paid_date)
+          // ถ้ามีสัญญาที่ match แล้ว (ครอบเคสที่คนกดยืนยันลงยอดจากกล่องรอตรวจไปแล้ว)
+          // ⚠️ a.paid_date อาจเป็น null — PostgREST .eq(col, null) ไม่ match แถวที่เป็น NULL จริง (ต้องใช้ .is())
+          //    เลยแยก query 2 แบบตามว่ามี paid_date หรือไม่ กัน false-negative (คิดว่ายังไม่เคย handle ทั้งที่เคยแล้ว)
+          let alreadyHandled = false;
+          let reviewQuery = db
+            .from("pj_sync_review")
+            .select("id")
+            .eq("pj_invoice_no", a.invoice_no)
+            .in("status", ["resolved", "skipped", "auto_resolved"]);
+          reviewQuery = a.paid_date
+            ? reviewQuery.eq("pj_paid_date", a.paid_date)
+            : reviewQuery.is("pj_paid_date", null);
+          const { data: resolvedReview } = await reviewQuery.limit(1);
+          if (resolvedReview && resolvedReview.length > 0) alreadyHandled = true;
+
+          if (!alreadyHandled && noInstContractId && a.paid_date) {
+            const { data: ledgerRow } = await db
+              .from("pj_applied_ledger")
+              .select("id")
+              .eq("contract_id", noInstContractId)
+              .eq("pj_paid_date", a.paid_date)
+              .maybeSingle();
+            if (ledgerRow) alreadyHandled = true;
+          }
+
+          if (alreadyHandled) {
+            skippedAlreadySynced++;
+            continue;
+          }
+
           if (a.has_other) {
             queueReview(a, "OTHER", noInstContractId, "other", a.other_amt);
           } else if (a.pen_amt > 0) {

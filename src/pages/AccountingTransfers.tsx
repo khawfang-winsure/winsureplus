@@ -1,18 +1,259 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronLeft, ChevronRight, Landmark, Receipt, Store, Upload, X } from 'lucide-react'
-import { Badge, Button, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Check, CheckCircle2, ChevronLeft, ChevronRight, Copy, Landmark, Receipt, Store, Upload, X, XCircle } from 'lucide-react'
+import { Badge, Button, EmptyState, Field, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { Input } from '../components/ui'
 import { useAuth } from '../lib/auth'
 import { baht, thaiDate } from '../lib/format'
+import { REJECTION_REASON_LABEL } from '../lib/messages'
 import {
   getDailyTransferByShop,
   getDailyTransferContracts,
   getSlipSignedUrl,
   markShopTransferred,
+  rejectSummaryContract,
+  sendSummaryBackToStaff,
+  updateContractTransactionDate,
   type DailyTransferContractRow,
   type DailyTransferShopRow,
+  type NeedsFixReason,
 } from '../lib/db'
 import { supabase } from '../lib/supabase'
+
+// ===== ปุ่มก็อปเลขบัญชี (req1) =====
+function CopyAccountNoButton({ accountNo }: { accountNo: string }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copy(e: MouseEvent) {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(accountNo)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title="คัดลอกเลขบัญชี"
+      className="inline-flex items-center gap-1 rounded-lg border border-peach bg-white px-1.5 py-0.5 text-xs text-ink-soft transition hover:bg-peach-light/50"
+    >
+      {copied ? <Check size={11} className="text-green-600" /> : <Copy size={11} />}
+      {copied ? 'คัดลอกแล้ว' : accountNo}
+    </button>
+  )
+}
+
+// ===== ป็อปอัพ "ยังไม่โอน/ไม่ผ่าน" ต่อเคส (req2) =====
+const REJECTION_REASON_CODES = Object.keys(REJECTION_REASON_LABEL) as NeedsFixReason[]
+
+function RejectContractModal({
+  contract,
+  byName,
+  onClose,
+  onDone,
+}: {
+  contract: DailyTransferContractRow
+  byName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [reasonCode, setReasonCode] = useState<NeedsFixReason>(REJECTION_REASON_CODES[0])
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const noteRequired = reasonCode === 'other'
+
+  async function handleSave() {
+    if (noteRequired && note.trim().length === 0) {
+      setError('กรุณาระบุเหตุผล')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await rejectSummaryContract(contract.contractId, reasonCode, note.trim() || null, byName)
+      onDone()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`ยังไม่โอน/ไม่ผ่าน — ${contract.customerName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">
+          {contract.contractNo} · ยอดโอนสุทธิ {baht(contract.netTransfer)} บาท
+        </p>
+
+        <Field label="เหตุผล" required>
+          <Select value={reasonCode} onChange={(e) => setReasonCode(e.target.value as NeedsFixReason)}>
+            {REJECTION_REASON_CODES.map((code) => (
+              <option key={code} value={code}>
+                {REJECTION_REASON_LABEL[code]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label="หมายเหตุ" required={noteRequired}>
+          <Textarea
+            rows={3}
+            placeholder={noteRequired ? 'กรุณาระบุเหตุผล' : 'ไม่บังคับ'}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </Field>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            ยกเลิก
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'ยืนยันตีกลับ'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ===== ป็อปอัพ "แก้วันที่โอน" ต่อเคส (req4, admin only) =====
+function EditTransactionDateModal({
+  contract,
+  byName,
+  onClose,
+  onDone,
+}: {
+  contract: DailyTransferContractRow
+  byName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [newDate, setNewDate] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSave() {
+    if (!newDate) {
+      setError('กรุณาเลือกวันที่')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await updateContractTransactionDate(contract.contractId, newDate, byName)
+      onDone()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`แก้วันที่โอน — ${contract.customerName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">{contract.contractNo}</p>
+
+        <Field label="วันที่ทำรายการใหม่" required>
+          <Input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} />
+        </Field>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            ยกเลิก
+          </Button>
+          <Button onClick={handleSave} disabled={saving || !newDate}>
+            {saving ? 'กำลังบันทึก...' : 'ยืนยันแก้วันที่'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ===== ป็อปอัพ "ส่งกลับให้พนักงาน" ทั้งร้าน (req4, admin only) =====
+function SendBackToStaffModal({
+  shop,
+  contracts,
+  byName,
+  onClose,
+  onDone,
+}: {
+  shop: DailyTransferShopRow
+  contracts: DailyTransferContractRow[]
+  byName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      await sendSummaryBackToStaff(
+        contracts.map((c) => c.contractId),
+        note.trim(),
+        byName,
+      )
+      onDone()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`ส่งกลับให้พนักงาน — ${shop.shopName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">
+          ส่งกลับทั้งหมด {contracts.length} สัญญาของร้านนี้ ให้พนักงานตรวจ/แก้ไขใหม่
+        </p>
+
+        <Field label="หมายเหตุ (ไม่บังคับ)">
+          <Textarea
+            rows={3}
+            placeholder="เช่น ยอดไม่ตรง กรุณาตรวจสอบใหม่"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </Field>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            ยกเลิก
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'ยืนยันส่งกลับ'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
 
 /** วันนี้ตามเขตเวลากรุงเทพ (UTC+7) รูปแบบ YYYY-MM-DD */
 function todayBangkok(): string {
@@ -27,7 +268,23 @@ function shiftDay(isoDate: string, delta: number): string {
 }
 
 // ===== รายสัญญาของร้าน (drill-down) =====
-function ShopContractsList({ shopId, dateISO }: { shopId: string; dateISO: string }) {
+function ShopContractsList({
+  shopId,
+  dateISO,
+  refreshKey,
+  isAdmin,
+  onReject,
+  onEditDate,
+  onRowsLoaded,
+}: {
+  shopId: string
+  dateISO: string
+  refreshKey: number
+  isAdmin: boolean
+  onReject: (contract: DailyTransferContractRow) => void
+  onEditDate: (contract: DailyTransferContractRow) => void
+  onRowsLoaded?: (rows: DailyTransferContractRow[]) => void
+}) {
   const [rows, setRows] = useState<DailyTransferContractRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -37,7 +294,10 @@ function ShopContractsList({ shopId, dateISO }: { shopId: string; dateISO: strin
     setError(null)
     getDailyTransferContracts(shopId, dateISO)
       .then((data) => {
-        if (!cancelled) setRows(data)
+        if (!cancelled) {
+          setRows(data)
+          onRowsLoaded?.(data)
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'โหลดรายการไม่สำเร็จ')
@@ -45,7 +305,8 @@ function ShopContractsList({ shopId, dateISO }: { shopId: string; dateISO: strin
     return () => {
       cancelled = true
     }
-  }, [shopId, dateISO])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, dateISO, refreshKey])
 
   if (error) {
     return <p className="px-4 py-3 text-sm text-red-700">โหลดรายการไม่สำเร็จ: {error}</p>
@@ -66,6 +327,7 @@ function ShopContractsList({ shopId, dateISO }: { shopId: string; dateISO: strin
             <th className="px-4 py-2 font-medium">ชื่อลูกค้า</th>
             <th className="px-4 py-2 text-right font-medium">ราคาเครื่อง</th>
             <th className="px-4 py-2 text-right font-medium">ยอดโอนสุทธิ</th>
+            <th className="px-4 py-2" />
           </tr>
         </thead>
         <tbody>
@@ -75,6 +337,27 @@ function ShopContractsList({ shopId, dateISO }: { shopId: string; dateISO: strin
               <td className="px-4 py-2 text-ink">{r.customerName}</td>
               <td className="px-4 py-2 text-right text-ink-soft">{baht(r.devicePrice)}</td>
               <td className="px-4 py-2 text-right font-medium text-ink">{baht(r.netTransfer)}</td>
+              <td className="px-4 py-2 text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => onEditDate(r)}
+                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-peach bg-white px-2 py-1 text-xs font-medium text-ink-soft transition hover:bg-peach-light/50"
+                    >
+                      แก้วันที่โอน
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onReject(r)}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 transition hover:bg-red-100"
+                  >
+                    <XCircle size={12} />
+                    ยังไม่โอน/ไม่ผ่าน
+                  </button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -193,17 +476,29 @@ function ShopRow({
   shop,
   dateISO,
   expanded,
+  refreshKey,
+  isAdmin,
   onToggle,
   onUpload,
   onViewSlip,
+  onRejectContract,
+  onEditDateContract,
+  onSendBackToStaff,
 }: {
   shop: DailyTransferShopRow
   dateISO: string
   expanded: boolean
+  refreshKey: number
+  isAdmin: boolean
   onToggle: () => void
   onUpload: () => void
   onViewSlip: () => void
+  onRejectContract: (contract: DailyTransferContractRow) => void
+  onEditDateContract: (contract: DailyTransferContractRow) => void
+  onSendBackToStaff: (contracts: DailyTransferContractRow[]) => void
 }) {
+  const [loadedRows, setLoadedRows] = useState<DailyTransferContractRow[]>([])
+
   return (
     <div className="rounded-xl border border-peach bg-white">
       <button
@@ -219,13 +514,23 @@ function ShopRow({
             <ChevronRight size={16} className="text-ink-soft transition-transform" />
           )}
           <Store size={16} className="text-salmon-deep" />
-          <span className="font-semibold text-ink">{shop.shopName}</span>
-          <span className="text-xs text-ink-soft">({shop.contractCount} สัญญา)</span>
+          <div>
+            <span className="font-semibold text-ink">{shop.shopName}</span>
+            <span className="ml-1.5 text-xs text-ink-soft">({shop.contractCount} สัญญา)</span>
+            {/* req1: ธนาคาร + เลขบัญชี + ชื่อบัญชี พร้อมปุ่มก็อป */}
+            <p className="mt-0.5 text-xs text-ink-soft">
+              {shop.bank} · <CopyAccountNoButton accountNo={shop.accountNo} /> · {shop.accountName}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-base font-bold text-ink">{baht(shop.amount)} บาท</span>
           {shop.transferred ? (
-            <Badge tone="green">โอนแล้ว</Badge>
+            shop.slipWaived ? (
+              <Badge tone="green">โอนแล้ว (ย้อนหลัง)</Badge>
+            ) : (
+              <Badge tone="green">โอนแล้ว</Badge>
+            )
           ) : (
             <Badge tone="amber">ยังไม่โอน</Badge>
           )}
@@ -234,12 +539,20 @@ function ShopRow({
 
       {expanded && (
         <div className="border-t border-peach">
-          <ShopContractsList shopId={shop.shopId} dateISO={dateISO} />
+          <ShopContractsList
+            shopId={shop.shopId}
+            dateISO={dateISO}
+            refreshKey={refreshKey}
+            isAdmin={isAdmin}
+            onReject={onRejectContract}
+            onEditDate={onEditDateContract}
+            onRowsLoaded={setLoadedRows}
+          />
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-peach px-4 py-3">
             <div className="text-xs text-ink-soft">
               {shop.transferred ? (
                 <>
-                  โอนโดย {shop.transferredBy ?? '-'}
+                  {shop.slipWaived ? 'ยืนยันย้อนหลังโดย' : 'โอนโดย'} {shop.transferredBy ?? '-'}
                   {shop.transferredAt && ` · ${thaiDate(shop.transferredAt.slice(0, 10))}`}
                   {shop.note && ` · หมายเหตุ: ${shop.note}`}
                 </>
@@ -247,17 +560,28 @@ function ShopRow({
                 'ยังไม่มีการบันทึกโอนเงินสำหรับร้านนี้ในวันนี้'
               )}
             </div>
-            {shop.transferred ? (
-              <Button variant="ghost" onClick={(e) => { e.stopPropagation(); onViewSlip() }}>
-                <Receipt size={15} />
-                ดูสลิป
-              </Button>
-            ) : (
-              <Button onClick={(e) => { e.stopPropagation(); onUpload() }}>
-                <Upload size={15} />
-                อัปโหลดสลิป
-              </Button>
-            )}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {isAdmin && loadedRows.length > 0 && (
+                <Button
+                  variant="ghost"
+                  onClick={(e) => { e.stopPropagation(); onSendBackToStaff(loadedRows) }}
+                >
+                  ส่งกลับให้พนักงาน
+                </Button>
+              )}
+              {shop.transferred && !shop.slipWaived && (
+                <Button variant="ghost" onClick={(e) => { e.stopPropagation(); onViewSlip() }}>
+                  <Receipt size={15} />
+                  ดูสลิป
+                </Button>
+              )}
+              {!shop.transferred && (
+                <Button onClick={(e) => { e.stopPropagation(); onUpload() }}>
+                  <Upload size={15} />
+                  อัปโหลดสลิป
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -267,8 +591,9 @@ function ShopRow({
 
 // ===== หน้าหลัก =====
 export default function AccountingTransfers() {
-  const { name } = useAuth()
+  const { name, role } = useAuth()
   const byName = name ?? 'บัญชี'
+  const isAdmin = role === 'admin'
 
   const [dateISO, setDateISO] = useState<string>(() => todayBangkok())
   const [shops, setShops] = useState<DailyTransferShopRow[] | null>(null)
@@ -281,6 +606,9 @@ export default function AccountingTransfers() {
   const [slipModal, setSlipModal] = useState<{ shopName: string; url: string } | null>(null)
   const [slipLoadingShopId, setSlipLoadingShopId] = useState<string | null>(null)
   const [slipError, setSlipError] = useState<string | null>(null)
+  const [rejectContract, setRejectContract] = useState<DailyTransferContractRow | null>(null)
+  const [editDateContract, setEditDateContract] = useState<DailyTransferContractRow | null>(null)
+  const [sendBackTarget, setSendBackTarget] = useState<{ shop: DailyTransferShopRow; contracts: DailyTransferContractRow[] } | null>(null)
 
   const refresh = useCallback(() => setTick((n) => n + 1), [])
 
@@ -406,9 +734,14 @@ export default function AccountingTransfers() {
               shop={shop}
               dateISO={dateISO}
               expanded={expandedShopId === shop.shopId}
+              refreshKey={tick}
+              isAdmin={isAdmin}
               onToggle={() => setExpandedShopId((cur) => (cur === shop.shopId ? null : shop.shopId))}
               onUpload={() => setUploadShop(shop)}
               onViewSlip={() => handleViewSlip(shop)}
+              onRejectContract={(c) => setRejectContract(c)}
+              onEditDateContract={(c) => setEditDateContract(c)}
+              onSendBackToStaff={(contracts) => setSendBackTarget({ shop, contracts })}
             />
           ))}
         </div>
@@ -431,6 +764,43 @@ export default function AccountingTransfers() {
 
       {slipModal && (
         <SlipModal shopName={slipModal.shopName} url={slipModal.url} onClose={() => setSlipModal(null)} />
+      )}
+
+      {rejectContract && (
+        <RejectContractModal
+          contract={rejectContract}
+          byName={byName}
+          onClose={() => setRejectContract(null)}
+          onDone={() => {
+            setRejectContract(null)
+            refresh()
+          }}
+        />
+      )}
+
+      {editDateContract && (
+        <EditTransactionDateModal
+          contract={editDateContract}
+          byName={byName}
+          onClose={() => setEditDateContract(null)}
+          onDone={() => {
+            setEditDateContract(null)
+            refresh()
+          }}
+        />
+      )}
+
+      {sendBackTarget && (
+        <SendBackToStaffModal
+          shop={sendBackTarget.shop}
+          contracts={sendBackTarget.contracts}
+          byName={byName}
+          onClose={() => setSendBackTarget(null)}
+          onDone={() => {
+            setSendBackTarget(null)
+            refresh()
+          }}
+        />
       )}
     </div>
   )

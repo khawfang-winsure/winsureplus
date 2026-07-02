@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFilter } from '../lib/useFilter'
-import { AlarmClock, AlertTriangle, CalendarClock, ChevronRight, PackageCheck, Search } from 'lucide-react'
+import { AlarmClock, AlertTriangle, CalendarClock, ChevronRight, PackageCheck, Search, UserCheck, Users } from 'lucide-react'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht, thaiDate } from '../lib/format'
 import {
+  claimCase,
+  getCaseOwnershipSummary,
   getFreelancerQueue,
   getMyAssignedGrades,
+  getMyCases,
   getOverduePromiseContracts,
   getPublicHolidays,
   markCaseSeen,
+  releaseCase,
   type ContractGrade,
   type FollowUpResult,
   type FreelancerQueueRow,
@@ -19,6 +23,7 @@ import { useAuth } from '../lib/auth'
 import { isContactWindowOpen } from '../lib/contactHours'
 import {
   computePriorityScore,
+  followUpStalenessLevel,
   getPromiseDateStatus,
   hasUnseenUpdate,
   isHardBlocked,
@@ -178,15 +183,34 @@ function ReturnedClosingBadge({ row }: { row: FreelancerQueueRow }) {
   )
 }
 
+// ===== ป้าย "ไม่ได้ติดตามมานาน" (req8) — ซ่อนถ้าสัญญาไม่ active (เคสคืนเครื่อง/ปิดเคสวันนี้ ไม่ต้องเตือน) =====
+function StalenessBadge({ row }: { row: FreelancerQueueRow }) {
+  if (row.isReturned || row.caseClosedToday) return null
+  const staleness = followUpStalenessLevel(row.lastContactedAt, new Date())
+  if (staleness.level === 'none') return null
+  return (
+    <span
+      className={`mt-0.5 inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${
+        staleness.level === 'danger' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+      }`}
+    >
+      <AlertTriangle size={12} />
+      {staleness.badgeText}
+    </span>
+  )
+}
+
 // ===== Row ใน Tab 1 =====
 function QueueRow({
   sr,
   outsideHours,
   onSelect,
+  onClaim,
 }: {
   sr: ScoredRow
   outsideHours: boolean
   onSelect: (r: FreelancerQueueRow) => void
+  onClaim: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
   const isBlocked = r.dnc || r.lawyerEngaged
@@ -268,6 +292,8 @@ function QueueRow({
         <PromiseAlertBadge promiseToPayDate={r.promiseToPayDate} />
         {/* ป้ายคืนเครื่องแล้ว + ยอดปิด */}
         {r.isReturned && <div><ReturnedClosingBadge row={r} /></div>}
+        {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
+        <div><StalenessBadge row={r} /></div>
       </td>
       {/* ร้าน */}
       <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
@@ -311,18 +337,28 @@ function QueueRow({
       </td>
       {/* ปุ่ม */}
       <td className="px-4 py-3">
-        <button
-          disabled={disableButton}
-          onClick={() => !disableButton && onSelect(r)}
-          title={tooltip || undefined}
-          className={`whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition ${
-            disableButton
-              ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
-              : 'border-peach bg-white text-ink hover:bg-peach-light/50'
-          }`}
-        >
-          บันทึกติดตาม
-        </button>
+        <div className="flex flex-col items-stretch gap-1.5">
+          <button
+            disabled={disableButton}
+            onClick={() => !disableButton && onSelect(r)}
+            title={tooltip || undefined}
+            className={`whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+              disableButton
+                ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
+                : 'border-peach bg-white text-ink hover:bg-peach-light/50'
+            }`}
+          >
+            บันทึกติดตาม
+          </button>
+          {/* req7: ฉันดูแลเคสนี้ */}
+          <button
+            onClick={() => onClaim(r)}
+            className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+          >
+            <UserCheck size={13} />
+            ฉันดูแลเคสนี้
+          </button>
+        </div>
       </td>
     </tr>
   )
@@ -333,10 +369,12 @@ function QueueCardMobile({
   sr,
   outsideHours,
   onSelect,
+  onClaim,
 }: {
   sr: ScoredRow
   outsideHours: boolean
   onSelect: (r: FreelancerQueueRow) => void
+  onClaim: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
   const isBlocked = r.dnc || r.lawyerEngaged
@@ -396,6 +434,8 @@ function QueueCardMobile({
           <PromiseAlertBadge promiseToPayDate={r.promiseToPayDate} />
           {/* ป้ายคืนเครื่องแล้ว + ยอดปิด */}
           {r.isReturned && <div><ReturnedClosingBadge row={r} /></div>}
+          {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
+          <div><StalenessBadge row={r} /></div>
         </div>
         <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
           {TIER_EMOJI[sr.tier]} {sr.score}
@@ -410,19 +450,28 @@ function QueueCardMobile({
         {r.outstanding > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">ค่าปรับ {baht(r.outstanding)} ฿</span>}
         {r.principalDue > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
       </div>
-      {/* ปุ่มบันทึก */}
-      <button
-        disabled={disableButton}
-        onClick={() => !disableButton && onSelect(r)}
-        title={tooltip || undefined}
-        className={`w-full rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-          disableButton
-            ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
-            : 'border-peach bg-white text-ink hover:bg-peach-light/50'
-        }`}
-      >
-        บันทึกติดตาม
-      </button>
+      {/* ปุ่มบันทึก + ฉันดูแลเคสนี้ */}
+      <div className="flex flex-col gap-1.5">
+        <button
+          disabled={disableButton}
+          onClick={() => !disableButton && onSelect(r)}
+          title={tooltip || undefined}
+          className={`w-full rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+            disableButton
+              ? 'cursor-not-allowed border-peach bg-peach-light/40 text-ink-soft opacity-60'
+              : 'border-peach bg-white text-ink hover:bg-peach-light/50'
+          }`}
+        >
+          บันทึกติดตาม
+        </button>
+        <button
+          onClick={() => onClaim(r)}
+          className="inline-flex w-full items-center justify-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+        >
+          <UserCheck size={14} />
+          ฉันดูแลเคสนี้
+        </button>
+      </div>
     </div>
   )
 }
@@ -438,7 +487,7 @@ export default function FreelancerWorkspace() {
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
   const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
-  const [activeTab, setActiveTab] = useFilter<'todo' | 'returned' | 'done'>('queue.tab', 'todo')
+  const [activeTab, setActiveTab] = useFilter<'todo' | 'mine' | 'returned' | 'done'>('queue.tab', 'todo')
 
   // overdue promise state
   const [overdue, setOverdue] = useState<OverduePromiseContract[]>([])
@@ -447,6 +496,13 @@ export default function FreelancerWorkspace() {
   // pagination state (default 50 — เหมือนหน้าฝั่งพนักงาน)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+
+  // req7: เคสที่ตัวเอง claim ไว้ ("งานที่ต้องดูแล") + toast แจ้งเตือนเคสถูกจองไปแล้ว
+  const [myCases, setMyCases] = useState<FreelancerQueueRow[]>([])
+  const [claimToast, setClaimToast] = useState<string | null>(null)
+  const [claimingId, setClaimingId] = useState<string | null>(null)
+  // req7 admin: สรุปใครถือกี่เคส
+  const [ownershipSummary, setOwnershipSummary] = useState<{ ownerId: string; ownerName: string; count: number }[]>([])
 
   // ตรวจเวลา render-time
   const windowResult = isContactWindowOpen(new Date(), publicHolidays)
@@ -491,6 +547,26 @@ export default function FreelancerWorkspace() {
     })
   }, [loadGrades, loadQueue])
 
+  // req7: โหลดเคสที่ตัวเอง claim ไว้ ("งานที่ต้องดูแล")
+  const loadMyCases = useCallback(async () => {
+    try {
+      const data = await getMyCases()
+      setMyCases(data)
+    } catch {
+      setMyCases([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadMyCases()
+  }, [loadMyCases])
+
+  // req7 admin: โหลดสรุปใครถือกี่เคส
+  useEffect(() => {
+    if (role !== 'admin') return
+    getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => setOwnershipSummary([]))
+  }, [role])
+
   // สลับเกรดที่เลือก
   function toggleGrade(grade: ContractGrade) {
     setSelectedGrades((prev) => {
@@ -500,6 +576,43 @@ export default function FreelancerWorkspace() {
       void loadQueue(next)
       return next
     })
+  }
+
+  // req7: จองเคส — เข้าแท็บ "งานที่ต้องดูแล" + หายจาก "ที่ต้องโทร"
+  async function handleClaimCase(r: FreelancerQueueRow) {
+    setClaimingId(r.contractId)
+    setClaimToast(null)
+    try {
+      await claimCase(r.contractId)
+      await Promise.all([
+        selectedGrades.length > 0 ? loadQueue(selectedGrades) : Promise.resolve(),
+        loadMyCases(),
+      ])
+      if (role === 'admin') void getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => {})
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setClaimToast(msg.includes('CASE_ALREADY_CLAIMED') ? 'เคสนี้มีคนรับดูแลแล้ว' : 'จองเคสไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setClaimingId(null)
+    }
+  }
+
+  // req7: ทิ้งงาน — กลับเข้า "ที่ต้องโทร"
+  async function handleReleaseCase(r: FreelancerQueueRow) {
+    setClaimingId(r.contractId)
+    setClaimToast(null)
+    try {
+      await releaseCase(r.contractId)
+      await Promise.all([
+        selectedGrades.length > 0 ? loadQueue(selectedGrades) : Promise.resolve(),
+        loadMyCases(),
+      ])
+      if (role === 'admin') void getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => {})
+    } catch (e) {
+      setClaimToast(e instanceof Error ? e.message : 'ทิ้งงานไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setClaimingId(null)
+    }
   }
 
   // ดึงรายการร้านไม่ซ้ำ
@@ -559,12 +672,16 @@ export default function FreelancerWorkspace() {
   // แบ่ง 3 กลุ่ม:
   // todayRows   = caseClosedToday (Tab 3 "ปิดเคสวันนี้") — ทุกชนิดรวมคืนเครื่อง
   // returnedRows = isReturned && !caseClosedToday (Tab 2 "คืนเครื่อง")
-  // activeRows  = !isReturned && !caseClosedToday (Tab 1 "ที่ต้องโทร")
+  // activeRows  = !isReturned && !caseClosedToday && ยังไม่มีใคร claim (Tab 1 "ที่ต้องโทร")
   // contactedToday ยังคงอยู่ในข้อมูล — ใช้แสดง team awareness ใน QueueRow ตามปกติ
+  // req7: admin เห็นคิวปกติทั้งหมด (ไม่ claim เอง) — เฉพาะ freelancer ที่เคส claim แล้วหายจาก "ที่ต้องโทร"
   const todayRows = useMemo(() => filtered.filter((r) => r.caseClosedToday), [filtered])
   const pendingRows = useMemo(() => filtered.filter((r) => !r.caseClosedToday), [filtered])
   const returnedRows = useMemo(() => pendingRows.filter((r) => r.isReturned), [pendingRows])
-  const activeRows = useMemo(() => pendingRows.filter((r) => !r.isReturned), [pendingRows])
+  const activeRows = useMemo(
+    () => pendingRows.filter((r) => !r.isReturned && (role === 'admin' || r.assignedTo === null)),
+    [pendingRows, role],
+  )
 
   // คำนวณ priority สำหรับ Tab 1 — memoized (เฉพาะ activeRows ไม่รวมคืนเครื่อง)
   const today = useMemo(() => new Date(), [])
@@ -783,6 +900,36 @@ export default function FreelancerWorkspace() {
             </div>
           )}
 
+          {/* req7: toast แจ้งเตือนเคสถูกจองไปแล้ว / จองไม่สำเร็จ */}
+          {claimToast && (
+            <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
+              <span>{claimToast}</span>
+              <button onClick={() => setClaimToast(null)} className="text-amber-700 hover:text-amber-900">
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* req7 admin: สรุปใครถือกี่เคส */}
+          {role === 'admin' && ownershipSummary.length > 0 && (
+            <Card className="mb-4">
+              <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink">
+                <Users size={15} />
+                ใครดูแลกี่เคส
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {ownershipSummary.map((o) => (
+                  <span
+                    key={o.ownerId}
+                    className="inline-flex items-center gap-1 rounded-full bg-peach-light/60 px-3 py-1 text-xs font-medium text-ink"
+                  >
+                    {o.ownerName || 'ไม่ทราบชื่อ'} · {o.count} เคส
+                  </span>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {/* === Tab bar === */}
           <div className="mb-4 flex flex-wrap gap-2">
             <button
@@ -794,6 +941,20 @@ export default function FreelancerWorkspace() {
               }`}
             >
               🎯 ที่ต้องโทร ({activeRows.length})
+            </button>
+            {/* req7: งานที่ต้องดูแล — เคสที่ตัวเอง claim ไว้ */}
+            <button
+              onClick={() => setActiveTab('mine')}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === 'mine'
+                  ? 'bg-emerald-600 text-white'
+                  : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <UserCheck size={15} />
+                งานที่ต้องดูแล ({myCases.length})
+              </span>
             </button>
             <button
               onClick={() => setActiveTab('returned')}
@@ -859,6 +1020,7 @@ export default function FreelancerWorkspace() {
                               sr={sr}
                               outsideHours={outsideHours}
                               onSelect={handleOpenCase}
+                              onClaim={handleClaimCase}
                             />
                           ))}
                         </tbody>
@@ -873,6 +1035,7 @@ export default function FreelancerWorkspace() {
                           sr={sr}
                           outsideHours={outsideHours}
                           onSelect={handleOpenCase}
+                          onClaim={handleClaimCase}
                         />
                       ))}
                     </div>
@@ -890,6 +1053,102 @@ export default function FreelancerWorkspace() {
                     </div>
                   </div>
                 </div>
+              )}
+            </>
+          )}
+
+          {/* === Tab "งานที่ต้องดูแล" (req7) — เคสที่ตัวเอง claim ไว้ === */}
+          {activeTab === 'mine' && (
+            <>
+              {myCases.length === 0 ? (
+                <EmptyState
+                  title="ยังไม่มีเคสที่ดูแลอยู่"
+                  hint="กด 'ฉันดูแลเคสนี้' จากแท็บ 'ที่ต้องโทร' เพื่อจองเคสมาไว้ที่นี่"
+                />
+              ) : (
+                <>
+                  {/* ===== Desktop table (≥ md) ===== */}
+                  <div className="hidden overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm md:block">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-peach bg-emerald-50 text-left text-xs font-semibold text-ink-soft">
+                          <th className="px-4 py-3">ลูกค้า / สัญญา</th>
+                          <th className="px-4 py-3">ร้าน</th>
+                          <th className="px-4 py-3 text-center">เกรด</th>
+                          <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                          <th className="px-4 py-3" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {myCases.map((r) => (
+                          <tr key={r.contractId} className="border-b border-peach last:border-0 hover:bg-emerald-50/40">
+                            <td className="px-4 py-3">
+                              <p className="font-medium text-ink">{r.customerName}</p>
+                              <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                              <div><StalenessBadge row={r} /></div>
+                            </td>
+                            <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
+                            <td className="px-4 py-3 text-center">
+                              <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <span className="font-semibold text-red-600">{r.daysLate}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleOpenCase(r)}
+                                  className="whitespace-nowrap rounded-xl border border-peach bg-white px-3 py-2 text-xs font-semibold text-ink transition hover:bg-peach-light/50"
+                                >
+                                  บันทึกติดตาม
+                                </button>
+                                <button
+                                  disabled={claimingId === r.contractId}
+                                  onClick={() => handleReleaseCase(r)}
+                                  className="whitespace-nowrap rounded-xl border border-peach bg-white px-3 py-2 text-xs font-semibold text-ink-soft transition hover:bg-peach-light/50 disabled:opacity-50"
+                                >
+                                  {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* ===== Mobile card stack (< md) ===== */}
+                  <div className="flex flex-col gap-3 md:hidden">
+                    {myCases.map((r) => (
+                      <div key={r.contractId} className="rounded-2xl border border-peach bg-white p-4 shadow-sm">
+                        <div className="mb-1 flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-ink">{r.customerName}</p>
+                            <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                            <div><StalenessBadge row={r} /></div>
+                          </div>
+                          <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-ink-soft">ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></p>
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            onClick={() => handleOpenCase(r)}
+                            className="flex-1 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-semibold text-ink transition hover:bg-peach-light/50"
+                          >
+                            บันทึกติดตาม
+                          </button>
+                          <button
+                            disabled={claimingId === r.contractId}
+                            onClick={() => handleReleaseCase(r)}
+                            className="flex-1 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-semibold text-ink-soft transition hover:bg-peach-light/50 disabled:opacity-50"
+                          >
+                            {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -1204,6 +1463,8 @@ export default function FreelancerWorkspace() {
             returnAnchorType: selectedContract.returnAnchorType,
             returnAnchorDate: selectedContract.returnAnchorDate,
             overdueDueDate: selectedContract.overdueDueDate,
+            lastContactedAt: selectedContract.lastContactedAt,
+            isActive: !selectedContract.caseClosedToday,
           }}
           softWarnReason={(() => {
             const sr = scoredRowMap.get(selectedContract.contractId)?.suppressReason ?? null
@@ -1216,10 +1477,12 @@ export default function FreelancerWorkspace() {
           onClose={handleModalClose}
           onSaved={() => {
             if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+            void loadMyCases()
           }}
           onCaseClosed={() => {
             setSelectedContract(null)
             if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+            void loadMyCases()
           }}
         />
       )}

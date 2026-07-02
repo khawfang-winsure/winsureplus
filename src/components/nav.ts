@@ -59,8 +59,8 @@ export const NAV: NavItem[] = [
     ],
   },
 
-  // กล่องรอตรวจ PJ — worklist สำหรับ admin (auto-sync ที่ลงไม่ได้)
-  { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ', icon: ClipboardCheck, adminOnly: true },
+  // กล่องรอตรวจ PJ — worklist สำหรับ admin+staff (auto-sync ที่ลงไม่ได้)
+  { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ', icon: ClipboardCheck },
 
   // กลุ่มพับได้: ลูกค้า & หนี้
   {

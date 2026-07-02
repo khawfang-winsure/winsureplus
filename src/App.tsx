@@ -120,7 +120,7 @@ function Gate() {
           <Route path="/debtflow" element={isAdmin ? <DebtflowReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/returns-report" element={isAdmin ? <ReturnsReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/settlements" element={isAdmin ? <SettlementReport /> : <Navigate to={fallbackTo} replace />} />
-          <Route path="/pj-sync-review" element={isAdmin ? <PjSyncReview /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/pj-sync-review" element={isAdminOrStaff ? <PjSyncReview /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/import" element={isAdmin ? <Import /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/inbox" element={isAdminOrStaff ? <InboxPage /> : <Navigate to={fallbackTo} replace />} />
           <Route path="*" element={<Navigate to={isFreelancer ? '/queue' : (isExecutive || isAccounting) ? fallbackTo : '/add'} replace />} />

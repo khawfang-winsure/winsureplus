@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { RotateCcw, X } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
-import { buildBulkSummary } from '../lib/messages'
-import { getContracts, getShops, markSummaryShopSent, markSummaryAccountingSent } from '../lib/db'
+import { buildBulkSummary, buildRejectionBanner, REJECTION_REASON_LABEL } from '../lib/messages'
+import { clearNeedsFix, getContracts, getShops, markSummaryShopSent, markSummaryAccountingSent } from '../lib/db'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
@@ -60,6 +60,9 @@ export default function WaitingSummary() {
   // 2 ด่าน: locallyShopSent = กดส่งร้านรอบนี้ (เด้งไปคอลัมน์ขวา), locallyAccountingSent = กดส่งบัญชี (จบ)
   const [locallyShopSent, setLocallyShopSent] = useState<Set<string>>(new Set())
   const [locallyAccountingSent, setLocallyAccountingSent] = useState<Set<string>>(new Set())
+  // เคสที่กด "แก้แล้ว ส่งใหม่" รอบนี้ — ซ่อนป้ายตีกลับทันทีโดยไม่ต้อง reload ทั้งหน้า (req2)
+  const [locallyClearedNeedsFix, setLocallyClearedNeedsFix] = useState<Set<string>>(new Set())
+  const [clearingId, setClearingId] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(SEL_KEY)
@@ -291,6 +294,17 @@ export default function WaitingSummary() {
     setSelectedAccounting(new Set())
   }
 
+  // req2: เคสที่ถูกตีกลับ (needsFixReason != null) กด "แก้แล้ว ส่งใหม่" → เคลียร์ needs_fix_* แล้วซ่อนป้ายทันที
+  async function handleClearNeedsFix(contractId: string) {
+    setClearingId(contractId)
+    try {
+      await clearNeedsFix(contractId)
+      setLocallyClearedNeedsFix((prev) => new Set([...prev, contractId]))
+    } finally {
+      setClearingId(null)
+    }
+  }
+
   const selectedShopNet = groups.flatMap((g) => g.items).reduce((sum, c) => sum + netOf(c), 0)
   const selectedAccountingNet = accountingGroups
     .flatMap((g) => g.items)
@@ -381,34 +395,65 @@ export default function WaitingSummary() {
                 <ul className="flex flex-col gap-2">
                   {pendingShop.map((c) => {
                     const checked = selected.has(c.id)
+                    const isRejected = !!c.needsFixReason && !locallyClearedNeedsFix.has(c.id)
                     return (
                       <li
                         key={c.id}
                         onClick={() => toggleShop(c.id)}
-                        className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
-                          checked ? 'border-salmon-deep bg-peach-light/60' : 'border-peach bg-white hover:bg-peach-light/30'
+                        className={`flex cursor-pointer flex-col gap-2 rounded-xl border px-4 py-3 transition ${
+                          isRejected
+                            ? 'border-red-300 bg-red-50/60'
+                            : checked
+                              ? 'border-salmon-deep bg-peach-light/60'
+                              : 'border-peach bg-white hover:bg-peach-light/30'
                         }`}
                       >
-                        <input type="checkbox" checked={checked} readOnly className="h-4 w-4 accent-salmon-deep" />
-                        <div className="flex-1">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <p className="font-medium text-ink">
-                              <Link
-                                to={`/contract/${c.id}`}
-                                className="text-salmon-deep hover:underline"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {c.customerName}
-                              </Link>
-                              {' '}— {c.contractNo}
+                        <div className="flex items-center gap-3">
+                          <input type="checkbox" checked={checked} readOnly className="h-4 w-4 accent-salmon-deep" />
+                          <div className="flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <p className="font-medium text-ink">
+                                <Link
+                                  to={`/contract/${c.id}`}
+                                  className="text-salmon-deep hover:underline"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {c.customerName}
+                                </Link>
+                                {' '}— {c.contractNo}
+                              </p>
+                              {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+                            </div>
+                            <p className="text-sm text-ink-soft">
+                              {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
                             </p>
-                            {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
                           </div>
-                          <p className="text-sm text-ink-soft">
-                            {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
-                          </p>
+                          <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
                         </div>
-                        <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
+                        {isRejected && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-red-100 px-3 py-2">
+                            <p className="text-xs font-medium text-red-700">
+                              {buildRejectionBanner(
+                                REJECTION_REASON_LABEL[c.needsFixReason ?? ''] ?? c.needsFixReason ?? '',
+                                c.needsFixDetail ?? null,
+                                c.needsFixBy ?? '-',
+                                c.needsFixAt ?? '',
+                              )}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void handleClearNeedsFix(c.id)
+                              }}
+                              disabled={clearingId === c.id}
+                              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-red-300 bg-white px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                            >
+                              <RotateCcw size={12} />
+                              {clearingId === c.id ? 'กำลังบันทึก...' : 'แก้แล้ว ส่งใหม่'}
+                            </button>
+                          </div>
+                        )}
                       </li>
                     )
                   })}

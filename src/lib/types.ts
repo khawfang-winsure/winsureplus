@@ -283,6 +283,14 @@ export interface Contract {
   settlementRemaining?: number | null  // เงินต้นที่เหลือ (ก่อนหักส่วนลด)
   settlementPaid?: number | null       // ลูกค้าจ่ายปิดจริง
   settledBy?: string | null            // ชื่อผู้กดปิด
+  // --- ถูกบัญชีตีกลับ ต้องแก้ (0084) — โชว์เป็นป้ายที่หน้า waiting-summary ---
+  needsFixReason?: string | null       // 'docs_incorrect'|'price_incorrect'|'duplicate'|'missing_info'|'other'
+  needsFixDetail?: string | null       // รายละเอียด/หมายเหตุประกอบ
+  needsFixBy?: string | null           // ชื่อคนตีกลับ
+  needsFixAt?: string | null           // เวลาที่ตีกลับ
+  // --- ระบบจองเคส claim/release (0086) ---
+  assignedTo?: string | null           // uuid ของ profiles ผู้ถือเคสอยู่ — null = ว่าง
+  assignedAt?: string | null           // เวลาที่ claim ล่าสุด
 }
 
 // ---------- Extra Charges (migration 0032) ----------

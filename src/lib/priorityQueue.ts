@@ -472,3 +472,54 @@ export function getPromiseDateStatus(
 
   return { status, days }
 }
+
+// ===== followUpStalenessLevel — ป้ายเตือน "ไม่ได้ติดตามมานาน" (เพิ่ม 2026-07-02, req 8) =====
+
+export type FollowUpStalenessLevelValue = 'none' | 'warn' | 'danger'
+
+export interface FollowUpStaleness {
+  level: FollowUpStalenessLevelValue
+  daysSince: number | null
+  badgeText: string
+}
+
+/**
+ * คำนวณระดับความ "นิ่ง" ของเคส จากเวลาติดตามล่าสุด
+ * ใช้ epoch compare (MS_PER_DAY, Math.floor) แบบ getPromiseDateStatus (บรรทัดด้านบน) — ไม่ string-slice
+ *
+ * กฎ:
+ *   lastContactedAt === null → { level:'danger', daysSince:null, badgeText:'ยังไม่เคยติดตาม' }
+ *   daysSince <= 20          → { level:'none',   badgeText:'' }
+ *   20 < daysSince <= 30      → { level:'warn',   badgeText:'ไม่ได้ติดตาม N วัน' }
+ *   daysSince > 30            → { level:'danger', badgeText:'ไม่ได้ติดตาม N วัน' }
+ *
+ * boundary: 20=none, 21=warn, 30=warn, 31=danger
+ * caller ซ่อนป้ายเองถ้าสัญญาไม่ active (ฟังก์ชันนี้ไม่รู้จักสถานะสัญญา)
+ */
+export function followUpStalenessLevel(
+  lastContactedAt: string | null,
+  today: Date,
+): FollowUpStaleness {
+  if (lastContactedAt === null) {
+    return { level: 'danger', daysSince: null, badgeText: 'ยังไม่เคยติดตาม' }
+  }
+
+  const MS_PER_DAY = 86_400_000
+  const lastMs = new Date(lastContactedAt).getTime()
+  const todayMs = today.getTime()
+
+  // NaN guard: timestamp รูปแบบผิด → ถือว่ายังไม่เคยติดตาม (safe default)
+  if (isNaN(lastMs)) {
+    return { level: 'danger', daysSince: null, badgeText: 'ยังไม่เคยติดตาม' }
+  }
+
+  const daysSince = Math.floor((todayMs - lastMs) / MS_PER_DAY)
+
+  if (daysSince <= 20) {
+    return { level: 'none', daysSince, badgeText: '' }
+  }
+  if (daysSince <= 30) {
+    return { level: 'warn', daysSince, badgeText: `ไม่ได้ติดตาม ${daysSince} วัน` }
+  }
+  return { level: 'danger', daysSince, badgeText: `ไม่ได้ติดตาม ${daysSince} วัน` }
+}

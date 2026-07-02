@@ -136,3 +136,63 @@ export function buildEmailText(c: Contract, shop: Shop): string {
     `เว็บไซต์นี้ : https://nebula.spaceoneinovative.com/login`,
   ].join('\n')
 }
+
+// ===== buildDebtSms — ข้อความ SMS ทวงหนี้ (เพิ่ม 2026-07-02, req 10) =====
+
+export interface BuildDebtSmsInput {
+  customerName: string
+  overdueAmount: number
+  overdueCount: number
+  includeReturnInstruction: boolean
+  companyPhone: string
+  returnAddress?: string
+}
+
+/**
+ * สร้างข้อความ SMS ทวงหนี้ 2 แบบ
+ * (ก) ไม่คืนเครื่อง: แจ้งยอดค้าง + เบอร์บริษัท
+ * (ข) includeReturnInstruction: แจ้งยอดค้าง + วิธีคืนเครื่องถ้าไม่ประสงค์ชำระต่อ
+ *
+ * throw ถ้า overdueCount===0 (ไม่มีอะไรให้ทวง) หรือ includeReturnInstruction=true แต่ returnAddress ว่าง
+ */
+export function buildDebtSms(input: BuildDebtSmsInput): string {
+  const { customerName, overdueAmount, overdueCount, includeReturnInstruction, companyPhone, returnAddress } = input
+
+  if (overdueCount === 0) {
+    throw new Error('ไม่มีงวดค้างชำระ ไม่สามารถสร้างข้อความทวงหนี้ได้')
+  }
+  if (includeReturnInstruction && !returnAddress) {
+    throw new Error('ยังไม่ได้ตั้งค่าที่อยู่คืนเครื่อง')
+  }
+
+  if (includeReturnInstruction) {
+    return `เรียนคุณ${customerName} ท่านมียอดค้างชำระ ${baht(overdueAmount)} บาท (${overdueCount} งวด) หากไม่ประสงค์ชำระต่อ กรุณาส่งเครื่องคืนที่ ${returnAddress} หรือโทร ${companyPhone}`
+  }
+
+  return `เรียนคุณ${customerName} ท่านมียอดค้างชำระ ${baht(overdueAmount)} บาท (${overdueCount} งวด) กรุณาชำระโดยเร็ว สอบถามเพิ่มเติม โทร ${companyPhone}`
+}
+
+// ===== buildRejectionBanner — ป้ายแดงตีกลับสรุปยอด (เพิ่ม 2026-07-02, req 2) =====
+
+/** code → label ไทย ของเหตุผลตีกลับ — UI (dropdown เลือกเหตุผล) ใช้ mapping เดียวกันนี้ */
+export const REJECTION_REASON_LABEL: Record<string, string> = {
+  docs_incorrect: 'เอกสารไม่ถูกต้อง',
+  price_incorrect: 'ราคาเครื่องไม่ถูกต้อง',
+  duplicate: 'รายการซ้ำ',
+  missing_info: 'ข้อมูลไม่ครบ',
+  other: 'อื่นๆ (ระบุเหตุผล)',
+}
+
+/**
+ * สร้างข้อความป้ายแดง "ตีกลับ" แสดงในรายการสรุปยอดที่ถูกส่งกลับ
+ * รูปแบบ: "ตีกลับ: {reasonLabel}{note?' — '+note:''} · โดย {rejectedBy} {thaiDate(rejectedAt)}"
+ */
+export function buildRejectionBanner(
+  reasonLabel: string,
+  note: string | null,
+  rejectedBy: string,
+  rejectedAt: string,
+): string {
+  const noteSuffix = note ? ` — ${note}` : ''
+  return `ตีกลับ: ${reasonLabel}${noteSuffix} · โดย ${rejectedBy} ${thaiDate(rejectedAt)}`
+}

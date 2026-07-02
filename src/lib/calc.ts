@@ -1,4 +1,5 @@
 // ===== สูตรคำนวณหลักของธุรกิจ (ทดสอบกับเคสตัวอย่างในสรุปข้อมูล.txt) =====
+import { baht } from './format'
 
 export interface SummaryBreakdown {
   afterDown: number // ยอดตัวเครื่องจริงหลังหักดาวน์
@@ -176,4 +177,103 @@ export function calcExtensionPrincipal(
   const newMonthly = newTerm > 0 ? Math.round(newFinance / newTerm) : 0
 
   return { principalRemaining, newFinance, newMonthly }
+}
+
+// ===== paymentRecoveryStatus — สรุป "กลับเป็นปกติ" ต้องจ่ายอีกเท่าไหร่ (เพิ่ม 2026-07-02, req 9) =====
+
+export interface RecoveryInstallmentInput {
+  dueDate: string // yyyy-mm-dd
+  amount: number
+  paidAmount: number
+  paidAt: string | null
+}
+
+export interface PaymentRecoveryStatus {
+  overdueCount: number
+  overdueAmountRemaining: number
+  recoveredThisEpisode: { installmentCount: number; amountPaid: number }
+  toNormal: { installmentsToClose: number; amountNeeded: number }
+  isNormal: boolean
+  badgeText: string
+}
+
+/**
+ * สรุปสถานะ "กลับเป็นปกติ" จากงวดที่ค้างอยู่ ณ วันนี้
+ * "กลับเป็นปกติ" = ไม่มีงวด paidAt=null AND dueDate<=today (ตรงกับ v_contract_status days_late=0)
+ *
+ * ใช้ string compare `dueDate<=todayStr` (ไม่ new Date() ข้างใน) — pattern เดียวกับ priorityQueue.ts:156
+ *
+ * ---- Trace tests (today = '2026-07-02') ----------------------------------------
+ * Trace1: [ง1 due04-02 amt2000 paid2000 paidAt04-02][ง2 due05-02 amt2000 paid2000 paidAt06-15]
+ *         [ง3 due06-02 amt2000 paid0 null][ง4 due07-02 amt2000 paid0 null]
+ *   → overdueCount=2 (ง3,ง4), remaining=4000, recovered={1,2000}(เฉพาะง2 — ง1 จ่ายตรงเวลาไม่นับ)
+ *   badge "ค้าง 2 งวด (4,000 ฿) · จ่ายมาแล้ว 1 งวด (2,000 ฿) · อีก 2 งวด (4,000 ฿) กลับปกติ"
+ *
+ * Trace2 partial: [ง1 due05-02 amt1500 paid1500 paidAt05-02][ง2 due06-02 amt1500 paid500 null]
+ *                 [ง3 due07-01 amt1500 paid0 null]
+ *   → overdueCount=2, remaining=2500, recovered={1,500}
+ *   badge "ค้าง 2 งวด (2,500 ฿) · จ่ายมาแล้วบางส่วน 500 ฿ · อีก 2,500 ฿ กลับปกติ"
+ */
+export function paymentRecoveryStatus(
+  installments: RecoveryInstallmentInput[],
+  today: Date,
+): PaymentRecoveryStatus {
+  const y = today.getFullYear()
+  const m = String(today.getMonth() + 1).padStart(2, '0')
+  const d = String(today.getDate()).padStart(2, '0')
+  const todayStr = `${y}-${m}-${d}`
+
+  const overdue = installments.filter((i) => i.paidAt === null && i.dueDate <= todayStr)
+  const overdueCount = overdue.length
+  const overdueAmountRemaining = overdue.reduce(
+    (sum, i) => sum + Math.max(0, i.amount - i.paidAmount),
+    0,
+  )
+
+  const recovered = installments.filter(
+    (i) => i.dueDate <= todayStr && i.paidAmount > 0 && i.paidAt !== null,
+  )
+  const recoveredThisEpisode = {
+    installmentCount: recovered.length,
+    amountPaid: recovered.reduce((sum, i) => sum + i.paidAmount, 0),
+  }
+
+  const toNormal = { installmentsToClose: overdueCount, amountNeeded: overdueAmountRemaining }
+  const isNormal = overdueCount === 0
+
+  return {
+    overdueCount,
+    overdueAmountRemaining,
+    recoveredThisEpisode,
+    toNormal,
+    isNormal,
+    badgeText: formatRecoveryBadge({
+      overdueCount,
+      overdueAmountRemaining,
+      recoveredThisEpisode,
+      toNormal,
+      isNormal,
+    }),
+  }
+}
+
+/** สร้างข้อความป้ายจากผลลัพธ์ paymentRecoveryStatus (แยกต่างหากตามสเปก) */
+export function formatRecoveryBadge(
+  status: Omit<PaymentRecoveryStatus, 'badgeText'>,
+): string {
+  if (status.isNormal) return 'ผ่อนปกติ'
+
+  const { overdueCount, overdueAmountRemaining, recoveredThisEpisode, toNormal } = status
+
+  const parts = [`ค้าง ${overdueCount} งวด (${baht(overdueAmountRemaining)} ฿)`]
+
+  if (recoveredThisEpisode.installmentCount > 0) {
+    parts.push(`จ่ายมาแล้ว ${recoveredThisEpisode.installmentCount} งวด (${baht(recoveredThisEpisode.amountPaid)} ฿)`)
+  } else if (recoveredThisEpisode.amountPaid > 0) {
+    parts.push(`จ่ายมาแล้วบางส่วน ${baht(recoveredThisEpisode.amountPaid)} ฿`)
+  }
+
+  parts.push(`อีก ${toNormal.installmentsToClose} งวด (${baht(toNormal.amountNeeded)} ฿) กลับปกติ`)
+
+  return parts.join(' · ')
 }

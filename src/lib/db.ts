@@ -156,6 +156,12 @@ interface ContractRow {
   settlement_remaining: number | null
   settlement_paid: number | null
   settled_by: string | null
+  needs_fix_reason: string | null
+  needs_fix_detail: string | null
+  needs_fix_by: string | null
+  needs_fix_at: string | null
+  assigned_to: string | null
+  assigned_at: string | null
   created_at: string
 }
 
@@ -237,6 +243,12 @@ function mapContract(r: ContractRow): Contract {
     settlementRemaining: r.settlement_remaining == null ? null : Number(r.settlement_remaining),
     settlementPaid: r.settlement_paid == null ? null : Number(r.settlement_paid),
     settledBy: r.settled_by ?? null,
+    needsFixReason: r.needs_fix_reason ?? null,
+    needsFixDetail: r.needs_fix_detail ?? null,
+    needsFixBy: r.needs_fix_by ?? null,
+    needsFixAt: r.needs_fix_at ?? null,
+    assignedTo: r.assigned_to ?? null,
+    assignedAt: r.assigned_at ?? null,
     createdAt: r.created_at,
   }
 }
@@ -677,6 +689,29 @@ export async function saveDeviceReturnTiers(tiers: DeviceReturnTier[]): Promise<
   if (error) throw error
 }
 
+// ---------- ตั้งค่าบริษัทสำหรับข้อความ SMS/จดหมาย (เก็บใน app_settings, key แยกทีละตัว) ----------
+// ยังไม่มี key เหล่านี้ใน DB จริง (ครีมจะ seed ทีหลัง) — อ่านไม่เจอ = คืนค่าว่าง '' ทั้งหมด ไม่ throw
+// (ต่างจาก pattern JSON เดิม เพราะนี่เป็น 3 ค่าแยกอิสระกัน ไม่ใช่ก้อนเดียว)
+export async function getCompanySmsSettings(): Promise<{
+  companyName: string
+  companyPhone: string
+  returnAddress: string
+}> {
+  const fallback = { companyName: '', companyPhone: '', returnAddress: '' }
+  if (!supabase) return fallback
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('key, value')
+    .in('key', ['company_name', 'company_phone', 'sms_return_address'])
+  if (error) throw error
+  const m = new Map((data ?? []).map((r) => [r.key as string, r.value as string]))
+  return {
+    companyName: m.get('company_name') ?? fallback.companyName,
+    companyPhone: m.get('company_phone') ?? fallback.companyPhone,
+    returnAddress: m.get('sms_return_address') ?? fallback.returnAddress,
+  }
+}
+
 export async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
   if (!supabase) {
     // โหมด mock — ยังไม่บันทึกจริง
@@ -744,6 +779,90 @@ export async function markSummaryAccountingSent(ids: string[], senderName?: stri
       summary_accounting_sent_by: senderName ?? null,
     })
     .in('id', ids)
+  if (error) throw error
+}
+
+/** เหตุผลตีกลับสรุปยอด (0084) — ตรงกับ constraint ที่ UI ใช้ (ไม่มี check constraint ใน DB ตั้งใจ เผื่อเพิ่มเหตุผลทีหลังไม่ต้อง migration) */
+export type NeedsFixReason = 'docs_incorrect' | 'price_incorrect' | 'duplicate' | 'missing_info' | 'other'
+
+/** บัญชีตีกลับเคส — set needs_fix_* + reset สถานะส่งสรุปยอดทั้ง 2 ด่าน (0084)
+ *  เคสจะเด้งกลับคอลัมน์ซ้ายของ waiting-summary (filter !summaryShopSentAt เหมือนเคสใหม่)
+ *  ไม่แตะ pending_documents/email_sent_* — เคสยังถือว่า "เอกสารครบ" แค่ยอด/ข้อมูลผิด ต้องแก้แล้วส่งใหม่ */
+export async function rejectSummaryContract(
+  contractId: string,
+  reasonCode: NeedsFixReason,
+  detail: string | null,
+  byName: string,
+): Promise<void> {
+  if (!supabase) return
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      needs_fix_reason: reasonCode,
+      needs_fix_detail: detail,
+      needs_fix_by: byName,
+      needs_fix_at: now,
+      // เด้งกลับคอลัมน์ซ้าย — reset สถานะส่งสรุปยอดทั้ง 2 ด่าน (ตรง pattern bounce-back ของ setContractFlags)
+      summary_shop_sent_at: null,
+      summary_shop_sent_by: null,
+      summary_accounting_sent_at: null,
+      summary_accounting_sent_by: null,
+    })
+    .eq('id', contractId)
+  if (error) throw error
+}
+
+/** เคลียร์ needs_fix_* — พนักงานแก้เสร็จแล้ว (เรียกก่อนส่งสรุปยอดใหม่) */
+export async function clearNeedsFix(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      needs_fix_reason: null,
+      needs_fix_detail: null,
+      needs_fix_by: null,
+      needs_fix_at: null,
+    })
+    .eq('id', contractId)
+  if (error) throw error
+}
+
+/** ส่งสรุปยอดกลับให้พนักงานแก้ (bulk) — reset สถานะส่ง 2 ด่าน + ตั้ง needs_fix เป็น reason='other' พร้อม note
+ *  ต่างจาก rejectSummaryContract ตรงที่รับหลายสัญญาพร้อมกัน (ใช้ตอนเลือกหลายแถวแล้วกด "ส่งกลับ") */
+export async function sendSummaryBackToStaff(contractIds: string[], note: string, byName: string): Promise<void> {
+  if (!supabase || contractIds.length === 0) return
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('contracts')
+    .update({
+      needs_fix_reason: 'other',
+      needs_fix_detail: note,
+      needs_fix_by: byName,
+      needs_fix_at: now,
+      summary_shop_sent_at: null,
+      summary_shop_sent_by: null,
+      summary_accounting_sent_at: null,
+      summary_accounting_sent_by: null,
+    })
+    .in('id', contractIds)
+  if (error) throw error
+}
+
+/** แก้วันที่ทำรายการ (transaction_date) ของสัญญา — ใช้ตอนบัญชีแก้วันที่กลุ่มโอนผิด
+ *  ⚠️ กระทบรายงานที่ group by วันนี้ (getDailyTransferByShop, weekly-summary, daily-report ทุกหน้าที่ query .eq('transaction_date', ...))
+ *  แก้แล้วยอดของวันเก่าจะลดลง / วันใหม่จะเพิ่มขึ้น — ไม่มี audit log แยกสำหรับฟิลด์นี้ (บันทึกแค่ byName ผ่าน caller เอง ถ้าต้องการ) */
+export async function updateContractTransactionDate(
+  contractId: string,
+  newDateISO: string,
+  byName: string,
+): Promise<void> {
+  if (!supabase) return
+  void byName // ยังไม่มีคอลัมน์ audit แยกสำหรับการแก้วันที่ — เผื่อ caller อยากส่งชื่อไปโชว์ใน note ภายนอก (เช่น log แยกที่ UI เก็บเอง)
+  const { error } = await supabase
+    .from('contracts')
+    .update({ transaction_date: newDateISO })
+    .eq('id', contractId)
   if (error) throw error
 }
 
@@ -2180,6 +2299,7 @@ interface ShopTransferRow {
   transferred_by: string | null
   transferred_at: string | null
   note: string | null
+  slip_waived: boolean // 0085
   created_at: string
 }
 
@@ -2195,6 +2315,10 @@ export interface DailyTransferShopRow {
   transferredBy: string | null
   transferredAt: string | null
   note: string | null
+  slipWaived: boolean // 0085: true = ยืนยันย้อนหลังไม่มีสลิป (แยกจาก "รอแนบสลิป")
+  bank: string // join จาก shops — ไว้โชว์บัญชีปลายทางตอนโอน
+  accountNo: string
+  accountName: string
 }
 
 /** รายสัญญาต่อร้าน (drill-down) — ใช้เมื่อ accounting กดดูรายละเอียดยอดของร้านวันนั้น */
@@ -2245,13 +2369,24 @@ export async function getDailyTransferByShop(dateISO: string): Promise<DailyTran
   if (shopIds.length === 0) return []
 
   const [{ data: shopData, error: sErr }, { data: transferData, error: tErr }] = await Promise.all([
-    supabase.from('shops').select('id, code, name').in('id', shopIds).range(0, PAGE_CAP),
+    supabase.from('shops').select('id, code, name, bank, account_no, account_name').in('id', shopIds).range(0, PAGE_CAP),
     supabase.from('shop_transfer').select('*').eq('transfer_date', dateISO).in('shop_id', shopIds).range(0, PAGE_CAP),
   ])
   if (sErr) throw sErr
   if (tErr) throw tErr
 
-  const shopNameById = new Map((shopData ?? []).map((s) => [s.id as string, { name: s.name as string, code: s.code as string }]))
+  const shopNameById = new Map(
+    (shopData ?? []).map((s) => [
+      s.id as string,
+      {
+        name: s.name as string,
+        code: s.code as string,
+        bank: (s.bank as string | null) ?? '',
+        accountNo: (s.account_no as string | null) ?? '',
+        accountName: (s.account_name as string | null) ?? '',
+      },
+    ]),
+  )
   const transferByShop = new Map((((transferData ?? []) as ShopTransferRow[])).map((t) => [t.shop_id, t]))
 
   const out: DailyTransferShopRow[] = shopIds.map((shopId) => {
@@ -2269,6 +2404,10 @@ export async function getDailyTransferByShop(dateISO: string): Promise<DailyTran
       transferredBy: t?.transferred_by ?? null,
       transferredAt: t?.transferred_at ?? null,
       note: t?.note ?? null,
+      slipWaived: t?.slip_waived ?? false,
+      bank: shopInfo?.bank ?? '',
+      accountNo: shopInfo?.accountNo ?? '',
+      accountName: shopInfo?.accountName ?? '',
     }
   })
   out.sort((a, b) => a.shopCode.localeCompare(b.shopCode))
@@ -2826,6 +2965,9 @@ export interface FreelancerQueueRow {
   returnAnchorType: 'returned' | 'overdue' | null  // 'returned'=นับจากวันคืน, 'overdue'=นับจากครบงวด, null=ไม่ได้/ไม่ใช่เคสคืน
   returnAnchorDate: string | null     // วันที่ 1 จริงๆ ที่ frontend ใช้ลบกับวันนี้
   color: string | null               // สีเครื่อง (ดึงตรงจาก contracts)
+  // --- ระบบจองเคส claim/release (0086) ---
+  assignedTo: string | null           // uuid ของ profiles ผู้ถือเคสอยู่ — null = ว่าง
+  assignedToName: string | null       // ชื่อผู้ถือเคส (join profiles.full_name) — null ถ้าว่าง
 }
 
 interface QueueStatusRow {
@@ -2858,16 +3000,29 @@ interface QueueContractRow {
   promise_to_pay_date: string | null
   promised_amount: number | null
   case_closed_at: string | null
+  assigned_to: string | null
 }
 
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
   if (!supabase || grades.length === 0) return []
 
-  // ดึง uid ของผู้ใช้ปัจจุบัน — ใช้ในการแยก my vs other author (Wave 3)
+  // ดึง uid ของผู้ใช้ปัจจุบัน — ใช้ในการแยก my vs other author (Wave 3) + กรอง claim (0086)
   const {
     data: { user: currentUser },
   } = await supabase.auth.getUser()
   const myUid = currentUser?.id ?? null
+
+  // role ของผู้ใช้ปัจจุบัน — admin เห็นทุกเคสในคิว (ไม่กรอง assigned_to), freelancer/staff เห็นเฉพาะ
+  // เคสที่ว่าง (assigned_to is null) หรือเคสที่ตัวเอง claim ไว้ (0086 — กันคิวโดนคนอื่น claim บังหน้าจอ)
+  let isAdminUser = false
+  if (myUid) {
+    const { data: myProfile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', myUid)
+      .maybeSingle()
+    isAdminUser = (myProfile as { role?: string } | null)?.role === 'admin'
+  }
 
   // ดึงจาก v_contract_status:
   //  - status='active' + bucket != normal (คิวลูกหนี้ปกติเดิม)
@@ -2968,7 +3123,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
     .select(
-      'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at',
+      'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at, assigned_to',
     )
     .in('id', ids)
     .range(0, PAGE_CAP)
@@ -3148,10 +3303,34 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
 
   // กรองทิ้งเคส returned ที่ยอดปิด ≤ 0 (ไม่มีอะไรต้องเก็บ = ไม่ต้องเด้งคิว)
   // เคส active คงเดิมทุกแถว
+  // กรอง assigned_to (0086): admin เห็นหมด, freelancer/staff เห็นเฉพาะเคสว่าง (assigned_to null) หรือของตัวเอง
+  // ทำหลัง filter returned-closing เพื่อไม่ไปแตะ logic tab เดิม (caseClosedToday/returned/overdueFilter ทำที่ UI ต่อจากนี้)
   const visibleRows = statusRows.filter((r) => {
-    if (r.status !== 'returned') return true
-    return (returnClosingMap.get(r.contract_id) ?? 0) > 0
+    if (r.status === 'returned' && (returnClosingMap.get(r.contract_id) ?? 0) <= 0) return false
+    if (isAdminUser) return true
+    const owner = contractMap.get(r.contract_id)?.assigned_to ?? null
+    return owner === null || owner === myUid
   })
+
+  // ชื่อผู้ถือเคส (assignedToName) — batch query profiles เฉพาะ assigned_to ที่ปรากฏใน visibleRows (ไม่ N+1)
+  const assignedToIds = [
+    ...new Set(
+      visibleRows
+        .map((r) => contractMap.get(r.contract_id)?.assigned_to ?? null)
+        .filter((v): v is string => v !== null),
+    ),
+  ]
+  const assignedNameMap = new Map<string, string>()
+  if (assignedToIds.length > 0) {
+    const { data: assignedProfiles, error: assignedProfilesErr } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in('id', assignedToIds)
+    if (assignedProfilesErr) throw assignedProfilesErr
+    for (const p of (assignedProfiles ?? []) as { id: string; full_name: string | null }[]) {
+      assignedNameMap.set(p.id, p.full_name ?? '')
+    }
+  }
 
   return visibleRows.map((r): FreelancerQueueRow => {
     const c = contractMap.get(r.contract_id)
@@ -3249,8 +3428,77 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       overdueDueDate,
       returnAnchorType,
       returnAnchorDate,
+      assignedTo: c?.assigned_to ?? null,
+      assignedToName: c?.assigned_to ? (assignedNameMap.get(c.assigned_to) ?? null) : null,
     }
   })
+}
+
+// ---------- ระบบจองเคส claim/release (0086) — กันสองคนโทรชนกันในคิวเดียวกัน ----------
+
+/** จองเคส — atomic ผ่าน RPC claim_case (0086); มีคนถืออยู่แล้ว → throw error message 'CASE_ALREADY_CLAIMED' (UI จับเอง) */
+export async function claimCase(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('claim_case', { p_contract_id: contractId })
+  if (error) throw error
+}
+
+/** ปล่อยเคส — atomic ผ่าน RPC release_case (0086); ไม่ใช่เจ้าของ/ไม่ใช่ admin → throw error message 'NOT_CASE_OWNER' */
+export async function releaseCase(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('release_case', { p_contract_id: contractId })
+  if (error) throw error
+}
+
+/** เคสที่ตัวเอง (ผู้ใช้ปัจจุบัน) claim ไว้ — reuse getFreelancerQueue shape (FreelancerQueueRow)
+ *  ดึงทุกเกรดที่ตัวเองได้รับมอบหมาย แล้ว filter เฉพาะ assignedTo = ตัวเอง ฝั่ง client
+ *  (ไม่แยก query ใหม่ทั้งชุด — reuse logic เดิมของคิวเพื่อกันสูตรคำนวณ principalDue/aggregate เพี้ยน 2 ที่) */
+export async function getMyCases(): Promise<FreelancerQueueRow[]> {
+  if (!supabase) return []
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return []
+  const grades = await getMyAssignedGrades()
+  if (grades.length === 0) return []
+  const queue = await getFreelancerQueue(grades)
+  return queue.filter((r) => r.assignedTo === user.id)
+}
+
+interface CaseOwnershipCountRow {
+  assigned_to: string
+}
+
+/** สรุปว่าใครถือกี่เคส — เฉพาะ admin (contracts RLS is_admin() → true, role อื่นเห็นแค่ของตัวเองผ่าน grade scope)
+ *  group by assigned_to ฝั่ง client (จำนวนแถวเล็ก ไม่ต้อง RPC พิเศษ) */
+export async function getCaseOwnershipSummary(): Promise<{ ownerId: string; ownerName: string; count: number }[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('assigned_to')
+    .not('assigned_to', 'is', null)
+    .range(0, PAGE_CAP)
+  if (error) throw error
+
+  const countMap = new Map<string, number>()
+  for (const r of (data ?? []) as CaseOwnershipCountRow[]) {
+    countMap.set(r.assigned_to, (countMap.get(r.assigned_to) ?? 0) + 1)
+  }
+  const ownerIds = [...countMap.keys()]
+  if (ownerIds.length === 0) return []
+
+  const { data: profileData, error: profileErr } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .in('id', ownerIds)
+  if (profileErr) throw profileErr
+  const nameMap = new Map(
+    ((profileData ?? []) as { id: string; full_name: string | null }[]).map((p) => [p.id, p.full_name ?? '']),
+  )
+
+  return ownerIds
+    .map((id) => ({ ownerId: id, ownerName: nameMap.get(id) ?? '(ไม่พบชื่อ)', count: countMap.get(id) ?? 0 }))
+    .sort((a, b) => b.count - a.count)
 }
 
 /** ปิดเคสในคิวโทร — บันทึกว่าพนักงานได้ดำเนินการเสร็จแล้ววันนี้

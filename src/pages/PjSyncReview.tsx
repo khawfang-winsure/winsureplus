@@ -51,7 +51,7 @@ function thaiDateTime(iso: string): string {
 
 export default function PjSyncReview() {
   const { role, name: userName, configured } = useAuth()
-  const isAdmin = !configured || role === 'admin'
+  const isAdminOrStaff = !configured || role === 'admin' || role === 'staff'
 
   const [rows, setRows] = useState<PjSyncReviewRow[]>([])
   const [runs, setRuns] = useState<PjSyncRunRow[]>([])
@@ -73,7 +73,7 @@ export default function PjSyncReview() {
   const [applyTarget, setApplyTarget] = useState<PjSyncReviewRow | null>(null)
 
   // กันชั้นใน (route ที่ App.tsx guard อยู่แล้ว)
-  if (!isAdmin) return <EmptyState title="เฉพาะแอดมินเท่านั้น" />
+  if (!isAdminOrStaff) return <EmptyState title="เฉพาะพนักงาน/แอดมินเท่านั้น" />
 
   const latest = runs[0] ?? null
   const latestBad = latest && (latest.status === 'error' || latest.status === 'login_failed')
