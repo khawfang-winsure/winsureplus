@@ -291,6 +291,10 @@ export interface Contract {
   // --- ระบบจองเคส claim/release (0086) ---
   assignedTo?: string | null           // uuid ของ profiles ผู้ถือเคสอยู่ — null = ว่าง
   assignedAt?: string | null           // เวลาที่ claim ล่าสุด
+  // --- หมายเหตุเคสติดปัญหา (0089) — พนักงานโน้ตเองว่าสรุปยอดไม่ได้เพราะติดอะไร คนละระบบกับ needsFix_* ---
+  summaryNote?: string | null          // ข้อความโน้ตอิสระ — null = ไม่มีโน้ตค้าง
+  summaryNoteBy?: string | null        // ชื่อคนเขียนโน้ตล่าสุด
+  summaryNoteAt?: string | null        // เวลาที่เขียน/แก้โน้ตล่าสุด
 }
 
 // ---------- Extra Charges (migration 0032) ----------

@@ -162,6 +162,9 @@ interface ContractRow {
   needs_fix_at: string | null
   assigned_to: string | null
   assigned_at: string | null
+  summary_note: string | null
+  summary_note_by: string | null
+  summary_note_at: string | null
   created_at: string
 }
 
@@ -249,6 +252,9 @@ function mapContract(r: ContractRow): Contract {
     needsFixAt: r.needs_fix_at ?? null,
     assignedTo: r.assigned_to ?? null,
     assignedAt: r.assigned_at ?? null,
+    summaryNote: r.summary_note ?? null,
+    summaryNoteBy: r.summary_note_by ?? null,
+    summaryNoteAt: r.summary_note_at ?? null,
     createdAt: r.created_at,
   }
 }
@@ -825,6 +831,20 @@ export async function clearNeedsFix(contractId: string): Promise<void> {
       needs_fix_at: null,
     })
     .eq('id', contractId)
+  if (error) throw error
+}
+
+/** หมายเหตุเคสติดปัญหา (0089) — พนักงานโน้ตเองว่าเคสนี้สรุปยอดไม่ได้เพราะติดอะไร
+ *  คนละระบบกับ needs_fix_* (บัญชีตีกลับ) — ห้ามชนกัน
+ *  เขียนผ่าน RPC set_summary_note เท่านั้น (ไม่เปิด contracts update policy กว้างขึ้น) — RPC ดึงชื่อผู้เขียนจาก
+ *  profiles ของ auth.uid() เอง กัน spoof ชื่อ; note = null หรือ '' = เคลียร์โน้ต
+ *  frozen signature — น้องวิวเรียกตามนี้ (byName รับไว้เพื่อความสม่ำเสมอกับฟังก์ชันอื่นในไฟล์นี้ แต่ RPC ไม่ใช้ค่านี้) */
+export async function updateSummaryNote(contractId: string, note: string | null, _byName: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('set_summary_note', {
+    p_contract_id: contractId,
+    p_note: note,
+  })
   if (error) throw error
 }
 
@@ -2321,13 +2341,21 @@ export interface DailyTransferShopRow {
   accountName: string
 }
 
-/** รายสัญญาต่อร้าน (drill-down) — ใช้เมื่อ accounting กดดูรายละเอียดยอดของร้านวันนั้น */
+/** รายสัญญาต่อร้าน (drill-down) — ใช้เมื่อ accounting กดดูรายละเอียดยอดของร้านวันนั้น
+ *  frozen contract — น้องวิว render ตามนี้เป๊ะ ห้ามเปลี่ยนชื่อ/ชนิดฟิลด์โดยไม่แจ้ง */
 export interface DailyTransferContractRow {
   contractId: string
   contractNo: string
   customerName: string
   devicePrice: number
   netTransfer: number
+  invNo: string | null
+  model: string | null
+  storage: string | null
+  sn: string | null
+  afterDown: number // ยอดตัวเครื่องหลังหักดาวน์ = calcSummary().afterDown
+  commission: number // ค่าคอมมิชชั่น = calcSummary().commission
+  docFee: number // ค่าเอกสาร
 }
 
 interface DailyTransferContractQueryRow {
@@ -2339,6 +2367,10 @@ interface DailyTransferContractQueryRow {
   down_percent: number
   commission_percent: number
   doc_fee: number
+  inv_no: string | null
+  model: string | null
+  storage: string | null
+  sn: string | null
 }
 
 /** สรุปยอดโอนรายวัน ต่อร้าน (สำหรับหน้าบัญชี) — LEFT JOIN สถานะโอนจาก shop_transfer
@@ -2348,7 +2380,9 @@ export async function getDailyTransferByShop(dateISO: string): Promise<DailyTran
 
   const { data: contractRows, error: cErr } = await supabase
     .from('contracts')
-    .select('id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee')
+    .select(
+      'id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee, inv_no, model, storage, sn',
+    )
     .eq('transaction_date', dateISO)
     .range(0, PAGE_CAP)
   if (cErr) throw cErr
@@ -2419,11 +2453,15 @@ export async function getDailyTransferContracts(shopId: string, dateISO: string)
   if (!supabase) return []
   const { data, error } = await supabase
     .from('contracts')
-    .select('id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee')
+    .select(
+      'id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee, inv_no, model, storage, sn',
+    )
     .eq('transaction_date', dateISO)
     .eq('shop_id', shopId)
     .range(0, PAGE_CAP)
   if (error) throw error
+  // reuse calcSummary (calc.ts) ตัวเดียวกับที่ itemBlock/buildBulkSummary (messages.ts) ใช้สร้างข้อความส่งร้าน
+  // ให้ afterDown/commission ตรงกับข้อความจริง 100% — ห้ามคำนวณแยกสูตร
   return ((data ?? []) as DailyTransferContractQueryRow[]).map((r) => {
     const s = calcSummary(Number(r.device_price), Number(r.down_percent), Number(r.commission_percent), Number(r.doc_fee))
     return {
@@ -2432,6 +2470,13 @@ export async function getDailyTransferContracts(shopId: string, dateISO: string)
       customerName: r.customer_name,
       devicePrice: Number(r.device_price),
       netTransfer: s.net,
+      invNo: r.inv_no ?? null,
+      model: r.model ?? null,
+      storage: r.storage ?? null,
+      sn: r.sn ?? null,
+      afterDown: s.afterDown,
+      commission: s.commission,
+      docFee: s.docFee,
     }
   })
 }

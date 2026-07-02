@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { RotateCcw, X } from 'lucide-react'
-import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
+import { Pencil, RotateCcw, X } from 'lucide-react'
+import { Badge, Button, EmptyState, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import CopyBox from '../components/CopyBox'
 import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
 import { buildBulkSummary, buildRejectionBanner, REJECTION_REASON_LABEL } from '../lib/messages'
-import { clearNeedsFix, getContracts, getShops, markSummaryShopSent, markSummaryAccountingSent } from '../lib/db'
+import {
+  clearNeedsFix,
+  getContracts,
+  getShops,
+  markSummaryShopSent,
+  markSummaryAccountingSent,
+  updateSummaryNote,
+} from '../lib/db'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, Shop } from '../lib/types'
@@ -41,6 +48,78 @@ function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[]
   })
 }
 
+// ===== ป็อปอัพหมายเหตุเคสติดปัญหา (สรุปยอดไม่ได้เพราะติดอะไร) =====
+function SummaryNoteModal({
+  contract,
+  byName,
+  onClose,
+  onDone,
+}: {
+  contract: Contract
+  byName: string
+  onClose: () => void
+  onDone: (note: string | null, byName: string) => void
+}) {
+  const [note, setNote] = useState(contract.summaryNote ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      const trimmed = note.trim()
+      await updateSummaryNote(contract.id, trimmed || null, byName)
+      onDone(trimmed || null, byName)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`หมายเหตุเคสติดปัญหา — ${contract.customerName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">{contract.contractNo}</p>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-ink">หมายเหตุ</span>
+          <Textarea
+            autoFocus
+            rows={3}
+            placeholder="เช่น รอลูกค้าโอนดาวน์เพิ่ม, เอกสารไม่ครบ ฯลฯ"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </label>
+        <p className="text-xs text-ink-soft">เว้นว่างแล้วบันทึก = ลบหมายเหตุ</p>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            ยกเลิก
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'บันทึกหมายเหตุ'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 const today = new Date().toISOString().slice(0, 10)
 const SEL_KEY = 'waiting-summary:selected'
 const DATE_KEY = 'waiting-summary:date'
@@ -48,7 +127,9 @@ const netOf = (c: Contract) =>
   calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
 
 export default function WaitingSummary() {
-  const { name } = useAuth()
+  const { name, role } = useAuth()
+  const canEditNote = role === 'admin' || role === 'staff'
+  const byName = name ?? 'ไม่ระบุชื่อ'
   const { data, loading } = useAsync(
     async () => {
       const [contracts, shops] = await Promise.all([getContracts(), getShops()])
@@ -63,6 +144,9 @@ export default function WaitingSummary() {
   // เคสที่กด "แก้แล้ว ส่งใหม่" รอบนี้ — ซ่อนป้ายตีกลับทันทีโดยไม่ต้อง reload ทั้งหน้า (req2)
   const [locallyClearedNeedsFix, setLocallyClearedNeedsFix] = useState<Set<string>>(new Set())
   const [clearingId, setClearingId] = useState<string | null>(null)
+  // หมายเหตุเคสติดปัญหา — เก็บ override ในเครื่องหลังบันทึก (ทั้งข้อความ+คนเขียน) กันต้อง reload ทั้งหน้า
+  const [noteOverride, setNoteOverride] = useState<Map<string, { note: string | null; by: string }>>(new Map())
+  const [noteTarget, setNoteTarget] = useState<Contract | null>(null)
   const [selected, setSelected] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(SEL_KEY)
@@ -87,6 +171,12 @@ export default function WaitingSummary() {
   const [shopFilter, setShopFilter] = useState('')
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
+  // หมายเหตุที่ใช้แสดงจริง — ถ้ามี override (เพิ่งบันทึกรอบนี้) ใช้ override ก่อน ไม่งั้นใช้ค่าจาก DB
+  const noteOf = (c: Contract) =>
+    noteOverride.has(c.id) ? noteOverride.get(c.id)!.note : c.summaryNote ?? null
+  // ป้ายชื่อคนโน้ต — ต้องมาจากแหล่งเดียวกับ noteOf กันข้อความ/ชื่อไม่ตรงกันระหว่างรอ reload
+  const noteByOf = (c: Contract) =>
+    noteOverride.has(c.id) ? noteOverride.get(c.id)!.by : c.summaryNoteBy ?? null
 
   // จำสิ่งที่ติ๊กไว้ (ฝั่งร้าน) + วันที่สรุป ข้าม reload
   useEffect(() => {
@@ -423,10 +513,27 @@ export default function WaitingSummary() {
                                 {' '}— {c.contractNo}
                               </p>
                               {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+                              {canEditNote && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setNoteTarget(c) }}
+                                  aria-label="แก้ไขหมายเหตุ"
+                                  title="แก้ไขหมายเหตุ"
+                                  className="rounded p-0.5 text-ink-soft transition hover:bg-peach-light/50 hover:text-ink"
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                              )}
                             </div>
                             <p className="text-sm text-ink-soft">
                               {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
                             </p>
+                            {noteOf(c) && (
+                              <p className="text-xs text-ink-soft">
+                                หมายเหตุ: {noteOf(c)}
+                                {noteByOf(c) && <span className="ml-1 text-[11px]">({noteByOf(c)})</span>}
+                              </p>
+                            )}
                           </div>
                           <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
                         </div>
@@ -516,10 +623,27 @@ export default function WaitingSummary() {
                               {' '}— {c.contractNo}
                             </p>
                             {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+                            {canEditNote && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setNoteTarget(c) }}
+                                aria-label="แก้ไขหมายเหตุ"
+                                title="แก้ไขหมายเหตุ"
+                                className="rounded p-0.5 text-ink-soft transition hover:bg-peach-light/50 hover:text-ink"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                            )}
                           </div>
                           <p className="text-sm text-ink-soft">
                             {shopOf(c.shopId)?.name} · {thaiDate(c.transactionDate)}
                           </p>
+                          {noteOf(c) && (
+                            <p className="text-xs text-ink-soft">
+                              หมายเหตุ: {noteOf(c)}
+                              {noteByOf(c) && <span className="ml-1 text-[11px]">({noteByOf(c)})</span>}
+                            </p>
+                          )}
                         </div>
                         <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
                       </li>
@@ -542,6 +666,18 @@ export default function WaitingSummary() {
             </section>
           </div>
         </>
+      )}
+
+      {noteTarget && (
+        <SummaryNoteModal
+          contract={noteTarget}
+          byName={byName}
+          onClose={() => setNoteTarget(null)}
+          onDone={(savedNote, savedBy) => {
+            setNoteOverride((prev) => new Map(prev).set(noteTarget.id, { note: savedNote, by: savedBy }))
+            setNoteTarget(null)
+          }}
+        />
       )}
     </div>
   )

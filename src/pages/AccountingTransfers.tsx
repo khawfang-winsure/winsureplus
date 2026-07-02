@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { Check, CheckCircle2, ChevronLeft, ChevronRight, Copy, Landmark, Receipt, Store, Upload, X, XCircle } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Copy, Landmark, Receipt, Store, Upload, X, XCircle } from 'lucide-react'
 import { Badge, Button, EmptyState, Field, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { Input } from '../components/ui'
 import { useAuth } from '../lib/auth'
@@ -267,6 +267,40 @@ function shiftDay(isoDate: string, delta: number): string {
   return d.toLocaleString('en-CA').slice(0, 10)
 }
 
+// ===== แถวย่อย "ข้อมูลที่ส่งให้ร้าน" (drill-down ต่อสัญญา) =====
+function ContractDetailRow({ r }: { r: DailyTransferContractRow }) {
+  const dash = (v: string | null) => v ?? '-'
+  const fields: { label: string; value: string }[] = [
+    { label: 'เลขที่สัญญา', value: r.contractNo },
+    { label: 'เลขที่ INV', value: dash(r.invNo) },
+    { label: 'ชื่อลูกค้า', value: r.customerName },
+    { label: 'รุ่นเครื่อง', value: dash(r.model) },
+    { label: 'ความจุ', value: dash(r.storage) },
+    { label: 'SN', value: dash(r.sn) },
+    { label: 'ราคาตัวเครื่อง', value: `${baht(r.devicePrice)} บาท` },
+    { label: 'ยอดหลังหักดาวน์', value: `${baht(r.afterDown)} บาท` },
+    { label: 'ค่าคอมมิชชั่น', value: `${baht(r.commission)} บาท` },
+    { label: 'ค่าเอกสาร', value: `${baht(r.docFee)} บาท` },
+    { label: 'ยอดโอนสุทธิ', value: `${baht(r.netTransfer)} บาท` },
+  ]
+
+  return (
+    <tr className="border-b border-peach/60 last:border-0 bg-peach-light/20">
+      <td colSpan={5} className="px-4 py-3">
+        <p className="mb-2 text-xs font-semibold text-ink-soft">ข้อมูลที่ส่งให้ร้าน</p>
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
+          {fields.map((f) => (
+            <div key={f.label} className="flex items-baseline justify-between gap-2 text-sm sm:justify-start">
+              <dt className="text-ink-soft">{f.label}</dt>
+              <dd className="font-medium text-ink sm:ml-1.5">{f.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </td>
+    </tr>
+  )
+}
+
 // ===== รายสัญญาของร้าน (drill-down) =====
 function ShopContractsList({
   shopId,
@@ -287,6 +321,7 @@ function ShopContractsList({
 }) {
   const [rows, setRows] = useState<DailyTransferContractRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [expandedContractId, setExpandedContractId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -330,37 +365,53 @@ function ShopContractsList({
             <th className="px-4 py-2" />
           </tr>
         </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.contractId} className="border-b border-peach/60 last:border-0">
-              <td className="px-4 py-2 text-ink">{r.contractNo}</td>
-              <td className="px-4 py-2 text-ink">{r.customerName}</td>
-              <td className="px-4 py-2 text-right text-ink-soft">{baht(r.devicePrice)}</td>
-              <td className="px-4 py-2 text-right font-medium text-ink">{baht(r.netTransfer)}</td>
-              <td className="px-4 py-2 text-right">
-                <div className="flex items-center justify-end gap-1.5">
-                  {isAdmin && (
+        {rows.map((r) => {
+          const isOpen = expandedContractId === r.contractId
+          return (
+            <tbody key={r.contractId}>
+              <tr
+                onClick={() => setExpandedContractId((cur) => (cur === r.contractId ? null : r.contractId))}
+                aria-expanded={isOpen}
+                className="cursor-pointer border-b border-peach/60 transition hover:bg-peach-light/20 last:border-0"
+              >
+                <td className="px-4 py-2 text-ink">
+                  <span className="inline-flex items-center gap-1.5">
+                    <ChevronDown
+                      size={14}
+                      className={`shrink-0 text-ink-soft transition-transform ${isOpen ? 'rotate-180' : ''}`}
+                    />
+                    {r.contractNo}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-ink">{r.customerName}</td>
+                <td className="px-4 py-2 text-right text-ink-soft">{baht(r.devicePrice)}</td>
+                <td className="px-4 py-2 text-right font-medium text-ink">{baht(r.netTransfer)}</td>
+                <td className="px-4 py-2 text-right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onEditDate(r) }}
+                        className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-peach bg-white px-2 py-1 text-xs font-medium text-ink-soft transition hover:bg-peach-light/50"
+                      >
+                        แก้วันที่โอน
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => onEditDate(r)}
-                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-peach bg-white px-2 py-1 text-xs font-medium text-ink-soft transition hover:bg-peach-light/50"
+                      onClick={(e) => { e.stopPropagation(); onReject(r) }}
+                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 transition hover:bg-red-100"
                     >
-                      แก้วันที่โอน
+                      <XCircle size={12} />
+                      ยังไม่โอน/ไม่ผ่าน
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => onReject(r)}
-                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 transition hover:bg-red-100"
-                  >
-                    <XCircle size={12} />
-                    ยังไม่โอน/ไม่ผ่าน
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
+                  </div>
+                </td>
+              </tr>
+              {isOpen && <ContractDetailRow r={r} />}
+            </tbody>
+          )
+        })}
       </table>
     </div>
   )
