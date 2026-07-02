@@ -52,6 +52,7 @@ function thaiDateTime(iso: string): string {
 export default function PjSyncReview() {
   const { role, name: userName, configured } = useAuth()
   const isAdminOrStaff = !configured || role === 'admin' || role === 'staff'
+  const isAdmin = !configured || role === 'admin'
 
   const [rows, setRows] = useState<PjSyncReviewRow[]>([])
   const [runs, setRuns] = useState<PjSyncRunRow[]>([])
@@ -59,11 +60,14 @@ export default function PjSyncReview() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [review, runList] = await Promise.all([getPjSyncReview('pending'), getPjSyncRuns(10)])
+    const [review, runList] = await Promise.all([
+      getPjSyncReview('pending'),
+      isAdmin ? getPjSyncRuns(10) : Promise.resolve([]),
+    ])
     setRows(review)
     setRuns(runList)
     setLoading(false)
-  }, [])
+  }, [isAdmin])
 
   useEffect(() => {
     load()
@@ -87,59 +91,61 @@ export default function PjSyncReview() {
         กล่องรอตรวจ PJ
       </PageTitle>
 
-      {/* ===== แถบสถานะการรัน ===== */}
-      <Card className="mb-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">สถานะการดึงยอดอัตโนมัติ</h3>
-          {latest && <span className="text-xs text-ink-soft">รอบล่าสุด {thaiDateTime(latest.startedAt)}</span>}
-        </div>
+      {/* ===== แถบสถานะการรัน (admin เท่านั้น — staff เห็นแค่กล่องรอตรวจ) ===== */}
+      {isAdmin && (
+        <Card className="mb-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-ink">สถานะการดึงยอดอัตโนมัติ</h3>
+            {latest && <span className="text-xs text-ink-soft">รอบล่าสุด {thaiDateTime(latest.startedAt)}</span>}
+          </div>
 
-        {loading ? (
-          <Loading />
-        ) : runs.length === 0 ? (
-          <p className="text-sm text-ink-soft">ยังไม่มีประวัติการรัน</p>
-        ) : (
-          <>
-            {/* เตือนเมื่อรอบล่าสุดพัง */}
-            {latestBad && latest && (
-              <div className="mb-3 flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-700">
-                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                <div>
-                  <p className="font-medium">การดึงยอดรอบล่าสุดมีปัญหา ({RUN_STATUS_LABEL[latest.status]})</p>
-                  {latest.errorDetail && <p className="mt-0.5 text-xs text-red-600">{latest.errorDetail}</p>}
+          {loading ? (
+            <Loading />
+          ) : runs.length === 0 ? (
+            <p className="text-sm text-ink-soft">ยังไม่มีประวัติการรัน</p>
+          ) : (
+            <>
+              {/* เตือนเมื่อรอบล่าสุดพัง */}
+              {latestBad && latest && (
+                <div className="mb-3 flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-medium">การดึงยอดรอบล่าสุดมีปัญหา ({RUN_STATUS_LABEL[latest.status]})</p>
+                    {latest.errorDetail && <p className="mt-0.5 text-xs text-red-600">{latest.errorDetail}</p>}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-peach text-left text-ink-soft">
-                    <th className="py-2 pr-4 font-medium">เวลา</th>
-                    <th className="py-2 pr-4 font-medium">สถานะ</th>
-                    <th className="py-2 pr-4 font-medium text-right">ลงอัตโนมัติ</th>
-                    <th className="py-2 font-medium text-right">เข้ากล่อง</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {runs.map((run) => (
-                    <tr key={run.id} className="border-b border-peach/50">
-                      <td className="py-2 pr-4 text-ink-soft whitespace-nowrap">{thaiDateTime(run.startedAt)}</td>
-                      <td className="py-2 pr-4">
-                        <Badge tone={RUN_STATUS_TONE[run.status]}>{RUN_STATUS_LABEL[run.status]}</Badge>
-                      </td>
-                      <td className="py-2 pr-4 text-right text-ink whitespace-nowrap">
-                        {run.autoAppliedCount} ราย · {baht(run.autoAppliedAmount)} ฿
-                      </td>
-                      <td className="py-2 text-right text-ink whitespace-nowrap">{run.reviewCount} ราย</td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-peach text-left text-ink-soft">
+                      <th className="py-2 pr-4 font-medium">เวลา</th>
+                      <th className="py-2 pr-4 font-medium">สถานะ</th>
+                      <th className="py-2 pr-4 font-medium text-right">ลงอัตโนมัติ</th>
+                      <th className="py-2 font-medium text-right">เข้ากล่อง</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </Card>
+                  </thead>
+                  <tbody>
+                    {runs.map((run) => (
+                      <tr key={run.id} className="border-b border-peach/50">
+                        <td className="py-2 pr-4 text-ink-soft whitespace-nowrap">{thaiDateTime(run.startedAt)}</td>
+                        <td className="py-2 pr-4">
+                          <Badge tone={RUN_STATUS_TONE[run.status]}>{RUN_STATUS_LABEL[run.status]}</Badge>
+                        </td>
+                        <td className="py-2 pr-4 text-right text-ink whitespace-nowrap">
+                          {run.autoAppliedCount} ราย · {baht(run.autoAppliedAmount)} ฿
+                        </td>
+                        <td className="py-2 text-right text-ink whitespace-nowrap">{run.reviewCount} ราย</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </Card>
+      )}
 
       {/* ===== ตารางกล่องรอตรวจ ===== */}
       {loading ? (
