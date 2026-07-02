@@ -704,7 +704,7 @@ export default function AccountingTransfers() {
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4 md:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <PageTitle sub="รายการยอดโอนเงินให้ร้านค้าประจำวัน — อัปโหลดสลิปเมื่อโอนแล้ว">
+        <PageTitle sub="รายการยอดโอนเงินให้ร้านค้า จัดกลุ่มตามวันที่ส่งบัญชี — อัปโหลดสลิปเมื่อโอนแล้ว">
           โอนเงินร้าน
         </PageTitle>
 
@@ -741,7 +741,7 @@ export default function AccountingTransfers() {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-peach bg-cream-deep p-4">
           <p className="flex items-center gap-1.5 text-xs text-ink-soft">
-            <Landmark size={13} /> ยอดที่ต้องโอนวันนี้
+            <Landmark size={13} /> ยอดที่ต้องโอน (ตามวันที่ส่งบัญชี)
           </p>
           <p className="mt-1 text-xl font-bold text-ink">{baht(summary.total)} บาท</p>
         </div>
@@ -776,7 +776,7 @@ export default function AccountingTransfers() {
       {loading ? (
         <Loading label="กำลังโหลดข้อมูลยอดโอน..." />
       ) : shops.length === 0 ? (
-        <EmptyState title="ไม่มีสัญญาในวันที่เลือก" hint="ลองเปลี่ยนวันที่ดูค่ะ" />
+        <EmptyState title="ยังไม่มีเคสส่งบัญชีในวันที่เลือก" hint="ลองเปลี่ยนวันที่ดู หรือรอพนักงานกดส่งบัญชีก่อนค่ะ" />
       ) : (
         <div className="flex flex-col gap-2">
           {shops.map((shop) => (

@@ -870,8 +870,9 @@ export async function sendSummaryBackToStaff(contractIds: string[], note: string
 }
 
 /** แก้วันที่ทำรายการ (transaction_date) ของสัญญา — ใช้ตอนบัญชีแก้วันที่กลุ่มโอนผิด
- *  ⚠️ กระทบรายงานที่ group by วันนี้ (getDailyTransferByShop, weekly-summary, daily-report ทุกหน้าที่ query .eq('transaction_date', ...))
- *  แก้แล้วยอดของวันเก่าจะลดลง / วันใหม่จะเพิ่มขึ้น — ไม่มี audit log แยกสำหรับฟิลด์นี้ (บันทึกแค่ byName ผ่าน caller เอง ถ้าต้องการ) */
+ *  ⚠️ กระทบ weekly-summary (src/lib/weeklySummary.ts group by c.transactionDate) — แก้แล้วยอดของวันเก่าจะลดลง / วันใหม่จะเพิ่มขึ้น
+ *  ไม่กระทบ /transfers (getDailyTransferByShop เกาะ summary_accounting_sent_at แล้ว) และไม่กระทบ daily-report (getDailyAudit ใช้ event timestamp ไม่ใช่ transaction_date)
+ *  ไม่มี audit log แยกสำหรับฟิลด์นี้ (บันทึกแค่ byName ผ่าน caller เอง ถ้าต้องการ) */
 export async function updateContractTransactionDate(
   contractId: string,
   newDateISO: string,
@@ -2374,16 +2375,26 @@ interface DailyTransferContractQueryRow {
 }
 
 /** สรุปยอดโอนรายวัน ต่อร้าน (สำหรับหน้าบัญชี) — LEFT JOIN สถานะโอนจาก shop_transfer
- *  รวมทุกร้านที่มีสัญญาเข้าวันนั้น (ไม่กรอง active — ร้านปิดไปแล้วแต่มีสัญญาเก่าวันนั้นยังต้องเห็น) */
+ *  รวมทุกร้านที่มีสัญญาเข้าวันนั้น (ไม่กรอง active — ร้านปิดไปแล้วแต่มีสัญญาเก่าวันนั้นยังต้องเห็น)
+ *  หน้า /transfers เกาะ summary_accounting_sent_at (วันส่งบัญชี) ไม่ใช่ transaction_date (วันขาย)
+ *  → เคสที่ยังไม่กดส่งบัญชี (summary_accounting_sent_at IS NULL) จะไม่ถูกนับ ตามต้องการ
+ *  shop_transfer.transfer_date ยัง key ด้วย dateISO เดิม เพราะฝั่งเรียกใช้ส่ง "วันส่งบัญชีที่กำลังดู" เข้ามาอยู่แล้ว */
 export async function getDailyTransferByShop(dateISO: string): Promise<DailyTransferShopRow[]> {
   if (!supabase) return []
+
+  // แปลงวัน Bangkok (UTC+7 คงที่ ไม่มี DST) → ช่วง UTC สำหรับ query summary_accounting_sent_at
+  // pattern เดียวกับ getDailyAudit — ใช้ Date.UTC ตรงๆ แล้วลบ 7 ชม. เลี่ยงกับดัก '+07:00' suffix parsing
+  const [y, m, d] = dateISO.split('-').map(Number)
+  const since = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - 7 * 3600 * 1000).toISOString()
+  const until = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0) - 7 * 3600 * 1000).toISOString()
 
   const { data: contractRows, error: cErr } = await supabase
     .from('contracts')
     .select(
       'id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee, inv_no, model, storage, sn',
     )
-    .eq('transaction_date', dateISO)
+    .gte('summary_accounting_sent_at', since)
+    .lt('summary_accounting_sent_at', until)
     .range(0, PAGE_CAP)
   if (cErr) throw cErr
 
@@ -2448,15 +2459,24 @@ export async function getDailyTransferByShop(dateISO: string): Promise<DailyTran
   return out
 }
 
-/** รายสัญญาของร้านหนึ่ง ในวันหนึ่ง — สำหรับ drill-down ใต้แถวสรุป */
+/** รายสัญญาของร้านหนึ่ง ในวันหนึ่ง — สำหรับ drill-down ใต้แถวสรุป
+ *  หน้า /transfers เกาะ summary_accounting_sent_at (วันส่งบัญชี) ไม่ใช่ transaction_date (วันขาย)
+ *  → ต้องกรองด้วยช่วงวันเดียวกับ getDailyTransferByShop เป๊ะ ไม่งั้นยอดรวม vs drill-down ไม่ตรงกัน */
 export async function getDailyTransferContracts(shopId: string, dateISO: string): Promise<DailyTransferContractRow[]> {
   if (!supabase) return []
+
+  // แปลงวัน Bangkok → ช่วง UTC — pattern เดียวกับ getDailyTransferByShop/getDailyAudit
+  const [y, m, d] = dateISO.split('-').map(Number)
+  const since = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - 7 * 3600 * 1000).toISOString()
+  const until = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0) - 7 * 3600 * 1000).toISOString()
+
   const { data, error } = await supabase
     .from('contracts')
     .select(
       'id, contract_no, customer_name, shop_id, device_price, down_percent, commission_percent, doc_fee, inv_no, model, storage, sn',
     )
-    .eq('transaction_date', dateISO)
+    .gte('summary_accounting_sent_at', since)
+    .lt('summary_accounting_sent_at', until)
     .eq('shop_id', shopId)
     .range(0, PAGE_CAP)
   if (error) throw error
