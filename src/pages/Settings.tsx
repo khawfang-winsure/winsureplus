@@ -37,7 +37,7 @@ const CATEGORIES: { key: CategoryKey; label: string; icon: LucideIcon; kinds: Op
   { key: 'device', label: 'ตัวเครื่อง', icon: Smartphone, kinds: ['phone_model', 'storage'] },
   { key: 'job', label: 'อาชีพ & หลักฐาน', icon: Briefcase, kinds: ['occupation', 'occupation_proof'] },
   { key: 'promo', label: 'โปรโมชั่น', icon: Tag, kinds: ['promotion'] },
-  { key: 'rates', label: 'เรตผ่อน', icon: Percent, kinds: [] },
+  { key: 'rates', label: 'เรตผ่อน', icon: Percent, kinds: [], adminOnly: true },
   { key: 'settlement', label: 'ส่วนลดปิดสัญญา', icon: BadgePercent, kinds: [], adminOnly: true },
   { key: 'users', label: 'สิทธิ์ผู้ใช้', icon: ShieldCheck, kinds: [], adminOnly: true },
 ]
@@ -52,7 +52,7 @@ export default function Settings() {
   const canEdit = !configured || role === 'admin'
   const isAdmin = canEdit
   const { cat: catParam } = useParams<{ cat: CategoryKey }>()
-  if ((catParam === 'users' || catParam === 'settlement') && !isAdmin) return <Navigate to="/settings/shops" replace />
+  if ((catParam === 'users' || catParam === 'settlement' || catParam === 'rates') && !isAdmin) return <Navigate to="/settings/shops" replace />
 
   // กรองเฉพาะหมวดที่ user ดูได้ (staff ไม่เห็น 'users')
   const visibleCats = CATEGORIES.filter((c) => !c.adminOnly || isAdmin)

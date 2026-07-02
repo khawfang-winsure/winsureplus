@@ -126,7 +126,7 @@ export const NAV: NavItem[] = [
       { to: '/settings/device', label: 'ตั้งค่าตัวเครื่อง' },
       { to: '/settings/job', label: 'ตั้งค่าอาชีพ' },
       { to: '/settings/promo', label: 'ตั้งค่าโปรโมชั่น' },
-      { to: '/settings/rates', label: 'ตั้งค่าเรตผ่อน' },
+      { to: '/settings/rates', label: 'ตั้งค่าเรตผ่อน', adminOnly: true },
       { to: '/settings/settlement', label: 'ส่วนลดปิดสัญญา', adminOnly: true },
       { to: '/settings/users', label: 'ตั้งค่าสิทธิ์ผู้ใช้', adminOnly: true },
       { to: '/import', label: 'Import / Export', adminOnly: true },
