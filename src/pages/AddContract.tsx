@@ -504,11 +504,66 @@ export default function AddContract() {
 
   async function handleSave() {
     const newErrors: Partial<Record<keyof FormState, string>> = {}
-    if (!f.contractNo) newErrors.contractNo = 'กรุณากรอกเลขที่สัญญา'
-    if (!f.customerName) newErrors.customerName = 'กรุณากรอกชื่อลูกค้า'
-    if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
-    if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
-    if (!f.devicePrice || num(f.devicePrice) <= 0) newErrors.devicePrice = 'กรุณากรอกราคาตัวเครื่อง'
+
+    // create = สัญญาใหม่ ต้องบังคับกรอกครบทุกช่อง / edit = สัญญาเก่า (เช่นนำเข้าจาก PJ) มีช่องว่างจริง ห้ามบังคับ backfill — ใช้ validation ขั้นต่ำเดิม
+    if (!isEdit) {
+      // ===== ส่วน 1: ข้อมูลรายการ =====
+      if (!f.transactionDate) newErrors.transactionDate = 'กรุณาเลือกวันที่ทำรายการ'
+      if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
+      if (!f.contractNo) newErrors.contractNo = 'กรุณากรอกเลขที่สัญญา'
+      if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
+
+      // ===== ส่วน 2: ข้อมูลลูกค้า =====
+      if (!f.customerName) newErrors.customerName = 'กรุณากรอกชื่อลูกค้า'
+      if (!f.nationalId) newErrors.nationalId = 'กรุณากรอกเลขบัตรประชาชน'
+      if (!f.phone) newErrors.phone = 'กรุณากรอกเบอร์โทรลูกค้า'
+      if (!f.phoneAlt1) newErrors.phoneAlt1 = 'กรุณากรอกเบอร์โทรศัพท์สำรอง 1'
+      if (!f.phoneAlt2) newErrors.phoneAlt2 = 'กรุณากรอกเบอร์โทรศัพท์สำรอง 2'
+      if (!f.facebookLink) newErrors.facebookLink = 'กรุณากรอกลิงค์เฟสลูกค้า'
+      if (!f.birthYear) newErrors.birthYear = 'กรุณากรอกปีเกิด'
+      if (!f.occupation) newErrors.occupation = 'กรุณาเลือกอาชีพ'
+      if (!f.occupationProof) newErrors.occupationProof = 'กรุณาเลือกหลักฐานอาชีพ'
+
+      // ===== ส่วน 3: ข้อมูลเครื่อง =====
+      if (!f.model) newErrors.model = 'กรุณาเลือกรุ่น'
+      if (!f.storage) newErrors.storage = 'กรุณาเลือกความจำ'
+      if (!f.color) newErrors.color = 'กรุณากรอกสี'
+      if (!f.sn) newErrors.sn = 'กรุณากรอกหมายเลข SN'
+      if (!f.imei) newErrors.imei = 'กรุณากรอกหมายเลข IMEI'
+      if (!f.devicePrice || num(f.devicePrice) <= 0) newErrors.devicePrice = 'กรุณากรอกราคาตัวเครื่อง'
+
+      // ===== ส่วน 4: การซื้อเครื่อง (สรุปยอดโอน) =====
+      if (!f.downPercent) newErrors.downPercent = 'กรุณากรอก % ดาวน์'
+      if (!f.commissionPercent) newErrors.commissionPercent = 'กรุณากรอก % คอมมิชชั่น'
+      if (!f.docFee) newErrors.docFee = 'กรุณากรอกค่าเอกสาร'
+
+      // ===== ส่วน 5: การผ่อน =====
+      // โหมด "กรอกเลขเอง" → บังคับกรอกเอง / โหมด "คำนวณจากเรต" → ต้องกดใช้เรต (ระบบเติมให้แล้ว) ก่อนถึงจะบันทึกได้
+      if (financeMode === 'manual') {
+        if (!f.financeAmount || num(f.financeAmount) <= 0) newErrors.financeAmount = 'กรุณากรอกยอดจัดไฟแนนซ์'
+        if (!f.monthlyPayment || num(f.monthlyPayment) <= 0) newErrors.monthlyPayment = 'กรุณากรอกค่าเช่าต่อเดือน'
+        if (!f.termMonths || num(f.termMonths) <= 0) newErrors.termMonths = 'กรุณากรอกจำนวนเดือน'
+      } else if (liveRateSets.length === 0) {
+        if (!f.financeAmount || num(f.financeAmount) <= 0 || !f.monthlyPayment || num(f.monthlyPayment) <= 0) {
+          newErrors.financeAmount = 'ยังไม่ได้ตั้งเรต — กรุณาสลับเป็น "กรอกเลขเอง"'
+        }
+      } else {
+        if (!f.financeAmount || num(f.financeAmount) <= 0 || !f.monthlyPayment || num(f.monthlyPayment) <= 0) {
+          newErrors.financeAmount = 'กรุณากดปุ่ม "ใช้เรตนี้" เพื่อคำนวณยอดก่อนบันทึก'
+        }
+      }
+      if (!f.dueDay) newErrors.dueDay = 'กรุณากรอกวันที่ชำระ'
+
+      // โปรโมชั่น — บังคับรายละเอียดเฉพาะตอนเลือก "มีโปร"
+      if (f.hasPromotion && !f.promotion) newErrors.promotion = 'กรุณาเลือกรายละเอียดโปร'
+    } else {
+      // โหมดแก้ไข — validation ขั้นต่ำเดิม (ก่อนงานบังคับครบทุกช่อง) กันบล็อกพนักงานแก้สัญญาเก่าที่มีช่องว่างมาแต่เดิม
+      if (!f.contractNo) newErrors.contractNo = 'กรุณากรอกเลขที่สัญญา'
+      if (!f.customerName) newErrors.customerName = 'กรุณากรอกชื่อลูกค้า'
+      if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
+      if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
+      if (!f.devicePrice || num(f.devicePrice) <= 0) newErrors.devicePrice = 'กรุณากรอกราคาตัวเครื่อง'
+    }
 
     // ตรวจ prefix — บังคับเฉพาะ: เพิ่มใหม่ หรือ แก้ไขและเปลี่ยนร้าน
     if (!isEdit || shopChangedRef.current) {
@@ -521,6 +576,7 @@ export default function AddContract() {
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
       return
     }
     setSaving(true)
@@ -652,6 +708,19 @@ export default function AddContract() {
       </PageTitle>
 
       <div className="mx-auto grid max-w-3xl gap-5">
+        {/* ===== สรุปช่องที่ยังกรอกไม่ครบ ===== */}
+        {Object.keys(errors).length > 0 && (
+          <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3">
+            <p className="mb-1.5 text-sm font-semibold text-red-700">
+              กรุณากรอกให้ครบ {Object.keys(errors).length} ช่อง:
+            </p>
+            <ul className="list-inside list-disc text-xs text-red-600">
+              {Object.values(errors).map((msg, i) => (
+                <li key={i}>{msg}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {/* ===== ฟอร์มกรอกข้อมูลสัญญา ===== */}
         <div className="flex flex-col gap-5">
           <Card>
@@ -663,6 +732,7 @@ export default function AddContract() {
                   value={f.transactionDate}
                   onChange={(e) => set('transactionDate', e.target.value)}
                 />
+                {errors.transactionDate && <p className="mt-1 text-xs text-red-600">{errors.transactionDate}</p>}
               </Field>
               <Field label="ชื่อร้านค้า" required>
                 <Select
@@ -822,7 +892,7 @@ export default function AddContract() {
                 <Input value={f.customerName} onChange={(e) => set('customerName', e.target.value)} />
                 {errors.customerName && <p className="mt-1 text-xs text-red-600">{errors.customerName}</p>}
               </Field>
-              <Field label="เลขบัตรประชาชน">
+              <Field label="เลขบัตรประชาชน" required>
                 <Input
                   value={f.nationalId}
                   onChange={(e) => {
@@ -845,40 +915,48 @@ export default function AddContract() {
                     ⚠️ ลูกค้าบัตรนี้มีสัญญาแล้ว: {dupCustomers.map((d) => d.contractNo).join(', ')} — ตรวจสอบก่อนบันทึก (ผ่อนเครื่อง 2 ได้)
                   </p>
                 )}
+                {errors.nationalId && <p className="mt-1 text-xs text-red-600">{errors.nationalId}</p>}
               </Field>
-              <Field label="เบอร์โทรลูกค้า">
+              <Field label="เบอร์โทรลูกค้า" required>
                 <Input value={f.phone} onChange={(e) => set('phone', e.target.value)} />
+                {errors.phone && <p className="mt-1 text-xs text-red-600">{errors.phone}</p>}
               </Field>
-              <Field label="โทรศัพท์สำรอง 1">
+              <Field label="โทรศัพท์สำรอง 1" required>
                 <Input value={f.phoneAlt1} onChange={(e) => set('phoneAlt1', e.target.value)} />
+                {errors.phoneAlt1 && <p className="mt-1 text-xs text-red-600">{errors.phoneAlt1}</p>}
               </Field>
-              <Field label="โทรศัพท์สำรอง 2">
+              <Field label="โทรศัพท์สำรอง 2" required>
                 <Input value={f.phoneAlt2} onChange={(e) => set('phoneAlt2', e.target.value)} />
+                {errors.phoneAlt2 && <p className="mt-1 text-xs text-red-600">{errors.phoneAlt2}</p>}
               </Field>
-              <Field label="ลิงค์เฟสลูกค้า">
+              <Field label="ลิงค์เฟสลูกค้า" required>
                 <Input value={f.facebookLink} onChange={(e) => set('facebookLink', e.target.value)} />
+                {errors.facebookLink && <p className="mt-1 text-xs text-red-600">{errors.facebookLink}</p>}
               </Field>
-              <Field label={`ปีเกิด (ค.ศ.)  ›  อายุ ${ageRange(num(f.birthYear) || undefined, currentYear)}`}>
+              <Field label={`ปีเกิด (ค.ศ.)  ›  อายุ ${ageRange(num(f.birthYear) || undefined, currentYear)}`} required>
                 <Input
                   type="number"
                   value={f.birthYear}
                   onChange={(e) => set('birthYear', e.target.value)}
                   placeholder="1998"
                 />
+                {errors.birthYear && <p className="mt-1 text-xs text-red-600">{errors.birthYear}</p>}
               </Field>
-              <Field label="อาชีพ">
+              <Field label="อาชีพ" required>
                 <Select value={f.occupation} onChange={(e) => set('occupation', e.target.value)}>
                   {opts.occupations.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
+                {errors.occupation && <p className="mt-1 text-xs text-red-600">{errors.occupation}</p>}
               </Field>
-              <Field label="หลักฐานอาชีพ">
+              <Field label="หลักฐานอาชีพ" required>
                 <Select value={f.occupationProof} onChange={(e) => set('occupationProof', e.target.value)}>
                   {opts.proofs.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
+                {errors.occupationProof && <p className="mt-1 text-xs text-red-600">{errors.occupationProof}</p>}
               </Field>
             </div>
           </Card>
@@ -886,44 +964,49 @@ export default function AddContract() {
           <Card>
             <h3 className="mb-3 font-semibold text-ink">ข้อมูลเครื่อง</h3>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="รุ่น">
+              <Field label="รุ่น" required>
                 <Select value={f.model} onChange={(e) => set('model', e.target.value)}>
                   {opts.models.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
+                {errors.model && <p className="mt-1 text-xs text-red-600">{errors.model}</p>}
               </Field>
-              <Field label="ความจำ">
+              <Field label="ความจำ" required>
                 <Select value={f.storage} onChange={(e) => set('storage', e.target.value)}>
                   {opts.storages.map((o) => (
                     <option key={o.id} value={o.label}>{o.label}</option>
                   ))}
                 </Select>
+                {errors.storage && <p className="mt-1 text-xs text-red-600">{errors.storage}</p>}
               </Field>
-              <Field label="สี">
+              <Field label="สี" required>
                 <Input
                   value={f.color}
                   onChange={(e) => set('color', e.target.value)}
                   placeholder="เช่น Black, Blue, Natural Titanium"
                 />
+                {errors.color && <p className="mt-1 text-xs text-red-600">{errors.color}</p>}
               </Field>
-              <Field label="หมายเลข SN">
+              <Field label="หมายเลข SN" required>
                 <Input value={f.sn} onChange={(e) => set('sn', e.target.value)} />
+                {errors.sn && <p className="mt-1 text-xs text-red-600">{errors.sn}</p>}
               </Field>
-              <Field label="หมายเลข IMEI">
+              <Field label="หมายเลข IMEI" required>
                 <Input value={f.imei} onChange={(e) => set('imei', e.target.value)} placeholder="เลข IMEI 15 หลัก" />
+                {errors.imei && <p className="mt-1 text-xs text-red-600">{errors.imei}</p>}
               </Field>
               <Field label="ราคาตัวเครื่อง (บาท)" required>
                 <Input type="number" value={f.devicePrice} onChange={(e) => set('devicePrice', e.target.value)} placeholder="19900" />
                 {errors.devicePrice && <p className="mt-1 text-xs text-red-600">{errors.devicePrice}</p>}
               </Field>
-              <Field label="สภาพสินค้า">
+              <Field label="สภาพสินค้า" required>
                 <Select value={f.condition} onChange={(e) => set('condition', e.target.value as DeviceCondition)}>
                   <option value="new">มือ 1</option>
                   <option value="used">มือ 2</option>
                 </Select>
               </Field>
-              <Field label="แหล่งเครื่อง">
+              <Field label="แหล่งเครื่อง" required>
                 <Select value={f.origin} onChange={(e) => set('origin', e.target.value as DeviceOrigin)}>
                   <option value="th">เครื่องไทย</option>
                   <option value="inter">เครื่องนอก</option>
@@ -935,14 +1018,17 @@ export default function AddContract() {
           <Card>
             <h3 className="mb-3 font-semibold text-ink">การเงิน — ซื้อเครื่อง (สำหรับสรุปยอดโอน)</h3>
             <div className="grid grid-cols-3 gap-3">
-              <Field label="% ดาวน์">
+              <Field label="% ดาวน์" required>
                 <Input type="number" value={f.downPercent} onChange={(e) => set('downPercent', e.target.value)} />
+                {errors.downPercent && <p className="mt-1 text-xs text-red-600">{errors.downPercent}</p>}
               </Field>
-              <Field label="% คอมมิชชั่น">
+              <Field label="% คอมมิชชั่น" required>
                 <Input type="number" value={f.commissionPercent} onChange={(e) => set('commissionPercent', e.target.value)} />
+                {errors.commissionPercent && <p className="mt-1 text-xs text-red-600">{errors.commissionPercent}</p>}
               </Field>
-              <Field label="ค่าเอกสาร (หักออก)">
+              <Field label="ค่าเอกสาร (หักออก)" required>
                 <Input type="number" value={f.docFee} onChange={(e) => set('docFee', e.target.value)} />
+                {errors.docFee && <p className="mt-1 text-xs text-red-600">{errors.docFee}</p>}
               </Field>
             </div>
             {/* แสดงผลคำนวณสด */}
@@ -1043,7 +1129,7 @@ export default function AddContract() {
               const lockCls = lock ? 'bg-slate-100 text-ink-soft cursor-not-allowed' : ''
               return (
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="ยอดจัดไฟแนนซ์">
+                  <Field label="ยอดจัดไฟแนนซ์" required>
                     <Input
                       type="number"
                       value={f.financeAmount}
@@ -1052,8 +1138,9 @@ export default function AddContract() {
                       readOnly={lock}
                       className={lockCls}
                     />
+                    {errors.financeAmount && <p className="mt-1 text-xs text-red-600">{errors.financeAmount}</p>}
                   </Field>
-                  <Field label="ค่าเช่าต่อเดือน">
+                  <Field label="ค่าเช่าต่อเดือน" required>
                     <Input
                       type="number"
                       value={f.monthlyPayment}
@@ -1062,8 +1149,9 @@ export default function AddContract() {
                       readOnly={lock}
                       className={lockCls}
                     />
+                    {errors.monthlyPayment && <p className="mt-1 text-xs text-red-600">{errors.monthlyPayment}</p>}
                   </Field>
-                  <Field label="จำนวนเดือน">
+                  <Field label="จำนวนเดือน" required>
                     <Input
                       type="number"
                       value={f.termMonths}
@@ -1072,9 +1160,11 @@ export default function AddContract() {
                       readOnly={lock}
                       className={lockCls}
                     />
+                    {errors.termMonths && <p className="mt-1 text-xs text-red-600">{errors.termMonths}</p>}
                   </Field>
-                  <Field label="ชำระทุกวันที่ (1-31)">
+                  <Field label="ชำระทุกวันที่ (1-31)" required>
                     <Input type="number" min={1} max={31} value={f.dueDay} onChange={(e) => set('dueDay', e.target.value)} />
+                    {errors.dueDay && <p className="mt-1 text-xs text-red-600">{errors.dueDay}</p>}
                   </Field>
                 </div>
               )
@@ -1094,7 +1184,7 @@ export default function AddContract() {
                 </Select>
               </Field>
               {f.hasPromotion && (
-                <Field label="รายละเอียดโปร">
+                <Field label="รายละเอียดโปร" required>
                   <Select
                     value={f.promotion}
                     onChange={(e) => {
@@ -1108,6 +1198,7 @@ export default function AddContract() {
                       <option key={o.id} value={o.label}>{o.label}</option>
                     ))}
                   </Select>
+                  {errors.promotion && <p className="mt-1 text-xs text-red-600">{errors.promotion}</p>}
                 </Field>
               )}
             </div>
