@@ -51,21 +51,31 @@ function NavContent({
           // mobile: accordion — open ถ้า active หรือ expanded; desktop: click-toggle เท่านั้น
           const open = !!expanded[item.label] || (isMobile && groupActive)
 
-          const childLinks = visibleChildren.map((child) => (
-            <NavLink
-              key={child.to}
-              to={child.to}
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-                  isActive
-                    ? 'bg-salmon-deep text-white shadow-sm'
-                    : 'text-ink-soft hover:bg-peach-light hover:text-ink'
-                }`
-              }
-            >
-              <ChevronRight size={14} className="shrink-0" />
-              <span className="whitespace-nowrap">{child.label}</span>
-            </NavLink>
+          const childLinks = visibleChildren.map((child, idx) => (
+            <div key={child.to} className="flex flex-col">
+              {child.sectionLabel && (
+                <div
+                  className={`whitespace-nowrap px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-soft/70 ${
+                    idx === 0 ? 'pt-0' : 'mt-1 border-t border-peach pt-2'
+                  }`}
+                >
+                  {child.sectionLabel}
+                </div>
+              )}
+              <NavLink
+                to={child.to}
+                className={({ isActive }) =>
+                  `flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
+                    isActive
+                      ? 'bg-salmon-deep text-white shadow-sm'
+                      : 'text-ink-soft hover:bg-peach-light hover:text-ink'
+                  }`
+                }
+              >
+                <ChevronRight size={14} className="shrink-0" />
+                <span className="whitespace-nowrap">{child.label}</span>
+              </NavLink>
+            </div>
           ))
 
           return (

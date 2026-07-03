@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   BarChart3,
   CalendarRange,
-  ClipboardCheck,
   Gauge,
   History,
   Inbox,
@@ -22,6 +21,8 @@ export interface NavChild {
   to: string
   label: string
   adminOnly?: boolean
+  /** หัวข้อย่อย (เส้นคั่น) ที่จะโชว์เหนือลิงก์นี้ — ใช้แบ่งกลุ่มย่อยภายใน submenu เดียวกัน */
+  sectionLabel?: string
 }
 
 export interface NavItem {
@@ -56,15 +57,13 @@ export const NAV: NavItem[] = [
     icon: Inbox,
     children: [
       { to: '/inbox', label: 'กล่องรับงาน' },
+      { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ' },
       { to: '/add', label: 'เพิ่มข้อมูลสัญญา' },
       { to: '/waiting-email', label: 'รอส่งอีเมล' },
       { to: '/waiting-summary', label: 'รอสรุปยอด' },
       { to: '/other-income', label: 'รายได้อื่นๆ' },
     ],
   },
-
-  // กล่องรอตรวจ PJ — worklist สำหรับ admin+staff (auto-sync ที่ลงไม่ได้)
-  { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ', icon: ClipboardCheck },
 
   // กลุ่มพับได้: ลูกค้า & หนี้
   {
@@ -74,7 +73,7 @@ export const NAV: NavItem[] = [
       { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด' },
       { to: '/customers', label: 'ลูกค้าทั้งหมด' },
       { to: '/extended', label: 'ลูกค้าขยายระยะเวลา' },
-      { to: '/customer-overview', label: 'ภาพรวมลูกค้า' },
+      { to: '/customer-overview', label: 'วิเคราะห์ลูกค้า (กราฟ)' },
       { to: '/letters', label: 'ส่งจดหมาย' },
     ],
   },
@@ -110,13 +109,15 @@ export const NAV: NavItem[] = [
     icon: BarChart3,
     adminOnly: true, // ซ่อนทั้งกลุ่มจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
     children: [
-      { to: '/weekly-summary', label: 'สรุปรายสัปดาห์', adminOnly: true },
-      { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
-      { to: '/shop-report', label: 'รายงานร้านค้า' },
-      { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
-      { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้' },
-      { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true },
+      { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true, sectionLabel: 'การเงิน' },
       { to: '/settlements', label: 'ปิดสัญญาก่อนกำหนด', adminOnly: true },
+      { to: '/weekly-summary', label: 'สรุปรายสัปดาห์', adminOnly: true },
+
+      { to: '/shop-report', label: 'รายงานร้านค้า', sectionLabel: 'ร้านค้า-เครื่อง' },
+      { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
+      { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
+
+      { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', sectionLabel: 'ทีมตามหนี้' },
       { to: '/debtflow', label: 'ติดตามหนี้ (DEBTFLOW)', adminOnly: true },
     ],
   },
@@ -126,11 +127,12 @@ export const NAV: NavItem[] = [
     label: 'ตั้งค่า',
     icon: Settings,
     children: [
-      { to: '/settings/shops', label: 'ตั้งค่าร้านค้า' },
+      { to: '/settings/shops', label: 'ตั้งค่าร้านค้า', sectionLabel: 'ตั้งค่าทั่วไป' },
       { to: '/settings/device', label: 'ตั้งค่าตัวเครื่อง' },
       { to: '/settings/job', label: 'ตั้งค่าอาชีพ' },
       { to: '/settings/promo', label: 'ตั้งค่าโปรโมชั่น' },
-      { to: '/settings/rates', label: 'ตั้งค่าเรตผ่อน', adminOnly: true },
+
+      { to: '/settings/rates', label: 'ตั้งค่าเรตผ่อน', adminOnly: true, sectionLabel: 'กระทบเงิน/สิทธิ์' },
       { to: '/settings/settlement', label: 'ส่วนลดปิดสัญญา', adminOnly: true },
       { to: '/settings/users', label: 'ตั้งค่าสิทธิ์ผู้ใช้', adminOnly: true },
       { to: '/import', label: 'Import / Export', adminOnly: true },
