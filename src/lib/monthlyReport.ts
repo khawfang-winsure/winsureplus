@@ -90,6 +90,54 @@ function normalizeOccupation(occ: string | undefined | null): string {
   return OCCUPATION_WHITELIST.has(occ) ? occ : OTHER_LABEL
 }
 
+/**
+ * normalize ชื่อรุ่นเครื่องให้รุ่นเดียวกันที่พิมพ์เพี้ยนมา merge กัน (ตัดความจุออก, แก้ case, แก้ Pro Max ติดกัน)
+ * ไม่ merge รุ่นที่ต่างกันจริง — iPhone 15 / 15 Plus / 15 Pro / 15 Pro Max ยังแยกกันเหมือนเดิม
+ * local เท่านั้น — ไม่ export ใช้ร่วมกับไฟล์อื่น
+ */
+function normalizeModelName(model: string | undefined | null): string {
+  if (!model || !model.trim()) return 'ไม่ระบุรุ่น'
+  let s = model.trim().replace(/\s+/g, ' ')
+
+  // แทรกช่องว่างระหว่างตัวอักษรกับเลขที่ติดกัน (ทั้ง 2 ทิศ) ก่อนตัดความจุ
+  // กัน "iphone11promax256gb" ไม่ให้ความจุรั่วเข้า key ตอนตัด token ทีหลัง
+  s = s.replace(/([a-zA-Z])(\d)/g, '$1 $2')
+  // เลข+ตัวอักษรติดกัน แต่ยกเว้นเลข+"e" ท้ายคำ (เช่น "16e" รุ่น iPhone 16e ห้ามแยกเป็น "16 e")
+  s = s.replace(/(\d)([a-zA-Z])/g, (m, d: string, l: string, offset: number, str: string) => {
+    if (l.toLowerCase() === 'e' && !/^[a-zA-Z]/.test(str.slice(offset + m.length))) return m
+    return `${d} ${l}`
+  })
+  s = s.replace(/\s+/g, ' ').trim()
+
+  // ตัดความจุ 2 สเต็ป:
+  // 1) เลข+หน่วยแบบทั่วไป (ครอบ 1TB/2TB/256GB/ทุกเลข+หน่วย — ปลอดภัยเพราะบังคับมีหน่วยต่อท้าย)
+  s = s.replace(/\b\d+\s?(gb|g|tb)\b/gi, ' ')
+  // 2) เลขความจุเปล่าไม่มีหน่วย ใช้ whitelist กันไปกินเลขรุ่น iPhone 11-17
+  s = s.replace(/\b(32|64|128|256|512|1024)\b/g, ' ')
+  s = s.replace(/\s+/g, ' ').trim()
+
+  // แทรกช่องว่างระหว่างเลขติดคำ เช่น 15Pro -> 15 Pro (เผื่อกรณีตัดความจุแล้วเลขรุ่นมาติดคำใหม่)
+  s = s.replace(/(\d)(pro|plus|max|air|mini)/gi, '$1 $2')
+  // แทรกช่องว่างระหว่าง iphone ติดเลข เช่น iPhone11 -> iPhone 11
+  s = s.replace(/(iphone)(\d)/gi, '$1 $2')
+
+  // normalize คำว่า iPhone
+  s = s.replace(/iphone/gi, 'iPhone')
+
+  // normalize "Pro Max" ก่อน (รวม Promax/promax/pro max/ProMax) — ต้องทำก่อนกฎ pro/max เดี่ยว
+  s = s.replace(/pro\s*max/gi, 'Pro Max')
+
+  // normalize คำต่อท้ายเดี่ยวๆ ที่เหลือ
+  s = s.replace(/\bpro\b/gi, 'Pro')
+  s = s.replace(/\bplus\b/gi, 'Plus')
+  s = s.replace(/\bmax\b/gi, 'Max')
+  s = s.replace(/\bair\b/gi, 'Air')
+  s = s.replace(/\bmini\b/gi, 'mini')
+
+  s = s.replace(/\s+/g, ' ').trim()
+  return s || 'ไม่ระบุรุ่น'
+}
+
 const RISKY_BUCKETS = new Set(['31-60', '61-90', '91-120', '120+'])
 
 /** วันสุดท้ายของเดือน monthISO ('YYYY-MM') → 'YYYY-MM-DD' */
@@ -320,7 +368,7 @@ function buildModelRows(
   monthEnd: string,
   thresholds: { low: number; mid: number },
 ): DimensionRow[] {
-  const keyOf = (c: Contract) => `${c.model} ${c.storage}`.trim()
+  const keyOf = (c: Contract) => normalizeModelName(c.model)
   const rows = buildDimension(contracts, statuses, monthStart, monthEnd, keyOf, thresholds)
   const sorted = [...rows].sort((a, b) => b.count - a.count)
   const top5 = sorted.slice(0, 5)
