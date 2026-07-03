@@ -9,6 +9,7 @@ import {
   Inbox,
   LayoutDashboard,
   Landmark,
+  Percent,
   Phone,
   Settings,
   TrendingUp,
@@ -46,6 +47,7 @@ export const NAV: NavItem[] = [
   { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
   { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
   { to: '/monthly-report', label: 'รายงานประจำเดือน', icon: CalendarRange, adminOnly: true, executiveVisible: true },
+  { to: '/shop-promo-analysis', label: 'วิเคราะห์ร้านเพื่อจัดโปร', icon: Percent, adminOnly: true, executiveVisible: true },
   { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: History, adminOnly: true, executiveVisible: true },
 
   // กลุ่มพับได้: รับเรื่อง/บันทึก

@@ -21,6 +21,7 @@ const ShopDetail = lazy(() => import('./pages/ShopDetail'))
 const Commission = lazy(() => import('./pages/Commission'))
 const ExecDashboard = lazy(() => import('./pages/ExecDashboard'))
 const MonthlyReport = lazy(() => import('./pages/MonthlyReport'))
+const ShopPromoAnalysis = lazy(() => import('./pages/ShopPromoAnalysis'))
 const WeeklySummary = lazy(() => import('./pages/WeeklySummary'))
 const Letters = lazy(() => import('./pages/Letters'))
 const LettersPrint = lazy(() => import('./pages/LettersPrint'))
@@ -94,6 +95,7 @@ function Gate() {
           <Route index element={isFreelancer ? <Navigate to="/queue" replace /> : (isExecutive || isAccounting) ? <Navigate to={fallbackTo} replace /> : <Dashboard />} />
           <Route path="/exec" element={(isAdmin || isExecutive) ? <ExecDashboard /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/monthly-report" element={(isAdmin || isExecutive) ? <MonthlyReport /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/shop-promo-analysis" element={(isAdmin || isExecutive) ? <ShopPromoAnalysis /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/weekly-summary" element={isAdmin ? <WeeklySummary /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/add" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/edit/:id" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />
