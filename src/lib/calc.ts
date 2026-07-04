@@ -192,7 +192,13 @@ export interface RecoveryInstallmentInput {
 export interface PaymentRecoveryStatus {
   overdueCount: number
   overdueAmountRemaining: number
-  recoveredThisEpisode: { installmentCount: number; amountPaid: number; lastPaidAt: string | null }
+  recoveredThisEpisode: {
+    installmentCount: number
+    amountPaid: number
+    lastPaidAt: string | null
+    /** ยอดของ "งวดเดียว" ที่จ่ายล่าสุด (paidAt สูงสุด) — ต่างจาก amountPaid ที่เป็นผลรวมทั้ง episode */
+    lastPaidAmount: number
+  }
   toNormal: { installmentsToClose: number; amountNeeded: number }
   isNormal: boolean
   badgeText: string
@@ -213,22 +219,29 @@ export interface PaymentRecoveryStatus {
  * ต้อง .slice(0,10) ก่อนเทียบกับ dueDate เสมอ ไม่งั้นงวดที่จ่ายตรงวันกำหนด (เวลาบวกเข้ามา) จะ
  * string-compare เป็น '>' ผิดพลาด กลายเป็น "จ่ายช้า" ทั้งที่ตรงเวลา (pattern เดียวกับ monthlyReport.ts:173)
  *
- * ---- Trace tests (today = '2026-07-04', amount=1712 ทุกงวด) --------------------
+ * ---- Trace tests (today = '2026-07-04', amount=1712 ทุกงวด เว้นระบุเอง) --------------------
  * (ก) เคส Pete: ง1 due04-02 paidAt='2026-04-02T09:15:00+00:00'(ตรงเวลา)
  *     · ง2 due05-02 paidAt='2026-06-30T10:00:00+00:00'(ช้า)
  *     · ง3 due06-02 paid null · ง4 due07-02 paid null
  *   → firstOverdue=ง3 → ถอยหลัง ง2 จ่ายช้า(2026-06-30>2026-05-02)→นับ,
  *     ง1 จ่ายตรงเวลา(2026-04-02<=2026-04-02)→หยุด
- *   → recovered={1, 1712, lastPaidAt='2026-06-30'}
+ *   → recovered={1, 1712, lastPaidAt='2026-06-30', lastPaidAmount=1712}
  *
  * (ข) จ่ายดี 6 งวด (paidAt.slice(0,10)===dueDate ทุกงวด) เพิ่งค้าง ง7,ง8
  *   → firstOverdue=ง7 → ถอยหลัง ง6 paid<=due→หยุดทันที
- *   → recovered={0, 0, null}
+ *   → recovered={0, 0, null, 0}
  *
  * (ค) partial: ง1 due05-02 paidAt='2026-05-02T08:00:00+00:00' เต็ม
  *     · ง2 due06-02 paidAt null paidAmount 500(งวดยังเปิด) · ง3 due07-02 paidAt null
  *   → firstOverdue=ง2 (paidAt===null แม้มี paidAmount>0) → ถอยหลัง ง1 paid<=due→หยุด
- *   → recovered={0, 0, null}. overdueAmountRemaining ของ ง2 = max(0,1712-500)=1212 (ไม่แก้ สูตรเดิมถูกอยู่แล้ว)
+ *   → recovered={0, 0, null, 0}. overdueAmountRemaining ของ ง2 = max(0,1712-500)=1212 (ไม่แก้ สูตรเดิมถูกอยู่แล้ว)
+ *
+ * (ง) หลายงวด paidAmount ต่างกัน จ่ายช้าทั้งคู่: ง1 due03-02 paidAmount=500 paidAt='2026-05-10'(ช้า)
+ *     · ง2 due04-02 paidAmount=700 paidAt='2026-06-15'(ช้า) · ง3 due05-02 paidAmount=900 paidAt='2026-06-20'(ช้า)
+ *     · ง4 due06-02 paid null (ค้าง, firstOverdue)
+ *   → firstOverdue=ง4 → ถอยหลัง ง3 ช้า→นับ, ง2 ช้า→นับ, ง1 ช้า→นับ (ชนขอบเขต idx=0 หยุด)
+ *   → recovered={3, amountPaid=500+700+900=2100, lastPaidAt='2026-06-20'(ของง3=max),
+ *      lastPaidAmount=900 (paidAmount ของง3 เท่านั้น ไม่ใช่ผลรวม 2100)}
  */
 export function paymentRecoveryStatus(
   installments: RecoveryInstallmentInput[],
@@ -261,6 +274,11 @@ export function paymentRecoveryStatus(
     }
   }
   const recoveredDatesOnly = recoveredList.map((i) => (i.paidAt as string).slice(0, 10))
+  // หา installment ที่ paidAt (slice 0,10) สูงสุด — ใช้ paidAmount ของงวดนั้นเดียว (ไม่ใช่ Σ)
+  const lastPaidInstallment = recoveredList.reduce<RecoveryInstallmentInput | null>((latest, i) => {
+    if (latest === null) return i
+    return (i.paidAt as string).slice(0, 10) > (latest.paidAt as string).slice(0, 10) ? i : latest
+  }, null)
   const recoveredThisEpisode = {
     installmentCount: recoveredList.length,
     amountPaid: recoveredList.reduce((sum, i) => sum + i.paidAmount, 0),
@@ -268,6 +286,7 @@ export function paymentRecoveryStatus(
       recoveredDatesOnly.length === 0
         ? null
         : recoveredDatesOnly.reduce<string>((max, d) => (d > max ? d : max), recoveredDatesOnly[0]),
+    lastPaidAmount: lastPaidInstallment === null ? 0 : lastPaidInstallment.paidAmount,
   }
 
   const toNormal = { installmentsToClose: overdueCount, amountNeeded: overdueAmountRemaining }

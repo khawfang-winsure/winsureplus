@@ -449,7 +449,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         {recoveryStatus.recoveredThisEpisode.lastPaidAt && (
           <p className="mt-1 text-xs text-ink-soft">
             จ่ายล่าสุด: {thaiDate(recoveryStatus.recoveredThisEpisode.lastPaidAt)} ·{' '}
-            {baht(recoveryStatus.recoveredThisEpisode.amountPaid)}฿
+            {baht(recoveryStatus.recoveredThisEpisode.lastPaidAmount)}฿
           </p>
         )}
       </div>
