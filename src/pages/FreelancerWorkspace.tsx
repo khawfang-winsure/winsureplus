@@ -1465,6 +1465,8 @@ export default function FreelancerWorkspace() {
             overdueDueDate: selectedContract.overdueDueDate,
             lastContactedAt: selectedContract.lastContactedAt,
             isActive: !selectedContract.caseClosedToday,
+            dueDay: selectedContract.dueDay,
+            transactionDate: selectedContract.transactionDate,
           }}
           softWarnReason={(() => {
             const sr = scoredRowMap.get(selectedContract.contractId)?.suppressReason ?? null

@@ -182,16 +182,17 @@ export function calcExtensionPrincipal(
 // ===== paymentRecoveryStatus — สรุป "กลับเป็นปกติ" ต้องจ่ายอีกเท่าไหร่ (เพิ่ม 2026-07-02, req 9) =====
 
 export interface RecoveryInstallmentInput {
+  installmentNo: number
   dueDate: string // yyyy-mm-dd
   amount: number
   paidAmount: number
-  paidAt: string | null
+  paidAt: string | null // ISO timestamptz (เช่น '2026-04-02T09:15:00+00:00'), ตัด .slice(0,10) ก่อนเทียบ
 }
 
 export interface PaymentRecoveryStatus {
   overdueCount: number
   overdueAmountRemaining: number
-  recoveredThisEpisode: { installmentCount: number; amountPaid: number }
+  recoveredThisEpisode: { installmentCount: number; amountPaid: number; lastPaidAt: string | null }
   toNormal: { installmentsToClose: number; amountNeeded: number }
   isNormal: boolean
   badgeText: string
@@ -203,16 +204,31 @@ export interface PaymentRecoveryStatus {
  *
  * ใช้ string compare `dueDate<=todayStr` (ไม่ new Date() ข้างใน) — pattern เดียวกับ priorityQueue.ts:156
  *
- * ---- Trace tests (today = '2026-07-02') ----------------------------------------
- * Trace1: [ง1 due04-02 amt2000 paid2000 paidAt04-02][ง2 due05-02 amt2000 paid2000 paidAt06-15]
- *         [ง3 due06-02 amt2000 paid0 null][ง4 due07-02 amt2000 paid0 null]
- *   → overdueCount=2 (ง3,ง4), remaining=4000, recovered={1,2000}(เฉพาะง2 — ง1 จ่ายตรงเวลาไม่นับ)
- *   badge "ค้าง 2 งวด (4,000 ฿) · จ่ายมาแล้ว 1 งวด (2,000 ฿) · อีก 2 งวด (4,000 ฿) กลับปกติ"
+ * recoveredThisEpisode = "contiguous streak" นับถอยหลังจากงวดค้างตัวแรกของรอบปัจจุบัน:
+ * เรียงตาม installmentNo, หา firstOverdueIdx (paidAt===null && dueDate<=today) แล้วเดินถอยหลัง
+ * นับต่อเมื่อ paidAt!==null && paidAt.slice(0,10)>dueDate (จ่ายช้า/จ่ายไล่) — หยุดทันทีเมื่อเจอ
+ * paidAt===null (งวดค้างของ episode ก่อนหน้า) หรือ paidAt.slice(0,10)<=dueDate (จ่ายตรงเวลา = ปกติ)
  *
- * Trace2 partial: [ง1 due05-02 amt1500 paid1500 paidAt05-02][ง2 due06-02 amt1500 paid500 null]
- *                 [ง3 due07-01 amt1500 paid0 null]
- *   → overdueCount=2, remaining=2500, recovered={1,500}
- *   badge "ค้าง 2 งวด (2,500 ฿) · จ่ายมาแล้วบางส่วน 500 ฿ · อีก 2,500 ฿ กลับปกติ"
+ * ⚠️ paidAt เป็น ISO timestamptz เต็ม (ตั้งด้วย now() ทุก payment path) ไม่ใช่ yyyy-mm-dd ล้วน —
+ * ต้อง .slice(0,10) ก่อนเทียบกับ dueDate เสมอ ไม่งั้นงวดที่จ่ายตรงวันกำหนด (เวลาบวกเข้ามา) จะ
+ * string-compare เป็น '>' ผิดพลาด กลายเป็น "จ่ายช้า" ทั้งที่ตรงเวลา (pattern เดียวกับ monthlyReport.ts:173)
+ *
+ * ---- Trace tests (today = '2026-07-04', amount=1712 ทุกงวด) --------------------
+ * (ก) เคส Pete: ง1 due04-02 paidAt='2026-04-02T09:15:00+00:00'(ตรงเวลา)
+ *     · ง2 due05-02 paidAt='2026-06-30T10:00:00+00:00'(ช้า)
+ *     · ง3 due06-02 paid null · ง4 due07-02 paid null
+ *   → firstOverdue=ง3 → ถอยหลัง ง2 จ่ายช้า(2026-06-30>2026-05-02)→นับ,
+ *     ง1 จ่ายตรงเวลา(2026-04-02<=2026-04-02)→หยุด
+ *   → recovered={1, 1712, lastPaidAt='2026-06-30'}
+ *
+ * (ข) จ่ายดี 6 งวด (paidAt.slice(0,10)===dueDate ทุกงวด) เพิ่งค้าง ง7,ง8
+ *   → firstOverdue=ง7 → ถอยหลัง ง6 paid<=due→หยุดทันที
+ *   → recovered={0, 0, null}
+ *
+ * (ค) partial: ง1 due05-02 paidAt='2026-05-02T08:00:00+00:00' เต็ม
+ *     · ง2 due06-02 paidAt null paidAmount 500(งวดยังเปิด) · ง3 due07-02 paidAt null
+ *   → firstOverdue=ง2 (paidAt===null แม้มี paidAmount>0) → ถอยหลัง ง1 paid<=due→หยุด
+ *   → recovered={0, 0, null}. overdueAmountRemaining ของ ง2 = max(0,1712-500)=1212 (ไม่แก้ สูตรเดิมถูกอยู่แล้ว)
  */
 export function paymentRecoveryStatus(
   installments: RecoveryInstallmentInput[],
@@ -230,12 +246,28 @@ export function paymentRecoveryStatus(
     0,
   )
 
-  const recovered = installments.filter(
-    (i) => i.dueDate <= todayStr && i.paidAmount > 0 && i.paidAt !== null,
-  )
+  const sorted = [...installments].sort((a, b) => a.installmentNo - b.installmentNo)
+  const firstOverdueIdx = sorted.findIndex((i) => i.paidAt === null && i.dueDate <= todayStr)
+
+  const recoveredList: RecoveryInstallmentInput[] = []
+  if (firstOverdueIdx > 0) {
+    for (let idx = firstOverdueIdx - 1; idx >= 0; idx--) {
+      const inst = sorted[idx]
+      if (inst.paidAt !== null && inst.paidAt.slice(0, 10) > inst.dueDate) {
+        recoveredList.push(inst)
+      } else {
+        break
+      }
+    }
+  }
+  const recoveredDatesOnly = recoveredList.map((i) => (i.paidAt as string).slice(0, 10))
   const recoveredThisEpisode = {
-    installmentCount: recovered.length,
-    amountPaid: recovered.reduce((sum, i) => sum + i.paidAmount, 0),
+    installmentCount: recoveredList.length,
+    amountPaid: recoveredList.reduce((sum, i) => sum + i.paidAmount, 0),
+    lastPaidAt:
+      recoveredDatesOnly.length === 0
+        ? null
+        : recoveredDatesOnly.reduce<string>((max, d) => (d > max ? d : max), recoveredDatesOnly[0]),
   }
 
   const toNormal = { installmentsToClose: overdueCount, amountNeeded: overdueAmountRemaining }
@@ -268,12 +300,10 @@ export function formatRecoveryBadge(
   const parts = [`ค้าง ${overdueCount} งวด (${baht(overdueAmountRemaining)} ฿)`]
 
   if (recoveredThisEpisode.installmentCount > 0) {
-    parts.push(`จ่ายมาแล้ว ${recoveredThisEpisode.installmentCount} งวด (${baht(recoveredThisEpisode.amountPaid)} ฿)`)
-  } else if (recoveredThisEpisode.amountPaid > 0) {
-    parts.push(`จ่ายมาแล้วบางส่วน ${baht(recoveredThisEpisode.amountPaid)} ฿`)
+    parts.push(`จ่ายลดมาแล้ว ${recoveredThisEpisode.installmentCount} งวด (${baht(recoveredThisEpisode.amountPaid)} ฿)`)
   }
 
-  parts.push(`อีก ${toNormal.installmentsToClose} งวด (${baht(toNormal.amountNeeded)} ฿) กลับปกติ`)
+  parts.push(`เหลือตามอีก ${toNormal.installmentsToClose} งวด`)
 
   return parts.join(' · ')
 }

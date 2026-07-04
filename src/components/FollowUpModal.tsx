@@ -77,6 +77,9 @@ interface ContractSummary {
   returnAnchorType?: 'returned' | 'overdue' | null
   returnAnchorDate?: string | null
   overdueDueDate?: string | null
+  // req11: บรรทัด "ทำรายการ ... ครบกำหนดทุกวันที่ ..." (ป็อปอัพบันทึกติดตาม)
+  dueDay?: number
+  transactionDate?: string
   // req8: เวลาติดตามล่าสุด — ใช้คำนวณป้าย "ไม่ได้ติดตามมานาน"
   lastContactedAt?: string | null
   // req8: ซ่อนป้ายถ้าสัญญาไม่ active (เคสคืนเครื่องยังนับว่า active สำหรับตามหนี้ — ใช้ isReturned แยกจาก closed)
@@ -181,6 +184,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
       .then((list) => {
         setRecoveryInstallments(
           list.map((i) => ({
+            installmentNo: i.installmentNo,
             dueDate: i.dueDate,
             amount: i.amount,
             paidAmount: i.paidAmount,
@@ -433,8 +437,21 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
             <Badge tone={staleness.level === 'danger' ? 'red' : 'amber'}>{staleness.badgeText}</Badge>
           )}
         </p>
+        {/* req11: ทำรายการ + ครบกำหนดทุกวันที่ */}
+        {contract.transactionDate && contract.dueDay && (
+          <p className="text-ink-soft">
+            ทำรายการ {thaiDate(contract.transactionDate)} · ครบกำหนดทุกวันที่ {contract.dueDay}
+          </p>
+        )}
         {/* req9: สถานะ "กลับเป็นปกติ" */}
         <p className="mt-1 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
+        {/* req11: จ่ายล่าสุด (เฉพาะเมื่อมี recovered episode) */}
+        {recoveryStatus.recoveredThisEpisode.lastPaidAt && (
+          <p className="mt-1 text-xs text-ink-soft">
+            จ่ายล่าสุด: {thaiDate(recoveryStatus.recoveredThisEpisode.lastPaidAt)} ·{' '}
+            {baht(recoveryStatus.recoveredThisEpisode.amountPaid)}฿
+          </p>
+        )}
       </div>
 
       {/* req10: ส่ง SMS ทวงหนี้ */}

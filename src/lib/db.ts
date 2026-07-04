@@ -3055,6 +3055,9 @@ export interface FreelancerQueueRow {
   // --- ระบบจองเคส claim/release (0086) ---
   assignedTo: string | null           // uuid ของ profiles ผู้ถือเคสอยู่ — null = ว่าง
   assignedToName: string | null       // ชื่อผู้ถือเคส (join profiles.full_name) — null ถ้าว่าง
+  // --- BA spec (แบม): เพิ่มข้อมูลสัญญาให้ FollowUpModal ใช้ ---
+  dueDay: number            // contracts.due_day — ชำระทุกวันที่ (1-31)
+  transactionDate: string   // contracts.transaction_date — วันที่ทำรายการ (yyyy-mm-dd)
 }
 
 interface QueueStatusRow {
@@ -3088,6 +3091,8 @@ interface QueueContractRow {
   promised_amount: number | null
   case_closed_at: string | null
   assigned_to: string | null
+  due_day: number | null
+  transaction_date: string | null
 }
 
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
@@ -3210,7 +3215,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   const { data: contractData, error: contractError } = await supabase
     .from('contracts')
     .select(
-      'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at, assigned_to',
+      'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at, assigned_to, due_day, transaction_date',
     )
     .in('id', ids)
     .range(0, PAGE_CAP)
@@ -3517,6 +3522,8 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       returnAnchorDate,
       assignedTo: c?.assigned_to ?? null,
       assignedToName: c?.assigned_to ? (assignedNameMap.get(c.assigned_to) ?? null) : null,
+      dueDay: Number(c?.due_day ?? 1),
+      transactionDate: c?.transaction_date ?? '',
     }
   })
 }
