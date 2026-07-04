@@ -5783,6 +5783,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
   return returns.map((ret): SaleHistoryInput => {
     const c = contractMap.get(ret.contract_id)
     const financeAmount = Number(c?.finance_amount ?? 0)
+    const devicePrice = Number(c?.device_price ?? 0)
     const commissionPercent = Number(c?.commission_percent ?? 0)
     const modelParts = [c?.model, c?.storage].filter(Boolean)
     return {
@@ -5792,7 +5793,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
       shopId: c?.shop_id ?? '',
       shopName: c?.shop_id ? (shopNameMap.get(c.shop_id) ?? '-') : '-',
       deviceModel: modelParts.join(' '),
-      deviceListPrice: financeAmount,
+      deviceListPrice: devicePrice,
       commissionPercent,
       commission: Math.round((financeAmount * commissionPercent) / 100),
       downPaid: downMap.get(ret.contract_id) ?? 0,
