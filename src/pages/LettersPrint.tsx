@@ -185,21 +185,43 @@ export default function LettersPrint() {
   return (
     <div className={`min-h-screen bg-gray-100 ${modeClass}`}>
       <style>{`
+        /* กระดาษจดหมาย: ใช้ "named page" แยกจากซอง (@page letter) เพราะเอกสารเดียวกันมีทั้ง
+           จดหมาย (A4 แนวตั้ง) และซอง (แนวนอน) ผสมกัน — ถ้าใช้ @page เดียวแบบ global จะกระทบทั้งคู่
+           @page margin: 18mm เป็นคนหักขอบกระดาษแทน container (ไม่ตรึง 210mm ตายตัวเหมือนเดิม)
+           เพื่อให้พิมพ์ 100% พอดีเสมอ ไม่ว่าผู้ใช้จะเลือก "ระยะขอบ = ไม่มี/ค่าเริ่มต้น" ใน dialog
+           ก็ตาม — เบราว์เซอร์ใช้ค่านี้เป็นค่าตั้งต้นให้ และ container ด้านล่างยืดเต็มพื้นที่ที่เหลือ
+           (width: 100% ไม่ใช่เลข mm ตายตัว) จึงไม่มีทางล้น/เพี้ยน center */
+        @page letter {
+          size: A4 portrait;
+          margin: 18mm;
+        }
         @media print {
           .no-print { display: none !important; }
-          .print-page { box-shadow: none !important; margin: 0 !important; }
+          .print-page { box-shadow: none !important; margin: 0 auto !important; }
           body { background: white !important; }
           /* แยกปริ้นทีละชนิด */
           .mode-letters .envelope-page { display: none !important; }
           .mode-envelopes .letter-page { display: none !important; }
         }
 
-        /* --- หน้าจดหมาย: เต็ม A4 --- */
+        /* --- หน้าจดหมาย: ยืดเต็มพื้นที่พิมพ์ (ไม่ตรึง 210mm) ---
+           text width จริง = ความกว้าง A4 (210mm) − ขอบซ้าย/ขวาที่ @page letter กำหนด (18mm × 2)
+           = 174mm (ใกล้เคียงค่าเดิม 170mm ที่เคยได้จาก padding 20mm ทั้ง 2 ข้าง — เลย์เอาต์/ฟอนต์
+           แทบไม่เปลี่ยน) padding ซ้าย-ขวาของ container ลดเหลือ 0 เพราะขอบมาจาก @page แล้ว
+           (ไม่ซ้อนสองชั้น) เหลือ padding บน-ล่างไว้กันตัวหนังสือชิดขอบบน-ล่างของหน้า */
         .letter-page {
-          width: 210mm; min-height: 297mm; margin: 12px auto; background: white;
-          padding: 20mm; box-shadow: 0 1px 6px rgba(0,0,0,.15);
+          page: letter;
+          box-sizing: border-box;
+          width: 100%; margin: 12px auto; background: white;
+          padding: 6mm 0; box-shadow: 0 1px 6px rgba(0,0,0,.15);
           page-break-after: always; color: #1f2937;
           font-family: 'Sarabun', 'TH Sarabun New', 'Noto Sans Thai', system-ui, sans-serif;
+        }
+        /* จอปกติ (ไม่ใช่ตอนพิมพ์): แสดงเป็นแผ่น A4 จำลองเหมือนเดิมให้ยังพรีวิวได้
+           (min-height ใส่เฉพาะจอ — ตอนพิมพ์ไม่ตรึงความสูง เพราะพื้นที่พิมพ์จริงต่อหน้าไม่เท่ากัน
+           ระหว่างเลือกระยะขอบ None/Default แต่ page-break-after ทำงานอิสระจากความสูงอยู่แล้ว) */
+        @media screen {
+          .letter-page { width: 210mm; min-height: 297mm; padding: 20mm; }
         }
         .letter-body { font-size: 15.5px; }
         /* เนื้อจดหมายที่ render จาก HTML (เทมเพลตที่จัดรูปแบบไว้) */
