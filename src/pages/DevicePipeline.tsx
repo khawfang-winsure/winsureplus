@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { AlertCircle, FileText, Package, Pencil } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AlertCircle, ArrowDownAZ, ArrowUpAZ, FileText, Package, Pencil, Search } from 'lucide-react'
 import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
 import { getReturns, updateDefectNotes, updateReturnWorkflow, updateSalePrice } from '../lib/db'
@@ -11,6 +11,9 @@ import {
   type DeviceStatus,
 } from '../lib/returnWorkflow'
 import { useAuth } from '../lib/auth'
+import { useFilter } from '../lib/useFilter'
+
+const UNASSIGNED = '__unassigned__'
 
 // ===== ตัวเลือก filter dropdown =====
 const FILTER_OPTIONS: { value: DeviceStatus | 'all' | 'active'; label: string }[] = [
@@ -66,6 +69,37 @@ function applyFilter(
   if (filter === 'all') return rows
   if (filter === 'active') return rows.filter((r) => resolveStatus(r) !== 'shipped')
   return rows.filter((r) => resolveStatus(r) === filter)
+}
+
+// ===== ค้นหา multi-field (client-side, null-safe) =====
+function applySearch(rows: DeviceReturnRow[], query: string): DeviceReturnRow[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return rows
+  return rows.filter((r) => {
+    const hay = [r.customerName, r.deviceModel, r.sn, r.imei, r.contractNo]
+      .join(' ')
+      .toLowerCase()
+    return hay.includes(q)
+  })
+}
+
+// ===== ฟิลเตอร์ผู้ดำเนินการ (รวม bucket "ยังไม่ระบุ") =====
+function applyAssignee(rows: DeviceReturnRow[], assignee: string): DeviceReturnRow[] {
+  if (!assignee) return rows
+  if (assignee === UNASSIGNED) return rows.filter((r) => !r.deviceStatusBy)
+  return rows.filter((r) => r.deviceStatusBy === assignee)
+}
+
+// ===== เรียงตามวันที่อัปเดตล่าสุด (null ไปท้ายสุดเสมอ) =====
+function applySort(rows: DeviceReturnRow[], dir: 'asc' | 'desc'): DeviceReturnRow[] {
+  return [...rows].sort((a, b) => {
+    const ta = a.deviceStatusUpdatedAt ? new Date(a.deviceStatusUpdatedAt).getTime() : null
+    const tb = b.deviceStatusUpdatedAt ? new Date(b.deviceStatusUpdatedAt).getTime() : null
+    if (ta === null && tb === null) return 0
+    if (ta === null) return 1
+    if (tb === null) return -1
+    return dir === 'desc' ? tb - ta : ta - tb
+  })
 }
 
 // ===== Late-fill tracking cell (pending_check + ไม่มี tracking_number) =====
@@ -264,6 +298,9 @@ export default function DevicePipeline() {
   const [rows, setRows] = useState<DeviceReturnRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<DeviceStatus | 'all' | 'active'>('active')
+  const [query, setQuery] = useState('')
+  const [assigneeFilter, setAssigneeFilter] = useFilter('devicePipeline.assignee', '')
+  const [sortDir, setSortDir] = useFilter<'asc' | 'desc'>('devicePipeline.sortDir', 'desc')
   const [selected, setSelected] = useState<DeviceReturnRow | null>(null)
   const [editPriceTarget, setEditPriceTarget] = useState<DeviceReturnRow | null>(null)
   const [detailTarget, setDetailTarget] = useState<DeviceReturnRow | null>(null)
@@ -278,7 +315,17 @@ export default function DevicePipeline() {
     load()
   }, [load])
 
-  const filtered = applyFilter(rows, filter)
+  // ผู้ดำเนินการทั้งหมดที่มีจริง (distinct, ไม่รวม null — จัดเข้า bucket "ยังไม่ระบุ" แยก)
+  const assignees = useMemo(() => {
+    const set = new Set<string>()
+    for (const r of rows) if (r.deviceStatusBy) set.add(r.deviceStatusBy)
+    return [...set].sort()
+  }, [rows])
+
+  const filtered = useMemo(
+    () => applySort(applyAssignee(applySearch(applyFilter(rows, filter), query), assigneeFilter), sortDir),
+    [rows, filter, query, assigneeFilter, sortDir],
+  )
 
   return (
     <div>
@@ -289,20 +336,51 @@ export default function DevicePipeline() {
         ติดตามเครื่อง (Device Pipeline)
       </PageTitle>
 
-      {/* Filter bar */}
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <label className="text-sm font-medium text-ink">กรอง:</label>
-        <Select
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as DeviceStatus | 'all' | 'active')}
-          className="w-64"
-        >
-          {FILTER_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </Select>
+      {/* แถบค้นหา + ตัวกรอง */}
+      <div className="mb-4 flex flex-col gap-3">
+        <div className="relative">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="ค้นหา ชื่อลูกค้า / รุ่น / SN / IMEI / เลขสัญญา"
+            className="pl-9"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-sm font-medium text-ink">กรอง:</label>
+          <Select
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as DeviceStatus | 'all' | 'active')}
+            className="!w-auto min-w-[220px]"
+          >
+            {FILTER_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+          <Select
+            value={assigneeFilter}
+            onChange={(e) => setAssigneeFilter(e.target.value)}
+            className="!w-auto min-w-[160px]"
+          >
+            <option value="">ทุกผู้ดำเนินการ</option>
+            <option value={UNASSIGNED}>ยังไม่ระบุ</option>
+            {assignees.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </Select>
+          <button
+            type="button"
+            onClick={() => setSortDir(sortDir === 'desc' ? 'asc' : 'desc')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-peach px-2.5 py-1.5 text-xs text-ink-soft hover:bg-peach-light"
+            aria-label="สลับลำดับวันที่อัปเดตล่าสุด"
+          >
+            {sortDir === 'desc' ? <ArrowDownAZ size={13} /> : <ArrowUpAZ size={13} />}
+            {sortDir === 'desc' ? 'อัปเดตล่าสุดก่อน' : 'อัปเดตเก่าสุดก่อน'}
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -340,6 +418,12 @@ export default function DevicePipeline() {
                       <p className="font-medium text-ink">{r.customerName}</p>
                       <p className="text-xs text-ink-soft">{r.contractNo} · เริ่ม {thaiDate(r.createdAt.slice(0, 10))}</p>
                       <p className="text-xs text-ink-soft">{r.deviceModel ?? '—'}</p>
+                      {r.imei && (
+                        <p className="text-xs text-ink-soft font-mono">IMEI: {r.imei}</p>
+                      )}
+                      {r.sn && (
+                        <p className="text-xs text-ink-soft font-mono">SN: {r.sn}</p>
+                      )}
                     </td>
                     <td className="py-3 pr-4">
                       <Badge tone={STATUS_TONE[status]}>

@@ -102,6 +102,8 @@ export interface DeviceReturnRow {
   deviceStatusUpdatedAt?: string | null
   deviceStatusBy?: string | null
   deviceModel?: string | null
+  imei?: string | null
+  sn?: string | null
   // --- Attribution + Repair cost (0035) ---
   attributedFreelancerId?: string | null
   attributedAt?: string | null

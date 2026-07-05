@@ -2082,7 +2082,7 @@ interface ReturnRow {
   repair_fee: number
   checked_at: string | null
   created_at: string
-  contracts: { contract_no: string; customer_name: string; model: string | null; storage: string | null } | null
+  contracts: { contract_no: string; customer_name: string; model: string | null; storage: string | null; imei: string | null; sn: string | null } | null
   // Device Pipeline columns (0027)
   tracking_number: string | null
   device_status: DeviceStatus | null
@@ -2109,7 +2109,7 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
   if (!supabase) return []
   let query = supabase
     .from('device_returns')
-    .select('*, contracts(contract_no, customer_name, model, storage), attributed_freelancer:profiles!attributed_freelancer_id(full_name)')
+    .select('*, contracts(contract_no, customer_name, model, storage, imei, sn), attributed_freelancer:profiles!attributed_freelancer_id(full_name)')
     .order('created_at', { ascending: false })
   if (filter?.deviceStatus && filter.deviceStatus !== 'all') {
     query = query.eq('device_status', filter.deviceStatus)
@@ -2138,6 +2138,8 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
     deviceStatusUpdatedAt: r.device_status_updated_at,
     deviceStatusBy: r.device_status_by,
     deviceModel: [r.contracts?.model, r.contracts?.storage].filter(Boolean).join(' ') || null,
+    imei: r.contracts?.imei ?? null,
+    sn: r.contracts?.sn ?? null,
     // Defect notes (0033)
     defectNotes: r.device_defect_notes,
     // Attribution + repair cost (0035)
