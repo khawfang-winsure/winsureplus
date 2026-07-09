@@ -12,6 +12,7 @@ import {
   type AddFollowUpInput,
   type ContractAddresses,
   type FollowUpContactMethod,
+  type FollowUpContactTarget,
   type FollowUpEntry,
   type FollowUpResult,
 } from '../lib/db'
@@ -52,6 +53,9 @@ const RESULT_TONE: Record<FollowUpResult, 'green' | 'amber' | 'red' | 'neutral'>
   line_pending: 'amber',
   other: 'neutral',
 }
+
+// 0091: ตัวเลือกความสัมพันธ์ผู้ติดต่อ (ญาติ/ผู้ค้ำ) — '__other' เปิดช่องพิมพ์เอง
+const RELATION_OPTIONS = ['บิดา', 'มารดา', 'คู่สมรส', 'บุตร', 'พี่น้อง', 'ผู้ค้ำประกัน', 'เพื่อน', 'นายจ้าง']
 
 // ===== Props =====
 interface ContractSummary {
@@ -116,6 +120,9 @@ interface FormState {
   promisedDate: string      // วันที่ลูกค้าสัญญาจะจ่าย (เฉพาะ result=promised, required)
   promisedAmount: string    // จำนวนเงินที่สัญญา (optional string → parse ก่อนส่ง)
   phoneDialed: string       // เบอร์ที่โทร ('__other' = พิมพ์เอง, '' = ไม่ระบุ)
+  contactTarget: FollowUpContactTarget   // 0091: โทรหาลูกหนี้เอง หรือผู้ติดต่อ (ญาติ/ผู้ค้ำ)
+  contactPersonName: string              // 0091: ชื่อผู้ติดต่อ (เฉพาะ contactTarget='other')
+  contactPersonRelation: string          // 0091: ตัวเลือกจาก RELATION_OPTIONS หรือ '__other' = พิมพ์เอง
 }
 
 /** คืน yyyy-mm-dd ของวันนี้บวก n วัน โดยใช้เวลาท้องถิ่น (ป้องกัน UTC drift) */
@@ -142,6 +149,9 @@ const BASE_FORM = {
   nextFollowUpAt: '',
   promisedDate: localDatePlusDays(7),
   promisedAmount: '',
+  contactTarget: 'debtor' as FollowUpContactTarget,
+  contactPersonName: '',
+  contactPersonRelation: '',
 }
 
 function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneAlt2?: string | null): FormState {
@@ -154,6 +164,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const [histLoading, setHistLoading] = useState(true)
   const [form, setForm] = useState<FormState>(() => makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
   const [customPhoneDialed, setCustomPhoneDialed] = useState('')
+  const [customRelation, setCustomRelation] = useState('')  // 0091: ความสัมพันธ์แบบพิมพ์เอง (เมื่อเลือก '__other')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -305,6 +316,16 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         : form.phoneDialed === '__other'
           ? customPhoneDialed.trim() || null
           : form.phoneDialed || null
+      // 0091: ผู้ติดต่อ (ญาติ/ผู้ค้ำ) — ส่งชื่อ/ความสัมพันธ์เฉพาะตอนเลือก contactTarget='other'
+      const isOtherContact = form.contactTarget === 'other'
+      const resolvedContactPersonName = isOtherContact
+        ? form.contactPersonName.trim() || null
+        : null
+      const resolvedContactPersonRelation = isOtherContact
+        ? (form.contactPersonRelation === '__other'
+            ? customRelation.trim() || null
+            : form.contactPersonRelation || null)
+        : null
       const input: AddFollowUpInput = {
         contractId: contract.contractId,
         noteText: form.noteText.trim(),
@@ -316,10 +337,14 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           : form.nextFollowUpAt || null,
         promisedAmount: parsedAmount,
         phoneDialed: resolvedPhoneDialed,
+        contactTarget: form.contactTarget,
+        contactPersonName: resolvedContactPersonName,
+        contactPersonRelation: resolvedContactPersonRelation,
       }
       await addFollowUp(input)
       setForm(makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
       setCustomPhoneDialed('')
+      setCustomRelation('')
       setSaved(true)
       await loadHistory()
       onSaved?.()
@@ -520,10 +545,10 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         </div>
       )}
 
-      {/* soft-warn: CAP */}
-      {softWarnReason === 'CAP' && !outsideHours && (
+      {/* soft-warn: CAP — เฉพาะตอนกำลังจะบันทึกแบบโทรหาลูกหนี้เอง (โทรผู้ติดต่อไม่นับโควตานี้) */}
+      {softWarnReason === 'CAP' && !outsideHours && form.contactTarget === 'debtor' && (
         <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          ติดต่อลูกค้ารายนี้ไปแล้ว 1 ครั้งวันนี้ — หากบันทึกเพิ่ม ระบบจะแจ้งข้อผิดพลาดขณะบันทึก
+          ติดต่อลูกค้ารายนี้ไปแล้ว 1 ครั้งวันนี้ (ลูกหนี้) — หากบันทึกเพิ่ม ระบบจะแจ้งข้อผิดพลาดขณะบันทึก
         </div>
       )}
 
@@ -570,6 +595,70 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
             ))}
           </Select>
         </Field>
+
+        {/* 0091: แยกโทรหาลูกหนี้เอง vs ผู้ติดต่อ (ญาติ/ผู้ค้ำ) — ผู้ติดต่อไม่นับโควตาวันละครั้งของลูกหนี้ */}
+        <Field label="ติดต่อกับใคร" required>
+          <Select
+            value={form.contactTarget}
+            onChange={(e) => set('contactTarget', e.target.value as FollowUpContactTarget)}
+            disabled={outsideHours}
+          >
+            <option value="debtor">ลูกหนี้ (ตัวลูกค้า)</option>
+            <option value="other">ผู้ติดต่อ (ญาติ/ผู้ค้ำ/คนอื่น)</option>
+          </Select>
+        </Field>
+
+        {form.contactTarget === 'other' && (
+          <>
+            {/* คำแนะนำ (advisory) — ระบบไม่ได้บังคับจำกัดโควตา เจ้าหน้าที่ต้องดูแลเอง */}
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
+              ⚠️ การโทรหาผู้ติดต่อ: ติดต่อได้เพื่อสอบถามช่องทางติดต่อลูกค้าเท่านั้น — ห้ามเปิดเผยเรื่องหนี้/ยอดหนี้
+              ยกเว้นผู้ติดต่อเป็นบิดา-มารดา คู่สมรส หรือบุตรของลูกค้าที่สอบถามเอง
+            </div>
+            <Field label="ชื่อผู้ติดต่อ">
+              <input
+                type="text"
+                className="w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
+                placeholder="ไม่บังคับ"
+                value={form.contactPersonName}
+                onChange={(e) => set('contactPersonName', e.target.value)}
+                disabled={outsideHours}
+              />
+            </Field>
+            <Field label="ความสัมพันธ์">
+              <Select
+                value={form.contactPersonRelation}
+                onChange={(e) => set('contactPersonRelation', e.target.value)}
+                disabled={outsideHours}
+              >
+                <option value="">-- เลือก --</option>
+                {RELATION_OPTIONS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+                <option value="__other">อื่นๆ (พิมพ์เอง)</option>
+              </Select>
+              {form.contactPersonRelation === '__other' && (
+                <input
+                  type="text"
+                  className="mt-2 w-full rounded-xl border border-peach bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-salmon-deep focus:ring-2 focus:ring-salmon/40 disabled:bg-peach-light/40 disabled:text-ink-soft"
+                  placeholder="ระบุความสัมพันธ์"
+                  value={customRelation}
+                  onChange={(e) => setCustomRelation(e.target.value)}
+                  disabled={outsideHours}
+                />
+              )}
+            </Field>
+            {/* คำแนะนำเฉพาะผู้ค้ำประกัน — โผล่เมื่อเลือกความสัมพันธ์นี้เท่านั้น (ระบบไม่ได้บังคับจำกัดจริง เป็นคำแนะนำให้เจ้าหน้าที่ดูแลเอง) */}
+            {form.contactPersonRelation === 'ผู้ค้ำประกัน' && (
+              <div className="rounded-lg border border-amber-400 bg-amber-100 px-3 py-2 text-xs font-medium leading-relaxed text-amber-800">
+                ⚠️ ผู้ติดต่อรายนี้เป็น &quot;ผู้ค้ำประกัน&quot; — กฎหมายถือเสมือนลูกหนี้ โปรดจำกัดการติดต่อด้วยตนเองไม่เกินวันละ 1 ครั้ง
+                (คำแนะนำ — ระบบไม่ได้บังคับจำกัดให้)
+              </div>
+            )}
+          </>
+        )}
 
         <Field label="ผลการติดต่อ" required>
           <Select
@@ -702,6 +791,12 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
                   {h.authorName} · {thaiDate(h.createdAt.slice(0, 10))} · {METHOD_LABEL[h.contactMethod]}
                   {h.nextFollowUpAt && ` · นัด: ${thaiDate(h.nextFollowUpAt)}`}
                 </p>
+                {/* 0091: บอกให้ชัดว่าครั้งนี้โทรหาผู้ติดต่อ (ญาติ/ผู้ค้ำ) ไม่ใช่ลูกหนี้เอง */}
+                {h.contactTarget === 'other' && (
+                  <p className="mt-1 text-xs font-medium text-amber-700">
+                    📞 โทรผู้ติดต่อ: {h.contactPersonName || 'ไม่ระบุชื่อ'} · {h.contactPersonRelation || 'ไม่ระบุความสัมพันธ์'}
+                  </p>
+                )}
               </li>
             ))}
           </ul>

@@ -2911,6 +2911,10 @@ export type FollowUpResult =
   | 'other'
   | 'line_pending'  // 0047: ลูกค้า initiate ผ่าน Line (inbound) — ยกเว้นกฎ พ.ร.บ. ทวงหนี้
 
+// 0091: โทรหาลูกหนี้ตัวเอง vs โทรหาผู้ติดต่อ (ญาติ/ผู้ค้ำ) — Pete Option A แบบง่าย
+// (ไม่แยกผู้ค้ำเป็น cap ของตัวเอง — แค่ debtor/other) daily cap พ.ร.บ. นับเฉพาะ 'debtor'
+export type FollowUpContactTarget = 'debtor' | 'other'
+
 export interface FollowUpEntry {
   id: string
   contractId: string
@@ -2922,6 +2926,9 @@ export interface FollowUpEntry {
   nextFollowUpAt: string | null
   promisedAmount: number | null
   createdAt: string
+  contactTarget: FollowUpContactTarget          // 0091
+  contactPersonName: string | null              // 0091: ชื่อผู้ติดต่อ (ถ้า contactTarget='other')
+  contactPersonRelation: string | null          // 0091: ความสัมพันธ์ เช่น ญาติ/ผู้ค้ำ
 }
 
 interface FollowUpRow {
@@ -2935,6 +2942,9 @@ interface FollowUpRow {
   next_follow_up_at: string | null
   promised_amount: number | null
   created_at: string
+  contact_target: FollowUpContactTarget | null            // 0091
+  contact_person_name: string | null                      // 0091
+  contact_person_relation: string | null                  // 0091
 }
 
 function mapFollowUp(r: FollowUpRow): FollowUpEntry {
@@ -2949,6 +2959,9 @@ function mapFollowUp(r: FollowUpRow): FollowUpEntry {
     nextFollowUpAt: r.next_follow_up_at,
     promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
     createdAt: r.created_at,
+    contactTarget: r.contact_target ?? 'debtor',   // 0091: fallback กันแถวเก่า/RPC ที่ไม่ select คอลัมน์นี้
+    contactPersonName: r.contact_person_name ?? null,
+    contactPersonRelation: r.contact_person_relation ?? null,
   }
 }
 
@@ -2961,6 +2974,9 @@ export interface AddFollowUpInput {
   nextFollowUpAt?: string | null    // ISO timestamp — ถ้า result='promised' trigger sync ไป contracts
   promisedAmount?: number | null    // ยอดที่สัญญาไว้ (Wave 1B — ส่งเมื่อ result='promised')
   phoneDialed?: string | null       // Wave 1B: เบอร์ที่หมุน (phone/phone_alt1/phone_alt2/พิมพ์เอง) → 0021
+  contactTarget?: FollowUpContactTarget | null       // 0091: default 'debtor' ที่ DB ถ้าไม่ส่ง
+  contactPersonName?: string | null                  // 0091: ส่งเมื่อ contactTarget='other'
+  contactPersonRelation?: string | null              // 0091: ส่งเมื่อ contactTarget='other'
 }
 
 export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
@@ -2973,6 +2989,9 @@ export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
     next_follow_up_at: input.nextFollowUpAt ?? null,
     promised_amount: input.promisedAmount ?? null,
     phone_dialed: input.phoneDialed ?? null,
+    contact_target: input.contactTarget ?? 'debtor',
+    contact_person_name: input.contactPersonName ?? null,
+    contact_person_relation: input.contactPersonRelation ?? null,
   })
   if (error) throw error
 }
@@ -3265,7 +3284,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   })()
   const { data: followUpsData, error: fuErr } = await supabase
     .from('follow_ups')
-    .select('contract_id, follow_up_result, created_at, author_name, author_id, note_text')
+    .select('contract_id, follow_up_result, created_at, author_name, author_id, note_text, contact_target')
     .in('contract_id', ids)
     .gte('created_at', since)
     .order('created_at', { ascending: false })
@@ -3308,6 +3327,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     author_name: string | null
     author_id: string | null
     note_text: string | null
+    contact_target: FollowUpContactTarget | null
   }[]) {
     const agg = fuMap.get(fu.contract_id) ?? {
       totalAttempts: 0,
@@ -3322,16 +3342,23 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     }
     agg.totalAttempts++
 
+    // 0091: เดินเรื่อง "ติดต่อลูกหนี้สำเร็จ/วันนี้" ต้องนับเฉพาะ contact_target='debtor' —
+    // โทรหาผู้ติดต่อ (ญาติ/ผู้ค้ำ) ไม่ใช่การติดต่อลูกหนี้ตัวเอง ไม่งั้น priority queue จะเพี้ยน
+    // (แถวเก่าก่อน 0091 ไม่มีคอลัมน์นี้ตอน select ยัง fallback 'debtor' ที่ DB default — ถือว่า debtor)
+    const isDebtorContact = (fu.contact_target ?? 'debtor') === 'debtor'
+
     // successfulAttempts: result ∈ {contacted, promised, paid, returned, other, line_pending}
     // ไม่นับ 'no_answer' (ไม่ติดต่อได้) และ 'refused' (ปฏิเสธ) และ null (ไม่ระบุ)
     // 0047: line_pending นับเป็น "ติดต่อสำเร็จ" (Pete decision — inbound ลูกค้า initiate)
+    // 0091: ต้องเป็นการโทรหาลูกหนี้ (contact_target='debtor') ด้วย
     if (
-      fu.follow_up_result === 'contacted' ||
-      fu.follow_up_result === 'promised' ||
-      fu.follow_up_result === 'paid' ||
-      fu.follow_up_result === 'returned' ||
-      fu.follow_up_result === 'other' ||
-      fu.follow_up_result === 'line_pending'
+      isDebtorContact &&
+      (fu.follow_up_result === 'contacted' ||
+        fu.follow_up_result === 'promised' ||
+        fu.follow_up_result === 'paid' ||
+        fu.follow_up_result === 'returned' ||
+        fu.follow_up_result === 'other' ||
+        fu.follow_up_result === 'line_pending')
     ) {
       agg.successfulAttempts++
     }
@@ -3357,7 +3384,8 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
 
     // contactedToday: ต้อง shift created_at เป็น Bangkok ก่อนเทียบ (กัน off-by-one)
     // contactedToday logic เดิม result !== 'no_answer' — ครอบ line_pending อยู่แล้ว (ตั้งใจ)
-    if (!agg.contactedToday && fu.follow_up_result !== 'no_answer') {
+    // 0091: ต้องเป็น contact_target='debtor' ด้วย — โทรหาผู้ติดต่อวันนี้ไม่ถือว่า "ติดต่อลูกหนี้วันนี้"
+    if (!agg.contactedToday && isDebtorContact && fu.follow_up_result !== 'no_answer') {
       const fuBkkDate = new Date(
         new Date(fu.created_at).getTime() + 7 * 3600 * 1000,
       )
