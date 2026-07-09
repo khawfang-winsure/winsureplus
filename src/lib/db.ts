@@ -3121,24 +3121,6 @@ interface QueueContractRow {
 export async function getFreelancerQueue(grades: ContractGrade[]): Promise<FreelancerQueueRow[]> {
   if (!supabase || grades.length === 0) return []
 
-  // ดึง uid ของผู้ใช้ปัจจุบัน — ใช้ในการแยก my vs other author (Wave 3) + กรอง claim (0086)
-  const {
-    data: { user: currentUser },
-  } = await supabase.auth.getUser()
-  const myUid = currentUser?.id ?? null
-
-  // role ของผู้ใช้ปัจจุบัน — admin เห็นทุกเคสในคิว (ไม่กรอง assigned_to), freelancer/staff เห็นเฉพาะ
-  // เคสที่ว่าง (assigned_to is null) หรือเคสที่ตัวเอง claim ไว้ (0086 — กันคิวโดนคนอื่น claim บังหน้าจอ)
-  let isAdminUser = false
-  if (myUid) {
-    const { data: myProfile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', myUid)
-      .maybeSingle()
-    isAdminUser = (myProfile as { role?: string } | null)?.role === 'admin'
-  }
-
   // ดึงจาก v_contract_status:
   //  - status='active' + bucket != normal (คิวลูกหนี้ปกติเดิม)
   //  - status='returned' (เคสคืนเครื่องแล้วแต่ยังค้างยอด → เด้งเข้าคิวตามเกรดเดิม)
@@ -3175,6 +3157,56 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
     statusRows.push(r)
   }
   if (statusRows.length === 0) return []
+
+  return buildFreelancerQueueRows(statusRows)
+}
+
+/** เคสเดียวตาม contract_id — สำหรับ optimistic update หลัง save/claim/release (#4, ไม่ต้องโหลดทั้งคิว)
+ *  reuse logic เดียวกับ getFreelancerQueue ผ่าน buildFreelancerQueueRows แต่ query v_contract_status แค่ 1 แถว
+ *  คืน null เมื่อ: ไม่มีสัญญานี้ / RLS บล็อก (ไม่ใช่เกรดตัวเอง) / active+bucket='normal' (ยังไม่ล่าช้า ไม่เข้าคิว) /
+ *  returned แต่ returnClosingAmount<=0 (จ่ายครบแล้ว ปิดจบ) / ไม่ใช่เจ้าของเคส (assigned_to คนอื่น, non-admin) */
+export async function getFreelancerQueueRow(contractId: string): Promise<FreelancerQueueRow | null> {
+  if (!supabase) return null
+  const { data: statusData, error: statusError } = await supabase
+    .from('v_contract_status')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount, bucket')
+    .eq('contract_id', contractId)
+    .in('status', ['active', 'returned'])
+    .maybeSingle()
+  if (statusError) throw statusError
+  if (!statusData) return null
+
+  // mirror เงื่อนไข SQL ของ getFreelancerQueue: active+bucket='normal' (ยังไม่ล่าช้า) ไม่เข้าคิว
+  // returned เข้าเสมอไม่ว่า bucket ไหน (union Query1+Query2 เดิม) — ตัด returnClosingAmount<=0 ทีหลังใน buildFreelancerQueueRows
+  const row = statusData as QueueStatusRow & { bucket: string | null }
+  if (row.status === 'active' && row.bucket === 'normal') return null
+
+  const rows = await buildFreelancerQueueRows([row])
+  return rows[0] ?? null
+}
+
+/** ประกอบ FreelancerQueueRow[] จาก statusRows ที่ query จาก v_contract_status มาแล้ว
+ *  (shared logic: getFreelancerQueue โหลดทั้งคิว + getFreelancerQueueRow เคสเดียว เรียกอันนี้ต่อกันเพื่อไม่ให้สูตรคำนวณเพี้ยน 2 ที่) */
+async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<FreelancerQueueRow[]> {
+  if (!supabase || statusRows.length === 0) return []
+
+  // ดึง uid ของผู้ใช้ปัจจุบัน — ใช้ในการแยก my vs other author (Wave 3) + กรอง claim (0086)
+  const {
+    data: { user: currentUser },
+  } = await supabase.auth.getUser()
+  const myUid = currentUser?.id ?? null
+
+  // role ของผู้ใช้ปัจจุบัน — admin เห็นทุกเคสในคิว (ไม่กรอง assigned_to), freelancer/staff เห็นเฉพาะ
+  // เคสที่ว่าง (assigned_to is null) หรือเคสที่ตัวเอง claim ไว้ (0086 — กันคิวโดนคนอื่น claim บังหน้าจอ)
+  let isAdminUser = false
+  if (myUid) {
+    const { data: myProfile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', myUid)
+      .maybeSingle()
+    isAdminUser = (myProfile as { role?: string } | null)?.role === 'admin'
+  }
 
   // --- ยอดปิดเคสคืนเครื่อง (returnClosingAmount) ---
   // เฉพาะแถว status='returned': คำนวณยอดปิดด้วย outstandingAfterReturn

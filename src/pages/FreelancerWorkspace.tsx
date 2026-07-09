@@ -8,6 +8,7 @@ import {
   claimCase,
   getCaseOwnershipSummary,
   getFreelancerQueue,
+  getFreelancerQueueRow,
   getMyAssignedGrades,
   getMyCases,
   getOverduePromiseContracts,
@@ -513,7 +514,7 @@ function QueueCardMobile({
 
 // ===== Component หลัก =====
 export default function FreelancerWorkspace() {
-  const { role } = useAuth()
+  const { role, session } = useAuth()
   const [assignedGrades, setAssignedGrades] = useState<ContractGrade[]>([])
   const [selectedGrades, setSelectedGrades] = useState<ContractGrade[]>([])
   const [rows, setRows] = useState<FreelancerQueueRow[]>([])
@@ -620,16 +621,59 @@ export default function FreelancerWorkspace() {
     })
   }
 
+  // #4: patch แถวเดียวใน rows + myCases จากผลลัพธ์ getFreelancerQueueRow — แทน full re-fetch ทั้งคิว
+  // row=null → เคสหลุดจากคิว/ไม่ใช่ของเรา (ลบออก); row!=null → replace ถ้ามีอยู่แล้ว หรือเพิ่มเข้าไปถ้ายังไม่มี
+  const applyRowPatch = useCallback((contractId: string, row: FreelancerQueueRow | null) => {
+    // rows: คิวหลักตาม selectedGrades — เติมเฉพาะแถวที่ตรงเกรดที่กำลังเลือกอยู่ (กัน chip filter เพี้ยน)
+    setRows((prev) => {
+      const idx = prev.findIndex((r) => r.contractId === contractId)
+      if (row && (selectedGrades.length === 0 || selectedGrades.includes(row.grade))) {
+        if (idx >= 0) {
+          const next = [...prev]
+          next[idx] = row
+          return next
+        }
+        return [...prev, row]
+      }
+      if (idx < 0) return prev
+      return prev.filter((r) => r.contractId !== contractId)
+    })
+
+    // myCases: เฉพาะเคสที่ assignedTo = ตัวเอง
+    setMyCases((prev) => {
+      const idx = prev.findIndex((r) => r.contractId === contractId)
+      const myId = session?.user.id ?? null
+      if (row && myId && row.assignedTo === myId) {
+        if (idx >= 0) {
+          const next = [...prev]
+          next[idx] = row
+          return next
+        }
+        return [...prev, row]
+      }
+      if (idx < 0) return prev
+      return prev.filter((r) => r.contractId !== contractId)
+    })
+  }, [selectedGrades, session])
+
+  // #4: ดึงเคสเดียวมา patch — network error → fallback full refetch (background, กันหน้า desync)
+  const refreshQueueRow = useCallback(async (contractId: string) => {
+    try {
+      const row = await getFreelancerQueueRow(contractId)
+      applyRowPatch(contractId, row)
+    } catch {
+      if (selectedGrades.length > 0) void loadQueue(selectedGrades, { background: true })
+      void loadMyCases()
+    }
+  }, [applyRowPatch, selectedGrades, loadQueue, loadMyCases])
+
   // req7: จองเคส — เข้าแท็บ "งานที่ต้องดูแล" + หายจาก "ที่ต้องโทร"
   async function handleClaimCase(r: FreelancerQueueRow) {
     setClaimingId(r.contractId)
     setClaimToast(null)
     try {
       await claimCase(r.contractId)
-      await Promise.all([
-        selectedGrades.length > 0 ? loadQueue(selectedGrades, { background: true }) : Promise.resolve(),
-        loadMyCases(),
-      ])
+      await refreshQueueRow(r.contractId)
       if (role === 'admin') void getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => {})
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -645,10 +689,7 @@ export default function FreelancerWorkspace() {
     setClaimToast(null)
     try {
       await releaseCase(r.contractId)
-      await Promise.all([
-        selectedGrades.length > 0 ? loadQueue(selectedGrades, { background: true }) : Promise.resolve(),
-        loadMyCases(),
-      ])
+      await refreshQueueRow(r.contractId)
       if (role === 'admin') void getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => {})
     } catch (e) {
       setClaimToast(e instanceof Error ? e.message : 'ทิ้งงานไม่สำเร็จ ลองใหม่อีกครั้ง')
@@ -1570,13 +1611,13 @@ export default function FreelancerWorkspace() {
           alreadyClosed={selectedContract.caseClosedToday}
           onClose={handleModalClose}
           onSaved={() => {
-            if (selectedGrades.length > 0) void loadQueue(selectedGrades, { background: true })
-            void loadMyCases()
+            // #4: patch แถวเดียว (selectedContract ยังไม่ null ในสโคปนี้) — ไม่ re-fetch ทั้งคิว
+            void refreshQueueRow(selectedContract.contractId)
           }}
           onCaseClosed={() => {
+            const contractId = selectedContract.contractId
             setSelectedContract(null)
-            if (selectedGrades.length > 0) void loadQueue(selectedGrades, { background: true })
-            void loadMyCases()
+            void refreshQueueRow(contractId)
           }}
         />
       )}
