@@ -3025,6 +3025,7 @@ export interface FreelancerQueueRow {
   installmentsTotal: number          // Wave 1B: จำนวนงวดทั้งหมด (term_months)
   outstanding: number                // ยอดค่าปรับค้าง (penaltyDue) — ยังคงไว้เพื่อ backward compat
   principalDue: number               // Wave 1B: ยอดเงินต้นค้าง = sum(amount - paid_amount) งวดที่ยังไม่ปิด
+  overdueAmount: number              // Wave 1 (คิวคนโทร): เงินต้นเฉพาะงวดที่ due_date<=today ยังไม่จ่าย (v_contract_status.overdue_amount, mig 0055) — UI บวกกับ outstanding(ค่าปรับ) เอง
   dnc: boolean
   lawyerEngaged: boolean
   disputed: boolean
@@ -3073,6 +3074,7 @@ interface QueueStatusRow {
   grade: string | null
   remaining_installments: number
   status: string   // 'active' | 'returned' — แยกเคสคืนเครื่องที่ยังค้างยอด
+  overdue_amount: number
 }
 
 interface QueueContractRow {
@@ -3125,7 +3127,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   // ไม่รวม returned_closed / closed / online (ปิดแล้ว ไม่ต้องตามเก็บ)
   const { data: statusData, error: statusError } = await supabase
     .from('v_contract_status')
-    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount')
     .in('status', ['active', 'returned'])
     .neq('bucket', 'normal')
     .in('grade', grades)
@@ -3139,7 +3141,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
   // ด้วย query ที่สอง เฉพาะ returned (เลี่ยงทำ logic ฝั่ง SQL ซับซ้อน)
   const { data: returnedNormalData, error: returnedNormalErr } = await supabase
     .from('v_contract_status')
-    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status')
+    .select('contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount')
     .eq('status', 'returned')
     .eq('bucket', 'normal')
     .in('grade', grades)
@@ -3499,6 +3501,7 @@ export async function getFreelancerQueue(grades: ContractGrade[]): Promise<Freel
       installmentsTotal: termMonths,
       outstanding: Number(r.penalty_due),
       principalDue: principalMap.get(r.contract_id) ?? 0,
+      overdueAmount: Number(r.overdue_amount) || 0,
       dnc: c?.dnc ?? false,
       lawyerEngaged: c?.lawyer_engaged ?? false,
       disputed: c?.disputed ?? false,

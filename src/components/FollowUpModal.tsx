@@ -70,6 +70,8 @@ interface ContractSummary {
   installmentsTotal?: number
   penaltyDue?: number
   principalDue?: number
+  // ข้อ 7: เงินต้นงวดที่เลยกำหนดและยังไม่จ่าย (v_contract_status.overdue_amount) — รวมกับ penaltyDue = ยอดต้องชำระวันนี้
+  overdueAmount?: number
   // เคสคืนเครื่อง
   isReturned?: boolean
   returnClosingAmount?: number
@@ -372,6 +374,15 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
               งวด {contract.installmentsPaid}/{contract.installmentsTotal}
             </p>
           )}
+        {/* ข้อ 7: ยอดต้องชำระวันนี้ (เงินต้นค้างที่เลยกำหนด + ค่าปรับ) — ตัวเลขเดียวแจ้งลูกค้าได้ทันที */}
+        {contract.overdueAmount !== undefined && contract.penaltyDue !== undefined && (
+          <p className="mt-1 rounded-lg bg-red-50 px-2.5 py-1.5">
+            <span className="text-xs font-medium text-red-500">ยอดต้องชำระวันนี้ (รวมค่าปรับ): </span>
+            <span className="text-base font-bold text-red-700">
+              {baht(contract.overdueAmount + contract.penaltyDue)} ฿
+            </span>
+          </p>
+        )}
         {contract.penaltyDue !== undefined && (
           <p className="text-ink-soft">
             ค่าปรับสะสม:{' '}

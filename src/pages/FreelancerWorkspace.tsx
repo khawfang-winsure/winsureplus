@@ -83,6 +83,14 @@ function stripPhone(p: string): string {
   return p.replace(/[\s-]/g, '')
 }
 
+// ===== โหมดเรียงลำดับแท็บ "ที่ต้องโทร" =====
+type SortMode = 'priority' | 'daysLateAsc' | 'daysLateDesc'
+const SORT_MODE_LABEL: Record<SortMode, string> = {
+  priority: 'ตามความเร่งด่วน',
+  daysLateAsc: 'วันค้างน้อย→มาก',
+  daysLateDesc: 'วันค้างมาก→น้อย',
+}
+
 // นับวันจาก anchorDate (Bangkok) — วันเดียวกับ anchor = วันที่ 1, เมื่อวาน = วันที่ 2
 // todayBkk และ anchorDate ต้องเป็น yyyy-mm-dd (Bangkok date ทั้งคู่)
 function daysSinceAnchor(anchorDate: string, todayBkk: string): number {
@@ -247,6 +255,14 @@ function QueueRow({
             {r.disputed && <Badge tone="amber">📋 โต้แย้งยอด</Badge>}
           </div>
         )}
+        {/* ป้าย "ทำแล้ววันนี้" */}
+        {r.contactedToday && (
+          <div className="mb-1">
+            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+              ✓ โทรแล้ววันนี้
+            </span>
+          </div>
+        )}
         <p className={`font-medium ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
           {r.customerName}
         </p>
@@ -320,6 +336,11 @@ function QueueRow({
       </td>
       {/* ค่างวด + ค่าปรับ */}
       <td className="px-4 py-3 text-right">
+        {/* ยอดรวมต้องชำระวันนี้ (เงินต้นค้าง + ค่าปรับ) — ตัวเลขเดียวแจ้งลูกค้าได้ทันที */}
+        <div className="mb-1.5">
+          <p className="text-[10px] font-medium text-red-500 whitespace-nowrap">ยอดต้องชำระวันนี้ (รวมค่าปรับ)</p>
+          <p className="text-base font-bold text-red-700 whitespace-nowrap">{baht(r.overdueAmount + r.outstanding)} ฿</p>
+        </div>
         <p className="text-sm text-ink whitespace-nowrap">{baht(r.monthlyPayment)} ฿</p>
         {r.outstanding > 0 ? (
           <p className="text-xs font-semibold text-red-600 whitespace-nowrap">{baht(r.outstanding)} ฿ ค่าปรับ</p>
@@ -404,6 +425,14 @@ function QueueCardMobile({
               {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
             </div>
           )}
+          {/* ป้าย "ทำแล้ววันนี้" */}
+          {r.contactedToday && (
+            <div className="mb-1">
+              <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+                ✓ โทรแล้ววันนี้
+              </span>
+            </div>
+          )}
           <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
             {r.customerName}
           </p>
@@ -441,6 +470,12 @@ function QueueCardMobile({
           {TIER_EMOJI[sr.tier]} {sr.score}
         </span>
       </div>
+      {/* ยอดรวมต้องชำระวันนี้ (เงินต้นค้าง + ค่าปรับ) — ตัวเลขเดียวแจ้งลูกค้าได้ทันที */}
+      <div className="mt-2 inline-flex flex-col items-start rounded-lg bg-red-50 px-2.5 py-1.5">
+        <span className="text-[10px] font-medium text-red-500">ยอดต้องชำระวันนี้ (รวมค่าปรับ)</span>
+        <span className="text-base font-bold text-red-700">{baht(r.overdueAmount + r.outstanding)} ฿</span>
+      </div>
+
       {/* บรรทัด 2: ตัวเลข */}
       <div className="mb-3 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
         <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
@@ -483,11 +518,15 @@ export default function FreelancerWorkspace() {
   const [selectedGrades, setSelectedGrades] = useState<ContractGrade[]>([])
   const [rows, setRows] = useState<FreelancerQueueRow[]>([])
   const [loading, setLoading] = useState(true)
+  // refetch หลัง save/claim/drop ใช้ตัวนี้แทน loading เดิม — ไม่ unmount list ไม่ให้ scroll กระโดดขึ้นบนสุด
+  const [refreshing, setRefreshing] = useState(false)
   const [shopFilter, setShopFilter] = useFilter<string>('queue.shop', '')
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [selectedContract, setSelectedContract] = useState<FreelancerQueueRow | null>(null)
   const [publicHolidays, setPublicHolidays] = useState<Set<string>>(new Set())
   const [activeTab, setActiveTab] = useFilter<'todo' | 'mine' | 'returned' | 'done'>('queue.tab', 'todo')
+  // ข้อ 6: โหมดเรียงแท็บ "ที่ต้องโทร" — ไม่ต้อง persist ข้ามหน้า
+  const [sortMode, setSortMode] = useState<SortMode>('priority')
 
   // overdue promise state
   const [overdue, setOverdue] = useState<OverduePromiseContract[]>([])
@@ -529,14 +568,17 @@ export default function FreelancerWorkspace() {
     return grades
   }, [])
 
-  // โหลดคิว
-  const loadQueue = useCallback(async (grades: ContractGrade[]) => {
-    setLoading(true)
+  // โหลดคิว — background=true ใช้ตอน refetch หลัง save/claim/drop (ไม่ toggle loading เพื่อกัน list unmount/scroll กระโดด)
+  const loadQueue = useCallback(async (grades: ContractGrade[], opts?: { background?: boolean }) => {
+    const background = opts?.background ?? false
+    if (background) setRefreshing(true)
+    else setLoading(true)
     try {
       const data = await getFreelancerQueue(grades)
       setRows(data)
     } finally {
-      setLoading(false)
+      if (background) setRefreshing(false)
+      else setLoading(false)
     }
   }, [])
 
@@ -585,7 +627,7 @@ export default function FreelancerWorkspace() {
     try {
       await claimCase(r.contractId)
       await Promise.all([
-        selectedGrades.length > 0 ? loadQueue(selectedGrades) : Promise.resolve(),
+        selectedGrades.length > 0 ? loadQueue(selectedGrades, { background: true }) : Promise.resolve(),
         loadMyCases(),
       ])
       if (role === 'admin') void getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => {})
@@ -604,7 +646,7 @@ export default function FreelancerWorkspace() {
     try {
       await releaseCase(r.contractId)
       await Promise.all([
-        selectedGrades.length > 0 ? loadQueue(selectedGrades) : Promise.resolve(),
+        selectedGrades.length > 0 ? loadQueue(selectedGrades, { background: true }) : Promise.resolve(),
         loadMyCases(),
       ])
       if (role === 'admin') void getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => {})
@@ -614,6 +656,21 @@ export default function FreelancerWorkspace() {
       setClaimingId(null)
     }
   }
+
+  // ข้อ 5: filter "งานที่ต้องดูแล" ด้วยช่องค้นหาเดียวกับแท็บอื่น (บั๊กเดิม: myCases ไม่เคยผ่าน searchTerm)
+  const filteredMyCases = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase()
+    if (!q) return myCases
+    const qPhone = stripPhone(q)
+    return myCases.filter(
+      (r) =>
+        r.customerName?.toLowerCase().includes(q) ||
+        r.contractNo?.toLowerCase().includes(q) ||
+        stripPhone(r.phone ?? '').includes(qPhone) ||
+        stripPhone(r.phoneAlt1 ?? '').includes(qPhone) ||
+        stripPhone(r.phoneAlt2 ?? '').includes(qPhone),
+    )
+  }, [myCases, searchTerm])
 
   // ดึงรายการร้านไม่ซ้ำ
   const shopOptions = useMemo(() => {
@@ -727,11 +784,18 @@ export default function FreelancerWorkspace() {
     [],
   )
 
-  // รายชื่อเดียวเรียงตามความสำคัญ (sortQueue: เลยนัด → ใกล้นัด≤7วัน → tier+score)
-  const sortedRows = useMemo(
-    () => sortQueue(scoredRows, todayStr),
-    [scoredRows, todayStr],
-  )
+  // รายชื่อเดียวเรียงตามโหมดที่เลือก (ข้อ 6):
+  // priority (default) = sortQueue เดิม (เลยนัด → ใกล้นัด≤7วัน → tier+score)
+  // daysLateAsc/Desc = เรียงตามวันค้างชำระอย่างเดียว
+  const sortedRows = useMemo(() => {
+    if (sortMode === 'daysLateAsc') {
+      return [...scoredRows].sort((a, b) => a.row.daysLate - b.row.daysLate)
+    }
+    if (sortMode === 'daysLateDesc') {
+      return [...scoredRows].sort((a, b) => b.row.daysLate - a.row.daysLate)
+    }
+    return sortQueue(scoredRows, todayStr)
+  }, [scoredRows, todayStr, sortMode])
 
   // === Pagination ของแท็บ "ที่ต้องโทร" ===
   const pagedSortedRows = useMemo(
@@ -765,7 +829,7 @@ export default function FreelancerWorkspace() {
   // reset หน้า=1 เมื่อเปลี่ยนแท็บ / ตัวกรอง / ค้นหา
   useEffect(() => {
     setPage(1)
-  }, [activeTab, shopFilter, searchTerm, overdueFilter, selectedGrades])
+  }, [activeTab, shopFilter, searchTerm, overdueFilter, selectedGrades, sortMode])
 
   function handlePageSizeChange(s: number) {
     setPageSize(s)
@@ -795,13 +859,16 @@ export default function FreelancerWorkspace() {
         <PageTitle sub="รายการลูกค้าที่ต้องติดตามตามเกรดที่ได้รับมอบหมาย" count={loading ? undefined : { shown: filtered.length, total: rows.length }}>
           คิวติดตามหนี้ — ผู้ติดตามหนี้
         </PageTitle>
-        <button
-          onClick={handleRefresh}
-          className="mt-1 flex shrink-0 items-center gap-1.5 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-medium text-ink transition hover:bg-peach-light/50"
-          title="โหลดข้อมูลใหม่"
-        >
-          🔄 รีเฟรช
-        </button>
+        <div className="mt-1 flex shrink-0 items-center gap-2">
+          {refreshing && <span className="text-xs text-ink-soft">กำลังอัปเดต...</span>}
+          <button
+            onClick={handleRefresh}
+            className="flex shrink-0 items-center gap-1.5 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-medium text-ink transition hover:bg-peach-light/50"
+            title="โหลดข้อมูลใหม่"
+          >
+            🔄 รีเฟรช
+          </button>
+        </div>
       </div>
 
       {/* banner นอกเวลา */}
@@ -953,7 +1020,7 @@ export default function FreelancerWorkspace() {
             >
               <span className="inline-flex items-center gap-1.5">
                 <UserCheck size={15} />
-                งานที่ต้องดูแล ({myCases.length})
+                งานที่ต้องดูแล ({filteredMyCases.length})
               </span>
             </button>
             <button
@@ -981,6 +1048,23 @@ export default function FreelancerWorkspace() {
           {/* === Tab 1: ที่ต้องโทร === */}
           {activeTab === 'todo' && (
             <>
+              {/* ข้อ 6: ตัวเลือกเรียงลำดับ */}
+              {activeRows.length > 0 && (
+                <div className="mb-3 flex items-center justify-end gap-2 text-xs text-ink-soft">
+                  <span>เรียงตาม:</span>
+                  <select
+                    value={sortMode}
+                    onChange={(e) => setSortMode(e.target.value as SortMode)}
+                    className="rounded-lg border border-peach bg-white px-2.5 py-1.5 text-xs font-medium text-ink outline-none transition focus:border-salmon-deep"
+                  >
+                    {(Object.keys(SORT_MODE_LABEL) as SortMode[]).map((m) => (
+                      <option key={m} value={m}>
+                        {SORT_MODE_LABEL[m]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {activeRows.length === 0 ? (
                 searchTerm.trim() ? (
                   <EmptyState
@@ -1060,11 +1144,18 @@ export default function FreelancerWorkspace() {
           {/* === Tab "งานที่ต้องดูแล" (req7) — เคสที่ตัวเอง claim ไว้ === */}
           {activeTab === 'mine' && (
             <>
-              {myCases.length === 0 ? (
-                <EmptyState
-                  title="ยังไม่มีเคสที่ดูแลอยู่"
-                  hint="กด 'ฉันดูแลเคสนี้' จากแท็บ 'ที่ต้องโทร' เพื่อจองเคสมาไว้ที่นี่"
-                />
+              {filteredMyCases.length === 0 ? (
+                searchTerm.trim() ? (
+                  <EmptyState
+                    title="ไม่พบลูกค้าที่ค้นหา"
+                    hint="ลองเปลี่ยนคำค้นหา หรือล้างช่องค้นหาเพื่อดูทั้งหมด"
+                  />
+                ) : (
+                  <EmptyState
+                    title="ยังไม่มีเคสที่ดูแลอยู่"
+                    hint="กด 'ฉันดูแลเคสนี้' จากแท็บ 'ที่ต้องโทร' เพื่อจองเคสมาไว้ที่นี่"
+                  />
+                )
               ) : (
                 <>
                   {/* ===== Desktop table (≥ md) ===== */}
@@ -1080,7 +1171,7 @@ export default function FreelancerWorkspace() {
                         </tr>
                       </thead>
                       <tbody>
-                        {myCases.map((r) => (
+                        {filteredMyCases.map((r) => (
                           <tr key={r.contractId} className="border-b border-peach last:border-0 hover:bg-emerald-50/40">
                             <td className="px-4 py-3">
                               <p className="font-medium text-ink">{r.customerName}</p>
@@ -1119,7 +1210,7 @@ export default function FreelancerWorkspace() {
 
                   {/* ===== Mobile card stack (< md) ===== */}
                   <div className="flex flex-col gap-3 md:hidden">
-                    {myCases.map((r) => (
+                    {filteredMyCases.map((r) => (
                       <div key={r.contractId} className="rounded-2xl border border-peach bg-white p-4 shadow-sm">
                         <div className="mb-1 flex items-start justify-between gap-2">
                           <div>
@@ -1456,6 +1547,7 @@ export default function FreelancerWorkspace() {
             installmentsTotal: selectedContract.installmentsTotal,
             penaltyDue: selectedContract.outstanding,
             principalDue: selectedContract.principalDue,
+            overdueAmount: selectedContract.overdueAmount,
             color: selectedContract.color,
             isReturned: selectedContract.isReturned,
             returnClosingAmount: selectedContract.returnClosingAmount,
@@ -1478,12 +1570,12 @@ export default function FreelancerWorkspace() {
           alreadyClosed={selectedContract.caseClosedToday}
           onClose={handleModalClose}
           onSaved={() => {
-            if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+            if (selectedGrades.length > 0) void loadQueue(selectedGrades, { background: true })
             void loadMyCases()
           }}
           onCaseClosed={() => {
             setSelectedContract(null)
-            if (selectedGrades.length > 0) void loadQueue(selectedGrades)
+            if (selectedGrades.length > 0) void loadQueue(selectedGrades, { background: true })
             void loadMyCases()
           }}
         />
