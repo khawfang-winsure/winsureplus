@@ -12,7 +12,7 @@ import {
   markShopTransferred,
   rejectSummaryContract,
   sendSummaryBackToStaff,
-  updateContractTransactionDate,
+  updateContractTransferDate,
   type DailyTransferContractRow,
   type DailyTransferShopRow,
   type NeedsFixReason,
@@ -131,12 +131,10 @@ function RejectContractModal({
 // ===== ป็อปอัพ "แก้วันที่โอน" ต่อเคส (req4, admin only) =====
 function EditTransactionDateModal({
   contract,
-  byName,
   onClose,
   onDone,
 }: {
   contract: DailyTransferContractRow
-  byName: string
   onClose: () => void
   onDone: () => void
 }) {
@@ -152,7 +150,7 @@ function EditTransactionDateModal({
     setSaving(true)
     setError(null)
     try {
-      await updateContractTransactionDate(contract.contractId, newDate, byName)
+      await updateContractTransferDate(contract.contractId, newDate)
       onDone()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
@@ -166,7 +164,7 @@ function EditTransactionDateModal({
       <div className="flex flex-col gap-4">
         <p className="text-sm text-ink-soft">{contract.contractNo}</p>
 
-        <Field label="วันที่ทำรายการใหม่" required>
+        <Field label="วันที่โอนใหม่" required>
           <Input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} />
         </Field>
 
@@ -832,7 +830,6 @@ export default function AccountingTransfers() {
       {editDateContract && (
         <EditTransactionDateModal
           contract={editDateContract}
-          byName={byName}
           onClose={() => setEditDateContract(null)}
           onDone={() => {
             setEditDateContract(null)

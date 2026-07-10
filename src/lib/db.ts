@@ -865,21 +865,20 @@ export async function sendSummaryBackToStaff(contractIds: string[], note: string
   if (error) throw error
 }
 
-/** แก้วันที่ทำรายการ (transaction_date) ของสัญญา — ใช้ตอนบัญชีแก้วันที่กลุ่มโอนผิด
- *  ⚠️ กระทบ weekly-summary (src/lib/weeklySummary.ts group by c.transactionDate) — แก้แล้วยอดของวันเก่าจะลดลง / วันใหม่จะเพิ่มขึ้น
- *  ไม่กระทบ /transfers (getDailyTransferByShop เกาะ summary_accounting_sent_at แล้ว) และไม่กระทบ daily-report (getDailyAudit ใช้ event timestamp ไม่ใช่ transaction_date)
- *  ไม่มี audit log แยกสำหรับฟิลด์นี้ (บันทึกแค่ byName ผ่าน caller เอง ถ้าต้องการ) */
-export async function updateContractTransactionDate(
-  contractId: string,
-  newDateISO: string,
-  byName: string,
-): Promise<void> {
+/** แก้ "วันที่โอน" ของสัญญา ที่หน้า /transfers ใช้จัดกลุ่มยอดรายวัน (0094 RPC)
+ *  ⚠️ แก้ contracts.summary_accounting_sent_at (วันส่งบัญชี — คอลัมน์ที่ getDailyTransferByShop/getDailyTransferContracts group จริง)
+ *     ไม่แตะ transaction_date (วันขาย ที่ weekly-summary ใช้) — ตั้งใจแยก 2 ความหมายนี้ออกจากกัน ไม่ให้ weekly-summary เพี้ยนตามโดยไม่ตั้งใจ
+ *  ⚠️ กระทบ daily-report (getDailyAudit อ่าน summary_accounting_sent_at ตัวเดียวกัน) — event "ส่งสรุปยอดให้บัญชี" จะย้ายวันตามไปด้วย (ตั้งใจ ถือเป็นพฤติกรรมที่ถูกต้อง เพราะ 2 หน้าจอนี้เกาะฟิลด์เดียวกัน)
+ *  ⚠️ ไม่แตะ shop_transfer (สลิป/สถานะยืนยันโอน) เลย — เพราะ shop_transfer เป็น 1 แถว/ร้าน/วัน ไม่ใช่ต่อสัญญา ย้ายสัญญา
+ *     1 ใบ "ย้ายสลิปตามไม่ได้" — RPC ไม่บล็อกแม้ร้านนั้นจะยืนยันโอน/แนบสลิปแล้ว (transferred=true) ในวันต้นทาง/ปลายทาง
+ *     ก็แก้ได้ปกติ (Pete ตัดสินใจ 2026-07-10: ยอมรับความเสี่ยงยอดไม่ตรงสลิปเดิม เพื่อความยืดหยุ่นแก้ย้อนหลัง)
+ *  admin-only (guard ซ้ำใน RPC เอง กัน staff เรียกตรง แม้ RLS contracts_write จะกว้างกว่า) */
+export async function updateContractTransferDate(contractId: string, newDateISO: string): Promise<void> {
   if (!supabase) return
-  void byName // ยังไม่มีคอลัมน์ audit แยกสำหรับการแก้วันที่ — เผื่อ caller อยากส่งชื่อไปโชว์ใน note ภายนอก (เช่น log แยกที่ UI เก็บเอง)
-  const { error } = await supabase
-    .from('contracts')
-    .update({ transaction_date: newDateISO })
-    .eq('id', contractId)
+  const { error } = await supabase.rpc('update_contract_transfer_date', {
+    p_contract_id: contractId,
+    p_new_date: newDateISO,
+  })
   if (error) throw error
 }
 
