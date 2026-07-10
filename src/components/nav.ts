@@ -108,7 +108,6 @@ export const NAV: NavItem[] = [
       { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
 
       { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', sectionLabel: 'ทีมตามหนี้' },
-      { to: '/debtflow', label: 'ติดตามหนี้ (DEBTFLOW)', adminOnly: true },
     ],
   },
 

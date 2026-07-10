@@ -6,11 +6,13 @@ import {
   loadStoredRange,
   fmtThaiShort,
   daysBetween,
+  addDays,
   type DateRange,
 } from '../components/DateRangePicker'
 import {
   getDeviceReturnCountsByFreelancerThisMonth,
   getDeviceReturnTiers,
+  getDeviceReturnByCollector,
   getCollectorScorecard,
   getPjRecoverySummary,
   getPjRecoveryMonthly,
@@ -28,6 +30,7 @@ import type {
   PjRecoveryOutcomeSummary,
   CollectorCallOutcome,
 } from '../lib/types'
+import type { DeviceReturnByCollectorResult } from '../lib/deviceReturnByCollector'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
 import { baht } from '../lib/format'
 
@@ -831,6 +834,63 @@ function CallOutcomeSection({
   )
 }
 
+// ===== เครื่องที่ตามคืนได้ (นับตามคนที่โทรจนลูกค้ายอมคืน) =====
+
+function DeviceReturnByCollectorSection({ rows }: { rows: DeviceReturnByCollectorResult[] }) {
+  const totalCount = rows.reduce((sum, r) => sum + r.count, 0)
+
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">เครื่องที่ตามคืนได้ (ตามคนที่ตามจนลูกค้าคืน)</h2>
+        <p className="text-sm text-ink-soft">
+          นับตามคนที่โทรจนลูกค้ายอมคืนเครื่อง ในช่วงวันที่เลือกด้านบน —{' '}
+          <span className="font-medium text-ink">คนละตัวกับ “ค่าคอมคืนเครื่อง” ในตารางด้านบน</span>{' '}
+          (ค่าคอมนับเฉพาะยอดของเดือนนี้เสมอ ไม่ผูกกับช่วงวันที่เลือก)
+        </p>
+      </div>
+
+      {totalCount === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ไม่มีเครื่องที่ตามคืนได้ในช่วงนี้
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 font-medium">พนักงาน</th>
+                <th className="pb-2 text-right font-medium">เคสที่คืนได้</th>
+                <th className="pb-2 text-right font-medium">มูลค่ารวม</th>
+                <th className="pb-2 text-right font-medium">ยังไม่จ่าย</th>
+                <th className="pb-2 text-right font-medium">จ่ายแล้ว (รอเช็คเครื่อง)</th>
+                <th className="pb-2 text-right font-medium">จ่ายครบ ปิดสัญญา</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.collectorId} className="border-b border-peach/40 last:border-0">
+                  <td className="py-2 font-medium text-ink">{r.name}</td>
+                  <td className="py-2 text-right font-semibold text-ink">{fmtInt(r.count)}</td>
+                  <td className="py-2 text-right text-ink">{fmtBaht(r.totalValue)}</td>
+                  <td className="py-2 text-right text-ink-soft">{fmtInt(r.byCaseNo.case1)}</td>
+                  <td className="py-2 text-right text-ink-soft">{fmtInt(r.byCaseNo.case2)}</td>
+                  <td className="py-2 text-right font-medium text-green-700">{fmtInt(r.byCaseNo.case3)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs leading-relaxed text-ink-soft">
+        ยังไม่จ่าย = กรณีที่ 1 (ยังไม่ชำระค่างวด+ค่าปรับ) · จ่ายแล้ว (รอเช็คเครื่อง) = กรณีที่ 2 ·
+        จ่ายครบ ปิดสัญญา = กรณีที่ 3 · “ยังไม่ระบุ” = ไม่มีบันทึกติดตามผูกกับเคสคืนเครื่องนี้
+      </p>
+    </Card>
+  )
+}
+
 // ===== Main Page =====
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
@@ -857,6 +917,9 @@ export default function StaffPerformance() {
 
   // ผลการโทร & การนัดชำระ (รายคน): โหลดตามช่วงวันที่เลือก (เหมือน scorecard)
   const [callOutcomes, setCallOutcomes] = useState<CollectorCallOutcome[]>([])
+
+  // เครื่องที่ตามคืนได้ต่อคน (attributed_freelancer_id — คนละตัวกับค่าคอมคืนเครื่อง): โหลดตามช่วงวันที่เลือก
+  const [deviceReturnByCollector, setDeviceReturnByCollector] = useState<DeviceReturnByCollectorResult[]>([])
 
   // ผลการตามหนี้จริงจากระบบ PJ: โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [pjData, setPjData] = useState<PjData>({
@@ -917,6 +980,17 @@ export default function StaffPerformance() {
     const eff = effectiveRange(range)
     getCollectorCallOutcomes(eff.start, eff.end)
       .then(setCallOutcomes)
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range])
+
+  // เครื่องที่ตามคืนได้ต่อคน — โหลดตามช่วงวันที่เลือก (toISO exclusive → +1 วันจาก eff.end)
+  useEffect(() => {
+    const eff = effectiveRange(range)
+    getDeviceReturnByCollector(eff.start, addDays(eff.end, 1))
+      .then(setDeviceReturnByCollector)
       .catch(() => {
         // silent — ไม่กระทบ scorecard หลัก
       })
@@ -1127,6 +1201,9 @@ export default function StaffPerformance() {
 
       {/* Section 2.5: ผลการโทร & การนัดชำระ (รายคน) — อิง /queue ช่วงที่เลือก */}
       <CallOutcomeSection rows={callOutcomes} totals={callOutcomeTotals} />
+
+      {/* Section 2.6: เครื่องที่ตามคืนได้ ต่อคน (attribution — คนละตัวกับค่าคอมคืนเครื่อง) */}
+      <DeviceReturnByCollectorSection rows={deviceReturnByCollector} />
 
       {/* Section 3: ผลการตามหนี้จริง (จากระบบ PJ) */}
       <PjRecoverySection data={pjData} />

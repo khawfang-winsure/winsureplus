@@ -392,65 +392,6 @@ export interface PrivateNote {
   updatedAt: string
 }
 
-// ---------- DEBTFLOW import (migration 0064) ----------
-
-/** เคสติดตามหนี้ที่ import จาก DEBTFLOW — admin อ่านอย่างเดียว */
-export interface DebtflowCase {
-  id: string
-  contractId: string | null       // link กลับ contracts.id (null ถ้าแมตช์ source_inv ไม่ได้)
-  contractNo: string | null       // join contracts.contract_no (ถ้าแมตช์แล้ว)
-  sourceInv: string               // เลขสัญญาจาก DEBTFLOW (cleaned)
-  customerName: string | null
-  dueDate: string | null          // 'YYYY-MM-DD'
-  daysLate: number | null
-  grade: string | null
-  primaryPhone: string | null
-  callStatus: string | null
-  phoneAlt1: string | null
-  phoneAlt2: string | null
-  deviceStatus: string | null
-  conversationNote: string | null
-  promiseDate: string | null      // 'YYYY-MM-DD'
-  assignedEmployee: string | null
-  paymentStatus: string | null
-  installmentAmount: number | null
-  cumulativePaid: number | null
-  dateAdded: string | null        // 'YYYY-MM-DD'
-  lastUpdate: string | null       // ISO timestamptz
-  importedAt: string
-}
-
-/** สรุป aggregate ของ DEBTFLOW batch สำหรับหน้ารายงาน */
-export interface DebtflowSummary {
-  totalCases: number
-  totalCollected: number           // Σ cumulative_paid
-  closedCases: number              // payment_status = 'ชำระเงินครบแล้ว'
-  byEmployee: DebtflowByEmployee[]
-  byGrade: DebtflowByGrade[]
-  byPaymentStatus: DebtflowByStatus[]
-}
-
-export interface DebtflowByEmployee {
-  employee: string
-  cases: number
-  collected: number
-  closed: number
-  outstandingHeld: number   // Σ overdue_amount ของเคสที่พนักงานรับผิดชอบ (ยอดเลยกำหนดยังไม่จ่าย)
-  closedRate: number        // round(100 * closed / cases) — จำนวนเต็ม
-  avgPerCase: number        // round(collected / cases)
-}
-
-export interface DebtflowByGrade {
-  grade: string
-  cases: number
-  collected: number
-}
-
-export interface DebtflowByStatus {
-  status: string
-  n: number
-}
-
 // ---------- PJ Recovery report (migration 0066) ----------
 // รายงาน "การตามหนี้ย้อนหลังจาก PJ" — สรุปเงินที่ตามกลับมาได้จากงวดที่จ่ายช้า
 // (recovered = งวดจ่ายช้า ไม่ใช่แถวค่าปรับ) อ่านจาก 4 aggregate views

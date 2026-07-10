@@ -40,7 +40,6 @@ const InboxPage = lazy(() => import('./pages/InboxPage'))
 const MyPerformance = lazy(() => import('./pages/MyPerformance'))
 const DocTracking = lazy(() => import('./pages/DocTracking'))
 const OtherIncomePage = lazy(() => import('./pages/OtherIncome'))
-const DebtflowReport = lazy(() => import('./pages/DebtflowReport'))
 const ReturnsReport = lazy(() => import('./pages/ReturnsReport'))
 const SettlementReport = lazy(() => import('./pages/SettlementReport'))
 const PjSyncReview = lazy(() => import('./pages/PjSyncReview'))
@@ -121,7 +120,6 @@ function Gate() {
           <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/settings" element={isAdminOrStaff ? <Navigate to="/settings/shops" replace /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/settings/:cat" element={isAdminOrStaff ? <Settings /> : <Navigate to={fallbackTo} replace />} />
-          <Route path="/debtflow" element={isAdmin ? <DebtflowReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/returns-report" element={isAdmin ? <ReturnsReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/settlements" element={isAdmin ? <SettlementReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/pj-sync-review" element={isAdminOrStaff ? <PjSyncReview /> : <Navigate to={fallbackTo} replace />} />
