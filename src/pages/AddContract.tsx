@@ -87,6 +87,12 @@ type AddrKey = 'current' | 'id_card' | 'work'
 
 const today = new Date().toISOString().slice(0, 10)
 
+/** ดึงวันที่ (1-31) จาก string "YYYY-MM-DD" ตรงๆ — ไม่ผ่าน Date object กันเพี้ยนเรื่อง timezone */
+function dayOfMonth(dateStr: string): number {
+  const day = Number(dateStr.split('-')[2])
+  return day >= 1 && day <= 31 ? day : 1
+}
+
 const CASE_ONLINE_DOC_ITEMS: string[] = [
   'ข้อมูลลูกค้า ยื่นเข้าในระบบ',
   'อาชีพ',
@@ -130,7 +136,7 @@ const initial: FormState = {
   financeAmount: '',
   monthlyPayment: '',
   termMonths: '12',
-  dueDay: '1',
+  dueDay: String(dayOfMonth(today)),
   hasPromotion: false,
   promotion: '',
   promotionDetail: '',
@@ -223,6 +229,7 @@ export default function AddContract() {
   const [dupCustomers, setDupCustomers] = useState<{ contractNo: string }[]>([]) // ลูกค้าบัตรนี้มีสัญญาแล้ว (เตือนนุ่ม)
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
   const shopChangedRef = useRef(false) // true = เปลี่ยนร้านระหว่างแก้ไข (ต้องบังคับ prefix ใหม่)
+  const dueDayTouchedRef = useRef(false) // true = พนักงานแก้ "วันครบกำหนด" เอง (เฉพาะโหมดเพิ่มใหม่ — ห้ามให้วันที่ทำรายการทับค่านี้อีก)
   const origDocsRef = useRef<{ pendingDocuments: boolean; pendingDocItems: string[] }>({
     pendingDocuments: false,
     pendingDocItems: [],
@@ -730,7 +737,14 @@ export default function AddContract() {
                 <Input
                   type="date"
                   value={f.transactionDate}
-                  onChange={(e) => set('transactionDate', e.target.value)}
+                  onChange={(e) => {
+                    const newDate = e.target.value
+                    set('transactionDate', newDate)
+                    // เพิ่มสัญญาใหม่: วันครบกำหนดตามวันที่ทำรายการอัตโนมัติ — เว้นพนักงานแก้วันครบกำหนดเองแล้ว
+                    if (!isEdit && !dueDayTouchedRef.current && newDate) {
+                      set('dueDay', String(dayOfMonth(newDate)))
+                    }
+                  }}
                 />
                 {errors.transactionDate && <p className="mt-1 text-xs text-red-600">{errors.transactionDate}</p>}
               </Field>
@@ -1163,7 +1177,21 @@ export default function AddContract() {
                     {errors.termMonths && <p className="mt-1 text-xs text-red-600">{errors.termMonths}</p>}
                   </Field>
                   <Field label="ชำระทุกวันที่ (1-31)" required>
-                    <Input type="number" min={1} max={31} value={f.dueDay} onChange={(e) => set('dueDay', e.target.value)} />
+                    <Input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={f.dueDay}
+                      onChange={(e) => {
+                        if (!isEdit) dueDayTouchedRef.current = true // พนักงานแก้เอง — กันวันที่ทำรายการทับ
+                        set('dueDay', e.target.value)
+                      }}
+                    />
+                    {!isEdit && (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        ตั้งตามวันที่ทำรายการให้อัตโนมัติ — แก้เองได้ถ้าลูกค้าตกลงวันจ่ายอื่น
+                      </p>
+                    )}
                     {errors.dueDay && <p className="mt-1 text-xs text-red-600">{errors.dueDay}</p>}
                   </Field>
                 </div>
