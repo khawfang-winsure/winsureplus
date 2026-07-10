@@ -379,52 +379,21 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
     <Modal title={`บันทึกติดตาม — ${contract.customerName}`} onClose={onClose}>
       {/* สรุปสัญญา */}
       <div className="mb-4 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
-        <p className="font-medium text-ink">{contract.contractNo}</p>
-        {contract.deviceModel && (
-          <p className="text-ink-soft">รุ่น: {contract.deviceModel}</p>
-        )}
-        {contract.color && (
-          <p className="text-ink-soft">สีเครื่อง: {contract.color}</p>
-        )}
-        {addresses.id_card?.district && (
-          <p className="text-ink-soft">อำเภอ: {addresses.id_card.district}</p>
-        )}
-        {addresses.id_card?.province && (
-          <p className="text-ink-soft">จังหวัด: {addresses.id_card.province}</p>
-        )}
-        {contract.installmentsPaid !== undefined &&
-          contract.installmentsTotal !== undefined &&
-          contract.installmentsTotal > 0 && (
-            <p className="text-ink-soft">
-              งวด {contract.installmentsPaid}/{contract.installmentsTotal}
-            </p>
-          )}
-        {/* ข้อ 7: ยอดต้องชำระวันนี้ (เงินต้นค้างที่เลยกำหนด + ค่าปรับ) — ตัวเลขเดียวแจ้งลูกค้าได้ทันที */}
-        {contract.overdueAmount !== undefined && contract.penaltyDue !== undefined && (
-          <p className="mt-1 rounded-lg bg-red-50 px-2.5 py-1.5">
-            <span className="text-xs font-medium text-red-500">ยอดต้องชำระวันนี้ (รวมค่าปรับ): </span>
-            <span className="text-base font-bold text-red-700">
-              {baht(contract.overdueAmount + contract.penaltyDue)} ฿
-            </span>
-          </p>
-        )}
-        {contract.penaltyDue !== undefined && (
-          <p className="text-ink-soft">
-            ค่าปรับสะสม:{' '}
-            <span className={contract.penaltyDue > 0 ? 'font-semibold text-red-600' : ''}>
-              {contract.penaltyDue.toLocaleString('th-TH')} ฿
-            </span>
-          </p>
-        )}
-        {contract.principalDue !== undefined && (
-          <p className="text-ink-soft">
-            เงินต้นคงค้าง:{' '}
-            <span className={contract.principalDue > 0 ? 'font-semibold text-red-600' : ''}>
-              {contract.principalDue.toLocaleString('th-TH')} ฿
-            </span>
-          </p>
-        )}
-        {contract.isReturned && (
+        {/* หัวเรื่อง: เลขสัญญา + ป้ายวันค้าง/ไม่ได้ติดตามมานาน */}
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <p className="font-medium text-ink">{contract.contractNo}</p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge tone="red">ค้าง {contract.daysLate} วัน</Badge>
+            {/* req8: ป้ายเตือนไม่ได้ติดตามมานาน */}
+            {showStalenessBadge && (
+              <Badge tone={staleness.level === 'danger' ? 'red' : 'amber'}>{staleness.badgeText}</Badge>
+            )}
+          </div>
+        </div>
+
+        {/* ตัวเลขเด่น: เคสคืนเครื่องแล้ว → ยอดปิดคืนเครื่อง / เคสปกติ → ยอดปิดทั้งสัญญา (เงินต้นคงค้าง + ค่าปรับสะสม)
+            ข้อ 2 (Pete feedback): เอา "ค้างชำระวันนี้ (รวมค่าปรับ)" ออก เพราะพนักงานงงว่าตามยอดไหน — ให้ "ยอดปิด" เป็นตัวเลขเด่นแทน */}
+        {contract.isReturned ? (
           <div className="mt-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">
               <PackageCheck size={13} />
@@ -454,33 +423,75 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
               return null
             })()}
           </div>
+        ) : (
+          contract.principalDue !== undefined && (
+            <p className="mt-2 rounded-lg bg-red-50 px-2.5 py-1.5">
+              <span className="text-xs font-medium text-red-500">ยอดปิด (จ่ายครบทั้งสัญญา): </span>
+              <span className="text-base font-bold text-red-700">
+                {baht(contract.principalDue + (contract.penaltyDue ?? 0))} ฿
+              </span>
+            </p>
+          )
         )}
-        <p className="mt-1 text-ink-soft">ร้าน: {contract.shopName}</p>
-        {/* เบอร์โทรทั้งหมด */}
-        {contract.phone && (
-          <p className="text-ink-soft">เบอร์หลัก: {contract.phone}</p>
-        )}
-        {contract.phoneAlt1 && (
-          <p className="text-ink-soft">เบอร์สำรอง 1: {contract.phoneAlt1}</p>
-        )}
-        {contract.phoneAlt2 && (
-          <p className="text-ink-soft">เบอร์สำรอง 2: {contract.phoneAlt2}</p>
-        )}
-        <p className="mt-1 flex flex-wrap items-center gap-1.5">
-          <Badge tone="red">ค้าง {contract.daysLate} วัน</Badge>
-          {/* req8: ป้ายเตือนไม่ได้ติดตามมานาน */}
-          {showStalenessBadge && (
-            <Badge tone={staleness.level === 'danger' ? 'red' : 'amber'}>{staleness.badgeText}</Badge>
+
+        {/* ข้อ 3: รายละเอียดสัญญา/ลูกค้า — จัด 2 คอลัมน์ label-value กันกองซ้าย */}
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
+          {contract.deviceModel && (
+            <p className="text-ink-soft">รุ่น: <span className="text-ink">{contract.deviceModel}</span></p>
           )}
-        </p>
-        {/* req11: ทำรายการ + ครบกำหนดทุกวันที่ */}
-        {contract.transactionDate && contract.dueDay && (
-          <p className="text-ink-soft">
-            ทำรายการ {thaiDate(contract.transactionDate)} · ครบกำหนดทุกวันที่ {contract.dueDay}
-          </p>
-        )}
+          {contract.color && (
+            <p className="text-ink-soft">สีเครื่อง: <span className="text-ink">{contract.color}</span></p>
+          )}
+          {addresses.id_card?.district && (
+            <p className="text-ink-soft">อำเภอ: <span className="text-ink">{addresses.id_card.district}</span></p>
+          )}
+          {addresses.id_card?.province && (
+            <p className="text-ink-soft">จังหวัด: <span className="text-ink">{addresses.id_card.province}</span></p>
+          )}
+          {contract.installmentsPaid !== undefined &&
+            contract.installmentsTotal !== undefined &&
+            contract.installmentsTotal > 0 && (
+              <p className="text-ink-soft">
+                งวด: <span className="text-ink">{contract.installmentsPaid}/{contract.installmentsTotal}</span>
+              </p>
+            )}
+          {contract.penaltyDue !== undefined && (
+            <p className="text-ink-soft">
+              ค่าปรับสะสม:{' '}
+              <span className={contract.penaltyDue > 0 ? 'font-semibold text-red-600' : 'text-ink'}>
+                {contract.penaltyDue.toLocaleString('th-TH')} ฿
+              </span>
+            </p>
+          )}
+          {contract.principalDue !== undefined && (
+            <p className="text-ink-soft">
+              เงินต้นคงค้าง:{' '}
+              <span className={contract.principalDue > 0 ? 'font-semibold text-red-600' : 'text-ink'}>
+                {contract.principalDue.toLocaleString('th-TH')} ฿
+              </span>
+            </p>
+          )}
+          <p className="text-ink-soft">ร้าน: <span className="text-ink">{contract.shopName}</span></p>
+          {/* เบอร์โทรทั้งหมด */}
+          {contract.phone && (
+            <p className="text-ink-soft">เบอร์หลัก: <span className="text-ink">{contract.phone}</span></p>
+          )}
+          {contract.phoneAlt1 && (
+            <p className="text-ink-soft">เบอร์สำรอง 1: <span className="text-ink">{contract.phoneAlt1}</span></p>
+          )}
+          {contract.phoneAlt2 && (
+            <p className="text-ink-soft">เบอร์สำรอง 2: <span className="text-ink">{contract.phoneAlt2}</span></p>
+          )}
+          {/* req11: ทำรายการ + ครบกำหนดทุกวันที่ — ข้อความยาว กว้างเต็มแถว */}
+          {contract.transactionDate && contract.dueDay && (
+            <p className="col-span-2 text-ink-soft">
+              ทำรายการ {thaiDate(contract.transactionDate)} · ครบกำหนดทุกวันที่ {contract.dueDay}
+            </p>
+          )}
+        </div>
+
         {/* req9: สถานะ "กลับเป็นปกติ" */}
-        <p className="mt-1 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
+        <p className="mt-2 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
         {/* req11: จ่ายล่าสุด (เฉพาะเมื่อมี recovered episode) */}
         {recoveryStatus.recoveredThisEpisode.lastPaidAt && (
           <p className="mt-1 text-xs text-ink-soft">

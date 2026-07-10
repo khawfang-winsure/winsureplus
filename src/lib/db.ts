@@ -5533,6 +5533,26 @@ export async function overridePenalty(
 }
 
 /**
+ * แก้/ลบค่าปรับของงวดผ่าน RPC admin_set_installment_penalty (admin เท่านั้น — guard ฝั่ง DB ด้วย is_admin())
+ * ต่างจาก overridePenalty() ด้านบน (เขียนตรงผ่าน RLS installments_write ที่ staff เขียนได้ด้วย):
+ * ทางนี้ guard เข้มกว่า + คำนวณ penalty_days ให้เอง + validate ช่วงยอด + ผูกชื่อผู้แก้จาก profiles ฝั่ง server
+ * "ลบค่าปรับ" = เรียกด้วย penaltyAmount = 0
+ */
+export async function setInstallmentPenalty(
+  installmentId: string,
+  penaltyAmount: number,
+  reason: string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('admin_set_installment_penalty', {
+    p_installment_id: installmentId,
+    p_penalty_amount: penaltyAmount,
+    p_reason: reason || null,
+  })
+  if (error) throw error
+}
+
+/**
  * ดึงประวัติการแก้ค่าปรับของสัญญา (admin+staff)
  */
 export async function getPenaltyOverrideHistory(contractId: string): Promise<PenaltyOverrideHistoryEntry[]> {

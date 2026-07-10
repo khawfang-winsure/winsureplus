@@ -12,7 +12,7 @@ import {
   getRateSets,
   getFollowUps,
   recordPaymentWithPenalty,
-  overridePenalty,
+  setInstallmentPenalty,
   getPenaltyOverrideHistory,
   getExtraCharges,
   insertExtraCharge,
@@ -1209,25 +1209,24 @@ export default function ContractDetail() {
                         '-'
                       )}
                     </td>
-                    {/* #3 — ค่าปรับ: admin คลิกได้เพื่อ override, staff เห็น display only */}
+                    {/* #3 — ค่าปรับ: admin เห็นไอคอนดินสอแก้ไข/ลบค่าปรับเสมอ, staff เห็น display only */}
                     <td className="px-3 py-2.5">
-                      {i.penaltyAmount > 0 ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          {isAdmin ? (
-                            <button
-                              onClick={() => setPenaltyOverrideTarget(i)}
-                              className="rounded px-1 py-0.5 text-left hover:bg-amber-50 hover:text-amber-700"
-                              title="คลิกเพื่อแก้ไขค่าปรับ (admin)"
-                            >
-                              {baht(i.penaltyAmount)} ({i.penaltyDays}ว.)
-                            </button>
-                          ) : (
-                            <span>{baht(i.penaltyAmount)} ({i.penaltyDays}ว.)</span>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="text-ink-soft">-</span>
-                      )}
+                      <span className="inline-flex items-center gap-1.5">
+                        {i.penaltyAmount > 0 ? (
+                          <span>{baht(i.penaltyAmount)} ({i.penaltyDays}ว.)</span>
+                        ) : (
+                          <span className="text-ink-soft">-</span>
+                        )}
+                        {isAdmin && (
+                          <button
+                            onClick={() => setPenaltyOverrideTarget(i)}
+                            className="rounded p-1 text-ink-soft hover:bg-amber-50 hover:text-amber-700"
+                            title="แก้ไข/ลบค่าปรับ (admin)"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        )}
+                      </span>
                     </td>
                     <td className="px-3 py-2.5">
                       {i.paidAt ? (
@@ -1752,7 +1751,6 @@ export default function ContractDetail() {
       {penaltyOverrideTarget && (
         <PenaltyOverrideModal
           ins={penaltyOverrideTarget}
-          userName={userName ?? ''}
           onClose={() => setPenaltyOverrideTarget(null)}
           onDone={async () => {
             setPenaltyOverrideTarget(null)
@@ -2413,17 +2411,15 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
 
 /**
  * #3 — PenaltyOverrideModal (admin only)
- * แก้ค่าปรับของงวดที่เลือก + ตั้ง penalty_overridden=true กัน cron reset
- * หมายเหตุ: badge "Override" ต้องรอน้องชีสเพิ่ม penaltyOverridden ใน Installment type + getInstallments mapping
+ * แก้ไข/ลบค่าปรับของงวดที่เลือก — เรียก setInstallmentPenalty() ผ่าน RPC admin_set_installment_penalty
+ * (guard เข้มฝั่ง DB ด้วย is_admin() + validate ยอด + เขียน audit log + กัน cron คิดค่าปรับทับ)
  */
 function PenaltyOverrideModal({
   ins,
-  userName,
   onClose,
   onDone,
 }: {
   ins: Installment
-  userName: string
   onClose: () => void
   onDone: () => void
 }) {
@@ -2432,7 +2428,7 @@ function PenaltyOverrideModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  async function save() {
+  async function save(amount: number) {
     if (!reason.trim()) {
       setErr('กรุณาระบุเหตุผลในการแก้ค่าปรับ')
       return
@@ -2440,7 +2436,7 @@ function PenaltyOverrideModal({
     setBusy(true)
     setErr(null)
     try {
-      await overridePenalty(ins.id, newAmount, reason.trim(), userName)
+      await setInstallmentPenalty(ins.id, amount, reason.trim())
       onDone()
     } catch (e) {
       setErr(errMsg(e))
@@ -2463,21 +2459,29 @@ function PenaltyOverrideModal({
             type="number"
             autoFocus
             value={newAmount || ''}
-            onChange={(e) => setNewAmount(Number(e.target.value) || 0)}
+            onChange={(e) => setNewAmount(Math.max(0, Number(e.target.value) || 0))}
           />
         </Field>
+        <button
+          type="button"
+          onClick={() => setNewAmount(0)}
+          disabled={newAmount === 0}
+          className="self-start text-xs font-semibold text-red-600 hover:underline disabled:cursor-not-allowed disabled:text-ink-soft disabled:no-underline"
+        >
+          ลบค่าปรับ (ตั้งเป็น 0 บาท)
+        </button>
         <Field label="เหตุผล (จำเป็น)">
           <Textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="เช่น ลูกค้าตกลงจ่ายบางส่วน, ผิดพลาดจากระบบ..."
+            placeholder="เช่น ลูกค้าจ่ายตรงแต่สลิปมาช้า, ลูกค้าตกลงจ่ายบางส่วน, ผิดพลาดจากระบบ..."
             rows={2}
           />
         </Field>
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || newAmount < 0 || !reason.trim()}>
+          <Button onClick={() => void save(newAmount)} disabled={busy || newAmount < 0 || !reason.trim()}>
             {busy ? 'กำลังบันทึก...' : 'บันทึกค่าปรับใหม่'}
           </Button>
         </div>
