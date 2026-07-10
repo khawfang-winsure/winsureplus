@@ -1032,6 +1032,62 @@ export async function closeReturnedContract(contractId: string, byName: string):
   if (error) throw error
 }
 
+/** ข้อมูลเช็คก่อนลบสัญญา — ใช้โชว์คำเตือนหนักๆ ที่ UI ก่อนกดยืนยันลบ (0095)
+ *  ไม่ได้ block การลบ (Pete: admin ลบได้แม้มีประวัติ) — ใช้เฉพาะเพื่อ warn */
+export interface ContractDeleteGuardInfo {
+  hasPayments: boolean      // เคยมี payment_log action='pay' ไหม
+  hasDeviceReturn: boolean  // เคยมีรายการคืนเครื่องไหม
+  wasTransferred: boolean   // เคยส่งสรุปให้ร้าน/บัญชีไปแล้วไหม (summary_shop_sent_at / summary_accounting_sent_at)
+}
+
+/** เช็คประวัติสัญญาก่อนลบ (โชว์คำเตือนที่ UI) — เรียกก่อน deleteContract() เสมอ
+ *  @param contractId  id ของสัญญา */
+export async function getContractDeleteGuardInfo(contractId: string): Promise<ContractDeleteGuardInfo> {
+  if (!supabase) return { hasPayments: false, hasDeviceReturn: false, wasTransferred: false }
+
+  const [paymentRes, returnRes, contractRes] = await Promise.all([
+    supabase
+      .from('payment_log')
+      .select('id', { count: 'exact', head: true })
+      .eq('contract_id', contractId)
+      .eq('action', 'pay'),
+    supabase
+      .from('device_returns')
+      .select('id', { count: 'exact', head: true })
+      .eq('contract_id', contractId),
+    supabase
+      .from('contracts')
+      .select('summary_shop_sent_at, summary_accounting_sent_at')
+      .eq('id', contractId)
+      .maybeSingle(),
+  ])
+  if (paymentRes.error) throw paymentRes.error
+  if (returnRes.error) throw returnRes.error
+  if (contractRes.error) throw contractRes.error
+
+  return {
+    hasPayments: (paymentRes.count ?? 0) > 0,
+    hasDeviceReturn: (returnRes.count ?? 0) > 0,
+    wasTransferred: !!(contractRes.data?.summary_shop_sent_at || contractRes.data?.summary_accounting_sent_at),
+  }
+}
+
+/** ลบสัญญาถาวร (admin เท่านั้น — RPC guard) — สำรอง snapshot ลง deleted_contracts_archive
+ *  ก่อนลบเสมอ (0095). ไม่ block แม้มีประวัติจ่าย/โอน — เตือนที่ UI ผ่าน getContractDeleteGuardInfo()
+ *  แทน. เลข contract_no/inv_no กลับมาใช้ใหม่ได้ทันทีหลังลบสำเร็จ
+ *  @param contractId  id ของสัญญาที่จะลบ
+ *  @param byName      ชื่อผู้กดลบ (useAuth().name) — บันทึกลง archive.deleted_by (บังคับ ห้ามว่าง)
+ *  @returns           contractNo ที่เพิ่งปลดออกมา (ใช้โชว์ toast ยืนยัน) */
+export async function deleteContract(contractId: string, byName: string): Promise<{ contractNo: string }> {
+  if (!supabase) return { contractNo: '' }
+  const { data, error } = await supabase.rpc('delete_contract', {
+    p_contract_id: contractId,
+    p_by: byName,
+  })
+  if (error) throw error
+  return { contractNo: (data as string) ?? '' }
+}
+
 export async function getContract(id: string): Promise<Contract | null> {
   if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
   const { data, error } = await supabase.from('contracts').select('*').eq('id', id).maybeSingle()

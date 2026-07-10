@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -42,7 +42,10 @@ import {
   revertDocReceipt,
   setDocsIncomplete,
   getDocRejectLog,
+  getContractDeleteGuardInfo,
+  deleteContract,
   type DocRejectEntry,
+  type ContractDeleteGuardInfo,
   type ContractFlagPatch,
   type PaymentLogEntry,
   type ExtensionRecord,
@@ -177,6 +180,14 @@ export default function ContractDetail() {
   const [cancelReturnOpen, setCancelReturnOpen] = useState(false)
   const [cancelReturnBusy, setCancelReturnBusy] = useState(false)
   const [cancelReturnErr, setCancelReturnErr] = useState<string | null>(null)
+  // ลบสัญญาถาวร (admin only) — เช็คประวัติก่อนเตือน + retype-to-confirm ถ้ามีประวัติ
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteGuardInfo, setDeleteGuardInfo] = useState<ContractDeleteGuardInfo | null>(null)
+  const [deleteGuardLoading, setDeleteGuardLoading] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteErr, setDeleteErr] = useState<string | null>(null)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [deleteSuccessNo, setDeleteSuccessNo] = useState<string | null>(null) // ไม่ null = ลบสำเร็จ กำลังพาออกจากหน้า
   const [flagsOpen, setFlagsOpen] = useState(false)
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
   const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
@@ -366,6 +377,15 @@ export default function ContractDetail() {
   // สิทธิ์ขยายที่ยังเหลือ (ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const canExtend = allowedExtTypes(extensions).length > 0
 
+  // ลบสัญญา: มีประวัติ (จ่ายเงิน/คืนเครื่อง/โอนร้าน) อย่างใดอย่างหนึ่ง → บังคับพิมพ์เลขสัญญายืนยันก่อนกดลบได้
+  const deleteHasWarning = !!(
+    deleteGuardInfo &&
+    (deleteGuardInfo.hasPayments || deleteGuardInfo.hasDeviceReturn || deleteGuardInfo.wasTransferred)
+  )
+  const deleteConfirmMatches = deleteConfirmText.trim() === contract.contractNo
+  const deleteCanConfirm =
+    !!deleteGuardInfo && !deleteGuardLoading && !deleteBusy && (!deleteHasWarning || deleteConfirmMatches)
+
   async function handleSaveNote() {
     if (!id) return
     setNoteSaving(true)
@@ -440,6 +460,39 @@ export default function ContractDetail() {
       setCancelReturnErr(errMsg(e))
     } finally {
       setCancelReturnBusy(false)
+    }
+  }
+
+  // เปิดป็อปอัพลบสัญญา — โหลดประวัติ (จ่ายเงิน/คืนเครื่อง/โอนร้าน) มาโชว์คำเตือนก่อนให้กดยืนยัน
+  async function handleOpenDelete() {
+    if (!contract) return
+    setDeleteOpen(true)
+    setDeleteGuardLoading(true)
+    setDeleteErr(null)
+    setDeleteConfirmText('')
+    setDeleteSuccessNo(null)
+    try {
+      const info = await getContractDeleteGuardInfo(contract.id)
+      setDeleteGuardInfo(info)
+    } catch (e) {
+      setDeleteErr(errMsg(e))
+    } finally {
+      setDeleteGuardLoading(false)
+    }
+  }
+
+  // ลบสัญญาถาวร (RPC สำรอง archive ก่อนลบ) → โชว์ข้อความยืนยันสั้นๆ แล้วพาออกจากหน้า
+  async function handleConfirmDelete() {
+    if (!contract) return
+    setDeleteBusy(true)
+    setDeleteErr(null)
+    try {
+      const { contractNo } = await deleteContract(contract.id, userName ?? 'ไม่ทราบ')
+      setDeleteSuccessNo(contractNo || contract.contractNo)
+      setTimeout(() => navigate('/customers', { replace: true }), 1400)
+    } catch (e) {
+      setDeleteErr(errMsg(e))
+      setDeleteBusy(false)
     }
   }
 
@@ -526,6 +579,16 @@ export default function ContractDetail() {
                 <PackageOpen size={15} /> คืนเครื่อง
               </Button>
             </>
+          )}
+          {/* ลบสัญญาถาวร — admin เท่านั้น (Feature: ลบสัญญา + ป็อปอัพยืนยันเตือนหนัก) */}
+          {isAdmin && (
+            <Button
+              variant="ghost"
+              onClick={() => void handleOpenDelete()}
+              className="border-red-200 text-red-600 hover:bg-red-50"
+            >
+              <Trash2 size={15} /> ลบสัญญา
+            </Button>
           )}
         </div>
       </div>
@@ -1611,6 +1674,65 @@ export default function ContractDetail() {
               {cancelReturnBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกการคืนเครื่อง'}
             </Button>
           </div>
+        </Modal>
+      )}
+
+      {/* ลบสัญญาถาวร — admin only, เตือนหนักถ้ามีประวัติจ่ายเงิน/คืนเครื่อง/โอนร้าน (retype เลขสัญญายืนยัน) */}
+      {deleteOpen && (
+        <Modal title="ลบสัญญาถาวร" onClose={() => !deleteBusy && setDeleteOpen(false)}>
+          {deleteSuccessNo ? (
+            <div className="flex flex-col gap-2">
+              <p className="rounded-lg bg-green-50 px-3 py-2.5 text-sm font-semibold text-green-700">
+                ลบสัญญา {deleteSuccessNo} แล้ว — เลขสัญญาและเลข INV นำกลับไปใช้ใหม่ได้
+              </p>
+              <p className="text-xs text-ink-soft">กำลังพาไปหน้ารายชื่อลูกค้า...</p>
+            </div>
+          ) : deleteGuardLoading ? (
+            <Loading />
+          ) : (
+            <div className="flex flex-col gap-3">
+              <div className="rounded-xl bg-peach-light/40 px-3 py-2.5 text-sm">
+                <p className="font-semibold text-ink">{contract.customerName}</p>
+                <p className="text-ink-soft">
+                  สัญญา {contract.contractNo} · INV {contract.invNo || '—'} · {contract.model} {contract.storage} · <span className="whitespace-nowrap">{baht(contract.devicePrice)} ฿</span>
+                </p>
+              </div>
+              <p className="text-sm text-ink">
+                ลบสัญญานี้ถาวร — ลบแล้วกู้คืนเองไม่ได้ (ผู้ดูแลระบบกู้จากที่สำรองได้) เลขสัญญาและเลข INV จะนำกลับไปใช้ใหม่ได้
+              </p>
+              {deleteHasWarning && deleteGuardInfo && (
+                <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                  <p className="mb-1 flex items-center gap-1.5 font-semibold">
+                    <AlertTriangle size={15} /> สัญญานี้มีประวัติแล้ว — การลบจะเอาประวัติเหล่านี้ออกด้วย
+                  </p>
+                  <ul className="list-disc pl-5">
+                    {deleteGuardInfo.hasPayments && <li>มีประวัติรับชำระเงิน</li>}
+                    {deleteGuardInfo.hasDeviceReturn && <li>มีประวัติคืนเครื่อง</li>}
+                    {deleteGuardInfo.wasTransferred && <li>ส่งสรุปยอดให้ร้าน/บัญชีไปแล้ว</li>}
+                  </ul>
+                </div>
+              )}
+              {deleteHasWarning && (
+                <Field label={`พิมพ์เลขสัญญา "${contract.contractNo}" เพื่อยืนยันการลบ`}>
+                  <Input
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder={contract.contractNo}
+                    autoFocus
+                  />
+                </Field>
+              )}
+              {deleteErr && <p className="text-sm text-red-600">{deleteErr}</p>}
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" disabled={deleteBusy} onClick={() => setDeleteOpen(false)}>
+                  ยกเลิก
+                </Button>
+                <Button disabled={!deleteCanConfirm} onClick={() => void handleConfirmDelete()}>
+                  {deleteBusy ? 'กำลังลบ...' : 'ยืนยันลบสัญญาถาวร'}
+                </Button>
+              </div>
+            </div>
+          )}
         </Modal>
       )}
 
