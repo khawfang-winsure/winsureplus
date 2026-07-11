@@ -540,7 +540,15 @@ export interface PjReviewContext {
   }[]
   unpaidInstallments: {              // งวดที่ยังไม่จ่ายเรียง installment_no — ไว้พรีวิวการตัด record_payment_spread
     no: number
+    amount: number                   // ค่างวดเต็มของงวดนี้ (ไว้เทียบยอดแปลก — pjReviewDup.ts)
     remaining: number                // max(amount - paid_amount, 0)
+  }[]
+  siblingReviewRows: {                // แถวอื่น (status='pending') ในกล่องรอตรวจของสัญญาเดียวกัน — ไว้เช็คซ้ำ/บริบท (pjReviewDup.ts)
+    id: string
+    paidDate: string | null           // 'YYYY-MM-DD'
+    amount: number
+    penaltyAmount: number
+    reason: PjSyncReviewReason
   }[]
 }
 

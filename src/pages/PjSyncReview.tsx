@@ -1,12 +1,24 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ExternalLink, SkipForward, Wallet } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ExternalLink, Receipt, SkipForward, Wallet } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { applyPjReviewPayment, getPjReviewContext, getPjSyncReview, getPjSyncRuns, resolvePjReviewItem } from '../lib/db'
+import {
+  applyPjReviewAsOtherIncome,
+  applyPjReviewPayment,
+  getPjReviewContext,
+  getPjSyncReview,
+  getPjSyncRuns,
+  resolvePjReviewItem,
+} from '../lib/db'
 import { spreadPayment } from '../lib/paymentSpread'
+import { detectDuplicatePjReviewRows, detectOddAmountFromContext } from '../lib/pjReviewDup'
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow, PjSyncRunRow } from '../lib/types'
 import { useAuth } from '../lib/auth'
+
+// ===== หมวดรายได้อื่นๆ สำเร็จรูปที่เจอบ่อยจากกล่องรอตรวจ PJ (category ยังเป็น free-text ที่ backend) =====
+const OTHER_INCOME_PRESETS = ['ค่าส่งกล่องพัสดุ', 'ค่าเปลี่ยนวันที่ชำระ'] as const
+const OTHER_INCOME_CUSTOM = 'อื่นๆ (พิมพ์เอง)'
 
 // ===== ป้ายเหตุผล (reason → ไทย + โทนสี) =====
 const REASON_LABEL: Record<PjSyncReviewReason, string> = {
@@ -75,6 +87,10 @@ export default function PjSyncReview() {
 
   const [target, setTarget] = useState<{ row: PjSyncReviewRow; action: 'resolved' | 'skipped' } | null>(null)
   const [applyTarget, setApplyTarget] = useState<PjSyncReviewRow | null>(null)
+  const [otherIncomeTarget, setOtherIncomeTarget] = useState<PjSyncReviewRow | null>(null)
+
+  // แถวที่น่าจะซ้ำในกล่อง (contract เดียวกัน + วันจ่ายเดียวกัน + ยอดเท่ากัน) — คำนวณครั้งเดียวต่อการโหลด rows
+  const dupMap = useMemo(() => detectDuplicatePjReviewRows(rows), [rows])
 
   // กันชั้นใน (route ที่ App.tsx guard อยู่แล้ว)
   if (!isAdminOrStaff) return <EmptyState title="เฉพาะพนักงาน/แอดมินเท่านั้น" />
@@ -171,7 +187,10 @@ export default function PjSyncReview() {
                   <td className="py-3 pr-4 text-ink-soft whitespace-nowrap">
                     {r.paidDate ? thaiDate(r.paidDate.slice(0, 10)) : '—'}
                   </td>
-                  <td className="py-3 pr-4 text-ink whitespace-nowrap">{r.invoiceNo}</td>
+                  <td className="py-3 pr-4 text-ink whitespace-nowrap">
+                    {r.invoiceNo}
+                    {r.paymentType && <span className="block text-xs text-ink-soft">{r.paymentType}</span>}
+                  </td>
                   <td className="py-3 pr-4">
                     {r.contractId ? (
                       <>
@@ -183,7 +202,10 @@ export default function PjSyncReview() {
                     )}
                   </td>
                   <td className="py-3 pr-4">
-                    <Badge tone={REASON_TONE[r.reason]}>{REASON_LABEL[r.reason]}</Badge>
+                    <div className="flex flex-col items-start gap-1">
+                      <Badge tone={REASON_TONE[r.reason]}>{REASON_LABEL[r.reason]}</Badge>
+                      {dupMap.get(r.id)?.isDuplicate && <Badge tone="amber">น่าจะซ้ำ</Badge>}
+                    </div>
                   </td>
                   <td className="py-3 pr-4 text-right text-ink">
                     {r.penaltyAmount > 0 ? (
@@ -215,6 +237,12 @@ export default function PjSyncReview() {
                         <Button onClick={() => setApplyTarget(r)}>
                           <Wallet size={13} />
                           ยืนยันลงยอด
+                        </Button>
+                      )}
+                      {r.contractId && (
+                        <Button variant="ghost" onClick={() => setOtherIncomeTarget(r)}>
+                          <Receipt size={13} />
+                          รายได้อื่นๆ
                         </Button>
                       )}
                       <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'resolved' })}>
@@ -250,6 +278,22 @@ export default function PjSyncReview() {
           onClose={() => setApplyTarget(null)}
           onDone={async () => {
             setApplyTarget(null)
+            await load()
+          }}
+          onSwitchToOtherIncome={() => {
+            setOtherIncomeTarget(applyTarget)
+            setApplyTarget(null)
+          }}
+        />
+      )}
+
+      {otherIncomeTarget && (
+        <OtherIncomeModal
+          row={otherIncomeTarget}
+          byName={userName ?? 'ไม่ทราบ'}
+          onClose={() => setOtherIncomeTarget(null)}
+          onDone={async () => {
+            setOtherIncomeTarget(null)
             await load()
           }}
         />
@@ -338,11 +382,13 @@ function ApplyModal({
   byName,
   onClose,
   onDone,
+  onSwitchToOtherIncome,
 }: {
   row: PjSyncReviewRow
   byName: string
   onClose: () => void
   onDone: () => void
+  onSwitchToOtherIncome: () => void
 }) {
   const [ctx, setCtx] = useState<PjReviewContext | null>(null)
   const [ctxLoading, setCtxLoading] = useState(true)
@@ -376,6 +422,9 @@ function ApplyModal({
 
   // พรีวิวสด: เงินต้นที่กรอกจะถูกตัดเข้างวดไหนบ้าง (ตรงกับ RPC record_payment_spread)
   const spreadPreview = spreadPayment(ctx?.unpaidInstallments ?? [], Number(principal) || 0)
+
+  // เตือน "ยอดแปลก" สด — เงินต้นที่กรอกเล็กกว่าค่างวดจริงมาก อาจไม่ใช่ค่างวด (ค่าส่งพัสดุ/ค่าธรรมเนียม)
+  const oddFlag = ctx ? detectOddAmountFromContext(Number(principal) || 0, ctx) : { isOddAmount: false, hint: null }
 
   async function confirm() {
     if (!nextUnpaid || !paidDate) return
@@ -506,6 +555,23 @@ function ApplyModal({
               </div>
             </div>
 
+            {/* เตือนยอดแปลก — เงินต้นเล็กกว่าค่างวดจริงมาก อาจไม่ใช่ค่างวด */}
+            {oddFlag.isOddAmount && oddFlag.hint && (
+              <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <div className="flex-1">
+                  <p>{oddFlag.hint}</p>
+                  <button
+                    type="button"
+                    onClick={onSwitchToOtherIncome}
+                    className="mt-1.5 text-xs font-semibold text-amber-800 underline underline-offset-2 hover:text-amber-900"
+                  >
+                    ลงเป็นรายได้อื่นๆแทน →
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* พรีวิวการตัดงวด — อัปเดตตามเงินต้นที่กรอก */}
             {spreadPreview.length > 0 && (
               <div className="rounded-xl border border-peach bg-peach-light/30 px-4 py-3 text-sm">
@@ -534,6 +600,138 @@ function ApplyModal({
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
           <Button onClick={confirm} disabled={busy || ctxLoading || !nextUnpaid || !paidDate}>
             {busy ? 'กำลังบันทึก...' : !nextUnpaid && !ctxLoading ? 'ไม่มีงวดค้างให้ลง' : 'ยืนยันลงยอด'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ===== Modal ลงเป็น "รายได้อื่นๆ" — ยอดที่ PJ ตัดมาแต่ไม่ใช่ค่างวด/ค่าปรับ (เช่น ค่าส่งพัสดุ, ค่าเปลี่ยนวันชำระ) =====
+function OtherIncomeModal({
+  row,
+  byName,
+  onClose,
+  onDone,
+}: {
+  row: PjSyncReviewRow
+  byName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [categoryChoice, setCategoryChoice] = useState<string>(OTHER_INCOME_PRESETS[0])
+  const [customCategory, setCustomCategory] = useState('')
+  const [amount, setAmount] = useState(String(row.amount))
+  const [note, setNote] = useState('')
+
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  // ปิดเมื่อกด Esc (ตาม pattern modal อื่นในโปรเจกต์)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const isCustomCategory = categoryChoice === OTHER_INCOME_CUSTOM
+  const category = (isCustomCategory ? customCategory : categoryChoice).trim()
+  const receivedAt = (row.paidDate ?? '').slice(0, 10)
+  const amountNum = Number(amount) || 0
+  const canSubmit = !!row.contractId && !!receivedAt && amountNum > 0 && category.length > 0
+
+  async function confirm() {
+    if (!row.contractId || !canSubmit) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await applyPjReviewAsOtherIncome({
+        reviewId: row.id,
+        contractId: row.contractId,
+        amount: amountNum,
+        category,
+        receivedAt,
+        note: note.trim() || undefined,
+        byName,
+      })
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="ลงเป็นรายได้อื่นๆ" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
+          <span className="text-ink-soft">ลูกค้า</span>
+          <span className="text-ink">{row.customerName ?? '—'} ({row.contractNo ?? '—'})</span>
+          <span className="text-ink-soft">เลขใบเสร็จ</span>
+          <span className="text-ink">{row.invoiceNo}</span>
+          {row.paymentType && (
+            <>
+              <span className="text-ink-soft">ประเภทจาก PJ</span>
+              <span className="text-ink">{row.paymentType}</span>
+            </>
+          )}
+          <span className="text-ink-soft">วันที่รับเงิน</span>
+          <span className="text-ink">{receivedAt ? thaiDate(receivedAt) : '—'}</span>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm text-ink-soft">หมวดรายได้</label>
+          <select
+            value={categoryChoice}
+            onChange={(e) => setCategoryChoice(e.target.value)}
+            className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+          >
+            {OTHER_INCOME_PRESETS.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            <option value={OTHER_INCOME_CUSTOM}>{OTHER_INCOME_CUSTOM}</option>
+          </select>
+          {isCustomCategory && (
+            <input
+              type="text"
+              value={customCategory}
+              onChange={(e) => setCustomCategory(e.target.value)}
+              placeholder="พิมพ์ชื่อหมวด เช่น ค่าธรรมเนียมเปลี่ยนเครื่อง"
+              className="mt-2 w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+            />
+          )}
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm text-ink-soft">จำนวนเงิน</label>
+          <input
+            type="number"
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm text-ink-soft">หมายเหตุ (ไม่บังคับ)</label>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            placeholder="รายละเอียดเพิ่มเติม"
+            className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
+          />
+        </div>
+
+        {err && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{err}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
+          <Button onClick={confirm} disabled={busy || !canSubmit}>
+            {busy ? 'กำลังบันทึก...' : 'ยืนยันลงเป็นรายได้อื่นๆ'}
           </Button>
         </div>
       </div>

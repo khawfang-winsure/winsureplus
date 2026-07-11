@@ -7001,6 +7001,15 @@ interface PjCtxPaymentRow {
   created_at: string
 }
 
+/** แถวอื่นของสัญญาเดียวกันที่ยังค้างในกล่องรอตรวจ (status='pending') */
+interface PjSiblingReviewRow {
+  id: string
+  pj_paid_date: string | null
+  pj_amount: string | number | null
+  reason: string
+  raw_json: PjRawReceipt[] | null
+}
+
 /**
  * บริบทของสัญญาที่ผูกกับเคสในกล่องรอตรวจ — ช่วยให้คนตรวจเห็นงวดถัดไป/ยอดรวม/ประวัติ
  * ไม่มี supabase → คืนค่าว่าง graceful
@@ -7013,10 +7022,11 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     totalDue: 0,
     recentPayments: [],
     unpaidInstallments: [],
+    siblingReviewRows: [],
   }
   if (!supabase) return empty
 
-  const [contractRes, instRes, payRes] = await Promise.all([
+  const [contractRes, instRes, payRes, siblingRes] = await Promise.all([
     supabase.from('contracts').select('monthly_payment').eq('id', contractId).maybeSingle(),
     supabase
       .from('installments')
@@ -7030,10 +7040,17 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
       .eq('action', 'pay')
       .order('created_at', { ascending: false })
       .limit(8),
+    supabase
+      .from('pj_sync_review')
+      .select('id, pj_paid_date, pj_amount, reason, raw_json')
+      .eq('matched_contract_id', contractId)
+      .eq('status', 'pending')
+      .order('pj_paid_date', { ascending: false }),
   ])
   if (contractRes.error) throw contractRes.error
   if (instRes.error) throw instRes.error
   if (payRes.error) throw payRes.error
+  if (siblingRes.error) throw siblingRes.error
 
   const instRows = (instRes.data ?? []) as PjCtxInstallmentRow[]
 
@@ -7067,13 +7084,23 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     installmentNo: r.installment_id ? instNoById.get(r.installment_id) ?? null : null,
   }))
 
-  // งวดที่ยังไม่จ่าย เรียง installment_no — ไว้พรีวิวการตัดของ record_payment_spread
+  // งวดที่ยังไม่จ่าย เรียง installment_no — ไว้พรีวิวการตัดของ record_payment_spread + เทียบยอดแปลก (pjReviewDup.ts)
   const unpaidInstallments = instRows
     .filter(r => r.status === 'pending' || r.status === 'late')
     .map(r => ({
       no: r.installment_no,
+      amount: parsePjAmount(r.amount),
       remaining: Math.max(parsePjAmount(r.amount) - parsePjAmount(r.paid_amount), 0),
     }))
+
+  // แถวอื่น (pending) ในกล่องรอตรวจของสัญญาเดียวกัน — ไว้เช็คซ้ำ/บริบท (pjReviewDup.ts)
+  const siblingReviewRows = ((siblingRes.data ?? []) as PjSiblingReviewRow[]).map(r => ({
+    id: r.id,
+    paidDate: r.pj_paid_date,
+    amount: parsePjAmount(r.pj_amount),
+    penaltyAmount: sumPjPenalty(r.raw_json),
+    reason: r.reason as PjSyncReviewRow['reason'],
+  }))
 
   return {
     monthly: parsePjAmount((contractRes.data as { monthly_payment: string | number | null } | null)?.monthly_payment),
@@ -7082,6 +7109,7 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     totalDue,
     recentPayments,
     unpaidInstallments,
+    siblingReviewRows,
   }
 }
 
@@ -7130,4 +7158,45 @@ export async function applyPjReviewPayment(params: {
   }
 
   await resolvePjReviewItem(reviewId, 'resolved', byName, note ?? 'ลงยอดจากกล่องรอตรวจ')
+}
+
+/**
+ * ลงเงินจากกล่องรอตรวจ PJ เป็น "รายได้อื่นๆ" (other_income, migration 0054) แทนค่างวด/ค่าปรับ
+ * ใช้กับยอดที่ PJ ตัดเป็นค่างวด/ค่าปรับแต่จริงๆ ไม่ใช่ (เช่น ค่าส่งกล่องพัสดุ, ค่าเปลี่ยนวันชำระ)
+ * ไม่แตะ installments/payment_log เลย — insert other_income แล้ว resolve แถวในกล่องเท่านั้น
+ *
+ * 🚨 ห้ามเขียน pj_applied_ledger จาก path นี้เด็ดขาด — ต่างจาก applyPjReviewPayment ด้านบน
+ *    ledger กันซ้ำของ auto-sync คีย์แค่ (contract_id, pj_paid_date) ไม่สนยอด/ประเภท
+ *    ถ้าวันเดียวกันมีค่างวดจริงจ่ายเข้ามาด้วย (คนละรายการ) แล้วเราเขียน ledger จาก other-income ไปก่อน
+ *    cron รอบถัดไปจะเห็น ledger มี entry ของวันนั้นแล้ว → skip ค่างวดจริงทิ้งไปเงียบๆ (เงินหาย)
+ *    การกันซ้ำของทางนี้ใช้แค่ "แถว pj_sync_review.status = resolved" พอ — getPjSyncReview('pending')
+ *    กรอง status อยู่แล้ว จึงไม่มีทางถูกหยิบมาประมวลผลซ้ำจากกล่องรอตรวจ
+ */
+export async function applyPjReviewAsOtherIncome(params: {
+  reviewId: string
+  contractId: string
+  amount: number
+  category: string    // หมวดรายได้อื่นๆ free-text เช่น 'ค่าส่งกล่องพัสดุ', 'ค่าเปลี่ยนวันที่ชำระ'
+  receivedAt: string  // 'YYYY-MM-DD' วันรับเงินจริง — ปกติใช้ row.paidDate จากกล่องรอตรวจ
+  note?: string
+  byName: string
+}): Promise<void> {
+  if (!supabase) return
+  const { reviewId, contractId, amount, category, receivedAt, note, byName } = params
+
+  await insertOtherIncome({
+    contractId,
+    amount,
+    category,
+    note,
+    receivedAt,
+    recordedBy: byName,
+  })
+
+  await resolvePjReviewItem(
+    reviewId,
+    'resolved',
+    byName,
+    note ? `ลงเป็นรายได้อื่นๆ (${category}): ${note}` : `ลงเป็นรายได้อื่นๆ (${category})`,
+  )
 }
