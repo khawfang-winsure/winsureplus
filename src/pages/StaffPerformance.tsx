@@ -32,7 +32,9 @@ import type {
 } from '../lib/types'
 import type { DeviceReturnByCollectorResult } from '../lib/deviceReturnByCollector'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
+import { computeCallOutcomeTotals, type CallOutcomeTotals } from '../lib/callOutcomes'
 import { baht } from '../lib/format'
+import TeamCallTodayWidget from '../components/TeamCallTodayWidget'
 
 // ===== ตัวช่วย =====
 
@@ -685,41 +687,7 @@ function PjRecoverySection({ data }: { data: PjData }) {
 }
 
 // ===== Call outcomes: ผลการโทร & การนัดชำระ (รายคน) =====
-
-interface CallOutcomeTotals {
-  casesFollowed: number
-  casesReached: number
-  casesNoAnswer: number
-  casesUnreachable: number
-  promisesMade: number
-  promisesKept: number
-  promisesBroken: number
-  promisesPending: number
-}
-
-function computeCallOutcomeTotals(rows: CollectorCallOutcome[]): CallOutcomeTotals {
-  const t: CallOutcomeTotals = {
-    casesFollowed: 0,
-    casesReached: 0,
-    casesNoAnswer: 0,
-    casesUnreachable: 0,
-    promisesMade: 0,
-    promisesKept: 0,
-    promisesBroken: 0,
-    promisesPending: 0,
-  }
-  for (const r of rows) {
-    t.casesFollowed += r.casesFollowed
-    t.casesReached += r.casesReached
-    t.casesNoAnswer += r.casesNoAnswer
-    t.casesUnreachable += r.casesUnreachable
-    t.promisesMade += r.promisesMade
-    t.promisesKept += r.promisesKept
-    t.promisesBroken += r.promisesBroken
-    t.promisesPending += r.promisesPending
-  }
-  return t
-}
+// computeCallOutcomeTotals + CallOutcomeTotals ย้ายไป ../lib/callOutcomes.ts (shared กับ TeamCallTodayWidget)
 
 /** จำนวนเต็มในตาราง: 0 → "—" (ให้สอดคล้องกับ scorecard) */
 function fmtInt(n: number): string {
@@ -1032,6 +1000,9 @@ export default function StaffPerformance() {
           Export Excel
         </Button>
       </div>
+
+      {/* วันนี้สด (auto-refresh) — แยกออกจากส่วน "เลือกช่วงวันที่" ด้านล่างซึ่งขับเคลื่อนทุก section ที่เหลือ */}
+      <TeamCallTodayWidget />
 
       {/* ตัวเลือกช่วงวันที่ */}
       <DateRangePicker

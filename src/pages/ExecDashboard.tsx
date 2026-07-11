@@ -7,6 +7,7 @@ import { LineChart } from '../components/LineChart'
 import MorningBriefing from '../components/MorningBriefing'
 import GradeMovementView from '../components/GradeMovementView'
 import { EscalateSummaryCard } from '../components/EscalateSummaryCard'
+import TeamCallTodayWidget from '../components/TeamCallTodayWidget'
 import { baht } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
@@ -258,14 +259,17 @@ export default function ExecDashboard() {
         <StaffCaseTable rows={d.briefing.staffCases} isExec={isExec} />
       )}
 
+      {/* ===== ผลงานทีมโทรวันนี้ (สด, auto-refresh) — โชว์ชื่อพนักงานเสมอ ไม่ gate isExec ===== */}
+      <TeamCallTodayWidget />
+
       {/* ===== แถว 1: KPI หัวใจ ===== */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <Kpi label="ลูกค้าทั้งหมด" value={String(d.totalContracts)} sub={`ผ่อนอยู่ ${d.activeContracts} · ปิด ${d.closedContracts}`} onClick={() => navigate('/customers')} snapshot />
+        <Kpi label="ลูกค้าทั้งหมด" value={String(d.totalContracts)} sub={`ผ่อนอยู่ ${d.activeContracts} · ปิด ${d.closedContracts}`} onClick={isExec ? undefined : () => navigate('/customers')} snapshot />
         <Kpi label="ยอดผ่อนรวม (พอร์ต)" value={`฿${money(d.portfolioPayable)}`} sub="ค่างวด × จำนวนงวด" snapshot />
         <Kpi label="ยอดจัดไฟแนนซ์รวม" value={`฿${money(d.portfolioFinance)}`} sub="เงินต้นที่ปล่อย" snapshot />
         <Kpi label="ชำระแล้ว" value={`฿${money(d.collected)}`} sub={`${collectedPct.toFixed(0)}% ของพอร์ต`} tone="text-green-600" snapshot />
         <Kpi label="คงค้าง" value={`฿${money(d.outstanding)}`} sub="ยังไม่ได้เก็บ" tone="text-amber-600" snapshot />
-        <Kpi label="หนี้เสีย (NPL)" value={`${d.nplRate.toFixed(1)}%`} sub={`฿${money(d.badDebt.value)}`} tone="text-red-600" onClick={() => navigate('/customer-overview')} snapshot />
+        <Kpi label="หนี้เสีย (NPL)" value={`${d.nplRate.toFixed(1)}%`} sub={`฿${money(d.badDebt.value)}`} tone="text-red-600" onClick={isExec ? undefined : () => navigate('/customer-overview')} snapshot />
       </div>
 
       {/* ===== แถว 2: สุขภาพลูกค้า ===== */}
@@ -293,7 +297,7 @@ export default function ExecDashboard() {
           <BarList
             rows={d.aging.map((a) => ({ label: a.label, count: a.count, value: a.value }))}
             color="#f97316"
-            onClick={(i) => navigate(`/overdue/${d.aging[i].bucket}`)}
+            onClick={isExec ? undefined : (i) => navigate(`/overdue/${d.aging[i].bucket}`)}
           />
         </Card>
       </div>
@@ -369,8 +373,8 @@ export default function ExecDashboard() {
         <h3 className="mb-3 font-semibold text-ink">สัญญาณเตือนล่วงหน้า</h3>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <Kpi label="ไม่จ่ายงวดแรก" value={`${d.earlyDefault.count} ราย`} sub={`฿${money(d.earlyDefault.value)}`} tone="text-red-600" small snapshot />
-          <Kpi label="ขอขยายในช่วง" value={`${d.extensionsThisMonth} ราย`} onClick={() => navigate('/extended')} tone="text-amber-600" small />
-          <Kpi label="คืนเครื่องในช่วง" value={`${d.returnsThisMonth.count} ราย`} sub={`฿${money(d.returnsThisMonth.value)}`} onClick={() => navigate('/returns')} small />
+          <Kpi label="ขอขยายในช่วง" value={`${d.extensionsThisMonth} ราย`} onClick={isExec ? undefined : () => navigate('/extended')} tone="text-amber-600" small />
+          <Kpi label="คืนเครื่องในช่วง" value={`${d.returnsThisMonth.count} ราย`} sub={`฿${money(d.returnsThisMonth.value)}`} onClick={isExec ? undefined : () => navigate('/returns')} small />
           <Kpi label="ยอดตามเก็บจากเคสคืนเครื่อง" value={`฿${money(returnedCollectible)}`} sub="เงินที่ยังตามเก็บได้ (1 งวด+ปรับ+ซ่อม) — ค้างทั้งหมด ไม่อิงช่วงวันที่" tone="text-orange-600" small snapshot />
           <Kpi label="เคสใหม่ในช่วง" value={`${d.newContractsThisMonth} ราย`} tone="text-green-600" small />
           <Kpi label="ร้านใหม่ในช่วง" value={`${d.newShopsThisMonth} ร้าน`} tone="text-green-600" small />
