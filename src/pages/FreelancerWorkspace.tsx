@@ -216,9 +216,9 @@ function StalenessBadge({ row }: { row: FreelancerQueueRow }) {
 }
 
 // ===== Row ใน Tab 1 =====
-// ลำดับสายตา: คอมพลายแอนซ์(DNC/ทนาย/โต้แย้ง) เด่นสุด (เห็นเสมอ) → ชื่อ+เบอร์หลัก (ใหญ่/หนา — ใช้โทรทันที)
-// → ป้ายเร่งด่วนสูงสุด 2 อัน (นัดชำระ + อัปเดตใหม่) → ข้อมูลรอง (รุ่นเครื่อง/เบอร์สำรอง/ประวัติคนโทร/โน้ต/ไม่ได้ติดตามนาน)
-// ซ่อนใต้ปุ่ม "รายละเอียดเพิ่มเติม" (progressive disclosure) — ไม่มีข้อมูลหาย แค่ย่อ
+// รอบ 2 (feedback เจ้าของ): เอาปุ่มขยาย/ย่อออก — ข้อมูลรองทั้งหมดแสดงตลอดในคอลัมน์ "รายละเอียด"
+// ลำดับสายตา: คอมพลายแอนซ์(DNC/ทนาย/โต้แย้ง) เด่นสุด → ชื่อ+เบอร์หลัก+เบอร์สำรอง (ใหญ่/หนา — ใช้โทรทันที) → ป้ายเร่งด่วนสูงสุด 2 อัน (นัดชำระ + อัปเดตใหม่)
+// คอลัมน์: ลูกค้า / ร้าน / เกรด·คะแนน·ค้าง (ยุบ 3 เดิม) / งวด / ยอดต้องชำระวันนี้ (breakdown ค่างวด+ค่าปรับ) / รายละเอียด (ใหม่ แสดงตลอด) / ปุ่ม
 function QueueRow({
   sr,
   outsideHours,
@@ -231,7 +231,6 @@ function QueueRow({
   onClaim: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
-  const [expanded, setExpanded] = useState(false)
   const isBlocked = r.dnc || r.lawyerEngaged
   const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
 
@@ -240,20 +239,11 @@ function QueueRow({
   else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
 
   const hasUnseen = hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt)
-  const staleness = !r.isReturned && !r.caseClosedToday ? followUpStalenessLevel(r.lastContactedAt, new Date()) : null
-  // เบอร์สำรองย้ายไปแสดงเสมอ (ต่อจากเบอร์หลัก) — ไม่นับใน hasSecondaryDetails อีกต่อไป
-  const hasSecondaryDetails = Boolean(
-    r.deviceModel ||
-      (r.lastResult !== null && r.lastContactedAt !== null) ||
-      r.latestNote ||
-      (staleness && staleness.level !== 'none'),
-  )
-  const detailsId = `queue-details-${r.contractId}`
 
   return (
     <tr className="border-b border-peach last:border-0 hover:bg-peach-light/20">
       {/* ลูกค้า */}
-      <td className="px-4 py-3">
+      <td className="px-4 py-3 align-top">
         {/* ป้ายคอมพลายแอนซ์ — เห็นเสมอ ไม่ซ่อน */}
         {(r.dnc || r.lawyerEngaged || r.disputed) && (
           <div className="mb-1.5 flex flex-wrap gap-1">
@@ -294,89 +284,64 @@ function QueueRow({
             )}
           </div>
         )}
-
-        {/* ปุ่มขยาย/ย่อข้อมูลรอง */}
-        {hasSecondaryDetails && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            aria-controls={detailsId}
-            className="mt-1.5 inline-flex items-center gap-0.5 text-xs font-medium text-salmon-deep hover:underline"
-          >
-            <ChevronRight size={12} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
-            {expanded ? 'ย่อรายละเอียด' : 'รายละเอียดเพิ่มเติม'}
-          </button>
-        )}
-
-        {expanded && (
-          <div id={detailsId} className="mt-1.5 flex flex-col gap-1 border-t border-peach/60 pt-1.5 text-xs text-ink-soft">
-            {/* รุ่น iPhone */}
-            {r.deviceModel && <p>📱 {r.deviceModel}</p>}
-            {/* team awareness */}
-            {r.lastResult !== null && r.lastContactedAt !== null && (
-              <p>
-                🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
-              </p>
-            )}
-            {/* latest note */}
-            {r.latestNote && (
-              <p>💬 {r.latestNote.length > 60 ? r.latestNote.slice(0, 60) + '…' : r.latestNote}</p>
-            )}
-            {/* ป้ายคืนเครื่องแล้ว + ยอดปิด (ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge) */}
-            <ReturnedClosingBadge row={r} />
-            {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
-            <StalenessBadge row={r} />
-          </div>
-        )}
       </td>
       {/* ร้าน */}
-      <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
-      {/* เกรด */}
-      <td className="px-4 py-3 text-center">
-        <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+      <td className="px-4 py-3 align-top text-sm text-ink-soft">{r.shopName}</td>
+      {/* เกรด · คะแนน · ค้าง — ยุบ 3 คอลัมน์เดิมเป็น 1 */}
+      <td className="px-4 py-3 align-top text-center">
+        <div className="flex flex-col items-center gap-1">
+          <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+          <span className="inline-flex items-center gap-1 text-[10px] text-ink-soft">
+            คะแนน
+            <span className={`rounded-full px-1.5 py-0.5 font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
+              {TIER_EMOJI[sr.tier]} {sr.score}
+            </span>
+          </span>
+          <span className="whitespace-nowrap text-xs font-semibold text-red-600">ค้าง {r.daysLate} วัน</span>
+        </div>
       </td>
-      {/* score badge */}
-      <td className="px-4 py-3 text-center">
-        <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
-          {TIER_EMOJI[sr.tier]} {sr.score}
-        </span>
-      </td>
-      {/* ค้าง (วัน) */}
-      <td className="px-4 py-3 text-right">
-        <span className="font-semibold text-red-600">{r.daysLate}</span>
-      </td>
-      {/* งวด X/Y */}
-      <td className="px-4 py-3 text-right text-sm text-ink">
+      {/* งวด X/Y — เลขงวดเด่น + ค่างวดจริง/เดือนเป็นบรรทัดรอง (ให้ตอบลูกค้าได้ทันทีว่างวดนึงเท่าไร) */}
+      <td className="px-4 py-3 align-top text-right text-sm text-ink">
         {r.installmentsTotal === 0
           ? <span className="text-ink-soft">—</span>
           : <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>
         }
+        {r.monthlyPayment > 0 && (
+          <p className="mt-0.5 whitespace-nowrap text-xs text-ink-soft">ค่างวดเดือนละ {baht(r.monthlyPayment)} ฿</p>
+        )}
       </td>
-      {/* ค่างวด + ค่าปรับ */}
-      <td className="px-4 py-3 text-right">
-        {/* ยอดรวมต้องชำระวันนี้ (เงินต้นค้าง + ค่าปรับ) — ตัวเลขเดียวแจ้งลูกค้าได้ทันที */}
-        <div className="mb-1.5">
-          <p className="text-[10px] font-medium text-red-500 whitespace-nowrap">ยอดต้องชำระวันนี้ (รวมค่าปรับ)</p>
+      {/* ยอดต้องชำระวันนี้ — breakdown ค่างวดที่ค้าง(overdueAmount) + ค่าปรับ(outstanding) = ยอดรวม
+          ใช้ overdueAmount ไม่ใช่ monthlyPayment (ค่างวดเต็ม) เพื่อให้บรรทัดย่อยบวกแล้วตรงกับ headline เป๊ะ */}
+      <td className="px-4 py-3 align-top text-right">
+        <div className="flex flex-col items-end gap-0.5 text-xs text-ink-soft">
+          <span className="whitespace-nowrap">ค่างวดที่ค้าง {baht(r.overdueAmount)} ฿</span>
+          <span className={`whitespace-nowrap ${r.outstanding > 0 ? 'font-semibold text-red-600' : ''}`}>
+            + ค่าปรับ {baht(r.outstanding)} ฿
+          </span>
+        </div>
+        <div className="mt-1 border-t border-peach/60 pt-1">
+          <p className="text-[10px] font-medium text-red-500 whitespace-nowrap">ยอดต้องชำระวันนี้</p>
           <p className="text-base font-bold text-red-700 whitespace-nowrap">{baht(r.overdueAmount + r.outstanding)} ฿</p>
         </div>
-        <p className="text-sm text-ink whitespace-nowrap">{baht(r.monthlyPayment)} ฿</p>
-        {r.outstanding > 0 ? (
-          <p className="text-xs font-semibold text-red-600 whitespace-nowrap">{baht(r.outstanding)} ฿ ค่าปรับ</p>
-        ) : (
-          <p className="text-xs text-ink-soft">-</p>
-        )}
       </td>
-      {/* เงินต้นค้าง */}
-      <td className="px-4 py-3 text-right">
-        {r.principalDue > 0 ? (
-          <span className="font-semibold text-red-600 whitespace-nowrap">{baht(r.principalDue)} ฿</span>
-        ) : (
-          <span className="text-ink-soft">-</span>
-        )}
+      {/* รายละเอียด — คอลัมน์ใหม่ แสดงตลอด (ย้ายจากใต้ปุ่มขยายเดิม) */}
+      <td className="px-4 py-3 align-top">
+        <div className="flex max-w-[220px] flex-col gap-1 text-xs text-ink-soft">
+          {r.deviceModel && <p>📱 {r.deviceModel}</p>}
+          {r.lastResult !== null && r.lastContactedAt !== null && (
+            <p>
+              🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
+            </p>
+          )}
+          {r.latestNote && <p className="whitespace-normal break-words">💬 {r.latestNote}</p>}
+          {/* ป้ายคืนเครื่องแล้ว + ยอดปิด (ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge) */}
+          <ReturnedClosingBadge row={r} />
+          {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
+          <StalenessBadge row={r} />
+        </div>
       </td>
       {/* ปุ่ม */}
-      <td className="px-4 py-3">
+      <td className="px-4 py-3 align-top">
         <div className="flex flex-col items-stretch gap-1.5">
           <button
             disabled={disableButton}
@@ -405,8 +370,9 @@ function QueueRow({
 }
 
 // ===== Card ใน Tab 1 (มือถือ < md) =====
-// ลำดับสายตาเดียวกับ desktop: คอมพลายแอนซ์ → ชื่อ+เบอร์หลัก → ป้ายเร่งด่วน(นัด/อัปเดตใหม่) →
-// กล่องยอดเงิน+วันค้าง (อ่านรวดเดียว) → ตัวเลขย่อย → ปุ่มขยายรายละเอียด → ปุ่ม action (เห็นเสมอ ไม่ซ่อน)
+// รอบ 2 (feedback เจ้าของ): เอาปุ่มขยาย/ย่อออก — รายละเอียดแสดงตลอดในการ์ด
+// ลำดับสายตาเดียวกับ desktop: คอมพลายแอนซ์ → ชื่อ+เบอร์หลัก+เบอร์สำรอง → ป้ายเร่งด่วน(นัด/อัปเดตใหม่) →
+// กล่องยอดเงิน breakdown → เกรด·คะแนน·ค้าง·งวด (ยุบรวม) → รายละเอียด (แสดงตลอด) → ปุ่ม action
 function QueueCardMobile({
   sr,
   outsideHours,
@@ -419,7 +385,6 @@ function QueueCardMobile({
   onClaim: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
-  const [expanded, setExpanded] = useState(false)
   const isBlocked = r.dnc || r.lawyerEngaged
   const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
   let tooltip = ''
@@ -427,15 +392,6 @@ function QueueCardMobile({
   else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
 
   const hasUnseen = hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt)
-  const staleness = !r.isReturned && !r.caseClosedToday ? followUpStalenessLevel(r.lastContactedAt, new Date()) : null
-  // เบอร์สำรองย้ายไปแสดงเสมอ (ต่อจากเบอร์หลัก) — ไม่นับใน hasSecondaryDetails อีกต่อไป
-  const hasSecondaryDetails = Boolean(
-    r.deviceModel ||
-      (r.lastResult !== null && r.lastContactedAt !== null) ||
-      r.latestNote ||
-      (staleness && staleness.level !== 'none'),
-  )
-  const detailsId = `queue-details-m-${r.contractId}`
 
   return (
     <div className="p-4">
@@ -448,96 +404,81 @@ function QueueCardMobile({
         </div>
       )}
 
-      {/* บรรทัด 1: ชื่อ + tier badge */}
-      <div className="mb-1 flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
-              {r.customerName}
-            </p>
-            {r.contactedToday && (
-              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
-                ✓ โทรแล้ว
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
-          {/* เบอร์หลัก — ต้องใช้โทรทันที ให้เด่นกว่าข้อมูลรอง */}
-          {r.phone && <p className="mt-1 text-sm font-medium text-ink">📞 {r.phone}</p>}
-          {/* เบอร์สำรอง — แสดงเสมอต่อจากเบอร์หลัก (โทรเบอร์หลักไม่ติดต้องใช้บ่อย) */}
-          {(r.phoneAlt1 || r.phoneAlt2) && (
-            <p className="text-xs text-ink-soft">📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}</p>
-          )}
-          {/* ป้ายเร่งด่วนสูงสุด 2 อัน: นัดชำระ + อัปเดตใหม่ */}
-          {(r.promiseToPayDate !== null || hasUnseen) && (
-            <div className="mt-1 flex flex-wrap items-center gap-1">
-              <PromiseBadge promiseToPayDate={r.promiseToPayDate} />
-              {hasUnseen && (
-                <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                  🔔 มีอัปเดตใหม่
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-        <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
-          {TIER_EMOJI[sr.tier]} {sr.score}
-        </span>
+      {/* ชื่อ + ป้าย "ทำแล้ววันนี้" */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
+          {r.customerName}
+        </p>
+        {r.contactedToday && (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
+            ✓ โทรแล้ว
+          </span>
+        )}
       </div>
-
-      {/* กล่องยอดเงิน + วันค้าง — อ่านรวดเดียว (ตัดจากเดิมที่กระจาย 3 จุด) */}
-      <div className="mt-2 flex items-stretch gap-2">
-        <div className="flex flex-1 flex-col items-start rounded-lg bg-red-50 px-2.5 py-1.5">
-          <span className="text-[10px] font-medium text-red-500">ยอดต้องชำระวันนี้ (รวมค่าปรับ)</span>
-          <span className="text-base font-bold text-red-700">{baht(r.overdueAmount + r.outstanding)} ฿</span>
-        </div>
-        <div className="flex flex-col items-center justify-center rounded-lg bg-red-50 px-3 py-1.5">
-          <span className="text-[10px] font-medium text-red-500">ค้าง</span>
-          <span className="text-base font-bold text-red-700">{r.daysLate} วัน</span>
-        </div>
-      </div>
-
-      {/* บรรทัด 2: ตัวเลขย่อย */}
-      <div className="mb-2 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
-        <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
-        {r.installmentsTotal > 0 && <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
-        <span className="whitespace-nowrap">ค่างวด {baht(r.monthlyPayment)} ฿</span>
-        {r.outstanding > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">ค่าปรับ {baht(r.outstanding)} ฿</span>}
-        {r.principalDue > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
-      </div>
-
-      {/* ปุ่มขยาย/ย่อข้อมูลรอง */}
-      {hasSecondaryDetails && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          aria-controls={detailsId}
-          className="mb-2 inline-flex items-center gap-0.5 text-xs font-medium text-salmon-deep hover:underline"
-        >
-          <ChevronRight size={12} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
-          {expanded ? 'ย่อรายละเอียด' : 'รายละเอียดเพิ่มเติม'}
-        </button>
+      <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+      {/* เบอร์หลัก — ต้องใช้โทรทันที ให้เด่นกว่าข้อมูลรอง */}
+      {r.phone && <p className="mt-1 text-sm font-medium text-ink">📞 {r.phone}</p>}
+      {/* เบอร์สำรอง — แสดงเสมอต่อจากเบอร์หลัก (โทรเบอร์หลักไม่ติดต้องใช้บ่อย) */}
+      {(r.phoneAlt1 || r.phoneAlt2) && (
+        <p className="text-xs text-ink-soft">📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}</p>
       )}
-
-      {expanded && (
-        <div id={detailsId} className="mb-3 flex flex-col gap-1 border-t border-peach/60 pt-1.5 text-xs text-ink-soft">
-          {r.deviceModel && <p>📱 {r.deviceModel}</p>}
-          {r.lastResult !== null && r.lastContactedAt !== null && (
-            <p>
-              🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
-            </p>
+      {/* ป้ายเร่งด่วนสูงสุด 2 อัน: นัดชำระ + อัปเดตใหม่ */}
+      {(r.promiseToPayDate !== null || hasUnseen) && (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          <PromiseBadge promiseToPayDate={r.promiseToPayDate} />
+          {hasUnseen && (
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+              🔔 มีอัปเดตใหม่
+            </span>
           )}
-          {r.latestNote && (
-            <p>💬 {r.latestNote.length > 60 ? r.latestNote.slice(0, 60) + '…' : r.latestNote}</p>
-          )}
-          {/* ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge */}
-          <ReturnedClosingBadge row={r} />
-          <StalenessBadge row={r} />
         </div>
       )}
 
-      {/* ปุ่มบันทึก + ฉันดูแลเคสนี้ — เห็นเสมอ ไม่ซ่อนใต้ขยาย */}
+      {/* กล่องยอดเงิน — breakdown ค่างวดที่ค้าง(overdueAmount) + ค่าปรับ(outstanding) = ยอดรวม
+          ใช้ overdueAmount ไม่ใช่ monthlyPayment (ค่างวดเต็ม) เพื่อให้บรรทัดย่อยบวกแล้วตรงกับ headline เป๊ะ */}
+      <div className="mt-2 rounded-lg bg-red-50 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-red-700/80">
+          <span>ค่างวดที่ค้าง {baht(r.overdueAmount)} ฿</span>
+          <span className={r.outstanding > 0 ? 'font-semibold text-red-600' : ''}>
+            + ค่าปรับ {baht(r.outstanding)} ฿
+          </span>
+        </div>
+        <div className="mt-1 flex items-center justify-between border-t border-red-200/70 pt-1">
+          <span className="text-[10px] font-medium text-red-500">ยอดต้องชำระวันนี้</span>
+          <span className="text-lg font-bold text-red-700">{baht(r.overdueAmount + r.outstanding)} ฿</span>
+        </div>
+      </div>
+
+      {/* เกรด · คะแนน · ค้าง · งวด — ยุบรวมแทนจุดกระจายเดิม + ค่างวดจริง/เดือน (ตอบลูกค้าได้ทันที) */}
+      <div className="mb-2 mt-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
+            {TIER_EMOJI[sr.tier]} คะแนน {sr.score}
+          </span>
+          <span className="whitespace-nowrap font-semibold text-red-600">ค้าง {r.daysLate} วัน</span>
+          {r.installmentsTotal > 0 && <span className="text-ink-soft">งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
+        </div>
+        {r.monthlyPayment > 0 && (
+          <p className="mt-1 text-xs text-ink-soft">ค่างวดเดือนละ {baht(r.monthlyPayment)} ฿</p>
+        )}
+      </div>
+
+      {/* รายละเอียด — แสดงตลอด (ย้ายจากใต้ปุ่มขยายเดิม) */}
+      <div className="mb-3 flex flex-col gap-1 border-t border-peach/60 pt-2 text-xs text-ink-soft">
+        {r.deviceModel && <p>📱 {r.deviceModel}</p>}
+        {r.lastResult !== null && r.lastContactedAt !== null && (
+          <p>
+            🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
+          </p>
+        )}
+        {r.latestNote && <p className="whitespace-normal break-words">💬 {r.latestNote}</p>}
+        {/* ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge */}
+        <ReturnedClosingBadge row={r} />
+        <StalenessBadge row={r} />
+      </div>
+
+      {/* ปุ่มบันทึก + ฉันดูแลเคสนี้ */}
       <div className="flex flex-col gap-1.5">
         <button
           disabled={disableButton}
@@ -1184,12 +1125,10 @@ export default function FreelancerWorkspace() {
                           <tr className="border-b border-peach bg-cream-deep text-left text-xs font-semibold text-ink-soft">
                             <th className="px-4 py-3">ลูกค้า</th>
                             <th className="px-4 py-3">ร้าน</th>
-                            <th className="px-4 py-3 text-center">เกรด</th>
-                            <th className="px-4 py-3 text-center">คะแนน</th>
-                            <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                            <th className="px-4 py-3 text-center">เกรด · ค้าง</th>
                             <th className="px-4 py-3 text-right">งวด</th>
-                            <th className="px-4 py-3 text-right">ค่างวด / ค่าปรับ</th>
-                            <th className="px-4 py-3 text-right">เงินต้นค้าง</th>
+                            <th className="px-4 py-3 text-right">ยอดต้องชำระวันนี้</th>
+                            <th className="px-4 py-3">รายละเอียด</th>
                             <th className="px-4 py-3" />
                           </tr>
                         </thead>
