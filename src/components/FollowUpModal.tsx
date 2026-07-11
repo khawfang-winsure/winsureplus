@@ -490,8 +490,10 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           )}
         </div>
 
-        {/* req9: สถานะ "กลับเป็นปกติ" */}
-        <p className="mt-2 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
+        {/* req9: สถานะ "กลับเป็นปกติ" — ซ่อนสำหรับเคสคืนเครื่อง (เหลือจ่ายแค่ยอดปิด ไม่ใช่ค้าง N งวด) */}
+        {!contract.isReturned && (
+          <p className="mt-2 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
+        )}
         {/* req11: จ่ายล่าสุด (เฉพาะเมื่อมี recovered episode) */}
         {recoveryStatus.recoveredThisEpisode.lastPaidAt && (
           <p className="mt-1 text-xs text-ink-soft">

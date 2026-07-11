@@ -775,7 +775,11 @@ export default function FreelancerWorkspace() {
   // req7: admin เห็นคิวปกติทั้งหมด (ไม่ claim เอง) — เฉพาะ freelancer ที่เคส claim แล้วหายจาก "ที่ต้องโทร"
   const todayRows = useMemo(() => filtered.filter((r) => r.caseClosedToday), [filtered])
   const pendingRows = useMemo(() => filtered.filter((r) => !r.caseClosedToday), [filtered])
-  const returnedRows = useMemo(() => pendingRows.filter((r) => r.isReturned), [pendingRows])
+  // req: เคสคืนเครื่องที่ถูก claim แล้ว ย้ายออกจากแท็บ "คืนเครื่อง" ไปอยู่ "งานที่ต้องดูแล" เหมือนเคสโทรปกติ
+  const returnedRows = useMemo(
+    () => pendingRows.filter((r) => r.isReturned && (role === 'admin' || r.assignedTo === null)),
+    [pendingRows, role],
+  )
   const activeRows = useMemo(
     () => pendingRows.filter((r) => !r.isReturned && (role === 'admin' || r.assignedTo === null)),
     [pendingRows, role],
@@ -1224,7 +1228,12 @@ export default function FreelancerWorkspace() {
                               <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
                             </td>
                             <td className="px-4 py-3 text-right">
-                              <span className="font-semibold text-red-600">{r.daysLate}</span>
+                              {/* เคสคืนเครื่อง: badge ยอดปิด แทน daysLate (วัดวันตั้งแต่คืน ไม่ใช่ค้างงวด) */}
+                              {r.isReturned ? (
+                                <ReturnedClosingBadge row={r} />
+                              ) : (
+                                <span className="font-semibold text-red-600">{r.daysLate}</span>
+                              )}
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center justify-end gap-1.5">
@@ -1261,7 +1270,12 @@ export default function FreelancerWorkspace() {
                           </div>
                           <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
                         </div>
-                        <p className="mt-1 text-xs text-ink-soft">ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></p>
+                        {/* เคสคืนเครื่อง: badge ยอดปิด แทน daysLate (วัดวันตั้งแต่คืน ไม่ใช่ค้างงวด) */}
+                        {r.isReturned ? (
+                          <div className="mt-1"><ReturnedClosingBadge row={r} /></div>
+                        ) : (
+                          <p className="mt-1 text-xs text-ink-soft">ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></p>
+                        )}
                         <div className="mt-2 flex gap-2">
                           <button
                             onClick={() => handleOpenCase(r)}
@@ -1366,12 +1380,22 @@ export default function FreelancerWorkspace() {
                                 </span>
                               </td>
                               <td className="px-4 py-3">
-                                <button
-                                  onClick={() => handleOpenCase(r)}
-                                  className="whitespace-nowrap rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
-                                >
-                                  บันทึกติดตาม
-                                </button>
+                                <div className="flex flex-col items-stretch gap-1.5">
+                                  <button
+                                    onClick={() => handleOpenCase(r)}
+                                    className="whitespace-nowrap rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                                  >
+                                    บันทึกติดตาม
+                                  </button>
+                                  {/* req: รับเคสคืนเครื่องมาดูแล — reuse handleClaimCase เดิม */}
+                                  <button
+                                    onClick={() => handleClaimCase(r)}
+                                    className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+                                  >
+                                    <UserCheck size={13} />
+                                    ฉันดูแลเคสนี้
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           )
@@ -1431,12 +1455,22 @@ export default function FreelancerWorkspace() {
                               </div>
                             </div>
                           </div>
-                          <button
-                            onClick={() => handleOpenCase(r)}
-                            className="w-full rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100"
-                          >
-                            บันทึกติดตาม
-                          </button>
+                          <div className="flex flex-col gap-1.5">
+                            <button
+                              onClick={() => handleOpenCase(r)}
+                              className="w-full rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                            >
+                              บันทึกติดตาม
+                            </button>
+                            {/* req: รับเคสคืนเครื่องมาดูแล — reuse handleClaimCase เดิม */}
+                            <button
+                              onClick={() => handleClaimCase(r)}
+                              className="inline-flex w-full items-center justify-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+                            >
+                              <UserCheck size={14} />
+                              ฉันดูแลเคสนี้
+                            </button>
+                          </div>
                         </div>
                       )
                     })}
