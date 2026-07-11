@@ -98,12 +98,13 @@ export const NAV: NavItem[] = [
     label: 'รายงาน',
     icon: BarChart3,
     adminOnly: true, // ซ่อนทั้งกลุ่มจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
+    executiveVisible: true, // exec เห็นกลุ่มนี้ด้วย แต่เห็นเฉพาะ child ที่ไม่ได้ตั้ง adminOnly (ตอนนี้คือ /staff-performance เท่านั้น)
     children: [
       { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true, sectionLabel: 'การเงิน' },
       { to: '/settlements', label: 'ปิดสัญญาก่อนกำหนด', adminOnly: true },
       { to: '/weekly-summary', label: 'สรุปรายสัปดาห์', adminOnly: true },
 
-      { to: '/shop-report', label: 'รายงานร้านค้า', sectionLabel: 'ร้านค้า-เครื่อง' },
+      { to: '/shop-report', label: 'รายงานร้านค้า', adminOnly: true, sectionLabel: 'ร้านค้า-เครื่อง' },
       { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
       { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
 

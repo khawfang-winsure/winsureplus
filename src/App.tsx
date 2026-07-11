@@ -115,7 +115,7 @@ function Gate() {
           <Route path="/extended" element={isAdminOrStaff ? <ExtendedContracts /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/shop-report" element={isAdmin ? <ShopReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/shop/:id" element={isAdmin ? <ShopDetail /> : <Navigate to={fallbackTo} replace />} />
-          <Route path="/staff-performance" element={isAdmin ? <StaffPerformance /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/staff-performance" element={(isAdmin || isExecutive) ? <StaffPerformance /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/staff-daily-report" element={(isAdmin || isExecutive) ? <StaffDailyReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/commission" element={isAdmin ? <Commission /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/settings" element={isAdminOrStaff ? <Navigate to="/settings/shops" replace /> : <Navigate to={fallbackTo} replace />} />
