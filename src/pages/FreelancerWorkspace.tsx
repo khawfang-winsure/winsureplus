@@ -148,22 +148,24 @@ interface ScoredRow {
   promiseToPayDate: string | null
 }
 
-// ===== ป้ายเตือนวันนัดชำระ — overdue/due_today/due_tomorrow =====
-// ใช้ getPromiseDateStatus (pure fn) → ป้ายสีตามความเร่งด่วน
-// upcoming/none → คืน null (ไม่มีป้ายเด่น; แถวยังโชว์ "สัญญาจะจ่าย dd/mm" ตามเดิม)
-function PromiseAlertBadge({ promiseToPayDate }: { promiseToPayDate: string | null }) {
+// ===== ป้ายวันนัดชำระ — รวม 1 ป้าย (เดิมมี 2 ป้ายซ้อนกัน: ข้อความ "สัญญาจะจ่าย dd/mm" + ป้ายเตือน overdue/today/tomorrow) =====
+// ใช้ getPromiseDateStatus (pure fn) → เลือกโทนสีตามความเร่งด่วน; upcoming (ยังไม่ใกล้) → ป้ายกลางเฉยๆ ไม่ใช้สีเตือน
+function PromiseBadge({ promiseToPayDate }: { promiseToPayDate: string | null }) {
+  if (!promiseToPayDate) return null
   const { status, days } = getPromiseDateStatus(promiseToPayDate)
+  const [, m, d] = promiseToPayDate.split('-')
+  const dateLabel = `${d}/${m}`
   if (status === 'overdue') {
     return (
-      <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
         <AlertTriangle size={12} />
-        เลยนัด {Math.abs(days ?? 0)} วัน
+        เลยนัด {Math.abs(days ?? 0)} วัน ({dateLabel})
       </span>
     )
   }
   if (status === 'due_today') {
     return (
-      <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700">
         <CalendarClock size={12} />
         ถึงวันนัดวันนี้
       </span>
@@ -171,13 +173,17 @@ function PromiseAlertBadge({ promiseToPayDate }: { promiseToPayDate: string | nu
   }
   if (status === 'due_tomorrow') {
     return (
-      <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
         <CalendarClock size={12} />
-        ใกล้นัด (พรุ่งนี้)
+        ใกล้นัดพรุ่งนี้ ({dateLabel})
       </span>
     )
   }
-  return null
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-peach-light px-2 py-0.5 text-xs font-medium text-ink-soft">
+      📅 สัญญาจะจ่าย {dateLabel}
+    </span>
+  )
 }
 
 // ===== ป้าย "คืนเครื่องแล้ว" + ยอดปิดที่ต้องตามเก็บ =====
@@ -210,6 +216,9 @@ function StalenessBadge({ row }: { row: FreelancerQueueRow }) {
 }
 
 // ===== Row ใน Tab 1 =====
+// ลำดับสายตา: คอมพลายแอนซ์(DNC/ทนาย/โต้แย้ง) เด่นสุด (เห็นเสมอ) → ชื่อ+เบอร์หลัก (ใหญ่/หนา — ใช้โทรทันที)
+// → ป้ายเร่งด่วนสูงสุด 2 อัน (นัดชำระ + อัปเดตใหม่) → ข้อมูลรอง (รุ่นเครื่อง/เบอร์สำรอง/ประวัติคนโทร/โน้ต/ไม่ได้ติดตามนาน)
+// ซ่อนใต้ปุ่ม "รายละเอียดเพิ่มเติม" (progressive disclosure) — ไม่มีข้อมูลหาย แค่ย่อ
 function QueueRow({
   sr,
   outsideHours,
@@ -222,6 +231,7 @@ function QueueRow({
   onClaim: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
+  const [expanded, setExpanded] = useState(false)
   const isBlocked = r.dnc || r.lawyerEngaged
   const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
 
@@ -229,88 +239,96 @@ function QueueRow({
   if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
   else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
 
-  // promise badge color
-  const todayPart = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
-  const promiseOverdue =
-    r.promiseToPayDate !== null && r.promiseToPayDate < todayPart
-
-  const [, pMonth, pDay] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
+  const hasUnseen = hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt)
+  const staleness = !r.isReturned && !r.caseClosedToday ? followUpStalenessLevel(r.lastContactedAt, new Date()) : null
+  // เบอร์สำรองย้ายไปแสดงเสมอ (ต่อจากเบอร์หลัก) — ไม่นับใน hasSecondaryDetails อีกต่อไป
+  const hasSecondaryDetails = Boolean(
+    r.deviceModel ||
+      (r.lastResult !== null && r.lastContactedAt !== null) ||
+      r.latestNote ||
+      (staleness && staleness.level !== 'none'),
+  )
+  const detailsId = `queue-details-${r.contractId}`
 
   return (
     <tr className="border-b border-peach last:border-0 hover:bg-peach-light/20">
       {/* ลูกค้า */}
       <td className="px-4 py-3">
-        {/* unseen update badge */}
-        {hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt) && (
-          <div className="mb-1">
-            <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-              🔔 มีอัปเดตใหม่
-            </span>
-          </div>
-        )}
-        {/* status flags */}
+        {/* ป้ายคอมพลายแอนซ์ — เห็นเสมอ ไม่ซ่อน */}
         {(r.dnc || r.lawyerEngaged || r.disputed) && (
-          <div className="mb-1 flex flex-wrap gap-1">
+          <div className="mb-1.5 flex flex-wrap gap-1">
             {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ (DNC)</Badge>}
             {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ มีทนายความ</Badge>}
             {r.disputed && <Badge tone="amber">📋 โต้แย้งยอด</Badge>}
           </div>
         )}
-        {/* ป้าย "ทำแล้ววันนี้" */}
-        {r.contactedToday && (
-          <div className="mb-1">
-            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+
+        {/* ชื่อ + ป้าย "ทำแล้ววันนี้" */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className={`text-[15px] font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
+            {r.customerName}
+          </p>
+          {r.contactedToday && (
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
               ✓ โทรแล้ววันนี้
             </span>
+          )}
+        </div>
+        <p className="text-xs text-ink-soft">{r.contractNo}</p>
+
+        {/* เบอร์หลัก — ต้องใช้โทรทันที ให้เด่นกว่าข้อมูลรอง */}
+        {r.phone && <p className="mt-1 text-sm font-medium text-ink">📞 {r.phone}</p>}
+        {/* เบอร์สำรอง — แสดงเสมอต่อจากเบอร์หลัก (โทรเบอร์หลักไม่ติดต้องใช้บ่อย) */}
+        {(r.phoneAlt1 || r.phoneAlt2) && (
+          <p className="text-xs text-ink-soft">📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}</p>
+        )}
+
+        {/* ป้ายเร่งด่วนสูงสุด 2 อัน: นัดชำระ + อัปเดตใหม่ */}
+        {(r.promiseToPayDate !== null || hasUnseen) && (
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            <PromiseBadge promiseToPayDate={r.promiseToPayDate} />
+            {hasUnseen && (
+              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                🔔 มีอัปเดตใหม่
+              </span>
+            )}
           </div>
         )}
-        <p className={`font-medium ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
-          {r.customerName}
-        </p>
-        <p className="text-xs text-ink-soft">{r.contractNo}</p>
-        {/* รุ่น iPhone */}
-        {r.deviceModel && (
-          <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>
-        )}
-        {/* เบอร์หลัก */}
-        {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
-        {/* เบอร์สำรอง */}
-        {(r.phoneAlt1 || r.phoneAlt2) && (
-          <p className="text-xs text-ink-soft">
-            📞 สำรอง:{' '}
-            {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}
-          </p>
-        )}
-        {/* team awareness */}
-        {r.lastResult !== null && r.lastContactedAt !== null && (
-          <p className="mt-0.5 text-xs text-ink-soft">
-            🕐 {r.lastContactedByName ?? '?'}{' '}
-            {relativeContactTime(r.lastContactedAt)}{' '}
-            — {RESULT_LABEL[r.lastResult]}
-          </p>
-        )}
-        {/* latest note */}
-        {r.latestNote && (
-          <p className="mt-0.5 text-xs text-ink-soft">
-            💬 {r.latestNote.length > 40 ? r.latestNote.slice(0, 40) + '…' : r.latestNote}
-          </p>
-        )}
-        {/* promise badge */}
-        {r.promiseToPayDate !== null && pDay !== null && pMonth !== null && (
-          <span
-            className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-              promiseOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
-            }`}
+
+        {/* ปุ่มขยาย/ย่อข้อมูลรอง */}
+        {hasSecondaryDetails && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            className="mt-1.5 inline-flex items-center gap-0.5 text-xs font-medium text-salmon-deep hover:underline"
           >
-            📅 สัญญาจะจ่าย {pDay}/{pMonth}
-          </span>
+            <ChevronRight size={12} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
+            {expanded ? 'ย่อรายละเอียด' : 'รายละเอียดเพิ่มเติม'}
+          </button>
         )}
-        {/* ป้ายเตือนวันนัด (เลยนัด/วันนี้/พรุ่งนี้) */}
-        <PromiseAlertBadge promiseToPayDate={r.promiseToPayDate} />
-        {/* ป้ายคืนเครื่องแล้ว + ยอดปิด */}
-        {r.isReturned && <div><ReturnedClosingBadge row={r} /></div>}
-        {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
-        <div><StalenessBadge row={r} /></div>
+
+        {expanded && (
+          <div id={detailsId} className="mt-1.5 flex flex-col gap-1 border-t border-peach/60 pt-1.5 text-xs text-ink-soft">
+            {/* รุ่น iPhone */}
+            {r.deviceModel && <p>📱 {r.deviceModel}</p>}
+            {/* team awareness */}
+            {r.lastResult !== null && r.lastContactedAt !== null && (
+              <p>
+                🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
+              </p>
+            )}
+            {/* latest note */}
+            {r.latestNote && (
+              <p>💬 {r.latestNote.length > 60 ? r.latestNote.slice(0, 60) + '…' : r.latestNote}</p>
+            )}
+            {/* ป้ายคืนเครื่องแล้ว + ยอดปิด (ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge) */}
+            <ReturnedClosingBadge row={r} />
+            {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
+            <StalenessBadge row={r} />
+          </div>
+        )}
       </td>
       {/* ร้าน */}
       <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
@@ -387,6 +405,8 @@ function QueueRow({
 }
 
 // ===== Card ใน Tab 1 (มือถือ < md) =====
+// ลำดับสายตาเดียวกับ desktop: คอมพลายแอนซ์ → ชื่อ+เบอร์หลัก → ป้ายเร่งด่วน(นัด/อัปเดตใหม่) →
+// กล่องยอดเงิน+วันค้าง (อ่านรวดเดียว) → ตัวเลขย่อย → ปุ่มขยายรายละเอียด → ปุ่ม action (เห็นเสมอ ไม่ซ่อน)
 function QueueCardMobile({
   sr,
   outsideHours,
@@ -399,94 +419,125 @@ function QueueCardMobile({
   onClaim: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
+  const [expanded, setExpanded] = useState(false)
   const isBlocked = r.dnc || r.lawyerEngaged
   const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
-  const todayPart = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
-  const promiseOverdue = r.promiseToPayDate !== null && r.promiseToPayDate < todayPart
-  const [, pMonth, pDay] = r.promiseToPayDate ? r.promiseToPayDate.split('-') : [null, null, null]
   let tooltip = ''
   if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
   else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+
+  const hasUnseen = hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt)
+  const staleness = !r.isReturned && !r.caseClosedToday ? followUpStalenessLevel(r.lastContactedAt, new Date()) : null
+  // เบอร์สำรองย้ายไปแสดงเสมอ (ต่อจากเบอร์หลัก) — ไม่นับใน hasSecondaryDetails อีกต่อไป
+  const hasSecondaryDetails = Boolean(
+    r.deviceModel ||
+      (r.lastResult !== null && r.lastContactedAt !== null) ||
+      r.latestNote ||
+      (staleness && staleness.level !== 'none'),
+  )
+  const detailsId = `queue-details-m-${r.contractId}`
+
   return (
     <div className="p-4">
+      {/* ป้ายคอมพลายแอนซ์ — เห็นเสมอ ไม่ซ่อน */}
+      {(r.dnc || r.lawyerEngaged || r.disputed) && (
+        <div className="mb-1.5 flex flex-wrap gap-1">
+          {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ</Badge>}
+          {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ ทนายความ</Badge>}
+          {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
+        </div>
+      )}
+
       {/* บรรทัด 1: ชื่อ + tier badge */}
       <div className="mb-1 flex items-start gap-2">
         <div className="flex-1 min-w-0">
-          {hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt) && (
-            <div className="mb-1">
-              <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                🔔 มีอัปเดตใหม่
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
+              {r.customerName}
+            </p>
+            {r.contactedToday && (
+              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
+                ✓ โทรแล้ว
               </span>
-            </div>
-          )}
-          {(r.dnc || r.lawyerEngaged || r.disputed) && (
-            <div className="mb-1 flex flex-wrap gap-1">
-              {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ</Badge>}
-              {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ ทนายความ</Badge>}
-              {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
-            </div>
-          )}
-          {/* ป้าย "ทำแล้ววันนี้" */}
-          {r.contactedToday && (
-            <div className="mb-1">
-              <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
-                ✓ โทรแล้ววันนี้
-              </span>
-            </div>
-          )}
-          <p className={`font-semibold leading-tight ${isBlocked ? 'text-ink-soft' : 'text-ink'}`}>
-            {r.customerName}
-          </p>
+            )}
+          </div>
           <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
-          {r.deviceModel && <p className="text-xs text-ink-soft">📱 {r.deviceModel}</p>}
-          {r.phone && <p className="text-xs text-ink-soft">{r.phone}</p>}
+          {/* เบอร์หลัก — ต้องใช้โทรทันที ให้เด่นกว่าข้อมูลรอง */}
+          {r.phone && <p className="mt-1 text-sm font-medium text-ink">📞 {r.phone}</p>}
+          {/* เบอร์สำรอง — แสดงเสมอต่อจากเบอร์หลัก (โทรเบอร์หลักไม่ติดต้องใช้บ่อย) */}
           {(r.phoneAlt1 || r.phoneAlt2) && (
-            <p className="text-xs text-ink-soft">
-              📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}
-            </p>
+            <p className="text-xs text-ink-soft">📞 สำรอง: {[r.phoneAlt1, r.phoneAlt2].filter(Boolean).join(', ')}</p>
           )}
-          {r.lastResult !== null && r.lastContactedAt !== null && (
-            <p className="mt-0.5 text-xs text-ink-soft">
-              🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
-            </p>
+          {/* ป้ายเร่งด่วนสูงสุด 2 อัน: นัดชำระ + อัปเดตใหม่ */}
+          {(r.promiseToPayDate !== null || hasUnseen) && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              <PromiseBadge promiseToPayDate={r.promiseToPayDate} />
+              {hasUnseen && (
+                <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                  🔔 มีอัปเดตใหม่
+                </span>
+              )}
+            </div>
           )}
-          {r.latestNote && (
-            <p className="mt-0.5 text-xs text-ink-soft">
-              💬 {r.latestNote.length > 40 ? r.latestNote.slice(0, 40) + '…' : r.latestNote}
-            </p>
-          )}
-          {r.promiseToPayDate !== null && pDay !== null && pMonth !== null && (
-            <span className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${promiseOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-              📅 สัญญาจะจ่าย {pDay}/{pMonth}
-            </span>
-          )}
-          {/* ป้ายเตือนวันนัด (เลยนัด/วันนี้/พรุ่งนี้) */}
-          <PromiseAlertBadge promiseToPayDate={r.promiseToPayDate} />
-          {/* ป้ายคืนเครื่องแล้ว + ยอดปิด */}
-          {r.isReturned && <div><ReturnedClosingBadge row={r} /></div>}
-          {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
-          <div><StalenessBadge row={r} /></div>
         </div>
         <span className={`shrink-0 self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
           {TIER_EMOJI[sr.tier]} {sr.score}
         </span>
       </div>
-      {/* ยอดรวมต้องชำระวันนี้ (เงินต้นค้าง + ค่าปรับ) — ตัวเลขเดียวแจ้งลูกค้าได้ทันที */}
-      <div className="mt-2 inline-flex flex-col items-start rounded-lg bg-red-50 px-2.5 py-1.5">
-        <span className="text-[10px] font-medium text-red-500">ยอดต้องชำระวันนี้ (รวมค่าปรับ)</span>
-        <span className="text-base font-bold text-red-700">{baht(r.overdueAmount + r.outstanding)} ฿</span>
+
+      {/* กล่องยอดเงิน + วันค้าง — อ่านรวดเดียว (ตัดจากเดิมที่กระจาย 3 จุด) */}
+      <div className="mt-2 flex items-stretch gap-2">
+        <div className="flex flex-1 flex-col items-start rounded-lg bg-red-50 px-2.5 py-1.5">
+          <span className="text-[10px] font-medium text-red-500">ยอดต้องชำระวันนี้ (รวมค่าปรับ)</span>
+          <span className="text-base font-bold text-red-700">{baht(r.overdueAmount + r.outstanding)} ฿</span>
+        </div>
+        <div className="flex flex-col items-center justify-center rounded-lg bg-red-50 px-3 py-1.5">
+          <span className="text-[10px] font-medium text-red-500">ค้าง</span>
+          <span className="text-base font-bold text-red-700">{r.daysLate} วัน</span>
+        </div>
       </div>
 
-      {/* บรรทัด 2: ตัวเลข */}
-      <div className="mb-3 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
+      {/* บรรทัด 2: ตัวเลขย่อย */}
+      <div className="mb-2 mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-soft">
         <span>เกรด <Badge tone={GRADE_TONE[r.grade]}>{r.grade}</Badge></span>
-        <span>ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></span>
         {r.installmentsTotal > 0 && <span>งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
         <span className="whitespace-nowrap">ค่างวด {baht(r.monthlyPayment)} ฿</span>
         {r.outstanding > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">ค่าปรับ {baht(r.outstanding)} ฿</span>}
         {r.principalDue > 0 && <span className="font-semibold text-red-600 whitespace-nowrap">เงินต้นค้าง {baht(r.principalDue)} ฿</span>}
       </div>
-      {/* ปุ่มบันทึก + ฉันดูแลเคสนี้ */}
+
+      {/* ปุ่มขยาย/ย่อข้อมูลรอง */}
+      {hasSecondaryDetails && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          className="mb-2 inline-flex items-center gap-0.5 text-xs font-medium text-salmon-deep hover:underline"
+        >
+          <ChevronRight size={12} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          {expanded ? 'ย่อรายละเอียด' : 'รายละเอียดเพิ่มเติม'}
+        </button>
+      )}
+
+      {expanded && (
+        <div id={detailsId} className="mb-3 flex flex-col gap-1 border-t border-peach/60 pt-1.5 text-xs text-ink-soft">
+          {r.deviceModel && <p>📱 {r.deviceModel}</p>}
+          {r.lastResult !== null && r.lastContactedAt !== null && (
+            <p>
+              🕐 {r.lastContactedByName ?? '?'} {relativeContactTime(r.lastContactedAt)} — {RESULT_LABEL[r.lastResult]}
+            </p>
+          )}
+          {r.latestNote && (
+            <p>💬 {r.latestNote.length > 60 ? r.latestNote.slice(0, 60) + '…' : r.latestNote}</p>
+          )}
+          {/* ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge */}
+          <ReturnedClosingBadge row={r} />
+          <StalenessBadge row={r} />
+        </div>
+      )}
+
+      {/* ปุ่มบันทึก + ฉันดูแลเคสนี้ — เห็นเสมอ ไม่ซ่อนใต้ขยาย */}
       <div className="flex flex-col gap-1.5">
         <button
           disabled={disableButton}
