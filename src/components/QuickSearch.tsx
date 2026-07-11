@@ -31,14 +31,15 @@ function filterContracts(contracts: Contract[], q: string): ContractResult[] {
     .filter(
       (c) =>
         c.customerName.toLowerCase().includes(lower) ||
-        c.contractNo.toLowerCase().includes(lower),
+        c.contractNo.toLowerCase().includes(lower) ||
+        c.invNo.toLowerCase().includes(lower),
     )
     .slice(0, 5)
     .map((c) => ({
       kind: 'contract' as const,
       id: c.id,
       label: c.customerName,
-      sub: c.contractNo,
+      sub: c.invNo ? `${c.contractNo} · INV ${c.invNo}` : c.contractNo,
     }))
 }
 
@@ -222,7 +223,7 @@ function QuickSearchModal({ navigate, isAdmin }: { navigate: ReturnType<typeof u
             ref={inputRef}
             type="text"
             className="flex-1 bg-transparent text-base text-ink outline-none placeholder:text-ink-soft"
-            placeholder="ค้นหาลูกค้า เลขสัญญา หรือร้าน..."
+            placeholder="ค้นหาลูกค้า เลขสัญญา เลข INV หรือร้าน..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
