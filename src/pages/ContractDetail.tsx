@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2 } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -44,6 +44,9 @@ import {
   getDocRejectLog,
   getContractDeleteGuardInfo,
   deleteContract,
+  assignCase,
+  listActiveFreelancers,
+  type FreelancerRow,
   type DocRejectEntry,
   type ContractDeleteGuardInfo,
   type ContractFlagPatch,
@@ -219,6 +222,9 @@ export default function ContractDetail() {
   const [isPinned, setIsPinned] = useState(false)
   const [pinBusy, setPinBusy] = useState(false)
   const [contractShopName, setContractShopName] = useState('')
+
+  // ===== มอบหมายเคสให้คนโทร (freelancer) เจาะจง — admin+staff เท่านั้น =====
+  const [assignCaseOpen, setAssignCaseOpen] = useState(false)
 
   // ===== ที่อยู่ (ดึง id_card สำหรับโชว์อำเภอ/จังหวัด) =====
   const [addresses, setAddresses] = useState<ContractAddresses>({})
@@ -676,6 +682,21 @@ export default function ContractDetail() {
           </div>
         </div>
       </Card>
+
+      {/* ===== ผู้ดูแลเคส (คนโทร) — มอบหมาย/เปลี่ยนคนดูแลเคสติดตามหนี้เจาะจง (admin + staff เท่านั้น) ===== */}
+      {canStaff && (
+        <Card className="mb-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs text-ink-soft">ผู้ดูแลเคส (คนโทร)</p>
+              <p className="font-semibold text-ink">{contract.assignedToName || 'ยังไม่มีคนดูแล'}</p>
+            </div>
+            <Button variant="ghost" onClick={() => setAssignCaseOpen(true)}>
+              <UserCheck size={15} /> {contract.assignedToName ? 'เปลี่ยนผู้ดูแล' : 'มอบหมายให้คนโทร'}
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* เลขอ้างอิงเครื่อง + ลูกค้า (เลขบัตรเต็มเฉพาะหน้านี้) */}
       <Card className="mb-4 py-3">
@@ -1747,6 +1768,18 @@ export default function ContractDetail() {
         />
       )}
 
+      {/* มอบหมาย/เปลี่ยนผู้ดูแลเคส (คนโทร) — admin+staff เท่านั้น */}
+      {assignCaseOpen && (
+        <AssignCaseModal
+          contract={contract}
+          onClose={() => setAssignCaseOpen(false)}
+          onDone={async () => {
+            setAssignCaseOpen(false)
+            await load()
+          }}
+        />
+      )}
+
       {/* #3 — Penalty override modal (admin only) */}
       {penaltyOverrideTarget && (
         <PenaltyOverrideModal
@@ -2550,6 +2583,153 @@ function AddExtraChargeModal({
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
           <Button onClick={save} disabled={busy || amount <= 0 || !reason.trim()}>
             {busy ? 'กำลังบันทึก...' : 'เพิ่มค่าใช้จ่าย'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** ข้อความไทยของ error code ที่ assign_case (RPC, mig 0099) อาจ raise — fallback ข้อความรวมถ้า code อื่น */
+const ASSIGN_CASE_ERROR_LABEL: Record<string, string> = {
+  ASSIGNEE_NOT_ACTIVE_FREELANCER: 'คนที่เลือกไม่ใช่คนโทรที่ใช้งานอยู่ กรุณาเลือกคนอื่น',
+  CONTRACT_NOT_ASSIGNABLE: 'เคสนี้ปิดแล้ว มอบหมายไม่ได้',
+  CONTRACT_NOT_FOUND: 'ไม่พบสัญญานี้ในระบบ',
+}
+function assignCaseErrMsg(e: unknown): string {
+  const raw = errMsg(e)
+  return ASSIGN_CASE_ERROR_LABEL[raw] ?? `มอบหมายไม่สำเร็จ: ${raw}`
+}
+
+/**
+ * AssignCaseModal — มอบหมาย/เปลี่ยนผู้ดูแลเคส (คนโทร) เจาะจง (admin+staff, RPC assign_case มิ 0099)
+ * โหลดรายชื่อ freelancer ที่ active มาให้เลือก (ค้นหา + เลื่อนดูได้ในรายการ) — ถ้าเคสมีคนถืออยู่แล้ว
+ * ต้องกดยืนยันซ้ำอีกครั้งก่อน reassign
+ */
+function AssignCaseModal({
+  contract,
+  onClose,
+  onDone,
+}: {
+  contract: Contract
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [freelancers, setFreelancers] = useState<FreelancerRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [selectedId, setSelectedId] = useState('')
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    listActiveFreelancers()
+      .then((rows) => { if (alive) setFreelancers(rows.filter((f) => f.active)) })
+      .catch(() => { if (alive) setFreelancers([]) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [])
+
+  const filtered = freelancers.filter(
+    (f) => search.trim() === '' || f.fullName.toLowerCase().includes(search.trim().toLowerCase()),
+  )
+  const selected = freelancers.find((f) => f.id === selectedId) ?? null
+  const currentHolderName = contract.assignedToName ?? null
+  const isReassign = !!contract.assignedTo
+
+  function pick(id: string) {
+    setSelectedId(id)
+    setConfirming(false)
+    setErr(null)
+  }
+
+  async function submit() {
+    if (!selectedId) return
+    if (isReassign && !confirming) {
+      setConfirming(true)
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      await assignCase(contract.id, selectedId)
+      onDone()
+    } catch (e) {
+      setErr(assignCaseErrMsg(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={isReassign ? 'เปลี่ยนผู้ดูแลเคส' : 'มอบหมายเคสให้คนโทร'} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        {currentHolderName && (
+          <p className="rounded-lg bg-peach-light/50 px-3 py-2 text-sm text-ink-soft">
+            ผู้ดูแลปัจจุบัน: <span className="font-semibold text-ink">{currentHolderName}</span>
+          </p>
+        )}
+
+        {loading ? (
+          <Loading label="กำลังโหลดรายชื่อคนโทร..." />
+        ) : freelancers.length === 0 ? (
+          <p className="text-sm text-ink-soft">ยังไม่มีคนโทร (freelancer) ที่ใช้งานอยู่ในระบบ</p>
+        ) : (
+          <>
+            <Field label="ค้นหาคนโทร">
+              <Input
+                autoFocus
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setConfirming(false) }}
+                placeholder="พิมพ์ชื่อคนโทร..."
+              />
+            </Field>
+            <div className="max-h-64 overflow-y-auto rounded-xl border border-peach">
+              {filtered.length === 0 ? (
+                <p className="px-3 py-3 text-sm text-ink-soft">ไม่พบชื่อที่ค้นหา</p>
+              ) : (
+                filtered.map((f) => {
+                  const active = f.id === selectedId
+                  return (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => pick(f.id)}
+                      className={`flex w-full items-center justify-between gap-2 border-b border-peach/60 px-3 py-2.5 text-left text-sm last:border-b-0 transition ${
+                        active ? 'bg-salmon-deep/10 text-ink' : 'text-ink hover:bg-peach-light/40'
+                      }`}
+                    >
+                      <span className="font-medium">{f.fullName}</span>
+                      <span className="whitespace-nowrap text-xs text-ink-soft">
+                        {f.grades.length > 0 ? `เกรด ${f.grades.join(', ')}` : 'ยังไม่มีเกรด'}
+                      </span>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </>
+        )}
+
+        {confirming && selected && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            เคสนี้มี {currentHolderName ?? 'คนอื่น'} ดูแลอยู่ ยืนยันเปลี่ยนเป็น{' '}
+            <span className="font-semibold">{selected.fullName}</span> ใช่หรือไม่?
+          </p>
+        )}
+        {err && <p className="text-sm text-red-600">{err}</p>}
+
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" disabled={busy} onClick={onClose}>ยกเลิก</Button>
+          <Button onClick={() => void submit()} disabled={busy || !selectedId}>
+            {busy
+              ? 'กำลังบันทึก...'
+              : confirming
+                ? 'ยืนยันเปลี่ยนผู้ดูแล'
+                : isReassign
+                  ? 'เปลี่ยนผู้ดูแล'
+                  : 'มอบหมาย'}
           </Button>
         </div>
       </div>

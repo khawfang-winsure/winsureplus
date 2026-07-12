@@ -290,9 +290,10 @@ export interface Contract {
   needsFixDetail?: string | null       // รายละเอียด/หมายเหตุประกอบ
   needsFixBy?: string | null           // ชื่อคนตีกลับ
   needsFixAt?: string | null           // เวลาที่ตีกลับ
-  // --- ระบบจองเคส claim/release (0086) ---
+  // --- ระบบจองเคส claim/release (0086) + มอบหมายเคส admin/staff (0099) ---
   assignedTo?: string | null           // uuid ของ profiles ผู้ถือเคสอยู่ — null = ว่าง
-  assignedAt?: string | null           // เวลาที่ claim ล่าสุด
+  assignedAt?: string | null           // เวลาที่ claim/มอบหมายล่าสุด
+  assignedToName?: string | null       // ชื่อผู้ถือเคส (join profiles.full_name, เติมเฉพาะ getContract) — undefined = ยังไม่ได้ query
   // --- หมายเหตุเคสติดปัญหา (0089) — พนักงานโน้ตเองว่าสรุปยอดไม่ได้เพราะติดอะไร คนละระบบกับ needsFix_* ---
   summaryNote?: string | null          // ข้อความโน้ตอิสระ — null = ไม่มีโน้ตค้าง
   summaryNoteBy?: string | null        // ชื่อคนเขียนโน้ตล่าสุด

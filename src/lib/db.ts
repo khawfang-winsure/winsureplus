@@ -1092,7 +1092,19 @@ export async function getContract(id: string): Promise<Contract | null> {
   if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
   const { data, error } = await supabase.from('contracts').select('*').eq('id', id).maybeSingle()
   if (error) throw error
-  return data ? mapContract(data as ContractRow) : null
+  if (!data) return null
+  const contract = mapContract(data as ContractRow)
+  // join ชื่อผู้ถือเคส (assignedToName) — เคสเดียว ไม่ N+1 ยิงแยกได้; ว่าง (assigned_to null) ข้ามไปเลย
+  if (contract.assignedTo) {
+    const { data: assigneeProfile, error: assigneeErr } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', contract.assignedTo)
+      .maybeSingle()
+    if (assigneeErr) throw assigneeErr
+    contract.assignedToName = (assigneeProfile as { full_name: string | null } | null)?.full_name ?? null
+  }
+  return contract
 }
 
 /** ดึงเลขที่สัญญาทั้งหมดของร้านหนึ่ง — ใช้รันเลขถัดไปอัตโนมัติ */
@@ -2951,6 +2963,60 @@ export async function getFreelancerGrades(id: string): Promise<string[]> {
 export async function setFreelancerGrades(id: string, grades: string[]): Promise<void> {
   await callAdminUsers({ action: 'setFreelancerGrades', id, grades })
 }
+
+/** รายชื่อผู้ติดตามหนี้ (freelancer) ที่ active — สำหรับ dropdown "มอบหมายเคส" (0099, admin+staff เรียกได้)
+ *  ต่างจาก listFreelancers(): query ตรงผ่าน RLS ไม่ผ่าน Edge Function admin-users — Edge Function เดิม
+ *  guard เฉพาะ role==='admin' (403 ถ้าไม่ใช่) ทำให้ staff เรียกไม่ได้เลย → modal มอบหมายเคสเห็นรายชื่อว่างเปล่า
+ *  (error ถูกกลืนเงียบ) เป็นบั๊กที่ทำให้ "staff มอบหมายได้" (Pete lock) ใช้งานจริงไม่ได้
+ *  ใช้ได้ทั้ง admin/staff เพราะ RLS profiles_read_staff_view (0022: is_admin() OR is_staff()+role='freelancer')
+ *  + fga_read (0022: is_admin() OR is_staff() OR freelancer_id=auth.uid()) เปิดให้ query ตรงอยู่แล้ว
+ *  ไม่ต้องแก้ Edge Function / ไม่แตะ listFreelancers() เดิม (ใช้ที่หน้า user management อื่นอยู่)
+ *  คืน shape เดียวกับ FreelancerRow — email เป็น null เสมอ (ไม่มี service_role เข้าถึง auth.users จากฝั่ง client
+ *  ถ้าต้อง email จริงใช้ listFreelancers() แทน — ContractDetail ไม่ได้ใช้ email อยู่แล้ว) */
+export async function listActiveFreelancers(): Promise<FreelancerRow[]> {
+  if (!supabase) return []
+
+  // Step 1: profiles ที่ role='freelancer' AND active=true
+  const { data: profileData, error: profileErr } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .eq('role', 'freelancer')
+    .eq('active', true)
+    .order('full_name')
+    .range(0, PAGE_CAP)
+  if (profileErr) throw profileErr
+
+  const freelancers = (profileData ?? []) as { id: string; full_name: string | null }[]
+  if (freelancers.length === 0) return []
+
+  const freelancerIds = freelancers.map((p) => p.id)
+
+  // Step 2: grade assignments ที่ active (ended_at IS NULL) ของ freelancer ทั้งหมดที่ดึงมา
+  const { data: fgaData, error: fgaErr } = await supabase
+    .from('freelancer_grade_assignments')
+    .select('freelancer_id, grade')
+    .in('freelancer_id', freelancerIds)
+    .is('ended_at', null)
+    .range(0, PAGE_CAP)
+  if (fgaErr) throw fgaErr
+
+  const gradeMap = new Map<string, string[]>()
+  for (const row of (fgaData ?? []) as { freelancer_id: string; grade: string }[]) {
+    const existing = gradeMap.get(row.freelancer_id) ?? []
+    existing.push(row.grade)
+    gradeMap.set(row.freelancer_id, existing)
+  }
+
+  return freelancers.map(
+    (p): FreelancerRow => ({
+      id: p.id,
+      fullName: p.full_name || '(ไม่มีชื่อ)',
+      email: null,
+      active: true, // query กรอง active=true มาแล้ว
+      grades: gradeMap.get(p.id) ?? [],
+    }),
+  )
+}
 export type FollowUpContactMethod = 'phone' | 'line' | 'sms' | 'visit' | 'other'
 export type FollowUpResult =
   | 'contacted'
@@ -3660,19 +3726,69 @@ export async function releaseCase(contractId: string): Promise<void> {
   if (error) throw error
 }
 
-/** เคสที่ตัวเอง (ผู้ใช้ปัจจุบัน) claim ไว้ — reuse getFreelancerQueue shape (FreelancerQueueRow)
- *  ดึงทุกเกรดที่ตัวเองได้รับมอบหมาย แล้ว filter เฉพาะ assignedTo = ตัวเอง ฝั่ง client
- *  (ไม่แยก query ใหม่ทั้งชุด — reuse logic เดิมของคิวเพื่อกันสูตรคำนวณ principalDue/aggregate เพี้ยน 2 ที่) */
+/** มอบหมายเคสให้ freelancer เจาะจง — ผ่าน RPC assign_case (0099, admin+staff เท่านั้น)
+ *  ต่างจาก claimCase: ข้ามเกรดได้ + reassign/steal ได้ (ไม่เช็ค assigned_to is null)
+ *  ผู้รับมอบหมายต้องเป็น freelancer ที่ active — ไม่ตรง → throw 'ASSIGNEE_NOT_ACTIVE_FREELANCER'
+ *  ไม่พบสัญญา → throw 'CONTRACT_NOT_FOUND' */
+export async function assignCase(contractId: string, assigneeId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('assign_case', {
+    p_contract_id: contractId,
+    p_assignee_id: assigneeId,
+  })
+  if (error) throw error
+}
+
+/** เคสที่ตัวเอง (ผู้ใช้ปัจจุบัน) ถือครองอยู่ — reuse getFreelancerQueue shape (FreelancerQueueRow)
+ *  รวม 2 แหล่ง แล้ว dedupe ด้วย contractId:
+ *   1) เคสในเกรดที่ตัวเองได้รับมอบหมาย (getFreelancerQueue(grades)) filter assignedTo=me — เดิม
+ *   2) เคส "ข้ามเกรด" ที่ถูก assign_case (0099) มอบให้ตรงๆ โดยไม่ผูก grade เลย —
+ *      getFreelancerQueue กรองด้วย grades เสมอ จึงไม่มีทางเจอเคสข้ามเกรด ต้อง query แยก:
+ *      ดึง contracts.id ที่ assigned_to=me ตรงๆ ก่อน (RLS 0099 เปิด clause นี้ไม่ผูก grade แล้ว)
+ *      แล้วค่อยดึงสถานะจาก v_contract_status + ประกอบด้วย buildFreelancerQueueRows เดียวกับคิวปกติ
+ *      (reuse สูตรคำนวณ principalDue/aggregate เดิม ไม่เขียนซ้ำ กันเพี้ยน 2 ที่) */
 export async function getMyCases(): Promise<FreelancerQueueRow[]> {
   if (!supabase) return []
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) return []
+
   const grades = await getMyAssignedGrades()
-  if (grades.length === 0) return []
-  const queue = await getFreelancerQueue(grades)
-  return queue.filter((r) => r.assignedTo === user.id)
+  const inGradeQueue = grades.length > 0 ? await getFreelancerQueue(grades) : []
+  const inGradeMine = inGradeQueue.filter((r) => r.assignedTo === user.id)
+  const inGradeIds = new Set(inGradeMine.map((r) => r.contractId))
+
+  // เคสที่ assigned_to=me ตรงๆ (ไม่ผูก grade) — RLS 0099 เปิดให้อ่าน contracts แถวนี้ได้แล้ว
+  const { data: assignedContracts, error: assignedErr } = await supabase
+    .from('contracts')
+    .select('id')
+    .eq('assigned_to', user.id)
+    .range(0, PAGE_CAP)
+  if (assignedErr) throw assignedErr
+  const crossGradeIds = ((assignedContracts ?? []) as { id: string }[])
+    .map((r) => r.id)
+    .filter((id) => !inGradeIds.has(id))
+
+  if (crossGradeIds.length === 0) return inGradeMine
+
+  const { data: statusData, error: statusErr } = await supabase
+    .from('v_contract_status')
+    .select(
+      'contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount, bucket',
+    )
+    .in('contract_id', crossGradeIds)
+    .range(0, PAGE_CAP)
+  if (statusErr) throw statusErr
+
+  // mirror เงื่อนไข getFreelancerQueue: active+bucket='normal' (ยังไม่ล่าช้า) ไม่เข้าคิว
+  // returned เข้าเสมอไม่ว่า bucket ไหน — buildFreelancerQueueRows ตัด returnClosingAmount<=0 ทีหลังเอง
+  const filteredStatus = ((statusData ?? []) as (QueueStatusRow & { bucket: string | null })[]).filter(
+    (r) => !(r.status === 'active' && r.bucket === 'normal'),
+  )
+  const crossGradeRows = await buildFreelancerQueueRows(filteredStatus)
+
+  return [...inGradeMine, ...crossGradeRows]
 }
 
 interface CaseOwnershipCountRow {
