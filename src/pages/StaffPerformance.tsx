@@ -35,6 +35,7 @@ import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/com
 import { computeCallOutcomeTotals, type CallOutcomeTotals } from '../lib/callOutcomes'
 import { baht } from '../lib/format'
 import TeamCallTodayWidget from '../components/TeamCallTodayWidget'
+import CashCollectedTodayWidget from '../components/CashCollectedTodayWidget'
 
 // ===== ตัวช่วย =====
 
@@ -1002,7 +1003,10 @@ export default function StaffPerformance() {
       </div>
 
       {/* วันนี้สด (auto-refresh) — แยกออกจากส่วน "เลือกช่วงวันที่" ด้านล่างซึ่งขับเคลื่อนทุก section ที่เหลือ */}
-      <TeamCallTodayWidget />
+      <div className="grid gap-3 lg:grid-cols-2">
+        <TeamCallTodayWidget />
+        <CashCollectedTodayWidget />
+      </div>
 
       {/* ตัวเลือกช่วงวันที่ */}
       <DateRangePicker

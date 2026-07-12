@@ -8,6 +8,7 @@ import MorningBriefing from '../components/MorningBriefing'
 import GradeMovementView from '../components/GradeMovementView'
 import { EscalateSummaryCard } from '../components/EscalateSummaryCard'
 import TeamCallTodayWidget from '../components/TeamCallTodayWidget'
+import CashCollectedTodayWidget from '../components/CashCollectedTodayWidget'
 import { baht } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
@@ -259,8 +260,11 @@ export default function ExecDashboard() {
         <StaffCaseTable rows={d.briefing.staffCases} isExec={isExec} />
       )}
 
-      {/* ===== ผลงานทีมโทรวันนี้ (สด, auto-refresh) — โชว์ชื่อพนักงานเสมอ ไม่ gate isExec ===== */}
-      <TeamCallTodayWidget />
+      {/* ===== ทีมโทรวันนี้ + เงินเก็บได้จริงวันนี้ (สด, auto-refresh) — โชว์ชื่อพนักงานเสมอ ไม่ gate isExec ===== */}
+      <div className="grid gap-3 lg:grid-cols-2">
+        <TeamCallTodayWidget />
+        <CashCollectedTodayWidget />
+      </div>
 
       {/* ===== แถว 1: KPI หัวใจ ===== */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">

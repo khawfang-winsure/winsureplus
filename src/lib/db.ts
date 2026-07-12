@@ -5,6 +5,7 @@ import { supabase } from './supabase'
 import type {
   AuditEvent,
   AuditEventType,
+  CashCollectedToday,
   CollectorCallOutcome,
   Contract,
   ContractStatus,
@@ -1670,6 +1671,26 @@ export async function getCashflowDaily(): Promise<DailyCashflowRow[]> {
     .range(0, 9999)
   if (error) throw error
   return ((data ?? []) as DailyCashflowViewRow[]).map(mapDailyCashflow)
+}
+
+/**
+ * เงินเก็บได้จริงวันนี้ — ทุกช่องทาง (ทีมโทรตามได้ + ลูกค้าจ่ายเอง + PJ auto-sync)
+ * นับตาม record date (วันบันทึกเข้าระบบ, Asia/Bangkok) — reuse v_cashflow_daily (0056) แถวเดียวของวันนี้
+ * ไม่ join contracts/other_income เพิ่ม (หนัก) — breakdown 5 หมวดใช้ getCashflowRows() ใน execDashboard.ts แทน
+ * ยังไม่มีแถวของวันนี้ (ยังไม่มีเงินเข้าเลย) → คืน income=0 ไม่ throw
+ */
+export async function getCashCollectedToday(): Promise<CashCollectedToday> {
+  const today = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+  if (!supabase) return { payDate: today, income: 0, penaltyIncome: 0, payCount: 0 }
+  const { data, error } = await supabase
+    .from('v_cashflow_daily')
+    .select('pay_date, income, penalty_income, pay_count')
+    .eq('pay_date', today)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return { payDate: today, income: 0, penaltyIncome: 0, payCount: 0 }
+  const row = mapDailyCashflow(data as DailyCashflowViewRow)
+  return { payDate: row.payDate, income: row.income, penaltyIncome: row.penaltyIncome, payCount: row.payCount }
 }
 
 // ---------- v_due_schedule_monthly — รวมยอดงวดต่อเดือน (migration 0058) ----------

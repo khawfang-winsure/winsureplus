@@ -583,3 +583,16 @@ export interface CollectorCallOutcome {
   promisesBroken: number     // นัดที่ไม่จ่าย และเลยวันนัดแล้ว (ผิดนัด)
   promisesPending: number    // นัดที่ยังไม่ถึงวันนัด (ยังไม่ตัดสิน)
 }
+
+/**
+ * เงินเก็บได้จริงวันนี้ — ทุกช่องทาง (ทีมโทรตามได้ + ลูกค้าจ่ายเอง + PJ auto-sync)
+ * นับตาม record date (วันบันทึกเข้าระบบ, Asia/Bangkok) จาก v_cashflow_daily (migration 0056)
+ * ไม่มี breakdown 5 หมวด (installment/down/docFee/other) เพราะต้อง join contracts + other_income หนัก —
+ * ถ้าต้องการ breakdown เต็มดู getCashflowRows() ใน execDashboard.ts (คำนวณช่วงวันที่เลือกได้ ไม่ใช่แค่วันนี้)
+ */
+export interface CashCollectedToday {
+  payDate: string        // วันนี้ตาม Asia/Bangkok (YYYY-MM-DD) ที่ใช้ query
+  income: number         // ยอดรับรวมวันนี้ = principal + penalty_paid_amount, 0 ถ้ายังไม่มีเงินเข้า
+  penaltyIncome: number  // ยอดค่าปรับแยกวันนี้
+  payCount: number       // จำนวนรายการ action='pay' วันนี้
+}
