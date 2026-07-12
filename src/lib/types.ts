@@ -518,6 +518,8 @@ export interface PjSyncReviewRow {
   reason: PjSyncReviewReason
   status: PjSyncReviewStatus
   penaltyAmount: number              // Σ amount ของ raw_json ที่ payment_type='penalty' (ค่าปรับใน batch นี้)
+  /** uuid ดิบต่อใบเสร็จจาก PJ (field "uuid" ใน raw_json — migration 0100 pj_applied_receipts) — [] = ไม่มี (แถวเก่า/raw_json ไม่มี field นี้) */
+  receiptUuids: string[]
 }
 
 /** บริบทประกอบการตัดสินใจในกล่องรอตรวจ — งวดถัดไป + ยอดรวม + ประวัติชำระล่าสุด */

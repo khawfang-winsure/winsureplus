@@ -30,8 +30,21 @@ export interface PjReviewDupFlag {
  * @returns Map<rowId, PjReviewDupFlag> — 1 entry ต่อ 1 แถวใน rows (lookup O(1) ต่อแถวตอน render)
  */
 export function detectDuplicatePjReviewRows(rows: PjSyncReviewRow[]): Map<string, PjReviewDupFlag> {
-  const dupKey = (r: PjSyncReviewRow): string | null =>
-    r.contractId && r.paidDate ? `${r.contractId}|${r.paidDate.slice(0, 10)}|${r.amount}` : null
+  // คีย์กลุ่ม:
+  //   - ถ้าแถวมี receiptUuids (uuid ดิบต่อใบเสร็จจาก PJ — field "uuid") → ใช้ตรงนี้เป็นหลัก
+  //     exact กว่า composite เดิม เพราะ uuid ไม่ชนกันข้ามใบเสร็จแม้สัญญา/วันเดียวกัน (ต่างจาก contract+date+amount)
+  //   - ไม่มี uuid (แถวเก่าก่อน deploy หรือ raw_json ไม่มี field นี้) → fallback composite เดิม
+  //     เพิ่ม payment_type เข้าคีย์ (เดิมไม่มี) กัน invoice เดียวจ่าย 2 ยอดคนละประเภท (เช่น ค่างวด + ค่าปรับ
+  //     ยอดเท่ากันโดยบังเอิญ) ถูกมองว่าซ้ำกันทั้งที่เป็นคนละรายการ
+  const dupKey = (r: PjSyncReviewRow): string | null => {
+    if (r.receiptUuids && r.receiptUuids.length > 0) {
+      return `uuid:${[...r.receiptUuids].sort().join(',')}`
+    }
+    if (r.contractId && r.paidDate) {
+      return `${r.contractId}|${r.paidDate.slice(0, 10)}|${r.amount}|${r.paymentType ?? ''}`
+    }
+    return null
+  }
 
   const groups = new Map<string, string[]>()
   for (const r of rows) {

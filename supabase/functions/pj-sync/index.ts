@@ -36,6 +36,36 @@ const UA =
 const SYNC_BY_NAME = "PJ Auto-Sync";
 const LOCK_STALE_MINUTES = 10;
 
+// ── กันลงซ้ำแบบ exact ด้วย receipt uuid (มิ.ย.→ก.ค. 2026 แก้บั๊ก "จ่าย 2 ก้อนวันเดียว ก้อน 2 หาย") ──
+// เดิมกันซ้ำด้วย (contract_id, pj_paid_date) เท่านั้น (pj_applied_ledger, 0080) — ไม่ดู invoice/ใบเสร็จ
+// → 2 ใบเสร็จคนละ invoice_no (เช่น ค่างวดปัจจุบัน + ค่างวดเก่าตกค้าง) จ่ายวันเดียวกัน ใบที่ 2 ถูก skip เงียบ
+//
+// DEDUP_CUTOFF = "2026-07-13" (วันถัดจากวันที่โค้ดนี้ deploy จริง 12 ก.ค. 2026) — แบ่ง 2 พฤติกรรมตาม
+// receipt.paid_date:
+//   - paid_date <  CUTOFF: ใช้ legacy check เดิมเป๊ะ (installments.paid_at::date + pj_applied_ledger
+//     คีย์ contract_id+paid_date) — ใบเสร็จเก่าไม่เคยเก็บ uuid ไว้ ห้าม backfill จึงต้องพึ่งของเดิมต่อ
+//   - paid_date >= CUTOFF: ใช้ pj_applied_receipts (migration 0100) คีย์ pj_receipt_uuid — exact ต่อใบเสร็จ
+//     ไม่ชนกันข้ามใบแม้สัญญา/วันเดียวกัน → แก้บั๊กเงินหายจริง
+//
+// ⚠️ ทำไมไม่ใช้วันที่ deploy ตรงๆ (12 ก.ค.) — transition-day double-apply:
+//    รอบ cron ก่อน deploy (เช้าวันที่ 12) sync ยอดของวันที่ 12 ไปแล้วผ่าน legacy path (ตอนนั้นยังไม่มี
+//    ตาราง pj_applied_receipts) → installments.paid_at=12-07 + pj_applied_ledger(contract,12-07) มีแล้ว
+//    แต่ pj_applied_receipts ยังไม่มี uuid ของใบเสร็จเหล่านั้นเลย (ตารางเพิ่งสร้างว่างเปล่า) ถ้า CUTOFF
+//    ตั้งเป็น "2026-07-12" (>= เช็คตัวมันเอง) รอบ cron ถัดไปในวันเดียวกันจะเห็นใบเสร็จ paid_date=12-07
+//    เข้า path uuid ทันที (12 >= 12) → หา uuid ใน pj_applied_receipts ไม่เจอ (ว่าง) → คิดว่ายังไม่เคยลง
+//    → apply ซ้ำ = เงินเบิ้ลยอดที่ลงไปแล้วตั้งแต่เช้า (path uuid ไม่เช็ค installments.paid_at อีกต่อไป —
+//    safety-net นั้นถูกตัดทิ้งไปแล้วเพื่อแก้บั๊ก 2-same-day จึงไม่มีอะไรกันยอดเช้านี้เลย)
+//    เลื่อน CUTOFF ไปเป็นวันถัดไป (13 ก.ค.) แทน — วันที่ 12 ทั้งวัน (รวมยอดที่ sync ไปแล้วตอนเช้า) ยังคง
+//    ใช้ legacy path ต่อเนื่องเป๊ะ (idempotent อยู่แล้วด้วยกลไกเดิม) ส่วน uuid path เริ่มทำงานแบบสะอาดตั้งแต่
+//    ใบเสร็จวันที่ 13 เป็นต้นไป ไม่มีทางไปทับยอดที่ legacy เพิ่งลงเช้านี้
+//
+// trade-off ที่ยอมรับ: วันที่ 12 ก.ค. (วัน deploy) บั๊ก "2-same-day" เดิม (คนละ invoice_no จ่ายวันเดียวกัน
+// ใบที่ 2 skip เงียบ) ยังเกิดได้อยู่ 1 วัน เพราะยังไม่ใช้ path uuid — แลกกับการไม่เสี่ยงเบิ้ลยอดเช้านี้ทั้งหมด
+// ซึ่งเสียหายกว่ามาก (edge case นานๆ ครั้ง เทียบกับความเสี่ยงเบิ้ลทุกยอดของวันนี้)
+//
+// ห้ามแก้ค่านี้ย้อนหลัง (จะทำให้ใบเสร็จที่เพิ่งข้าม cutoff ไปใช้ legacy path ทั้งที่ไม่มี ledger row จริง)
+const DEDUP_CUTOFF = "2026-07-13";
+
 // ── cookie jar helpers (ก๊อปจาก pj-probe ตรงตัว — พิสูจน์ผ่านแล้ว) ────────────
 function mergeSetCookies(jar: Map<string, string>, res: Response) {
   let setCookies: string[] = [];
@@ -301,6 +331,9 @@ export default {
         installment_receipt_count: number;
         paid_date: string | null; // YYYY-MM-DD
         raw: any[];
+        // ใบเสร็จย่อยที่ประกอบเป็น invoice นี้ (1 แถวต่อ 1 receipt.uuid) — ใช้ dedup exact (>= DEDUP_CUTOFF)
+        // แยกจาก raw (raw = ทั้งแถวดิบ เก็บไว้ล้วนๆ เผื่อ reconcile / ใส่ pj_sync_review.raw_json)
+        receipts: { uuid: string; amount: number; paymentType: "installment" | "penalty" | "other" }[];
       };
       const aggMap = new Map<string, Agg>();
       let downSkipped = 0;
@@ -310,6 +343,10 @@ export default {
         const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
         const amt = parseAmount(pick(row, ["amount", "paid_amount", "total"]));
         const paidDate = toIsoDate(pick(row, ["paid_date", "payment_date", "date", "created_at"]));
+        // uuid ดิบต่อใบเสร็จจาก PJ (field "uuid" — UUIDv7 unique ทุกใบ) — ใช้ dedup exact แทน
+        // contract-day skip หยาบเดิม (ดู DEDUP_CUTOFF ด้านบน + migration 0100 pj_applied_receipts)
+        const receiptUuidRaw = pick(row, ["uuid"]);
+        const receiptUuid = receiptUuidRaw ? String(receiptUuidRaw).trim() : null;
 
         if (!invRaw) continue;
         const inv = String(invRaw).trim();
@@ -331,23 +368,30 @@ export default {
             installment_receipt_count: 0,
             paid_date: paidDate,
             raw: [],
+            receipts: [],
           };
           aggMap.set(inv, a);
         }
         a.raw.push(row);
         if (paidDate && !a.paid_date) a.paid_date = paidDate;
 
+        let category: "installment" | "penalty" | "other";
         if (typeRaw.includes("penalty")) {
           a.pen_amt += amt;
+          category = "penalty";
         } else if (typeRaw.includes("installment")) {
           a.inst_amt += amt;
           a.has_installment = true;
           a.installment_receipt_count++;
+          category = "installment";
         } else {
           // other (หรือ type แปลก) → flag OTHER
           a.other_amt += amt;
           a.has_other = true;
+          category = "other";
         }
+        // เก็บ uuid ต่อใบเสร็จ (down_payment ข้ามไปแล้วด้านบน ไม่เข้ามาถึงตรงนี้)
+        if (receiptUuid) a.receipts.push({ uuid: receiptUuid, amount: amt, paymentType: category });
       }
 
       // ── 4) categorize + apply/review ─────────────────────────────────────────
@@ -478,29 +522,52 @@ export default {
         const allInsts = insts ?? [];
 
         // ── กันลงซ้ำ (idempotency) ─────────────────────────────────────────────
-        // (1) เช็ค paid_at เดิม: มีงวดที่ paid_at::date == วันจ่ายของใบเสร็จ → ลงไปแล้ว/import แล้ว
-        // (2) เช็ค ledger: pj_applied_ledger มีแถวของ (contract_id, pj_paid_date) นี้แล้ว
-        //     ครอบเคสจ่ายขาด (PARTIAL) ที่พนักงานกดยืนยันแล้ว → paid_at ยังเป็น null แต่ ledger จดไว้แล้ว
         const targetPaidDate = a.paid_date ?? syncIsoDate;
-        const alreadySynced = allInsts.some((it) => {
-          if (!it.paid_at) return false;
-          const d = toIsoDate(it.paid_at);
-          return d != null && targetPaidDate != null && d === targetPaidDate;
-        });
+        // >= DEDUP_CUTOFF ใช้ path uuid ใหม่ (exact ต่อใบเสร็จ) / < CUTOFF (หรือ paid_date หา ไม่ได้) ใช้ legacy
+        const usesUuidDedup = targetPaidDate != null && targetPaidDate >= DEDUP_CUTOFF;
 
-        // ตรวจ ledger (เฉพาะเมื่อ targetPaidDate ไม่เป็น null)
-        let ledgerAlreadyApplied = false;
-        if (targetPaidDate) {
-          const { data: ledgerRow } = await db
-            .from("pj_applied_ledger")
-            .select("inst_amount, pen_amount")
-            .eq("contract_id", contract.id)
-            .eq("pj_paid_date", targetPaidDate)
-            .maybeSingle();
-          if (ledgerRow) ledgerAlreadyApplied = true;
+        let alreadySynced = false; // legacy path เท่านั้น
+        let ledgerAlreadyApplied = false; // legacy path เท่านั้น
+        let alreadyAppliedByUuid = false; // uuid path เท่านั้น
+
+        if (usesUuidDedup) {
+          // ── path ใหม่: เช็ค pj_applied_receipts ด้วย uuid ต่อใบเสร็จ (a.receipts) ─────────
+          //    เจอ uuid ใดก็ตามในเซ็ตนี้แปลว่า invoice นี้ (ของรอบนี้) ลงไปแล้ว → ข้ามทั้งก้อน
+          //    ใบเสร็จ invoice อื่น (uuid ต่างชุด) ของสัญญา/วันเดียวกัน ไม่ถูกกระทบ — จุดที่แก้บั๊กเงินหาย
+          const receiptUuids = a.receipts.map((r) => r.uuid);
+          if (receiptUuids.length > 0) {
+            const { data: seenReceipts, error: seenErr } = await db
+              .from("pj_applied_receipts")
+              .select("pj_receipt_uuid")
+              .in("pj_receipt_uuid", receiptUuids);
+            if (seenErr) {
+              return await failRun("error", `db error (pj_applied_receipts check): ${seenErr.message}`, 500);
+            }
+            if (seenReceipts && seenReceipts.length > 0) alreadyAppliedByUuid = true;
+          }
+        } else {
+          // ── path เดิม (คงพฤติกรรมเดิมเป๊ะ — ห้ามแก้) ──────────────────────────────────
+          // (1) เช็ค paid_at เดิม: มีงวดที่ paid_at::date == วันจ่ายของใบเสร็จ → ลงไปแล้ว/import แล้ว
+          // (2) เช็ค ledger: pj_applied_ledger มีแถวของ (contract_id, pj_paid_date) นี้แล้ว
+          //     ครอบเคสจ่ายขาด (PARTIAL) ที่พนักงานกดยืนยันแล้ว → paid_at ยังเป็น null แต่ ledger จดไว้แล้ว
+          alreadySynced = allInsts.some((it) => {
+            if (!it.paid_at) return false;
+            const d = toIsoDate(it.paid_at);
+            return d != null && targetPaidDate != null && d === targetPaidDate;
+          });
+
+          if (targetPaidDate) {
+            const { data: ledgerRow } = await db
+              .from("pj_applied_ledger")
+              .select("inst_amount, pen_amount")
+              .eq("contract_id", contract.id)
+              .eq("pj_paid_date", targetPaidDate)
+              .maybeSingle();
+            if (ledgerRow) ledgerAlreadyApplied = true;
+          }
         }
 
-        if (alreadySynced || ledgerAlreadyApplied) {
+        if (alreadySynced || ledgerAlreadyApplied || alreadyAppliedByUuid) {
           skippedAlreadySynced++;
           continue; // ไม่ลง ไม่ review
         }
@@ -535,33 +602,57 @@ export default {
           //    ไม่ match targetPaidDate='2026-06-30' → รอบถัดไปลงซ้ำงวดถัดไป!
           //    UTC midnight → paid_at::date = วันจ่ายจริง ตรงกับ targetPaidDate (เหมือน manual sync เก่า)
           const paidAtTs = (targetPaidDate ?? syncIsoDate) + "T00:00:00.000Z";
+
+          // ── ติ๊ก review (RED fix): p_receipt_uuids ต้องลงไปกับ RPC เดียวกันแบบ atomic ──────────
+          //    เดิม INSERT pj_applied_receipts แยก tx ทีหลัง (best-effort) — ถ้า insert fail แต่ payment
+          //    ผ่านแล้ว รอบถัดไปจะเห็นว่า "ยังไม่เคยลง" (ไม่เจอ uuid) แล้ว apply ซ้ำ = เงินเบิ้ลจริง
+          //    ย้ายเข้า RPC (migration 0100) ให้ commit/rollback พร้อมกับ payment_log/installments เสมอ
+          //    ส่งเฉพาะ path >= DEDUP_CUTOFF (usesUuidDedup) — path เดิมส่ง null (RPC ข้ามไม่แตะตารางนี้)
+          const receiptUuidsPayload =
+            usesUuidDedup && a.receipts.length > 0
+              ? a.receipts.map((r) => ({
+                  uuid: r.uuid,
+                  invoice_no: a.invoice_no,
+                  paid_date: targetPaidDate,
+                  amount: r.amount,
+                  payment_type: r.paymentType,
+                  source: "auto",
+                }))
+              : null;
+
           const { error: rpcErr } = await db.rpc("record_payment_spread", {
             p_contract_id: contract.id,
             p_principal: instAmt,
             p_penalty: a.pen_amt,
             p_paid_at: paidAtTs,
             p_by_name: SYNC_BY_NAME,
+            p_receipt_uuids: receiptUuidsPayload,
           });
           if (rpcErr) {
-            // ลง RPC ไม่ผ่าน → flag review แทน crash (ไม่หยุดทั้งรอบ)
+            // ลง RPC ไม่ผ่าน → flag review แทน crash (ไม่หยุดทั้งรอบ) — ไม่มีอะไรถูกลงเลย (atomic)
             queueReview(a, "AMOUNT_MISMATCH", contract.id, "installment", instAmt);
             continue;
           }
-          // จด ledger กันลงซ้ำรอบถัดไป + ปิดเคสรอตรวจ (best-effort — ไม่ crash ทั้งรอบ)
+          // จด ledger (เฉพาะ path เดิม — path ใหม่จดในตัว RPC ไปแล้ว atomic) + ปิดเคสรอตรวจ (best-effort
+          // — ไม่ crash ทั้งรอบ; ไม่กระทบเงิน แค่ housekeeping)
           try {
-            await db.from("pj_applied_ledger").upsert({
-              contract_id: contract.id,
-              pj_paid_date: targetPaidDate,
-              inst_amount: instAmt,
-              pen_amount: a.pen_amt,
-              source: "auto",
-              applied_at: new Date().toISOString(),
-            }, { onConflict: "contract_id,pj_paid_date" });
+            if (!usesUuidDedup) {
+              // path เดิม (< DEDUP_CUTOFF) — คงพฤติกรรมเดิมเป๊ะ (ยังเป็น best-effort แยก tx เหมือนก่อน
+              // แก้รอบนี้ — ไม่ใช่บั๊กใหม่ ไม่อยู่ใน scope ของ fix นี้ ห้ามแก้)
+              await db.from("pj_applied_ledger").upsert({
+                contract_id: contract.id,
+                pj_paid_date: targetPaidDate,
+                inst_amount: instAmt,
+                pen_amount: a.pen_amt,
+                source: "auto",
+                applied_at: new Date().toISOString(),
+              }, { onConflict: "contract_id,pj_paid_date" });
+            }
             await db.from("pj_sync_review")
               .update({ status: "auto_resolved" })
               .eq("pj_invoice_no", a.invoice_no)
               .eq("status", "pending");
-          } catch { /* best-effort — ไม่บล็อกทั้งรอบ */ }
+          } catch { /* best-effort — ไม่บล็อกทั้งรอบ (housekeeping เท่านั้น ไม่ใช่เงิน) */ }
           autoApplied.push({ contract_no: contractNo, amount: instAmt + a.pen_amt });
           autoAppliedTotal += instAmt + a.pen_amt;
           continue;

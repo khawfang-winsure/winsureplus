@@ -7000,12 +7000,13 @@ export async function getShopContractTotals(): Promise<ShopContractTotal[]> {
 
 // ===== PJ auto-sync review box (migration 0077) =====
 
-/** 1 receipt ดิบใน raw_json (array) — field ที่ใช้รวมค่าปรับ */
+/** 1 receipt ดิบใน raw_json (array) — field ที่ใช้รวมค่าปรับ + uuid ต่อใบเสร็จ (migration 0100) */
 interface PjRawReceipt {
   payment_type?: string | null
   amount?: string | number | null
   paid_date?: string | null
   invoice_no?: string | null
+  uuid?: string | null
 }
 
 interface PjSyncReviewViewRow {
@@ -7036,6 +7037,14 @@ function sumPjPenalty(raw: PjRawReceipt[] | null | undefined): number {
     (sum, r) => (r?.payment_type === 'penalty' ? sum + parsePjAmount(r.amount) : sum),
     0,
   )
+}
+
+/** ดึง uuid ดิบต่อใบเสร็จทุกตัวจาก raw_json (migration 0100 pj_applied_receipts ใช้เป็น dedup key) — [] ถ้าไม่มี */
+function extractPjReceiptUuids(raw: PjRawReceipt[] | null | undefined): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map(r => (r?.uuid ? String(r.uuid).trim() : null))
+    .filter((u): u is string => !!u)
 }
 
 interface PjSyncRunViewRow {
@@ -7075,6 +7084,7 @@ export async function getPjSyncReview(
     reason: (r.reason as PjSyncReviewRow['reason']),
     status: (r.status as PjSyncReviewRow['status']),
     penaltyAmount: sumPjPenalty(r.raw_json),
+    receiptUuids: extractPjReceiptUuids(r.raw_json),
   }))
 }
 
@@ -7258,6 +7268,13 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
  * ⚠️ p_paid_at = paidDate + 'T00:00:00.000Z' (UTC midnight, ลงท้าย Z เสมอ)
  *    ห้ามใช้ +07:00 — timestamptz เก็บ UTC, +07:00 จะเลื่อนเป็นวันก่อนหน้า พัง idempotency
  * rpc error → throw ก่อน resolve (ไม่ปิดเคสถ้าลงยอดไม่สำเร็จ)
+ *
+ * ⚠️ p_receipt_uuids (migration 0100, ติ๊ก review RED fix): ดึง uuid ต่อใบเสร็จจาก raw_json ของแถวใน
+ *    กล่องรอตรวจ "ก่อน" เรียก RPC แล้วส่งเข้าไปพร้อมกัน — ให้ RPC insert pj_applied_receipts ใน
+ *    transaction เดียวกับ payment_log/installments (atomic) เหมือน path auto-sync ใน pj-sync/index.ts
+ *    ห้ามแยก insert หลัง RPC เป็นคนละ tx อีก (เดิมทำแบบนั้น → insert fail แล้ว uuid ไม่ถูกจด → auto-sync
+ *    รอบถัดไปเห็นว่ายังไม่เคยลง → apply ซ้ำ = เงินเบิ้ล) — ถ้าอ่าน raw_json ไม่สำเร็จ (best-effort)
+ *    ยังส่ง null ต่อได้ตามปกติ (แค่ไม่มี uuid ไว้กัน auto-sync ซ้ำ ไม่กระทบการลงเงินหลัก)
  */
 export async function applyPjReviewPayment(params: {
   reviewId: string
@@ -7271,16 +7288,43 @@ export async function applyPjReviewPayment(params: {
   if (!supabase) return
   const { reviewId, contractId, principal, penalty, paidDate, byName, note } = params
 
+  // ดึง uuid ต่อใบเสร็จจาก raw_json "ก่อน" เรียก RPC (read-only ไม่กระทบ atomicity ของการลงเงิน)
+  let receiptUuidsPayload:
+    | { uuid: string; invoice_no: string | null; paid_date: string | null; amount: number; payment_type: string | null; source: string }[]
+    | null = null
+  try {
+    const { data: reviewRow } = await supabase
+      .from('pj_sync_review')
+      .select('pj_invoice_no, pj_payment_type, raw_json')
+      .eq('id', reviewId)
+      .maybeSingle()
+    const rawReceipts = (reviewRow?.raw_json ?? []) as PjRawReceipt[]
+    const receiptsFound = Array.isArray(rawReceipts) ? rawReceipts.filter(r => r?.uuid) : []
+    if (receiptsFound.length > 0) {
+      receiptUuidsPayload = receiptsFound.map(r => ({
+        uuid:         String(r.uuid),
+        invoice_no:   reviewRow?.pj_invoice_no ?? null,
+        paid_date:    paidDate || null,
+        amount:       parsePjAmount(r.amount),
+        payment_type: r.payment_type ?? reviewRow?.pj_payment_type ?? null,
+        source:       'review',
+      }))
+    }
+  } catch { /* best-effort อ่าน raw_json — ไม่มี uuid ก็ยังลงเงินได้ปกติ แค่ไม่มี exact-dedup เสริม */ }
+
   const { error } = await supabase.rpc('record_payment_spread', {
-    p_contract_id: contractId,
-    p_principal:   principal,
-    p_penalty:     penalty,
-    p_paid_at:     `${paidDate}T00:00:00.000Z`,
-    p_by_name:     byName,
+    p_contract_id:    contractId,
+    p_principal:      principal,
+    p_penalty:        penalty,
+    p_paid_at:        `${paidDate}T00:00:00.000Z`,
+    p_by_name:        byName,
+    p_receipt_uuids:  receiptUuidsPayload,
   })
   if (error) throw error
 
-  // จด ledger กันลงซ้ำ: cron รอบถัดไปเจอ ledger → ข้าม ไม่ลงซ้ำ (best-effort)
+  // จด ledger กันลงซ้ำ (legacy safety net คนละกลไกจาก pj_applied_receipts — คงไว้เหมือนเดิม ห้ามลบ
+  // แยก tx เหมือนเดิมทุกประการ ไม่ใช่ scope ของ atomic fix รอบนี้): cron รอบถัดไป (< DEDUP_CUTOFF ใน
+  // pj-sync/index.ts) เจอ ledger → ข้าม ไม่ลงซ้ำ (best-effort)
   if (paidDate) {
     try {
       await supabase.from('pj_applied_ledger').upsert({
