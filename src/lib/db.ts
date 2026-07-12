@@ -22,6 +22,7 @@ import type {
   OtherIncome,
   OverdueBucket,
   OverduePromiseContract,
+  CollectionMonthlyRow,
   PjDaysLateBucket,
   LetterOutcome,
   LetterOutcomeByRound,
@@ -6776,6 +6777,48 @@ export async function getPjRecoveryOutcomeSummary(): Promise<PjRecoveryOutcomeSu
     outstandingInstallments: Number(r.outstanding_installments ?? 0),
     outstandingBaht: Number(r.outstanding_baht ?? 0),
   }
+}
+
+// ---------- Collection monthly — อัตราเก็บเงินย้อนหลังรายเดือน (migration 0102) ----------
+// นับตามเดือนครบกำหนด (due_date): จ่ายแล้ว vs ยังค้าง — ไม่พึ่ง paid_at (ย้อนหลังมั่ว)
+// นับเฉพาะงวดที่ due_date <= current_date (ตัดงวดอนาคตออกใน view แล้ว)
+// aggregate ฝั่ง DB → ไม่ติด PAGE_CAP; รองรับ isSupabaseConfigured=false
+
+interface VCollectionMonthlyRow {
+  due_month: string | null
+  total_installments: string | number | null
+  paid_installments: string | number | null
+  unpaid_installments: string | number | null
+  collected_baht: string | number | null
+  pct_collected: string | number | null
+  active_total: string | number | null
+  active_paid: string | number | null
+  active_unpaid: string | number | null
+  active_collected_baht: string | number | null
+  active_pct_collected: string | number | null
+}
+
+/** อัตราเก็บเงินรายเดือนครบกำหนด (v_collection_monthly — เรียงตามเดือนใน view) */
+export async function getCollectionMonthly(): Promise<CollectionMonthlyRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_collection_monthly')
+    .select('due_month, total_installments, paid_installments, unpaid_installments, collected_baht, pct_collected, active_total, active_paid, active_unpaid, active_collected_baht, active_pct_collected')
+    .range(0, 999)
+  if (error) throw error
+  return ((data ?? []) as VCollectionMonthlyRow[]).map(r => ({
+    month: (r.due_month ?? '').slice(0, 7),   // 'YYYY-MM-DD' → 'YYYY-MM'
+    total: Number(r.total_installments ?? 0),
+    paid: Number(r.paid_installments ?? 0),
+    unpaid: Number(r.unpaid_installments ?? 0),
+    collectedBaht: Number(r.collected_baht ?? 0),
+    pctCollected: Number(r.pct_collected ?? 0),
+    activeTotal: Number(r.active_total ?? 0),
+    activePaid: Number(r.active_paid ?? 0),
+    activeUnpaid: Number(r.active_unpaid ?? 0),
+    activeCollectedBaht: Number(r.active_collected_baht ?? 0),
+    activePctCollected: Number(r.active_pct_collected ?? 0),  // null → 0
+  }))
 }
 
 // ---------- Letter outcome report — วัดผลจดหมายติดตามหนี้ (migration 0069) ----------

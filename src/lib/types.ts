@@ -451,6 +451,26 @@ export interface PjRecoveryOutcomeSummary {
   outstandingBaht: number
 }
 
+// ---------- Collection monthly — อัตราเก็บเงินย้อนหลังรายเดือน (migration 0102) ----------
+// นับตามเดือนที่ครบกำหนด (due_date): จ่ายแล้ว vs ยังค้าง — ไม่พึ่งวันที่จ่าย
+// (paid_at ย้อนหลังเป็น placeholder จึงเชื่อ "จ่าย/ค้าง" ได้ แต่เชื่อ "จ่ายช้ากี่วัน" ไม่ได้)
+
+/** อัตราเก็บเงินรายเดือนครบกำหนด (จาก v_collection_monthly) */
+export interface CollectionMonthlyRow {
+  month: string          // 'YYYY-MM' (เดือนของ due_date)
+  total: number          // งวดที่ครบกำหนดในเดือนนั้น (due_date <= วันนี้)
+  paid: number           // งวดที่เก็บได้ (paid_at ไม่ว่าง)
+  unpaid: number         // งวดที่ยังค้าง (paid_at ว่าง)
+  collectedBaht: number  // ยอดที่เก็บได้ (บาท)
+  pctCollected: number   // % เก็บได้ = round(100 * paid / total)
+  // มุมเฉพาะเคสเดินอยู่ (contract.status='active') — ตัดคืนเครื่อง/ปิดสัญญาออก (migration 0103)
+  activeTotal: number          // งวดครบกำหนดของเคส active
+  activePaid: number           // เก็บได้ (เคส active)
+  activeUnpaid: number         // ยังค้าง (เคส active)
+  activeCollectedBaht: number  // ยอดเก็บได้ เคส active (บาท)
+  activePctCollected: number   // % เก็บได้ เคส active (null → 0 ถ้าเดือนนั้นไม่มีเคส active)
+}
+
 // ---------- Letter outcome report — วัดผลจดหมายติดตามหนี้ (migration 0069) ----------
 // คำนวณ auto ว่าส่งจดหมายแล้วลูกค้าจ่าย/คืนเครื่องกี่ % — attribution ให้จดหมาย
 // ฉบับล่าสุดก่อนจ่าย (จ่าย/คืนต้องเกิดก่อนจดหมายฉบับถัดไป). อ่านจาก 3 aggregate views

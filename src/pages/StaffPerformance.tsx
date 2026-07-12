@@ -20,6 +20,7 @@ import {
   getPjRecoveryOutcomeMonthly,
   getPjRecoveryOutcomeSummary,
   getCollectorCallOutcomes,
+  getCollectionMonthly,
   type CollectorScorecardRow,
 } from '../lib/db'
 import type {
@@ -29,6 +30,7 @@ import type {
   PjRecoveryOutcomeMonth,
   PjRecoveryOutcomeSummary,
   CollectorCallOutcome,
+  CollectionMonthlyRow,
 } from '../lib/types'
 import type { DeviceReturnByCollectorResult } from '../lib/deviceReturnByCollector'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
@@ -687,6 +689,247 @@ function PjRecoverySection({ data }: { data: PjData }) {
   )
 }
 
+// ===== อัตราเก็บเงินย้อนหลัง (รายเดือน) =====
+// 2 มุม: เฉพาะเคสที่ยังผ่อน (default) | รวมทุกเคส — สลับแล้ว การ์ด/กราฟ/ตารางเปลี่ยนตาม
+type CollectionAngle = 'active' | 'all'
+
+interface CollectionView {
+  month: string
+  total: number
+  paid: number
+  unpaid: number
+  collectedBaht: number
+  pct: number
+  hasData: boolean // total > 0 (มีงวดครบกำหนดในมุมที่เลือก)
+}
+
+function toCollectionView(row: CollectionMonthlyRow, angle: CollectionAngle): CollectionView {
+  if (angle === 'active') {
+    return {
+      month: row.month,
+      total: row.activeTotal,
+      paid: row.activePaid,
+      unpaid: row.activeUnpaid,
+      collectedBaht: row.activeCollectedBaht,
+      pct: row.activePctCollected,
+      hasData: row.activeTotal > 0,
+    }
+  }
+  return {
+    month: row.month,
+    total: row.total,
+    paid: row.paid,
+    unpaid: row.unpaid,
+    collectedBaht: row.collectedBaht,
+    pct: row.pctCollected,
+    hasData: row.total > 0,
+  }
+}
+
+// สี % ตามเกณฑ์ (ให้สอดคล้อง PjOutcomeTable)
+function pctTone(pct: number): string {
+  return pct >= 80 ? 'text-green-700' : pct >= 50 ? 'text-amber-600' : 'text-red-600'
+}
+function pctBarColor(pct: number, active: boolean): string {
+  if (pct >= 80) return active ? '#16a34a' : '#22c55e'
+  if (pct >= 50) return active ? '#d97706' : '#f59e0b'
+  return active ? '#dc2626' : '#ef4444'
+}
+
+function CollectionMonthlySection({ rows }: { rows: CollectionMonthlyRow[] }) {
+  const [angle, setAngle] = useState<CollectionAngle>('active')
+  const [hover, setHover] = useState<number | null>(null)
+
+  const views = useMemo(() => rows.map((r) => toCollectionView(r, angle)), [rows, angle])
+
+  const totals = useMemo(() => {
+    let total = 0, paid = 0, unpaid = 0, collectedBaht = 0
+    for (const v of views) {
+      total += v.total
+      paid += v.paid
+      unpaid += v.unpaid
+      collectedBaht += v.collectedBaht
+    }
+    const pct = total > 0 ? Math.round((paid / total) * 100) : 0
+    return { total, paid, unpaid, collectedBaht, pct }
+  }, [views])
+
+  const showEvery = views.length <= 18 ? 1 : 2
+
+  const btnClass = (on: boolean) =>
+    `rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+      on ? 'bg-peach-deep text-white' : 'text-ink-soft hover:text-ink'
+    }`
+
+  return (
+    <Card>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-base font-bold text-ink">อัตราเก็บเงินย้อนหลัง (รายเดือน)</h2>
+          <p className="text-sm text-ink-soft">
+            นับตามเดือนที่ครบกำหนด ดูว่าสุดท้ายเก็บเงินได้กี่ % (รวมทั้งจ่ายตรงและจ่ายสาย) — ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน
+          </p>
+        </div>
+        {/* สลับ 2 มุม */}
+        <div
+          className="inline-flex shrink-0 rounded-xl border border-peach bg-white p-0.5"
+          role="group"
+          aria-label="เลือกมุมมองอัตราเก็บเงิน"
+        >
+          <button
+            type="button"
+            aria-pressed={angle === 'active'}
+            onClick={() => setAngle('active')}
+            className={btnClass(angle === 'active')}
+          >
+            เฉพาะเคสที่ยังผ่อน
+          </button>
+          <button
+            type="button"
+            aria-pressed={angle === 'all'}
+            onClick={() => setAngle('all')}
+            className={btnClass(angle === 'all')}
+          >
+            รวมทุกเคส
+          </button>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูลงวดครบกำหนด
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* การ์ดสรุป (รวมทุกเดือนของมุมที่เลือก) */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Card className="p-4 text-center">
+              <CalendarClock size={18} className="mx-auto mb-1 text-ink-soft" />
+              <p className="text-xs text-ink-soft mb-1">งวดครบกำหนดทั้งหมด</p>
+              <p className="text-xl font-bold text-ink">{totals.total.toLocaleString()}</p>
+              <p className="text-xs text-ink-soft">งวด</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <Wallet size={18} className="mx-auto mb-1 text-green-600" />
+              <p className="text-xs text-ink-soft mb-1">เก็บได้</p>
+              <p className="text-xl font-bold text-green-600">{totals.paid.toLocaleString()} งวด</p>
+              <p className={`text-xs font-semibold ${pctTone(totals.pct)}`}>{totals.pct}%</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <AlertTriangle size={18} className="mx-auto mb-1 text-red-500" />
+              <p className="text-xs text-ink-soft mb-1">ยังค้าง</p>
+              <p className="text-xl font-bold text-red-600">{totals.unpaid.toLocaleString()}</p>
+              <p className="text-xs text-ink-soft">งวด</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <Wallet size={18} className="mx-auto mb-1 text-peach-deep" />
+              <p className="text-xs text-ink-soft mb-1">เงินที่เก็บได้</p>
+              <p className="text-xl font-bold text-peach-deep">฿{baht(totals.collectedBaht)}</p>
+            </Card>
+          </div>
+
+          {/* กราฟแท่ง % เก็บได้รายเดือน */}
+          <Card>
+            <h3 className="mb-1 text-sm font-semibold text-ink">% เก็บได้ รายเดือน</h3>
+            <p className="mb-4 text-xs text-ink-soft">
+              แท่งสูง = เก็บเงินของงวดที่ครบกำหนดในเดือนนั้นได้ครบมากกว่า
+            </p>
+            <div className="flex items-end gap-1.5 sm:gap-2" style={{ height: 180 }}>
+              {views.map((v, i) => {
+                const h = v.hasData ? Math.max(2, (v.pct / 100) * 150) : 2
+                const active = hover === i
+                return (
+                  <div
+                    key={v.month}
+                    className="relative flex flex-1 flex-col items-center justify-end"
+                    onMouseEnter={() => setHover(i)}
+                    onMouseLeave={() => setHover(null)}
+                  >
+                    {active && (
+                      <div className="pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg bg-zinc-900 px-2.5 py-1.5 text-xs text-white shadow-lg">
+                        <div className="font-medium text-zinc-300">{thaiMonthShort(v.month)}</div>
+                        <div className="font-semibold">{v.hasData ? `${v.pct}%` : 'ไม่มีเคสในมุมนี้'}</div>
+                        <div className="text-zinc-300">
+                          {v.paid.toLocaleString()}/{v.total.toLocaleString()} งวด
+                        </div>
+                      </div>
+                    )}
+                    <div
+                      className="w-full rounded-t-md transition-colors"
+                      style={{ height: h, backgroundColor: pctBarColor(v.pct, active), maxWidth: 36 }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+            {/* ป้ายแกนล่าง */}
+            <div className="mt-1.5 flex gap-1.5 sm:gap-2">
+              {views.map((v, i) => (
+                <span
+                  key={v.month}
+                  className="flex-1 overflow-hidden text-center text-[10px] leading-tight text-ink-soft"
+                >
+                  {i % showEvery === 0 ? thaiMonthShort(v.month) : ''}
+                </span>
+              ))}
+            </div>
+          </Card>
+
+          {/* ตารางรายเดือน (เก่า → ใหม่) */}
+          <Card>
+            <h3 className="mb-3 text-sm font-semibold text-ink">รายเดือน (เรียงเดือนเก่า → ใหม่)</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                    <th className="pb-2 font-medium">เดือนครบกำหนด</th>
+                    <th className="pb-2 text-right font-medium">งวดครบกำหนด</th>
+                    <th className="pb-2 text-right font-medium">เก็บได้ (งวด)</th>
+                    <th className="pb-2 text-right font-medium">เก็บได้ (%)</th>
+                    <th className="pb-2 text-right font-medium">ยังค้าง</th>
+                    <th className="pb-2 text-right font-medium">เงินที่เก็บได้</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {views.map((v) => {
+                    const rowBg = !v.hasData
+                      ? ''
+                      : v.pct >= 80
+                        ? 'bg-green-50/60'
+                        : v.pct >= 50
+                          ? 'bg-amber-50/50'
+                          : 'bg-red-50/50'
+                    return (
+                      <tr key={v.month} className={`border-b border-peach/40 last:border-0 ${rowBg}`}>
+                        <td className="py-2 font-medium text-ink">{thaiMonthShort(v.month)}</td>
+                        <td className="py-2 text-right text-ink-soft">{v.total.toLocaleString()}</td>
+                        <td className="py-2 text-right font-semibold text-green-700">
+                          {v.paid.toLocaleString()}
+                        </td>
+                        <td
+                          className={`py-2 text-right font-semibold ${v.hasData ? pctTone(v.pct) : 'text-ink-soft'}`}
+                        >
+                          {v.hasData ? `${v.pct}%` : '—'}
+                        </td>
+                        <td className="py-2 text-right text-red-600">
+                          {v.unpaid > 0 ? v.unpaid.toLocaleString() : '—'}
+                        </td>
+                        <td className="py-2 text-right font-semibold text-peach-deep">
+                          {v.collectedBaht > 0 ? `฿${baht(v.collectedBaht)}` : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ===== Call outcomes: ผลการโทร & การนัดชำระ (รายคน) =====
 // computeCallOutcomeTotals + CallOutcomeTotals ย้ายไป ../lib/callOutcomes.ts (shared กับ TeamCallTodayWidget)
 
@@ -890,6 +1133,9 @@ export default function StaffPerformance() {
   // เครื่องที่ตามคืนได้ต่อคน (attributed_freelancer_id — คนละตัวกับค่าคอมคืนเครื่อง): โหลดตามช่วงวันที่เลือก
   const [deviceReturnByCollector, setDeviceReturnByCollector] = useState<DeviceReturnByCollectorResult[]>([])
 
+  // อัตราเก็บเงินย้อนหลัง (รายเดือน): โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
+  const [collectionMonthly, setCollectionMonthly] = useState<CollectionMonthlyRow[]>([])
+
   // ผลการตามหนี้จริงจากระบบ PJ: โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [pjData, setPjData] = useState<PjData>({
     summary: EMPTY_PJ,
@@ -923,6 +1169,14 @@ export default function StaffPerformance() {
     }).catch(() => {
       // silent — PJ ไม่กระทบ scorecard หลัก
     })
+  }, [])
+
+  useEffect(() => {
+    getCollectionMonthly()
+      .then(setCollectionMonthly)
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
   }, [])
 
   useEffect(() => {
@@ -1182,6 +1436,8 @@ export default function StaffPerformance() {
 
       {/* Section 3: ผลการตามหนี้จริง (จากระบบ PJ) */}
       <PjRecoverySection data={pjData} />
+
+      <CollectionMonthlySection rows={collectionMonthly} />
     </div>
   )
 }
