@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, Download, X, Users, Wallet, CalendarClock, AlertTriangle } from 'lucide-react'
+import { ChevronRight, ChevronDown, Download, X, Users, Wallet, CalendarClock, AlertTriangle } from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
   DateRangePicker,
@@ -77,6 +77,12 @@ function rateCls(value: number | null): string {
 /** เงิน: "฿1,234" หรือ "—" ถ้า 0 / null */
 function fmtBaht(n: number | null): string {
   if (n === null || n === 0) return '—'
+  return `฿${baht(n)}`
+}
+
+/** เงินย่อ: ≥1 ล้าน → "฿1.5M" (1 ตำแหน่ง), ต่ำกว่านั้นเต็มจำนวน */
+function fmtBahtM(n: number): string {
+  if (n >= 1_000_000) return `฿${(n / 1_000_000).toFixed(1)}M`
   return `฿${baht(n)}`
 }
 
@@ -736,8 +742,268 @@ function pctBarColor(pct: number, active: boolean): string {
   return active ? '#dc2626' : '#ef4444'
 }
 
-function CollectionMonthlySection({ rows }: { rows: CollectionMonthlyRow[] }) {
-  const [angle, setAngle] = useState<CollectionAngle>('active')
+// ===== มุมมองผู้บริหาร: กราฟเส้น % เก็บได้รายเดือน (inline SVG — ไม่พึ่ง dependency) =====
+function CollectionTrendChart({ views }: { views: CollectionView[] }) {
+  // วาดเฉพาะเดือนที่มีงวดครบกำหนดในมุมที่เลือก (กันจุด 0% หลอกตา)
+  const pts = useMemo(() => views.filter((v) => v.hasData), [views])
+  if (pts.length === 0) {
+    return (
+      <div className="rounded-xl border border-peach bg-white px-4 py-8 text-center text-sm text-ink-soft">
+        ยังไม่มีข้อมูลพอสำหรับวาดกราฟ
+      </div>
+    )
+  }
+
+  const W = 680
+  const H = 220
+  const PAD = { l: 30, r: 14, t: 18, b: 26 }
+  const plotW = W - PAD.l - PAD.r
+  const plotH = H - PAD.t - PAD.b
+
+  // แกน Y: default 60–100 แต่ถ้ามีเดือนต่ำกว่า 60 ให้ขยายฐานลง (ปัดลงหลักสิบ) กันข้อมูลถูกตัด
+  const minPct = Math.min(...pts.map((v) => v.pct))
+  const yMin = Math.min(60, Math.floor(minPct / 10) * 10)
+  const yMax = 100
+  const span = Math.max(1, yMax - yMin)
+
+  const n = pts.length
+  const lastIdx = n - 1
+  const xAt = (i: number) => PAD.l + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW)
+  const yAt = (pct: number) => PAD.t + (1 - (Math.max(yMin, Math.min(yMax, pct)) - yMin) / span) * plotH
+
+  const linePts = pts.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v.pct).toFixed(1)}`).join(' ')
+
+  const gridVals: number[] = []
+  for (let g = yMin; g <= yMax; g += 10) gridVals.push(g)
+
+  const showEvery = n <= 12 ? 1 : 2
+
+  return (
+    <div className="overflow-x-auto">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ minWidth: n > 8 ? 480 : undefined }}
+        role="img"
+        aria-label="กราฟแนวโน้มอัตราเก็บเงินรายเดือน ทั้งโปรเจกต์"
+      >
+        {/* เส้นกริด + ป้ายแกน Y */}
+        {gridVals.map((g) => (
+          <g key={g}>
+            <line
+              x1={PAD.l}
+              x2={W - PAD.r}
+              y1={yAt(g)}
+              y2={yAt(g)}
+              className="text-peach"
+              stroke="currentColor"
+              strokeWidth={1}
+              opacity={0.6}
+            />
+            <text
+              x={PAD.l - 6}
+              y={yAt(g) + 3}
+              textAnchor="end"
+              className="text-ink-soft"
+              fill="currentColor"
+              fontSize={10}
+            >
+              {g}
+            </text>
+          </g>
+        ))}
+
+        {/* เส้นแนวโน้ม */}
+        <polyline
+          points={linePts}
+          fill="none"
+          stroke="#f97316"
+          strokeWidth={2.5}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+
+        {/* จุดแต่ละเดือน — เดือนล่าสุด (index สุดท้าย) เป็นสีต่าง (amber) */}
+        {pts.map((v, i) => {
+          const last = i === lastIdx
+          return (
+            <g key={v.month}>
+              <circle
+                cx={xAt(i)}
+                cy={yAt(v.pct)}
+                r={last ? 5.5 : 3.5}
+                fill={last ? '#eda100' : '#f97316'}
+                stroke="#fff"
+                strokeWidth={last ? 2 : 1}
+              />
+              {last && (
+                <text
+                  x={xAt(i)}
+                  y={yAt(v.pct) - 11}
+                  textAnchor="middle"
+                  fontSize={12}
+                  fontWeight={700}
+                  fill="#eda100"
+                >
+                  {v.pct}%
+                </text>
+              )}
+            </g>
+          )
+        })}
+
+        {/* ป้ายแกน X (เดือน) */}
+        {pts.map((v, i) =>
+          i % showEvery === 0 || i === lastIdx ? (
+            <text
+              key={v.month}
+              x={xAt(i)}
+              y={H - 7}
+              textAnchor="middle"
+              className="text-ink-soft"
+              fill="currentColor"
+              fontSize={10}
+            >
+              {thaiMonthShort(v.month)}
+            </text>
+          ) : null,
+        )}
+      </svg>
+    </div>
+  )
+}
+
+// ===== มุมมองผู้บริหาร: Hero (ตัวเลขใหญ่ + การ์ด + กราฟ) =====
+function CollectionExecOverview({
+  rows,
+  angle,
+  onAngleChange,
+}: {
+  rows: CollectionMonthlyRow[]
+  angle: CollectionAngle
+  onAngleChange: (a: CollectionAngle) => void
+}) {
+  const views = useMemo(() => rows.map((r) => toCollectionView(r, angle)), [rows, angle])
+  const withData = useMemo(() => views.filter((v) => v.hasData), [views])
+
+  const totals = useMemo(() => {
+    let total = 0, paid = 0, unpaid = 0, collectedBaht = 0
+    for (const v of views) {
+      total += v.total
+      paid += v.paid
+      unpaid += v.unpaid
+      collectedBaht += v.collectedBaht
+    }
+    const pct = total > 0 ? Math.round((paid / total) * 100) : 0
+    return { total, paid, unpaid, collectedBaht, pct }
+  }, [views])
+
+  const period =
+    withData.length > 0
+      ? `${thaiMonthShort(withData[0].month)} – ${thaiMonthShort(withData[withData.length - 1].month)}`
+      : '—'
+
+  const btnClass = (on: boolean) =>
+    `rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+      on ? 'bg-peach-deep text-white' : 'text-ink-soft hover:text-ink'
+    }`
+
+  return (
+    <Card>
+      {/* หัวข้อ + ปุ่มสลับมุม (คุมทั้ง hero / การ์ด / กราฟ / ตารางด้านล่าง) */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-base font-bold text-ink">มุมมองผู้บริหาร — เก็บหนี้ได้ดีแค่ไหน</h2>
+          <p className="text-sm text-ink-soft">
+            ภาพรวมทั้งโปรเจกต์: จากงวดที่ครบกำหนดทั้งหมด สุดท้ายเก็บเงินได้กี่ % (รวมทั้งจ่ายตรงและจ่ายสาย) — ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน
+          </p>
+        </div>
+        <div
+          className="inline-flex shrink-0 rounded-xl border border-peach bg-white p-0.5"
+          role="group"
+          aria-label="เลือกมุมมองอัตราเก็บเงิน"
+        >
+          <button
+            type="button"
+            aria-pressed={angle === 'active'}
+            onClick={() => onAngleChange('active')}
+            className={btnClass(angle === 'active')}
+          >
+            เฉพาะเคสที่ยังผ่อน
+          </button>
+          <button
+            type="button"
+            aria-pressed={angle === 'all'}
+            onClick={() => onAngleChange('all')}
+            className={btnClass(angle === 'all')}
+          >
+            รวมทุกเคส
+          </button>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูลงวดครบกำหนด
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {/* ตัวเลขใหญ่ + การ์ดสรุป */}
+          <div className="grid gap-3 lg:grid-cols-3">
+            {/* การ์ดใหญ่ % ภาพรวม */}
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-peach bg-peach-light/50 px-4 py-6 text-center">
+              <p className="text-xs font-medium text-ink-soft">เก็บเงินได้ทั้งโปรเจกต์</p>
+              <p className={`my-1 font-bold leading-none ${pctTone(totals.pct)}`} style={{ fontSize: 50 }}>
+                {totals.pct}%
+              </p>
+              <p className="text-xs text-ink-soft">{period}</p>
+            </div>
+
+            {/* การ์ดตัวเลขย่อย */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:col-span-2">
+              <Card className="p-4 text-center">
+                <CalendarClock size={18} className="mx-auto mb-1 text-ink-soft" />
+                <p className="text-xs text-ink-soft mb-1">งวดครบกำหนดทั้งหมด</p>
+                <p className="text-xl font-bold text-ink">{totals.total.toLocaleString()}</p>
+                <p className="text-xs text-ink-soft">งวด</p>
+              </Card>
+              <Card className="p-4 text-center">
+                <Wallet size={18} className="mx-auto mb-1 text-green-600" />
+                <p className="text-xs text-ink-soft mb-1">เก็บได้</p>
+                <p className="text-xl font-bold text-green-600">{totals.paid.toLocaleString()} งวด</p>
+                <p className={`text-xs font-semibold ${pctTone(totals.pct)}`}>{totals.pct}%</p>
+              </Card>
+              <Card className="p-4 text-center">
+                <AlertTriangle size={18} className="mx-auto mb-1 text-red-500" />
+                <p className="text-xs text-ink-soft mb-1">ยังค้าง</p>
+                <p className="text-xl font-bold text-red-600">{totals.unpaid.toLocaleString()}</p>
+                <p className="text-xs text-ink-soft">งวด</p>
+              </Card>
+              <Card className="p-4 text-center">
+                <Wallet size={18} className="mx-auto mb-1 text-peach-deep" />
+                <p className="text-xs text-ink-soft mb-1">เงินที่เก็บได้</p>
+                <p className="text-xl font-bold text-peach-deep">{fmtBahtM(totals.collectedBaht)}</p>
+              </Card>
+            </div>
+          </div>
+
+          {/* กราฟเส้นแนวโน้ม */}
+          <div className="rounded-xl border border-peach bg-white p-4">
+            <h3 className="mb-1 text-sm font-semibold text-ink">แนวโน้ม % เก็บได้รายเดือน</h3>
+            <p className="mb-3 text-xs text-ink-soft">เส้นสูง = เก็บเงินของงวดที่ครบกำหนดในเดือนนั้นได้ครบมากกว่า</p>
+            <CollectionTrendChart views={views} />
+            <p className="mt-3 flex items-center gap-1.5 text-xs leading-relaxed text-ink-soft">
+              <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: '#eda100' }} />
+              เดือนล่าสุดกำลังดำเนินอยู่ — ยังเก็บไม่ครบรอบ ตัวเลขจะขยับขึ้นอีก
+            </p>
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function CollectionMonthlySection({ rows, angle }: { rows: CollectionMonthlyRow[]; angle: CollectionAngle }) {
   const [hover, setHover] = useState<number | null>(null)
 
   const views = useMemo(() => rows.map((r) => toCollectionView(r, angle)), [rows, angle])
@@ -756,43 +1022,13 @@ function CollectionMonthlySection({ rows }: { rows: CollectionMonthlyRow[] }) {
 
   const showEvery = views.length <= 18 ? 1 : 2
 
-  const btnClass = (on: boolean) =>
-    `rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-      on ? 'bg-peach-deep text-white' : 'text-ink-soft hover:text-ink'
-    }`
-
   return (
     <Card>
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 className="text-base font-bold text-ink">อัตราเก็บเงินย้อนหลัง (รายเดือน)</h2>
-          <p className="text-sm text-ink-soft">
-            นับตามเดือนที่ครบกำหนด ดูว่าสุดท้ายเก็บเงินได้กี่ % (รวมทั้งจ่ายตรงและจ่ายสาย) — ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน
-          </p>
-        </div>
-        {/* สลับ 2 มุม */}
-        <div
-          className="inline-flex shrink-0 rounded-xl border border-peach bg-white p-0.5"
-          role="group"
-          aria-label="เลือกมุมมองอัตราเก็บเงิน"
-        >
-          <button
-            type="button"
-            aria-pressed={angle === 'active'}
-            onClick={() => setAngle('active')}
-            className={btnClass(angle === 'active')}
-          >
-            เฉพาะเคสที่ยังผ่อน
-          </button>
-          <button
-            type="button"
-            aria-pressed={angle === 'all'}
-            onClick={() => setAngle('all')}
-            className={btnClass(angle === 'all')}
-          >
-            รวมทุกเคส
-          </button>
-        </div>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">อัตราเก็บเงินย้อนหลัง (รายเดือน)</h2>
+        <p className="text-sm text-ink-soft">
+          นับตามเดือนที่ครบกำหนด ดูว่าสุดท้ายเก็บเงินได้กี่ % (รวมทั้งจ่ายตรงและจ่ายสาย) — มุมมองตามปุ่มสลับ “มุมมองผู้บริหาร” ด้านบน
+        </p>
       </div>
 
       {rows.length === 0 ? (
@@ -1135,6 +1371,10 @@ export default function StaffPerformance() {
 
   // อัตราเก็บเงินย้อนหลัง (รายเดือน): โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [collectionMonthly, setCollectionMonthly] = useState<CollectionMonthlyRow[]>([])
+  // มุมมอง hero + ตารางเก็บเงิน (แชร์ปุ่มสลับเดียว): เฉพาะเคสที่ยังผ่อน (default) | รวมทุกเคส
+  const [collectionAngle, setCollectionAngle] = useState<CollectionAngle>('active')
+  // พับ/กางรายละเอียดรายเดือน (default พับ เพื่อความสะอาด)
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   // ผลการตามหนี้จริงจากระบบ PJ: โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [pjData, setPjData] = useState<PjData>({
@@ -1434,10 +1674,40 @@ export default function StaffPerformance() {
       {/* Section 2.6: เครื่องที่ตามคืนได้ ต่อคน (attribution — คนละตัวกับค่าคอมคืนเครื่อง) */}
       <DeviceReturnByCollectorSection rows={deviceReturnByCollector} />
 
-      {/* Section 3: ผลการตามหนี้จริง (จากระบบ PJ) */}
-      <PjRecoverySection data={pjData} />
+      {/* ===== โซนเก็บหนี้ภาพรวม ===== */}
+      {/* ชั้น 1+2: มุมมองผู้บริหาร (ตัวเลขใหญ่ + การ์ด + กราฟเส้น) */}
+      <CollectionExecOverview
+        rows={collectionMonthly}
+        angle={collectionAngle}
+        onAngleChange={setCollectionAngle}
+      />
 
-      <CollectionMonthlySection rows={collectionMonthly} />
+      {/* ชั้น 3: รายละเอียดพับเก็บ (ตารางรายเดือน + ผลการตามหนี้สด) */}
+      <div className="space-y-6">
+        <button
+          type="button"
+          onClick={() => setDetailsOpen((v) => !v)}
+          aria-expanded={detailsOpen}
+          className="flex w-full items-center justify-between gap-2 rounded-2xl border border-peach bg-cream-deep px-5 py-4 text-left shadow-sm transition-colors hover:bg-peach-light/30"
+        >
+          <div>
+            <span className="text-base font-bold text-ink">ดูรายละเอียดรายเดือน</span>
+            <p className="text-sm text-ink-soft">
+              ตารางอัตราเก็บเงินรายเดือน + ผลการตามหนี้จริง (อัปเดตสด)
+            </p>
+          </div>
+          <ChevronDown
+            className={`h-5 w-5 shrink-0 text-ink-soft transition-transform ${detailsOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+
+        {detailsOpen && (
+          <div className="space-y-6">
+            <CollectionMonthlySection rows={collectionMonthly} angle={collectionAngle} />
+            <PjRecoverySection data={pjData} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }
