@@ -29,6 +29,7 @@ const DIMS: { key: Dimension; label: string }[] = [
   { key: 'occupation', label: 'อาชีพ' },
   { key: 'ageGroup', label: 'กลุ่มอายุ' },
   { key: 'model', label: 'รุ่นสินค้า' },
+  { key: 'deviceType', label: 'ประเภทเครื่อง (iPhone/iPad)' },
   { key: 'shop', label: 'ร้านค้า' },
   { key: 'promotion', label: 'โปรโมชั่น' },
   { key: 'term', label: 'ระยะผ่อน' },

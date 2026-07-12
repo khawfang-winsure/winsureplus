@@ -23,6 +23,7 @@ export interface CustomerRow {
   occupation: string
   ageGroup: string
   model: string
+  deviceType: string // iPhone / iPad / อื่นๆ (แยกจากชื่อรุ่น)
   promotion: string
   term: string
   downRate: string
@@ -44,6 +45,15 @@ export type Dimension =
   | 'down'
   | 'condition'
   | 'origin'
+  | 'deviceType'
+
+/** แยกประเภทเครื่องจากชื่อรุ่น: iPad / iPhone / อื่นๆ (case-insensitive, กัน null/ว่าง) */
+export function deviceType(model: string | null | undefined): 'iPhone' | 'iPad' | 'อื่นๆ' {
+  const s = (model ?? '').toString()
+  if (/ipad/i.test(s)) return 'iPad'
+  if (/iphone/i.test(s)) return 'iPhone'
+  return 'อื่นๆ'
+}
 
 function addDaysISO(iso: string, days: number): string {
   const d = new Date(iso + 'T00:00:00')
@@ -104,6 +114,7 @@ export function enrichCustomers(
       occupation: c.occupation || 'ไม่ระบุ',
       ageGroup: ageGroupOf(c.birthYear, todayISO),
       model: c.model || 'ไม่ระบุ',
+      deviceType: deviceType(c.model),
       promotion: c.promotion || (c.hasPromotion ? 'มีโปร' : 'ไม่มีโปร'),
       term: `${c.termMonths} เดือน`,
       downRate: `ดาวน์ ${c.downPercent}%`,
@@ -155,6 +166,7 @@ const DIM_KEY: Record<Exclude<Dimension, 'all'>, (r: CustomerRow) => string> = {
   occupation: (r) => r.occupation,
   ageGroup: (r) => r.ageGroup,
   model: (r) => r.model,
+  deviceType: (r) => r.deviceType,
   shop: (r) => r.shopName,
   promotion: (r) => r.promotion,
   term: (r) => r.term,
