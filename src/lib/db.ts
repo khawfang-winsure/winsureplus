@@ -6654,7 +6654,7 @@ export async function getPjRecoverySummary(): Promise<PjRecoverySummary> {
   }
   if (!supabase) return empty
   const { data, error } = await supabase
-    .from('v_pj_recovery_summary')
+    .from('v_recovery_summary')
     .select('late_contracts, late_installments, recovered_total, avg_days_late, max_days_late')
     .maybeSingle()
   if (error) throw error
@@ -6673,7 +6673,7 @@ export async function getPjRecoverySummary(): Promise<PjRecoverySummary> {
 export async function getPjRecoveryMonthly(): Promise<PjRecoveryMonth[]> {
   if (!supabase) return []
   const { data, error } = await supabase
-    .from('v_pj_recovery_monthly')
+    .from('v_recovery_monthly')
     .select('month, installments, contracts, recovered_baht')
     .range(0, 999)
   if (error) throw error
@@ -6706,7 +6706,7 @@ export async function getPjRecoveryByEmployee(): Promise<PjRecoveryEmployee[]> {
 export async function getPjDaysLateDist(): Promise<PjDaysLateBucket[]> {
   if (!supabase) return []
   const { data, error } = await supabase
-    .from('v_pj_days_late_dist')
+    .from('v_recovery_days_late_dist')
     .select('bucket, installments, contracts')
     .range(0, 999)
   if (error) throw error
@@ -6741,7 +6741,7 @@ interface PjRecoveryOutcomeSummaryRow {
 export async function getPjRecoveryOutcomeMonthly(): Promise<PjRecoveryOutcomeMonth[]> {
   if (!supabase) return []
   const { data, error } = await supabase
-    .from('v_pj_recovery_outcome_monthly')
+    .from('v_recovery_outcome_monthly')
     .select('due_month, recovered_installments, recovered_baht, outstanding_installments, outstanding_baht')
     .range(0, 999)
   if (error) throw error
@@ -6764,7 +6764,7 @@ export async function getPjRecoveryOutcomeSummary(): Promise<PjRecoveryOutcomeSu
   }
   if (!supabase) return empty
   const { data, error } = await supabase
-    .from('v_pj_recovery_outcome_summary')
+    .from('v_recovery_outcome_summary')
     .select('recovered_installments, recovered_baht, outstanding_installments, outstanding_baht')
     .maybeSingle()
   if (error) throw error

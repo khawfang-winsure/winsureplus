@@ -670,9 +670,9 @@ function PjRecoverySection({ data }: { data: PjData }) {
   return (
     <Card>
       <div className="mb-4">
-        <h2 className="text-base font-bold text-ink">ผลการตามหนี้จริง (จากระบบ PJ)</h2>
+        <h2 className="text-base font-bold text-ink">ผลการตามหนี้จริง (อัปเดตสด)</h2>
         <p className="text-sm text-ink-soft">
-          วันจ่ายจริงรายงวดจาก PJ — เงินจากงวดที่จ่ายช้าแล้วในที่สุดตามกลับมาได้ (ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน)
+          คำนวณสดจากข้อมูลการรับชำระในระบบเรา อัปเดตแบบเรียลไทม์ — เงินจากงวดที่จ่ายช้าแล้วในที่สุดตามกลับมาได้ (ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน)
         </p>
       </div>
 
@@ -1027,7 +1027,7 @@ export default function StaffPerformance() {
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         <span className="font-semibold">หมายเหตุ:</span>{' '}
         สกอร์การ์ดส่วนนี้อิงการบันทึกโทรใน /queue — ถ้าทีมยังไม่เริ่มบันทึกการโทร ตัวเลขจะเป็น 0
-        ดู “ผลการตามหนี้จริง (จากระบบ PJ)” ด้านล่างเพื่อดูผลการตามหนี้จากข้อมูลจริง
+        ดู “ผลการตามหนี้จริง (อัปเดตสด)” ด้านล่างเพื่อดูผลการตามหนี้จากข้อมูลจริง
       </div>
 
       {/* Section 1: Team Summary */}
