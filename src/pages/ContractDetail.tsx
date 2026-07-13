@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -2101,6 +2101,7 @@ export default function ContractDetail() {
 
 // ===== ประวัติการติดตามทั้งหมดของสัญญา =====
 const MAX_FOLLOW_DISPLAY = 50
+const FOLLOW_COLLAPSED_COUNT = 3
 
 function FollowHistory({
   entries,
@@ -2109,8 +2110,14 @@ function FollowHistory({
   entries: FollowUpEntry[]
   loading: boolean
 }) {
+  const [collapsed, setCollapsed] = useState(true)
   const total = entries.length
-  const displayed = entries.slice(0, MAX_FOLLOW_DISPLAY)
+  // พับ: render แค่ 3 รายการล่าสุด (mount จริงแค่ 3 li — ไม่ใช่ซ่อนด้วย CSS)
+  // กาง: สูงสุด MAX_FOLLOW_DISPLAY เหมือนเดิม
+  const displayed = collapsed
+    ? entries.slice(0, FOLLOW_COLLAPSED_COUNT)
+    : entries.slice(0, MAX_FOLLOW_DISPLAY)
+  const showToggle = total > FOLLOW_COLLAPSED_COUNT
 
   return (
     <Card className="mb-4 py-3">
@@ -2127,7 +2134,7 @@ function FollowHistory({
         <p className="text-sm text-ink-soft">ยังไม่มีประวัติการติดตาม</p>
       ) : (
         <>
-          {total > MAX_FOLLOW_DISPLAY && (
+          {!collapsed && total > MAX_FOLLOW_DISPLAY && (
             <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
               แสดง {MAX_FOLLOW_DISPLAY} รายการล่าสุด จากทั้งหมด {total} รายการ
             </p>
@@ -2165,6 +2172,26 @@ function FollowHistory({
               </li>
             ))}
           </ol>
+          {showToggle && (
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              aria-expanded={!collapsed}
+              className="mt-2 flex items-center gap-1 text-xs font-medium text-ink-soft hover:text-ink"
+            >
+              {collapsed ? (
+                <>
+                  ดูทั้งหมด ({total} รายการ)
+                  <ChevronDown size={14} />
+                </>
+              ) : (
+                <>
+                  ย่อ
+                  <ChevronUp size={14} />
+                </>
+              )}
+            </button>
+          )}
         </>
       )}
     </Card>
