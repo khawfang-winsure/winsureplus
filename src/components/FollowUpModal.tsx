@@ -5,6 +5,7 @@ import { baht, thaiDate } from '../lib/format'
 import {
   addFollowUp,
   closeCase,
+  dismissInboxCase,
   getCompanySmsSettings,
   getContractAddresses,
   getFollowUps,
@@ -109,6 +110,8 @@ interface Props {
   softWarnReason?: 'CAP' | 'PROMISE_PENDING' | null
   /** วันที่ลูกค้าสัญญาจะจ่าย (yyyy-mm-dd) — ใช้แสดงในแถบเตือน PROMISE_PENDING */
   promiseToPayDate?: string | null
+  /** เปิดช่องติ๊ก "จัดการเรียบร้อย — เอาออกจากกล่องรับงาน" (เฉพาะเมื่อเปิดจากกล่องรับงาน /inbox) */
+  offerInboxClear?: boolean
 }
 
 // ===== ฟอร์มสถานะ =====
@@ -158,7 +161,7 @@ function makeInitialForm(phone: string | null, phoneAlt1?: string | null, phoneA
   return { ...BASE_FORM, phoneDialed: phone ?? phoneAlt1 ?? phoneAlt2 ?? '' }
 }
 
-export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false, alreadyClosed = false, softWarnReason, promiseToPayDate }: Props) {
+export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed, publicHolidays = new Set(), adminOverride = false, alreadyClosed = false, softWarnReason, promiseToPayDate, offerInboxClear = false }: Props) {
   const { name: authName } = useAuth()
   const [history, setHistory] = useState<FollowUpEntry[]>([])
   const [histLoading, setHistLoading] = useState(true)
@@ -170,6 +173,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const [error, setError] = useState<string | null>(null)
   const [closingCase, setClosingCase] = useState(false)
   const [closeError, setCloseError] = useState<string | null>(null)
+  const [clearInbox, setClearInbox] = useState(false)  // ติ๊ก "จัดการเรียบร้อย" — เอาออกจากกล่องรับงานหลังบันทึก
   const [addresses, setAddresses] = useState<ContractAddresses>({})
 
   // req9: งวดของสัญญานี้ — ใช้คำนวณ paymentRecoveryStatus
@@ -342,6 +346,13 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         contactPersonRelation: resolvedContactPersonRelation,
       }
       await addFollowUp(input)
+      // ordering สำคัญ: บันทึก follow_up สำเร็จก่อน แล้วค่อยเคลียร์ออกจากกล่องรับงาน
+      if (offerInboxClear && clearInbox) {
+        await dismissInboxCase(contract.contractId)
+        onSaved?.()
+        onClose()
+        return
+      }
       setForm(makeInitialForm(contract.phone, contract.phoneAlt1, contract.phoneAlt2))
       setCustomPhoneDialed('')
       setCustomRelation('')
@@ -763,6 +774,21 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
 
         {error && <p className="text-sm text-red-600">{error}</p>}
         {saved && <p className="text-sm text-green-700">บันทึกแล้ว</p>}
+
+        {/* เฉพาะเปิดจากกล่องรับงาน /inbox: ติ๊กเพื่อเอาเคสออกจากกล่องหลังบันทึก */}
+        {offerInboxClear && (
+          <label htmlFor="clearInboxCheck" className="flex items-start gap-2 text-sm text-ink">
+            <input
+              id="clearInboxCheck"
+              type="checkbox"
+              checked={clearInbox}
+              onChange={(e) => setClearInbox(e.target.checked)}
+              disabled={outsideHours}
+              className="mt-0.5 h-4 w-4 accent-salmon-deep disabled:cursor-not-allowed"
+            />
+            <span>จัดการเรียบร้อย — เอาออกจากกล่องรับงานหลังบันทึก</span>
+          </label>
+        )}
 
         <div className="flex flex-wrap gap-2 pt-1">
           <Button onClick={handleSave} disabled={saving || closingCase || outsideHours}>

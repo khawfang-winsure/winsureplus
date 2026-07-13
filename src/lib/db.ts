@@ -6583,6 +6583,12 @@ export async function getInboxCases(): Promise<InboxCase[]> {
     ((pinsData ?? []) as { contract_id: string }[]).map((p) => p.contract_id),
   )
 
+  // pinned_at ต่อ contract — ใช้เทียบ re-appear หลัง dismiss (re-pin หลังเคลียร์ = กลับมา)
+  const pinnedAtMap = new Map<string, string>()
+  for (const p of (pinsData ?? []) as { contract_id: string; pinned_at: string }[]) {
+    pinnedAtMap.set(p.contract_id, p.pinned_at)
+  }
+
   // Step 2: หา contract ที่ last_result = 'line_pending' จาก v_follow_up_stats_90d
   // last_result = result ของ follow_up ล่าสุด (ไม่ใช่ success-filtered) — ไม่ต้องแก้ view
   const { data: statsData, error: statsErr } = await supabase
@@ -6632,6 +6638,19 @@ export async function getInboxCases(): Promise<InboxCase[]> {
     }
   }
   const returnIds = new Set(returnMap.keys())
+
+  // Step 2d: ดึง inbox_dismissals ทั้งหมด → Map<contract_id, dismissed_at>
+  // เคสที่ถูกเคลียร์จะถูกซ่อน เว้นแต่มีความเคลื่อนไหวใหม่หลัง dismissed_at (ดู suppression ตอน map)
+  const { data: dismissData, error: dismissErr } = await supabase
+    .from('inbox_dismissals')
+    .select('contract_id, dismissed_at')
+    .range(0, PAGE_CAP)
+  if (dismissErr) throw dismissErr
+
+  const dismissedMap = new Map<string, string>()
+  for (const d of (dismissData ?? []) as { contract_id: string; dismissed_at: string }[]) {
+    dismissedMap.set(d.contract_id, d.dismissed_at)
+  }
 
   // union: pinned OR line_pending OR promise OR return
   const allIds = Array.from(
@@ -6701,11 +6720,28 @@ export async function getInboxCases(): Promise<InboxCase[]> {
     shop_name: string | null
     days_late: number
     penalty_due: number
-  }[]).map((r): InboxCase => {
+  }[]).map((r): InboxCase | null => {
     const c = contractMap.get(r.contract_id)
     const note = latestNoteMap.get(r.contract_id)
     const ret = returnMap.get(r.contract_id)
     const promiseToPayDate = c?.promise_to_pay_date ?? null
+
+    // Suppression: เคสที่ถูกเคลียร์ (มีใน inbox_dismissals) จะถูกซ่อน
+    //   เว้นแต่มี "ความเคลื่อนไหวใหม่หลัง dismissed_at" อย่างใดอย่างหนึ่ง → โชว์กลับ (re-appear):
+    //     - โน้ต follow_up ใหม่ (latestNoteAt > dismissed_at) — ครอบ "นัดใหม่" ด้วย (นัดสร้าง follow_up เสมอ)
+    //     - คืนเครื่องใหม่ (returnMap.created_at > dismissed_at)
+    //     - re-pin (pinned_at > dismissed_at)
+    //   note ที่ไม่มี (latestNoteAt null/'') = ไม่ผ่านเงื่อนไข note
+    const dismissedAt = dismissedMap.get(r.contract_id)
+    if (dismissedAt !== undefined) {
+      const dismissedMs = new Date(dismissedAt).getTime()
+      const noteAt = note?.created_at
+      const noteNewer = noteAt ? new Date(noteAt).getTime() > dismissedMs : false
+      const returnNewer = ret ? new Date(ret.created_at).getTime() > dismissedMs : false
+      const pinnedAt = pinnedAtMap.get(r.contract_id)
+      const pinNewer = pinnedAt ? new Date(pinnedAt).getTime() > dismissedMs : false
+      if (!noteNewer && !returnNewer && !pinNewer) return null // ยังไม่มีความเคลื่อนไหวใหม่ → ซ่อน
+    }
 
     // สร้าง sources[] — เหตุที่เคสอยู่ใน inbox (1 เคสมีได้หลายเหตุ)
     const sources: string[] = []
@@ -6731,7 +6767,7 @@ export async function getInboxCases(): Promise<InboxCase[]> {
       deviceReturnAt: ret?.created_at ?? null,
       sources,
     }
-  })
+  }).filter((x): x is InboxCase => x !== null)
 }
 
 // ---------- pinToInbox / unpinFromInbox ----------
@@ -6776,6 +6812,55 @@ export async function unpinFromInbox(contractId: string): Promise<void> {
     .delete()
     .eq('contract_id', contractId)
   if (error) throw error
+}
+
+// ---------- dismissInboxCase ----------
+
+/**
+ * เคลียร์เคสออกจากกล่องรับงาน (dismiss) แบบกลับมาได้เมื่อมีความเคลื่อนไหวใหม่
+ *
+ * - upsert inbox_dismissals (contract_id, dismissed_at=now() ผ่าน trigger, snapshot คน+ชื่อ, note)
+ *   re-dismiss = ชนกุญแจ → trigger touch_inbox_dismissal บังคับ dismissed_at := now() ใหม่
+ * - ลบ inbox_pins ของ contract นั้นด้วย → "เคลียร์" = เอาออกจากทุกแหล่ง (pinned ก็หาย)
+ *   ถ้า re-pin ทีหลัง pinned_at > dismissed_at → getInboxCases โชว์กลับ
+ *
+ * ⚠️ ordering: dismissed_at ตั้งด้วย server now() (trigger). กรณีวิวเรียก addFollowUp ก่อน
+ *   แล้ว dismissInboxCase ทีหลัง → now() ของ dismiss > created_at ของ note = ไม่ re-appear ทันที
+ */
+export async function dismissInboxCase(contractId: string, note?: string): Promise<void> {
+  if (!supabase) return
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return
+
+  // snapshot ชื่อคนกดเคลียร์ จาก profiles (กัน spoof + ตรง pattern pinToInbox/follow_ups)
+  const { data: profileData, error: profileErr } = await supabase
+    .from('profiles')
+    .select('full_name')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (profileErr) throw profileErr
+  const dismissedByName = (profileData as { full_name: string | null } | null)?.full_name ?? ''
+
+  const { error } = await supabase.from('inbox_dismissals').upsert(
+    {
+      contract_id: contractId,
+      dismissed_by_id: user.id,
+      dismissed_by_name: dismissedByName,
+      note: note ?? null,
+      // ไม่ส่ง dismissed_at — trigger touch_inbox_dismissal บังคับ now() ทั้ง insert + update path
+    },
+    { onConflict: 'contract_id' },
+  )
+  if (error) throw error
+
+  // เคลียร์ = เอาออกจากทุกแหล่ง → ลบ pin ด้วย (ถ้ามี)
+  const { error: unpinErr } = await supabase
+    .from('inbox_pins')
+    .delete()
+    .eq('contract_id', contractId)
+  if (unpinErr) throw unpinErr
 }
 
 // ---------- clawback aggregates (Fix C — แก้ PAGE_CAP ค่าคอม clawback) ----------

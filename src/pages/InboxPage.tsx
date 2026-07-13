@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CalendarClock, PackageOpen, MessageCircle, Pin, History } from 'lucide-react'
+import { CalendarClock, PackageOpen, MessageCircle, Pin, History, CheckCircle } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, PageTitle } from '../components/ui'
 import {
   getInboxCases,
-  unpinFromInbox,
+  dismissInboxCase,
   type InboxCase,
 } from '../lib/db'
 import { useAuth } from '../lib/auth'
@@ -114,7 +114,7 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [followUpTarget, setFollowUpTarget] = useState<InboxCase | null>(null)
-  const [unpinBusy, setUnpinBusy] = useState<string | null>(null) // contractId ที่กำลัง unpin
+  const [dismissBusy, setDismissBusy] = useState<string | null>(null) // contractId ที่กำลังเคลียร์ออกจากกล่อง
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -131,13 +131,14 @@ export default function InboxPage() {
 
   useEffect(() => { void load() }, [load])
 
-  async function handleUnpin(contractId: string) {
-    setUnpinBusy(contractId)
+  async function handleDismiss(contractId: string) {
+    if (!window.confirm('เอาเคสนี้ออกจากกล่องรับงาน? ประวัติการคุยไม่หาย และเคสจะกลับมาถ้ามีความเคลื่อนไหวใหม่')) return
+    setDismissBusy(contractId)
     try {
-      await unpinFromInbox(contractId)
+      await dismissInboxCase(contractId)
       await load()
     } finally {
-      setUnpinBusy(null)
+      setDismissBusy(null)
     }
   }
 
@@ -229,15 +230,15 @@ export default function InboxPage() {
                         <Button variant="ghost" onClick={() => setFollowUpTarget(c)}>
                           บันทึกการคุย
                         </Button>
-                        {c.pinned && (
-                          <Button
-                            variant="ghost"
-                            disabled={unpinBusy === c.contractId}
-                            onClick={() => void handleUnpin(c.contractId)}
-                          >
-                            {unpinBusy === c.contractId ? 'กำลังเอาออก…' : 'เอาออกจากกล่อง'}
-                          </Button>
-                        )}
+                        <Button
+                          variant="ghost"
+                          disabled={dismissBusy === c.contractId}
+                          onClick={() => void handleDismiss(c.contractId)}
+                          className="inline-flex items-center justify-center gap-1"
+                        >
+                          <CheckCircle className="h-3.5 w-3.5" aria-hidden />
+                          {dismissBusy === c.contractId ? 'กำลังเอาออก…' : 'จัดการเรียบร้อย'}
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -287,15 +288,15 @@ export default function InboxPage() {
                   <Button variant="ghost" onClick={() => setFollowUpTarget(c)}>
                     บันทึกการคุย
                   </Button>
-                  {c.pinned && (
-                    <Button
-                      variant="ghost"
-                      disabled={unpinBusy === c.contractId}
-                      onClick={() => void handleUnpin(c.contractId)}
-                    >
-                      {unpinBusy === c.contractId ? 'กำลังเอาออก…' : 'เอาออกจากกล่อง'}
-                    </Button>
-                  )}
+                  <Button
+                    variant="ghost"
+                    disabled={dismissBusy === c.contractId}
+                    onClick={() => void handleDismiss(c.contractId)}
+                    className="inline-flex items-center gap-1"
+                  >
+                    <CheckCircle className="h-3.5 w-3.5" aria-hidden />
+                    {dismissBusy === c.contractId ? 'กำลังเอาออก…' : 'จัดการเรียบร้อย'}
+                  </Button>
                 </div>
               </Card>
             ))}
@@ -315,6 +316,7 @@ export default function InboxPage() {
             daysLate: followUpTarget.daysLate,
           }}
           adminOverride={role === 'admin'}
+          offerInboxClear
           onClose={() => {
             setFollowUpTarget(null)
             void load()
