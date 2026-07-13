@@ -678,7 +678,7 @@ function PjRecoverySection({ data }: { data: PjData }) {
   return (
     <Card>
       <div className="mb-4">
-        <h2 className="text-base font-bold text-ink">ผลการตามหนี้จริง (อัปเดตสด)</h2>
+        <h2 className="text-base font-bold text-ink">ผลงานตามหนี้ที่ค้าง (อัปเดตสด)</h2>
         <p className="text-sm text-ink-soft">
           คำนวณสดจากข้อมูลการรับชำระในระบบเรา อัปเดตแบบเรียลไทม์ — เงินจากงวดที่จ่ายช้าแล้วในที่สุดตามกลับมาได้ (ข้อมูลทั้งหมด ไม่ขึ้นกับช่วงวันที่เลือกด้านบน)
         </p>
@@ -1025,7 +1025,7 @@ function CollectionMonthlySection({ rows, angle }: { rows: CollectionMonthlyRow[
   return (
     <Card>
       <div className="mb-4">
-        <h2 className="text-base font-bold text-ink">อัตราเก็บเงินย้อนหลัง (รายเดือน)</h2>
+        <h2 className="text-base font-bold text-ink">อัตราเก็บเงินรวมทุกเคส (รายเดือน)</h2>
         <p className="text-sm text-ink-soft">
           นับตามเดือนที่ครบกำหนด ดูว่าสุดท้ายเก็บเงินได้กี่ % (รวมทั้งจ่ายตรงและจ่ายสาย) — มุมมองตามปุ่มสลับ “มุมมองผู้บริหาร” ด้านบน
         </p>
@@ -1521,7 +1521,7 @@ export default function StaffPerformance() {
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         <span className="font-semibold">หมายเหตุ:</span>{' '}
         สกอร์การ์ดส่วนนี้อิงการบันทึกโทรใน /queue — ถ้าทีมยังไม่เริ่มบันทึกการโทร ตัวเลขจะเป็น 0
-        ดู “ผลการตามหนี้จริง (อัปเดตสด)” ด้านล่างเพื่อดูผลการตามหนี้จากข้อมูลจริง
+        ดู “ผลงานตามหนี้ที่ค้าง (อัปเดตสด)” ด้านล่างเพื่อดูผลการตามหนี้จากข้อมูลจริง
       </div>
 
       {/* Section 1: Team Summary */}
@@ -1693,7 +1693,7 @@ export default function StaffPerformance() {
           <div>
             <span className="text-base font-bold text-ink">ดูรายละเอียดรายเดือน</span>
             <p className="text-sm text-ink-soft">
-              ตารางอัตราเก็บเงินรายเดือน + ผลการตามหนี้จริง (อัปเดตสด)
+              ตารางอัตราเก็บเงินรวมทุกเคส (รายเดือน) + ผลงานตามหนี้ที่ค้าง (อัปเดตสด)
             </p>
           </div>
           <ChevronDown
