@@ -618,3 +618,38 @@ export interface CashCollectedToday {
   penaltyIncome: number  // ยอดค่าปรับแยกวันนี้
   payCount: number       // จำนวนรายการ action='pay' วันนี้
 }
+
+/**
+ * โอนเงินร้าน "หลายสลิปต่อร้านต่อวัน" (mig 0104)
+ * 1 สลิป (shop_transfer 1 แถว) = จ่ายให้ N สัญญา (shop_transfer_item)
+ */
+export interface TransferSlipItem {
+  id: string             // shop_transfer_item.id
+  contractId: string
+  contractNo?: string    // join จาก contracts (โชว์ใน UI)
+  customerName?: string  // join จาก contracts
+  amount: number         // ยอดที่บันทึกว่าจ่ายให้เคสนี้
+}
+
+export interface TransferSlip {
+  id: string             // shop_transfer.id (= transfer_id)
+  shopId: string
+  transferDate: string   // YYYY-MM-DD
+  amount: number         // ยอดสลิป (บัญชีแก้เองได้ — default = Σ item)
+  slipPath: string | null
+  transferredBy: string | null
+  transferredAt: string | null
+  note: string | null
+  slipWaived: boolean    // ยืนยันย้อนหลังไม่มีสลิป
+  voided: boolean        // ถูกยกเลิก (soft delete)
+  items: TransferSlipItem[]
+}
+
+/** 1 แถวต่อ (ร้าน,วัน) จาก v_transfer_slip_summary + ชื่อร้าน */
+export interface TransferSlipSummaryRow {
+  date: string           // transfer_date (YYYY-MM-DD)
+  shopId: string
+  shopName: string
+  slipCount: number
+  totalAmount: number
+}

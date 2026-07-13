@@ -44,6 +44,7 @@ const ReturnsReport = lazy(() => import('./pages/ReturnsReport'))
 const SettlementReport = lazy(() => import('./pages/SettlementReport'))
 const PjSyncReview = lazy(() => import('./pages/PjSyncReview'))
 const AccountingTransfers = lazy(() => import('./pages/AccountingTransfers'))
+const TransferSummary = lazy(() => import('./pages/TransferSummary'))
 
 export default function App() {
   return (
@@ -94,6 +95,7 @@ function Gate() {
           <Route index element={isFreelancer ? <Navigate to="/queue" replace /> : (isExecutive || isAccounting) ? <Navigate to={fallbackTo} replace /> : <Dashboard />} />
           <Route path="/exec" element={(isAdmin || isExecutive) ? <ExecDashboard /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/monthly-report" element={(isAdmin || isExecutive) ? <MonthlyReport /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/transfer-summary" element={(isAdmin || isExecutive) ? <TransferSummary /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/shop-promo-analysis" element={(isAdmin || isExecutive) ? <ShopPromoAnalysis /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/weekly-summary" element={isAdmin ? <WeeklySummary /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/add" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />

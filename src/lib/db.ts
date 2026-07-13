@@ -37,6 +37,9 @@ import type {
   PjSyncRunRow,
   PrivateNote,
   Shop,
+  TransferSlip,
+  TransferSlipItem,
+  TransferSlipSummaryRow,
 } from './types'
 import * as mock from './mockData'
 import {
@@ -2430,6 +2433,7 @@ interface ShopTransferRow {
   transferred_at: string | null
   note: string | null
   slip_waived: boolean // 0085
+  voided: boolean // 0104: soft-delete สลิป
   created_at: string
 }
 
@@ -2449,6 +2453,8 @@ export interface DailyTransferShopRow {
   bank: string // join จาก shops — ไว้โชว์บัญชีปลายทางตอนโอน
   accountNo: string
   accountName: string
+  // 0104: หลายสลิปต่อร้าน-วัน. legacy scalar ด้านบน (transferred/slipPath/...) = derived จากสลิปใบแรก เพื่อความเข้ากันได้กับ UI เดิม
+  slips: TransferSlip[] // สลิปทั้งหมดของร้าน-วันนี้ (voided=false) พร้อมสัญญาที่ผูก — UI ใหม่ (Wave 2) ใช้ตัวนี้
 }
 
 /** รายสัญญาต่อร้าน (drill-down) — ใช้เมื่อ accounting กดดูรายละเอียดยอดของร้านวันนั้น
@@ -2466,6 +2472,7 @@ export interface DailyTransferContractRow {
   afterDown: number // ยอดตัวเครื่องหลังหักดาวน์ = calcSummary().afterDown
   commission: number // ค่าคอมมิชชั่น = calcSummary().commission
   docFee: number // ค่าเอกสาร
+  linkedSlipId: string | null // 0104: id สลิปที่เคสนี้ถูกผูก (voided=false) — null = ยังไม่ผูกสลิป
 }
 
 interface DailyTransferContractQueryRow {
@@ -2524,7 +2531,8 @@ export async function getDailyTransferByShop(dateISO: string): Promise<DailyTran
 
   const [{ data: shopData, error: sErr }, { data: transferData, error: tErr }] = await Promise.all([
     supabase.from('shops').select('id, code, name, bank, account_no, account_name').in('id', shopIds).range(0, PAGE_CAP),
-    supabase.from('shop_transfer').select('*').eq('transfer_date', dateISO).in('shop_id', shopIds).range(0, PAGE_CAP),
+    // 0104: เอาเฉพาะสลิปที่ยังไม่ถูกยกเลิก (voided=false) — 1 แถว = 1 สลิป (หลายสลิป/ร้าน/วันได้)
+    supabase.from('shop_transfer').select('*').eq('transfer_date', dateISO).eq('voided', false).in('shop_id', shopIds).range(0, PAGE_CAP),
   ])
   if (sErr) throw sErr
   if (tErr) throw tErr
@@ -2541,31 +2549,105 @@ export async function getDailyTransferByShop(dateISO: string): Promise<DailyTran
       },
     ]),
   )
-  const transferByShop = new Map((((transferData ?? []) as ShopTransferRow[])).map((t) => [t.shop_id, t]))
+
+  const transferRows = (transferData ?? []) as ShopTransferRow[]
+  // items ของทุกสลิป + ชื่อลูกค้า/เลขสัญญา (join contracts)
+  const itemsBySlip = await getSlipItemsMap(transferRows.map((t) => t.id))
+
+  // จัดสลิปเข้าแต่ละร้าน
+  const slipsByShop = new Map<string, TransferSlip[]>()
+  for (const t of transferRows) {
+    const list = slipsByShop.get(t.shop_id) ?? []
+    list.push(transferRowToSlip(t, itemsBySlip.get(t.id) ?? []))
+    slipsByShop.set(t.shop_id, list)
+  }
 
   const out: DailyTransferShopRow[] = shopIds.map((shopId) => {
     const totals = totalByShop.get(shopId)!
     const shopInfo = shopNameById.get(shopId)
-    const t = transferByShop.get(shopId)
+    const slips = slipsByShop.get(shopId) ?? []
+    // legacy scalar = derived จากสลิปใบแรก (คงไว้เพื่อ UI เดิม; UI ใหม่ Wave 2 ใช้ slips[])
+    const first = slips[0]
     return {
       shopId,
       shopName: shopInfo?.name ?? '(ไม่พบชื่อร้าน)',
       shopCode: shopInfo?.code ?? '',
       amount: totals.amount,
       contractCount: totals.count,
-      transferred: t?.transferred ?? false,
-      slipPath: t?.slip_path ?? null,
-      transferredBy: t?.transferred_by ?? null,
-      transferredAt: t?.transferred_at ?? null,
-      note: t?.note ?? null,
-      slipWaived: t?.slip_waived ?? false,
+      transferred: slips.length > 0,
+      slipPath: slips.find((s) => s.slipPath)?.slipPath ?? null,
+      transferredBy: first?.transferredBy ?? null,
+      transferredAt: first?.transferredAt ?? null,
+      note: first?.note ?? null,
+      slipWaived: first?.slipWaived ?? false,
       bank: shopInfo?.bank ?? '',
       accountNo: shopInfo?.accountNo ?? '',
       accountName: shopInfo?.accountName ?? '',
+      slips,
     }
   })
   out.sort((a, b) => a.shopCode.localeCompare(b.shopCode))
   return out
+}
+
+/** map slipId → TransferSlipItem[] (join contracts เอา contract_no/customer_name) — internal helper 0104 */
+async function getSlipItemsMap(transferIds: string[]): Promise<Map<string, TransferSlipItem[]>> {
+  const result = new Map<string, TransferSlipItem[]>()
+  if (!supabase || transferIds.length === 0) return result
+
+  const { data: itemData, error: iErr } = await supabase
+    .from('shop_transfer_item')
+    .select('id, transfer_id, contract_id, amount')
+    .in('transfer_id', transferIds)
+    .range(0, PAGE_CAP)
+  if (iErr) throw iErr
+
+  const items = (itemData ?? []) as { id: string; transfer_id: string; contract_id: string; amount: number }[]
+  const contractIds = [...new Set(items.map((i) => i.contract_id))]
+
+  const contractInfo = new Map<string, { contractNo: string; customerName: string }>()
+  if (contractIds.length > 0) {
+    const { data: cData, error: cErr } = await supabase
+      .from('contracts')
+      .select('id, contract_no, customer_name')
+      .in('id', contractIds)
+      .range(0, PAGE_CAP)
+    if (cErr) throw cErr
+    for (const c of cData ?? []) {
+      contractInfo.set(c.id as string, { contractNo: c.contract_no as string, customerName: c.customer_name as string })
+    }
+  }
+
+  for (const i of items) {
+    const info = contractInfo.get(i.contract_id)
+    const list = result.get(i.transfer_id) ?? []
+    list.push({
+      id: i.id,
+      contractId: i.contract_id,
+      contractNo: info?.contractNo,
+      customerName: info?.customerName,
+      amount: Number(i.amount),
+    })
+    result.set(i.transfer_id, list)
+  }
+  return result
+}
+
+/** map ShopTransferRow (1 แถว) → TransferSlip domain — internal helper 0104 */
+function transferRowToSlip(t: ShopTransferRow, items: TransferSlipItem[]): TransferSlip {
+  return {
+    id: t.id,
+    shopId: t.shop_id,
+    transferDate: t.transfer_date,
+    amount: Number(t.amount),
+    slipPath: t.slip_path,
+    transferredBy: t.transferred_by,
+    transferredAt: t.transferred_at,
+    note: t.note,
+    slipWaived: t.slip_waived,
+    voided: t.voided,
+    items,
+  }
 }
 
 /** รายสัญญาของร้านหนึ่ง ในวันหนึ่ง — สำหรับ drill-down ใต้แถวสรุป
@@ -2589,6 +2671,10 @@ export async function getDailyTransferContracts(shopId: string, dateISO: string)
     .eq('shop_id', shopId)
     .range(0, PAGE_CAP)
   if (error) throw error
+
+  // 0104: หาว่าเคสไหนถูกผูกกับสลิป (voided=false) ของร้าน-วันนี้แล้ว → linkedSlipId
+  const linkedByContract = await getContractSlipLinkMap(shopId, dateISO)
+
   // reuse calcSummary (calc.ts) ตัวเดียวกับที่ itemBlock/buildBulkSummary (messages.ts) ใช้สร้างข้อความส่งร้าน
   // ให้ afterDown/commission ตรงกับข้อความจริง 100% — ห้ามคำนวณแยกสูตร
   return ((data ?? []) as DailyTransferContractQueryRow[]).map((r) => {
@@ -2606,37 +2692,131 @@ export async function getDailyTransferContracts(shopId: string, dateISO: string)
       afterDown: s.afterDown,
       commission: s.commission,
       docFee: s.docFee,
+      linkedSlipId: linkedByContract.get(r.id) ?? null,
     }
   })
 }
 
-/** บันทึกว่าร้านนี้โอนแล้ว (วันนั้น) — upsert ตาม unique(shop_id, transfer_date) จึง idempotent
- *  amount = snapshot ยอด ณ ตอนกดโอน (คำนวณจาก getDailyTransferByShop ฝั่งเรียกใช้ ไม่ derive ในฟังก์ชันนี้)
- *  accounting เรียกได้ (RLS mig 0083 อนุญาต insert/update) — ไม่มี export สำหรับ un-transfer/ลบ slip
- *  ให้ accounting เรียก (กันหลักฐานหาย ตาม Pete lock) */
+/** map contractId → transfer_id (สลิป voided=false) ของร้าน-วันหนึ่ง — internal helper 0104 */
+async function getContractSlipLinkMap(shopId: string, dateISO: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  if (!supabase) return map
+
+  // สลิป voided=false ของร้าน-วันนี้
+  const { data: slipRows, error: sErr } = await supabase
+    .from('shop_transfer')
+    .select('id')
+    .eq('shop_id', shopId)
+    .eq('transfer_date', dateISO)
+    .eq('voided', false)
+    .range(0, PAGE_CAP)
+  if (sErr) throw sErr
+
+  const slipIds = (slipRows ?? []).map((r) => r.id as string)
+  if (slipIds.length === 0) return map
+
+  const { data: itemRows, error: iErr } = await supabase
+    .from('shop_transfer_item')
+    .select('transfer_id, contract_id')
+    .in('transfer_id', slipIds)
+    .range(0, PAGE_CAP)
+  if (iErr) throw iErr
+
+  for (const it of itemRows ?? []) {
+    map.set(it.contract_id as string, it.transfer_id as string)
+  }
+  return map
+}
+
+/** อาร์กิวเมนต์สร้างสลิปโอน 1 ใบ (mig 0104) */
+export interface CreateTransferSlipArgs {
+  shopId: string
+  dateISO: string
+  amount: number // ยอดสลิป (บัญชีแก้เองได้ — default = Σ item ฝั่งเรียกใช้)
+  slipPath: string | null
+  note?: string
+  slipWaived?: boolean
+  items: { contractId: string; amount: number }[] // สัญญาที่สลิปนี้จ่ายให้ (ว่างได้ = สลิปยังไม่ผูกเคส)
+}
+
+/** สร้างสลิปโอน 1 ใบ + ผูกสัญญา (atomic ผ่าน RPC create_transfer_slip)
+ *  RPC ตรวจสิทธิ์ (admin/accounting) + กันผูกสัญญาซ้ำ 2 สลิปในร้าน-วันเดียว (raise ถ้าซ้ำ)
+ *  คืน transfer_id ของสลิปที่สร้าง */
+export async function createTransferSlip(args: CreateTransferSlipArgs): Promise<string> {
+  if (!supabase) return ''
+  const { data, error } = await supabase.rpc('create_transfer_slip', {
+    p_shop_id: args.shopId,
+    p_transfer_date: args.dateISO,
+    p_amount: args.amount,
+    p_slip_path: args.slipPath,
+    p_note: args.note ?? null,
+    p_slip_waived: args.slipWaived ?? false,
+    p_items: args.items.map((i) => ({ contract_id: i.contractId, amount: i.amount })),
+  })
+  if (error) throw error
+  return (data as string) ?? ''
+}
+
+/** ยกเลิกสลิป (soft delete) — admin เท่านั้น (RPC void_transfer_slip guard is_admin()) */
+export async function voidTransferSlip(transferId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('void_transfer_slip', { p_transfer_id: transferId })
+  if (error) throw error
+}
+
+/** [DEPRECATED — mig 0104] เดิม upsert 1 แถว/ร้าน/วัน. ตอนนี้ delegate ไป createTransferSlip (สลิปเดียว ไม่ผูกเคส)
+ *  คงไว้เพื่อความเข้ากันได้กับ UI เดิมชั่วคราว — UI ใหม่ (Wave 2) ให้เรียก createTransferSlip พร้อม items */
 export async function markShopTransferred(
   shopId: string,
   dateISO: string,
   amount: number,
   slipPath: string | null,
-  byName: string,
+  _byName: string,
   note?: string,
 ): Promise<void> {
-  if (!supabase) return
-  const { error } = await supabase.from('shop_transfer').upsert(
-    {
-      shop_id: shopId,
-      transfer_date: dateISO,
-      amount,
-      transferred: true,
-      slip_path: slipPath,
-      transferred_by: byName,
-      transferred_at: new Date().toISOString(),
-      note: note ?? null,
-    },
-    { onConflict: 'shop_id,transfer_date' },
-  )
+  await createTransferSlip({ shopId, dateISO, amount, slipPath, note, items: [] })
+}
+
+/** สรุปจำนวนสลิป + ยอดรวม ต่อ (ร้าน,วัน) ในช่วงวันที่ — จาก v_transfer_slip_summary + ชื่อร้าน (mig 0104) */
+export async function getTransferSlipSummary(startISO: string, endISO: string): Promise<TransferSlipSummaryRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_transfer_slip_summary')
+    .select('transfer_date, shop_id, slip_count, total_amount')
+    .gte('transfer_date', startISO)
+    .lte('transfer_date', endISO)
+    .range(0, PAGE_CAP)
   if (error) throw error
+
+  const rows = (data ?? []) as { transfer_date: string; shop_id: string; slip_count: number; total_amount: number }[]
+  const shopIds = [...new Set(rows.map((r) => r.shop_id))]
+  const shopNameById = new Map<string, string>()
+  if (shopIds.length > 0) {
+    const { data: shopData, error: sErr } = await supabase.from('shops').select('id, name').in('id', shopIds).range(0, PAGE_CAP)
+    if (sErr) throw sErr
+    for (const s of shopData ?? []) shopNameById.set(s.id as string, s.name as string)
+  }
+
+  return rows.map((r) => ({
+    date: r.transfer_date,
+    shopId: r.shop_id,
+    shopName: shopNameById.get(r.shop_id) ?? '(ไม่พบชื่อร้าน)',
+    slipCount: Number(r.slip_count),
+    totalAmount: Number(r.total_amount),
+  }))
+}
+
+/** รายสลิป (voided=false) ของวันหนึ่ง (กรองร้านได้) พร้อมสัญญาที่ผูก — drill-down (mig 0104) */
+export async function getTransferSlipsForDay(dateISO: string, shopId?: string): Promise<TransferSlip[]> {
+  if (!supabase) return []
+  let q = supabase.from('shop_transfer').select('*').eq('transfer_date', dateISO).eq('voided', false)
+  if (shopId) q = q.eq('shop_id', shopId)
+  const { data, error } = await q.range(0, PAGE_CAP)
+  if (error) throw error
+
+  const rows = (data ?? []) as ShopTransferRow[]
+  const itemsBySlip = await getSlipItemsMap(rows.map((t) => t.id))
+  return rows.map((t) => transferRowToSlip(t, itemsBySlip.get(t.id) ?? []))
 }
 
 /** signed URL ชั่วคราว (60 วิ) สำหรับเปิดดูสลิปที่เก็บแบบ private ใน bucket transfer-slips

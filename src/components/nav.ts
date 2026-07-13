@@ -50,6 +50,7 @@ export const NAV: NavItem[] = [
   { to: '/monthly-report', label: 'รายงานประจำเดือน', icon: CalendarRange, adminOnly: true, executiveVisible: true },
   { to: '/shop-promo-analysis', label: 'วิเคราะห์ร้านเพื่อจัดโปร', icon: Percent, adminOnly: true, executiveVisible: true },
   { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: History, adminOnly: true, executiveVisible: true },
+  { to: '/transfer-summary', label: 'สรุปการโอนเงินร้าน', icon: Landmark, adminOnly: true, executiveVisible: true },
 
   // กลุ่มพับได้: รับเรื่อง/บันทึก
   {

@@ -1,25 +1,42 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Copy, Landmark, Receipt, Store, Upload, X, XCircle } from 'lucide-react'
+import {
+  Ban,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Landmark,
+  Plus,
+  Receipt,
+  Store,
+  Upload,
+  X,
+  XCircle,
+} from 'lucide-react'
 import { Badge, Button, EmptyState, Field, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { Input } from '../components/ui'
 import { useAuth } from '../lib/auth'
 import { baht, thaiDate } from '../lib/format'
 import { REJECTION_REASON_LABEL } from '../lib/messages'
 import {
+  createTransferSlip,
   getDailyTransferByShop,
   getDailyTransferContracts,
   getSlipSignedUrl,
-  markShopTransferred,
   rejectSummaryContract,
   sendSummaryBackToStaff,
   updateContractTransferDate,
+  voidTransferSlip,
   type DailyTransferContractRow,
   type DailyTransferShopRow,
   type NeedsFixReason,
 } from '../lib/db'
+import type { TransferSlip } from '../lib/types'
 import { supabase } from '../lib/supabase'
 
-// ===== ปุ่มก็อปเลขบัญชี (req1) =====
+// ===== ปุ่มก็อปเลขบัญชี =====
 function CopyAccountNoButton({ accountNo }: { accountNo: string }) {
   const [copied, setCopied] = useState(false)
 
@@ -47,7 +64,7 @@ function CopyAccountNoButton({ accountNo }: { accountNo: string }) {
   )
 }
 
-// ===== ป็อปอัพ "ยังไม่โอน/ไม่ผ่าน" ต่อเคส (req2) =====
+// ===== ป็อปอัพ "ยังไม่โอน/ไม่ผ่าน" ต่อเคส =====
 const REJECTION_REASON_CODES = Object.keys(REJECTION_REASON_LABEL) as NeedsFixReason[]
 
 function RejectContractModal({
@@ -128,7 +145,7 @@ function RejectContractModal({
   )
 }
 
-// ===== ป็อปอัพ "แก้วันที่โอน" ต่อเคส (req4, admin only) =====
+// ===== ป็อปอัพ "แก้วันที่โอน" ต่อเคส (admin only) =====
 function EditTransactionDateModal({
   contract,
   onClose,
@@ -185,7 +202,7 @@ function EditTransactionDateModal({
   )
 }
 
-// ===== ป็อปอัพ "ส่งกลับให้พนักงาน" ทั้งร้าน (req4, admin only) =====
+// ===== ป็อปอัพ "ส่งกลับให้พนักงาน" ทั้งร้าน (admin only) =====
 function SendBackToStaffModal({
   shop,
   contracts,
@@ -265,6 +282,25 @@ function shiftDay(isoDate: string, delta: number): string {
   return d.toLocaleString('en-CA').slice(0, 10)
 }
 
+/** เซตของ contractId ที่ถูกผูกสลิปแล้วในร้านนี้ (จากทุกสลิป voided=false) */
+function linkedContractIds(shop: DailyTransferShopRow): Set<string> {
+  const s = new Set<string>()
+  for (const slip of shop.slips) for (const it of slip.items) s.add(it.contractId)
+  return s
+}
+
+/** สลิปเก่า (legacy) = สลิปที่ไม่ผูกเคสเลย (ก่อนระบบ multi-slip) — ถือว่าโอนทั้งร้าน */
+function hasLegacyWholeShopSlip(shop: DailyTransferShopRow): boolean {
+  return shop.slips.some((s) => s.items.length === 0)
+}
+
+/** ร้านนี้โอนครบทุกเคสหรือยัง */
+function shopFullyTransferred(shop: DailyTransferShopRow): boolean {
+  if (shop.slips.length === 0) return false
+  if (hasLegacyWholeShopSlip(shop)) return true
+  return shop.contractCount > 0 && linkedContractIds(shop).size >= shop.contractCount
+}
+
 // ===== แถวย่อย "ข้อมูลที่ส่งให้ร้าน" (drill-down ต่อสัญญา) =====
 function ContractDetailRow({ r }: { r: DailyTransferContractRow }) {
   const dash = (v: string | null) => v ?? '-'
@@ -284,7 +320,7 @@ function ContractDetailRow({ r }: { r: DailyTransferContractRow }) {
 
   return (
     <tr className="border-b border-peach/60 last:border-0 bg-peach-light/20">
-      <td colSpan={5} className="px-4 py-3">
+      <td colSpan={6} className="px-4 py-3">
         <p className="mb-2 text-xs font-semibold text-ink-soft">ข้อมูลที่ส่งให้ร้าน</p>
         <dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
           {fields.map((f) => (
@@ -299,80 +335,79 @@ function ContractDetailRow({ r }: { r: DailyTransferContractRow }) {
   )
 }
 
-// ===== รายสัญญาของร้าน (drill-down) =====
-function ShopContractsList({
-  shopId,
-  dateISO,
-  refreshKey,
+// ===== ตารางรายสัญญาของร้าน + เช็กบ็อกซ์เลือกเคส =====
+function ContractsTable({
+  rows,
+  selectedIds,
   isAdmin,
+  onToggleSelect,
+  onToggleAll,
   onReject,
   onEditDate,
-  onRowsLoaded,
 }: {
-  shopId: string
-  dateISO: string
-  refreshKey: number
+  rows: DailyTransferContractRow[]
+  selectedIds: Set<string>
   isAdmin: boolean
+  onToggleSelect: (contractId: string) => void
+  onToggleAll: () => void
   onReject: (contract: DailyTransferContractRow) => void
   onEditDate: (contract: DailyTransferContractRow) => void
-  onRowsLoaded?: (rows: DailyTransferContractRow[]) => void
 }) {
-  const [rows, setRows] = useState<DailyTransferContractRow[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
   const [expandedContractId, setExpandedContractId] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    setRows(null)
-    setError(null)
-    getDailyTransferContracts(shopId, dateISO)
-      .then((data) => {
-        if (!cancelled) {
-          setRows(data)
-          onRowsLoaded?.(data)
-        }
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'โหลดรายการไม่สำเร็จ')
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, dateISO, refreshKey])
-
-  if (error) {
-    return <p className="px-4 py-3 text-sm text-red-700">โหลดรายการไม่สำเร็จ: {error}</p>
-  }
-  if (rows === null) {
-    return <Loading label="กำลังโหลดรายสัญญา..." />
-  }
-  if (rows.length === 0) {
-    return <p className="px-4 py-3 text-sm text-ink-soft">ไม่มีสัญญาของร้านนี้ในวันที่เลือก</p>
-  }
+  const selectableRows = rows.filter((r) => r.linkedSlipId === null)
+  const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selectedIds.has(r.contractId))
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-peach text-left text-xs text-ink-soft">
-            <th className="px-4 py-2 font-medium">เลขที่สัญญา</th>
-            <th className="px-4 py-2 font-medium">ชื่อลูกค้า</th>
-            <th className="px-4 py-2 text-right font-medium">ราคาเครื่อง</th>
-            <th className="px-4 py-2 text-right font-medium">ยอดโอนสุทธิ</th>
-            <th className="px-4 py-2" />
+            <th className="px-3 py-2 font-medium">
+              <input
+                type="checkbox"
+                aria-label="เลือกทุกเคสที่ยังไม่โอน"
+                className="h-4 w-4 rounded border-peach accent-salmon-deep"
+                checked={allSelected}
+                disabled={selectableRows.length === 0}
+                onChange={onToggleAll}
+              />
+            </th>
+            <th className="px-3 py-2 font-medium">เลขที่สัญญา</th>
+            <th className="px-3 py-2 font-medium">ชื่อลูกค้า</th>
+            <th className="px-3 py-2 text-right font-medium">ราคาเครื่อง</th>
+            <th className="px-3 py-2 text-right font-medium">ยอดโอนสุทธิ</th>
+            <th className="px-3 py-2" />
           </tr>
         </thead>
         {rows.map((r) => {
           const isOpen = expandedContractId === r.contractId
+          const linked = r.linkedSlipId !== null
+          const checked = selectedIds.has(r.contractId)
           return (
             <tbody key={r.contractId}>
               <tr
-                onClick={() => setExpandedContractId((cur) => (cur === r.contractId ? null : r.contractId))}
-                aria-expanded={isOpen}
-                className="cursor-pointer border-b border-peach/60 transition hover:bg-peach-light/20 last:border-0"
+                className={`border-b border-peach/60 transition last:border-0 ${
+                  linked ? 'bg-green-50/40' : 'hover:bg-peach-light/20'
+                }`}
               >
-                <td className="px-4 py-2 text-ink">
+                <td className="px-3 py-2">
+                  {linked ? (
+                    <CheckCircle2 size={16} className="text-green-600" aria-label="ผูกสลิปแล้ว" />
+                  ) : (
+                    <input
+                      type="checkbox"
+                      aria-label={`เลือก ${r.customerName}`}
+                      className="h-4 w-4 rounded border-peach accent-salmon-deep"
+                      checked={checked}
+                      onChange={() => onToggleSelect(r.contractId)}
+                    />
+                  )}
+                </td>
+                <td
+                  className="cursor-pointer px-3 py-2 text-ink"
+                  onClick={() => setExpandedContractId((cur) => (cur === r.contractId ? null : r.contractId))}
+                >
                   <span className="inline-flex items-center gap-1.5">
                     <ChevronDown
                       size={14}
@@ -381,15 +416,21 @@ function ShopContractsList({
                     {r.contractNo}
                   </span>
                 </td>
-                <td className="px-4 py-2 text-ink">{r.customerName}</td>
-                <td className="px-4 py-2 text-right text-ink-soft">{baht(r.devicePrice)}</td>
-                <td className="px-4 py-2 text-right font-medium text-ink">{baht(r.netTransfer)}</td>
-                <td className="px-4 py-2 text-right">
+                <td className="px-3 py-2 text-ink">
+                  {r.customerName}
+                  {linked && <span className="ml-1.5 text-xs font-medium text-green-700">· โอนแล้ว</span>}
+                </td>
+                <td className="px-3 py-2 text-right text-ink-soft">{baht(r.devicePrice)}</td>
+                <td className="px-3 py-2 text-right font-medium text-ink">{baht(r.netTransfer)}</td>
+                <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-1.5">
                     {isAdmin && (
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); onEditDate(r) }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onEditDate(r)
+                        }}
                         className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-peach bg-white px-2 py-1 text-xs font-medium text-ink-soft transition hover:bg-peach-light/50"
                       >
                         แก้วันที่โอน
@@ -397,7 +438,10 @@ function ShopContractsList({
                     )}
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); onReject(r) }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onReject(r)
+                      }}
                       className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 transition hover:bg-red-100"
                     >
                       <XCircle size={12} />
@@ -415,6 +459,78 @@ function ShopContractsList({
   )
 }
 
+// ===== รายการสลิปที่ลงแล้วของร้าน =====
+function SlipsList({
+  slips,
+  isAdmin,
+  onViewSlip,
+  onVoidSlip,
+}: {
+  slips: TransferSlip[]
+  isAdmin: boolean
+  onViewSlip: (slipPath: string) => void
+  onVoidSlip: (slip: TransferSlip) => void
+}) {
+  if (slips.length === 0) return null
+  return (
+    <div className="border-t border-peach bg-peach-light/10 px-4 py-3">
+      <p className="mb-2 text-xs font-semibold text-ink-soft">สลิปที่ลงแล้ว ({slips.length})</p>
+      <div className="flex flex-col gap-2">
+        {slips.map((slip) => (
+          <div key={slip.id} className="rounded-xl border border-peach bg-white px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Receipt size={15} className="text-salmon-deep" />
+                <span className="font-semibold text-ink">{baht(slip.amount)} บาท</span>
+                {slip.slipWaived && <Badge tone="amber">ไม่มีสลิป (ยืนยันย้อนหลัง)</Badge>}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {slip.slipPath && !slip.slipWaived && (
+                  <Button variant="ghost" onClick={() => onViewSlip(slip.slipPath as string)}>
+                    <Receipt size={14} />
+                    ดูสลิป
+                  </Button>
+                )}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => onVoidSlip(slip)}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 transition hover:bg-red-100"
+                  >
+                    <Ban size={12} />
+                    ยกเลิกสลิป
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-ink-soft">
+              โดย {slip.transferredBy ?? '-'}
+              {slip.transferredAt && ` · ${thaiDate(slip.transferredAt.slice(0, 10))}`}
+              {slip.note && ` · หมายเหตุ: ${slip.note}`}
+            </p>
+            <div className="mt-1.5 text-xs text-ink">
+              {slip.items.length > 0 ? (
+                <ul className="flex flex-col gap-0.5">
+                  {slip.items.map((it) => (
+                    <li key={it.id} className="flex items-baseline justify-between gap-2">
+                      <span>
+                        {it.contractNo ?? it.contractId} · {it.customerName ?? '-'}
+                      </span>
+                      <span className="text-ink-soft">{baht(it.amount)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <span className="text-ink-soft">ทั้งร้าน (ข้อมูลเดิม)</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ===== ป็อปอัพดูสลิป =====
 function SlipModal({ shopName, url, onClose }: { shopName: string; url: string; onClose: () => void }) {
   return (
@@ -424,29 +540,43 @@ function SlipModal({ shopName, url, onClose }: { shopName: string; url: string; 
   )
 }
 
-// ===== ป็อปอัพอัปโหลดสลิป =====
-function UploadSlipModal({
+// ===== ป็อปอัพสร้างสลิป / บันทึกโอน (ผูกกับเคสที่เลือก) =====
+function CreateSlipModal({
   shop,
   dateISO,
-  byName,
+  contracts,
   onClose,
   onDone,
 }: {
   shop: DailyTransferShopRow
   dateISO: string
-  byName: string
+  contracts: DailyTransferContractRow[]
   onClose: () => void
   onDone: () => void
 }) {
+  const defaultSum = useMemo(() => contracts.reduce((s, c) => s + c.netTransfer, 0), [contracts])
   const fileRef = useRef<HTMLInputElement>(null)
+  const [amount, setAmount] = useState<string>(String(defaultSum))
   const [file, setFile] = useState<File | null>(null)
+  const [waive, setWaive] = useState(false)
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const amountNum = Number(amount)
+  const amountInvalid = !Number.isFinite(amountNum) || amountNum <= 0
+
   async function handleSave() {
-    if (!file) {
-      setError('กรุณาเลือกไฟล์สลิปก่อนบันทึก')
+    if (contracts.length === 0) {
+      setError('ยังไม่ได้เลือกเคสที่จ่ายในสลิปนี้')
+      return
+    }
+    if (amountInvalid) {
+      setError('กรุณาระบุยอดสลิปให้ถูกต้อง')
+      return
+    }
+    if (!waive && !file) {
+      setError('กรุณาแนบไฟล์สลิป หรือติ๊ก "ไม่มีสลิป (ยืนยันย้อนหลัง)"')
       return
     }
     if (!supabase) {
@@ -456,13 +586,24 @@ function UploadSlipModal({
     setSaving(true)
     setError(null)
     try {
-      const ext = file.name.split('.').pop() || 'jpg'
-      const path = `${shop.shopId}/${dateISO}.${ext}`
-      const { error: upErr } = await supabase.storage
-        .from('transfer-slips')
-        .upload(path, file, { upsert: true })
-      if (upErr) throw upErr
-      await markShopTransferred(shop.shopId, dateISO, shop.amount, path, byName, note.trim() || undefined)
+      let slipPath: string | null = null
+      if (file && !waive) {
+        const ext = file.name.split('.').pop() || 'jpg'
+        // path ใหม่กันชนไฟล์: shopId/date/<uuid>.ext (เดิม shopId/date.ext ทับกันเมื่อมีหลายสลิป)
+        const path = `${shop.shopId}/${dateISO}/${crypto.randomUUID()}.${ext}`
+        const { error: upErr } = await supabase.storage.from('transfer-slips').upload(path, file, { upsert: false })
+        if (upErr) throw upErr
+        slipPath = path
+      }
+      await createTransferSlip({
+        shopId: shop.shopId,
+        dateISO,
+        amount: amountNum,
+        slipPath,
+        note: note.trim() || undefined,
+        slipWaived: waive,
+        items: contracts.map((c) => ({ contractId: c.contractId, amount: c.netTransfer })),
+      })
       onDone()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
@@ -472,19 +613,52 @@ function UploadSlipModal({
   }
 
   return (
-    <Modal title={`อัปโหลดสลิป — ${shop.shopName}`} onClose={onClose}>
+    <Modal title={`สร้างสลิปโอน — ${shop.shopName}`} onClose={onClose}>
       <div className="space-y-4">
-        <div className="rounded-xl border border-peach bg-peach-light/30 px-4 py-3 text-sm">
-          <p className="text-ink-soft">ยอดที่ต้องโอน</p>
-          <p className="text-lg font-bold text-ink">{baht(shop.amount)} บาท</p>
-          <p className="text-xs text-ink-soft">{shop.contractCount} สัญญา</p>
+        {/* เคสที่สลิปนี้จ่ายให้ */}
+        <div className="rounded-xl border border-peach bg-peach-light/30 px-4 py-3">
+          <p className="mb-1.5 text-sm font-medium text-ink">
+            เคสที่สลิปนี้จ่ายให้ ({contracts.length})
+          </p>
+          <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto text-sm">
+            {contracts.map((c) => (
+              <li key={c.contractId} className="flex items-baseline justify-between gap-2">
+                <span className="text-ink">
+                  {c.contractNo} · {c.customerName}
+                </span>
+                <span className="text-ink-soft">{baht(c.netTransfer)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
 
+        <Field label="ยอดสลิป (บาท)" required>
+          <Input
+            type="number"
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className={amountInvalid ? 'border-red-400' : ''}
+          />
+          {amountNum !== defaultSum && !amountInvalid && (
+            <p className="mt-1 text-xs text-amber-700">
+              ยอดรวมของเคสที่เลือก = {baht(defaultSum)} บาท (ยอดสลิปที่กรอกไม่ตรง)
+            </p>
+          )}
+        </Field>
+
+        {/* แนบสลิป หรือ waive */}
         <div>
           <p className="mb-2 text-sm font-medium text-ink">ไฟล์สลิปโอนเงิน</p>
           <div
-            className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-peach bg-peach-light/20 px-5 py-4 transition hover:border-salmon/50 hover:bg-peach-light/40"
-            onClick={() => fileRef.current?.click()}
+            className={`flex items-center gap-3 rounded-xl border-2 border-dashed px-5 py-4 transition ${
+              waive
+                ? 'cursor-not-allowed border-peach/60 bg-peach-light/10 opacity-50'
+                : 'cursor-pointer border-peach bg-peach-light/20 hover:border-salmon/50 hover:bg-peach-light/40'
+            }`}
+            onClick={() => {
+              if (!waive) fileRef.current?.click()
+            }}
           >
             <Upload className="h-5 w-5 shrink-0 text-ink-soft" />
             <span className="text-sm text-ink-soft">{file ? file.name : 'คลิกเพื่อเลือกรูปสลิป'}</span>
@@ -496,11 +670,23 @@ function UploadSlipModal({
             className="hidden"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           />
+          <label className="mt-2 flex items-center gap-2 text-sm text-ink-soft">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-peach accent-salmon-deep"
+              checked={waive}
+              onChange={(e) => {
+                setWaive(e.target.checked)
+                if (e.target.checked) setFile(null)
+              }}
+            />
+            ไม่มีสลิป (ยืนยันย้อนหลังว่าโอนแล้ว)
+          </label>
         </div>
 
         <div>
           <p className="mb-1.5 text-sm font-medium text-ink">หมายเหตุ (ถ้ามี)</p>
-          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น โอนแยก 2 รอบ" />
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น โอนแยกรอบ" />
         </div>
 
         {error && (
@@ -512,7 +698,7 @@ function UploadSlipModal({
             ยกเลิก
           </Button>
           <Button onClick={handleSave} disabled={saving}>
-            {saving ? 'กำลังบันทึก...' : 'บันทึกว่าโอนแล้ว'}
+            {saving ? 'กำลังบันทึก...' : 'บันทึกสลิป'}
           </Button>
         </div>
       </div>
@@ -520,7 +706,59 @@ function UploadSlipModal({
   )
 }
 
-// ===== แถวร้าน (expand ดูรายสัญญา) =====
+// ===== ป็อปอัพยืนยันยกเลิกสลิป (admin only) =====
+function VoidSlipModal({
+  slip,
+  shopName,
+  onClose,
+  onDone,
+}: {
+  slip: TransferSlip
+  shopName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleVoid() {
+    setSaving(true)
+    setError(null)
+    try {
+      await voidTransferSlip(slip.id)
+      onDone()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ยกเลิกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`ยกเลิกสลิป — ${shopName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">
+          ยกเลิกสลิปยอด {baht(slip.amount)} บาท ({slip.items.length} เคส) — เคสที่ผูกกับสลิปนี้จะกลับมาเลือกโอนใหม่ได้
+        </p>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            ปิด
+          </Button>
+          <Button onClick={handleVoid} disabled={saving}>
+            {saving ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกสลิป'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ===== แถวร้าน (expand ดูรายสัญญา + สลิป) =====
 function ShopRow({
   shop,
   dateISO,
@@ -528,11 +766,12 @@ function ShopRow({
   refreshKey,
   isAdmin,
   onToggle,
-  onUpload,
   onViewSlip,
   onRejectContract,
   onEditDateContract,
   onSendBackToStaff,
+  onCreateSlip,
+  onVoidSlip,
 }: {
   shop: DailyTransferShopRow
   dateISO: string
@@ -540,13 +779,60 @@ function ShopRow({
   refreshKey: number
   isAdmin: boolean
   onToggle: () => void
-  onUpload: () => void
-  onViewSlip: () => void
+  onViewSlip: (slipPath: string, shopName: string) => void
   onRejectContract: (contract: DailyTransferContractRow) => void
   onEditDateContract: (contract: DailyTransferContractRow) => void
   onSendBackToStaff: (contracts: DailyTransferContractRow[]) => void
+  onCreateSlip: (shop: DailyTransferShopRow, contracts: DailyTransferContractRow[]) => void
+  onVoidSlip: (shop: DailyTransferShopRow, slip: TransferSlip) => void
 }) {
-  const [loadedRows, setLoadedRows] = useState<DailyTransferContractRow[]>([])
+  const [rows, setRows] = useState<DailyTransferContractRow[] | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!expanded) return
+    let cancelled = false
+    setRows(null)
+    setLoadErr(null)
+    setSelectedIds(new Set())
+    getDailyTransferContracts(shop.shopId, dateISO)
+      .then((data) => {
+        if (!cancelled) setRows(data)
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setLoadErr(e instanceof Error ? e.message : 'โหลดรายการไม่สำเร็จ')
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, shop.shopId, dateISO, refreshKey])
+
+  const fully = shopFullyTransferred(shop)
+  const linkedCount = useMemo(() => linkedContractIds(shop).size, [shop])
+  const partial = !fully && shop.slips.length > 0
+
+  const selectableRows = (rows ?? []).filter((r) => r.linkedSlipId === null)
+  const selectedRows = (rows ?? []).filter((r) => selectedIds.has(r.contractId))
+  const selectedSum = selectedRows.reduce((s, r) => s + r.netTransfer, 0)
+
+  function toggleSelect(contractId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(contractId)) next.delete(contractId)
+      else next.add(contractId)
+      return next
+    })
+  }
+
+  function toggleAll() {
+    setSelectedIds((prev) => {
+      const allSelected = selectableRows.length > 0 && selectableRows.every((r) => prev.has(r.contractId))
+      if (allSelected) return new Set()
+      return new Set(selectableRows.map((r) => r.contractId))
+    })
+  }
 
   return (
     <div className="rounded-xl border border-peach bg-white">
@@ -557,16 +843,14 @@ function ShopRow({
         className="flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-peach-light/30"
       >
         <div className="flex items-center gap-2">
-          {expanded ? (
-            <ChevronRight size={16} className="rotate-90 text-ink-soft transition-transform" />
-          ) : (
-            <ChevronRight size={16} className="text-ink-soft transition-transform" />
-          )}
+          <ChevronRight
+            size={16}
+            className={`text-ink-soft transition-transform ${expanded ? 'rotate-90' : ''}`}
+          />
           <Store size={16} className="text-salmon-deep" />
           <div>
             <span className="font-semibold text-ink">{shop.shopName}</span>
             <span className="ml-1.5 text-xs text-ink-soft">({shop.contractCount} สัญญา)</span>
-            {/* req1: ธนาคาร + เลขบัญชี + ชื่อบัญชี พร้อมปุ่มก็อป */}
             <p className="mt-0.5 text-xs text-ink-soft">
               {shop.bank} · <CopyAccountNoButton accountNo={shop.accountNo} /> · {shop.accountName}
             </p>
@@ -574,12 +858,12 @@ function ShopRow({
         </div>
         <div className="flex items-center gap-3">
           <span className="text-base font-bold text-ink">{baht(shop.amount)} บาท</span>
-          {shop.transferred ? (
-            shop.slipWaived ? (
-              <Badge tone="green">โอนแล้ว (ย้อนหลัง)</Badge>
-            ) : (
-              <Badge tone="green">โอนแล้ว</Badge>
-            )
+          {fully ? (
+            <Badge tone="green">โอนครบ</Badge>
+          ) : partial ? (
+            <Badge tone="amber">
+              โอนแล้ว {linkedCount}/{shop.contractCount} เคส
+            </Badge>
           ) : (
             <Badge tone="amber">ยังไม่โอน</Badge>
           )}
@@ -588,50 +872,59 @@ function ShopRow({
 
       {expanded && (
         <div className="border-t border-peach">
-          <ShopContractsList
-            shopId={shop.shopId}
-            dateISO={dateISO}
-            refreshKey={refreshKey}
+          {loadErr ? (
+            <p className="px-4 py-3 text-sm text-red-700">โหลดรายการไม่สำเร็จ: {loadErr}</p>
+          ) : rows === null ? (
+            <Loading label="กำลังโหลดรายสัญญา..." />
+          ) : rows.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-ink-soft">ไม่มีสัญญาของร้านนี้ในวันที่เลือก</p>
+          ) : (
+            <>
+              <ContractsTable
+                rows={rows}
+                selectedIds={selectedIds}
+                isAdmin={isAdmin}
+                onToggleSelect={toggleSelect}
+                onToggleAll={toggleAll}
+                onReject={onRejectContract}
+                onEditDate={onEditDateContract}
+              />
+
+              {/* แถบสร้างสลิปจากเคสที่ติ๊ก */}
+              {selectableRows.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-peach bg-cream-deep/40 px-4 py-3">
+                  <div className="text-sm text-ink-soft">
+                    เลือก <span className="font-semibold text-ink">{selectedRows.length}</span> เคส · ยอดรวม{' '}
+                    <span className="font-semibold text-ink">{baht(selectedSum)}</span> บาท
+                  </div>
+                  <Button
+                    disabled={selectedRows.length === 0}
+                    onClick={() => onCreateSlip(shop, selectedRows)}
+                  >
+                    <Plus size={15} />
+                    สร้างสลิป / บันทึกโอน
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* สลิปที่ลงแล้ว */}
+          <SlipsList
+            slips={shop.slips}
             isAdmin={isAdmin}
-            onReject={onRejectContract}
-            onEditDate={onEditDateContract}
-            onRowsLoaded={setLoadedRows}
+            onViewSlip={(slipPath) => onViewSlip(slipPath, shop.shopName)}
+            onVoidSlip={(slip) => onVoidSlip(shop, slip)}
           />
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-peach px-4 py-3">
-            <div className="text-xs text-ink-soft">
-              {shop.transferred ? (
-                <>
-                  {shop.slipWaived ? 'ยืนยันย้อนหลังโดย' : 'โอนโดย'} {shop.transferredBy ?? '-'}
-                  {shop.transferredAt && ` · ${thaiDate(shop.transferredAt.slice(0, 10))}`}
-                  {shop.note && ` · หมายเหตุ: ${shop.note}`}
-                </>
-              ) : (
-                'ยังไม่มีการบันทึกโอนเงินสำหรับร้านนี้ในวันนี้'
-              )}
+
+          {/* ส่งกลับให้พนักงาน (admin) */}
+          {isAdmin && rows && rows.length > 0 && (
+            <div className="flex justify-end border-t border-peach px-4 py-3">
+              <Button variant="ghost" onClick={() => onSendBackToStaff(rows)}>
+                ส่งกลับให้พนักงาน
+              </Button>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {isAdmin && loadedRows.length > 0 && (
-                <Button
-                  variant="ghost"
-                  onClick={(e) => { e.stopPropagation(); onSendBackToStaff(loadedRows) }}
-                >
-                  ส่งกลับให้พนักงาน
-                </Button>
-              )}
-              {shop.transferred && !shop.slipWaived && (
-                <Button variant="ghost" onClick={(e) => { e.stopPropagation(); onViewSlip() }}>
-                  <Receipt size={15} />
-                  ดูสลิป
-                </Button>
-              )}
-              {!shop.transferred && (
-                <Button onClick={(e) => { e.stopPropagation(); onUpload() }}>
-                  <Upload size={15} />
-                  อัปโหลดสลิป
-                </Button>
-              )}
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>
@@ -651,13 +944,14 @@ export default function AccountingTransfers() {
   const [tick, setTick] = useState(0)
 
   const [expandedShopId, setExpandedShopId] = useState<string | null>(null)
-  const [uploadShop, setUploadShop] = useState<DailyTransferShopRow | null>(null)
   const [slipModal, setSlipModal] = useState<{ shopName: string; url: string } | null>(null)
-  const [slipLoadingShopId, setSlipLoadingShopId] = useState<string | null>(null)
+  const [slipLoading, setSlipLoading] = useState(false)
   const [slipError, setSlipError] = useState<string | null>(null)
   const [rejectContract, setRejectContract] = useState<DailyTransferContractRow | null>(null)
   const [editDateContract, setEditDateContract] = useState<DailyTransferContractRow | null>(null)
   const [sendBackTarget, setSendBackTarget] = useState<{ shop: DailyTransferShopRow; contracts: DailyTransferContractRow[] } | null>(null)
+  const [createSlipTarget, setCreateSlipTarget] = useState<{ shop: DailyTransferShopRow; contracts: DailyTransferContractRow[] } | null>(null)
+  const [voidSlipTarget, setVoidSlipTarget] = useState<{ shop: DailyTransferShopRow; slip: TransferSlip } | null>(null)
 
   const refresh = useCallback(() => setTick((n) => n + 1), [])
 
@@ -678,22 +972,21 @@ export default function AccountingTransfers() {
   const summary = useMemo(() => {
     const list = shops ?? []
     const total = list.reduce((s, r) => s + r.amount, 0)
-    const transferredCount = list.filter((r) => r.transferred).length
-    return { total, transferredCount, shopCount: list.length }
+    const doneCount = list.filter(shopFullyTransferred).length
+    return { total, doneCount, shopCount: list.length }
   }, [shops])
 
-  async function handleViewSlip(shop: DailyTransferShopRow) {
-    if (!shop.slipPath) return
+  async function handleViewSlip(slipPath: string, shopName: string) {
     setSlipError(null)
-    setSlipLoadingShopId(shop.shopId)
+    setSlipLoading(true)
     try {
-      const url = await getSlipSignedUrl(shop.slipPath)
-      if (url) setSlipModal({ shopName: shop.shopName, url })
+      const url = await getSlipSignedUrl(slipPath)
+      if (url) setSlipModal({ shopName, url })
       else setSlipError('ไม่พบไฟล์สลิป')
     } catch (e) {
       setSlipError(e instanceof Error ? e.message : 'เปิดสลิปไม่สำเร็จ')
     } finally {
-      setSlipLoadingShopId(null)
+      setSlipLoading(false)
     }
   }
 
@@ -702,7 +995,7 @@ export default function AccountingTransfers() {
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4 md:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <PageTitle sub="รายการยอดโอนเงินให้ร้านค้า จัดกลุ่มตามวันที่ส่งบัญชี — อัปโหลดสลิปเมื่อโอนแล้ว">
+        <PageTitle sub="รายการยอดโอนเงินให้ร้านค้า จัดกลุ่มตามวันที่ส่งบัญชี — เลือกเคสที่จ่ายแล้วสร้างสลิป (ลงได้หลายสลิปต่อร้าน)">
           โอนเงินร้าน
         </PageTitle>
 
@@ -749,10 +1042,10 @@ export default function AccountingTransfers() {
         </div>
         <div className="rounded-2xl border border-peach bg-cream-deep p-4">
           <p className="flex items-center gap-1.5 text-xs text-ink-soft">
-            <CheckCircle2 size={13} /> โอนแล้ว
+            <CheckCircle2 size={13} /> โอนครบ
           </p>
           <p className="mt-1 text-xl font-bold text-ink">
-            {summary.transferredCount} / {summary.shopCount} ร้าน
+            {summary.doneCount} / {summary.shopCount} ร้าน
           </p>
         </div>
       </div>
@@ -786,26 +1079,39 @@ export default function AccountingTransfers() {
               refreshKey={tick}
               isAdmin={isAdmin}
               onToggle={() => setExpandedShopId((cur) => (cur === shop.shopId ? null : shop.shopId))}
-              onUpload={() => setUploadShop(shop)}
-              onViewSlip={() => handleViewSlip(shop)}
+              onViewSlip={handleViewSlip}
               onRejectContract={(c) => setRejectContract(c)}
               onEditDateContract={(c) => setEditDateContract(c)}
               onSendBackToStaff={(contracts) => setSendBackTarget({ shop, contracts })}
+              onCreateSlip={(s, contracts) => setCreateSlipTarget({ shop: s, contracts })}
+              onVoidSlip={(s, slip) => setVoidSlipTarget({ shop: s, slip })}
             />
           ))}
         </div>
       )}
 
-      {slipLoadingShopId && <p className="text-center text-xs text-ink-soft">กำลังเปิดสลิป...</p>}
+      {slipLoading && <p className="text-center text-xs text-ink-soft">กำลังเปิดสลิป...</p>}
 
-      {uploadShop && (
-        <UploadSlipModal
-          shop={uploadShop}
+      {createSlipTarget && (
+        <CreateSlipModal
+          shop={createSlipTarget.shop}
           dateISO={dateISO}
-          byName={byName}
-          onClose={() => setUploadShop(null)}
+          contracts={createSlipTarget.contracts}
+          onClose={() => setCreateSlipTarget(null)}
           onDone={() => {
-            setUploadShop(null)
+            setCreateSlipTarget(null)
+            refresh()
+          }}
+        />
+      )}
+
+      {voidSlipTarget && (
+        <VoidSlipModal
+          slip={voidSlipTarget.slip}
+          shopName={voidSlipTarget.shop.shopName}
+          onClose={() => setVoidSlipTarget(null)}
+          onDone={() => {
+            setVoidSlipTarget(null)
             refresh()
           }}
         />
