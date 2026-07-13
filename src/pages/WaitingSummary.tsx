@@ -371,7 +371,7 @@ export default function WaitingSummary() {
       )
       if (!ok) return
     }
-    await markSummaryShopSent(ids, name ?? undefined) // บันทึกลง DB จริง (กันส่งซ้ำ)
+    await markSummaryShopSent(ids, name ?? undefined, date) // บันทึกลง DB จริง (กันส่งซ้ำ) — เกาะวันที่สรุปที่เลือก
     setLocallyShopSent((prev) => new Set([...prev, ...ids]))
     setSelected(new Set())
   }
@@ -379,7 +379,7 @@ export default function WaitingSummary() {
   async function markAccountingSent() {
     const ids = [...selectedAccounting]
     if (ids.length === 0) return
-    await markSummaryAccountingSent(ids, name ?? undefined) // บันทึกลง DB จริง
+    await markSummaryAccountingSent(ids, name ?? undefined, date) // บันทึกลง DB จริง — เกาะวันที่สรุปที่เลือก
     setLocallyAccountingSent((prev) => new Set([...prev, ...ids]))
     setSelectedAccounting(new Set())
   }

@@ -749,43 +749,35 @@ export async function markSummarySent(ids: string[], senderName?: string): Promi
   if (error) throw error
 }
 
-/** สรุปยอด 2 ด่าน รอบ 1 — ส่งร้าน (0075)
+/** สรุปยอด 2 ด่าน รอบ 1 — ส่งร้าน (0075 · date-aware 0105)
  *  set summary_shop_sent_at/by + mirror summary_sent_at/by (กัน audit log เดิมที่อ่าน summary_sent_at พัง)
  *  คง auto-clear รอเอกสาร เหมือน markSummarySent เดิม (รอบ 1 = ยืนยันเอกสารครบ + ส่งร้าน)
- *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat */
-export async function markSummaryShopSent(ids: string[], senderName?: string): Promise<void> {
+ *  เกาะ "วันที่สรุปที่เลือก" ผ่าน RPC mark_summary_shop_sent (Postgres ประกอบ ts = วันที่เลือก +
+ *    เวลานาฬิกาปัจจุบัน Bangkok) แทน now() — กัน /transfers จัดกลุ่มผิดวัน. dateISO ว่าง → fallback now()
+ *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
+ *  @param dateISO วันที่สรุปที่พนักงานเลือก (YYYY-MM-DD) — optional; ว่าง = ใช้ now() */
+export async function markSummaryShopSent(ids: string[], senderName?: string, dateISO?: string): Promise<void> {
   if (!supabase || ids.length === 0) return
-  const now = new Date().toISOString()
-  const { error } = await supabase
-    .from('contracts')
-    .update({
-      summary_shop_sent_at: now,
-      summary_shop_sent_by: senderName ?? null,
-      // mirror สถานะรวมเดิม — audit log อ่าน summary_sent_at จึงต้องตั้งให้ด้วย
-      summary_sent_at: now,
-      summary_sent_by: senderName ?? null,
-      // auto-clear รอเอกสาร เมื่อยืนยันสรุปยอด (confirm-gate model 0049)
-      pending_documents: false,
-      documents_confirmed_at: now,
-      documents_confirmed_by: senderName ?? null,
-    })
-    .in('id', ids)
+  const { error } = await supabase.rpc('mark_summary_shop_sent', {
+    p_ids: ids,
+    p_sender: senderName ?? null,
+    p_date: dateISO ?? null,
+  })
   if (error) throw error
 }
 
-/** สรุปยอด 2 ด่าน รอบ 2 — ส่งบัญชี (0075)
+/** สรุปยอด 2 ด่าน รอบ 2 — ส่งบัญชี (0075 · date-aware 0105)
  *  set summary_accounting_sent_at/by เท่านั้น (ไม่แตะ pending_documents / summary_sent_at)
- *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat */
-export async function markSummaryAccountingSent(ids: string[], senderName?: string): Promise<void> {
+ *  เกาะ "วันที่สรุปที่เลือก" ผ่าน RPC mark_summary_accounting_sent เช่นเดียวกับรอบ 1. dateISO ว่าง → now()
+ *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
+ *  @param dateISO วันที่สรุปที่พนักงานเลือก (YYYY-MM-DD) — optional; ว่าง = ใช้ now() */
+export async function markSummaryAccountingSent(ids: string[], senderName?: string, dateISO?: string): Promise<void> {
   if (!supabase || ids.length === 0) return
-  const now = new Date().toISOString()
-  const { error } = await supabase
-    .from('contracts')
-    .update({
-      summary_accounting_sent_at: now,
-      summary_accounting_sent_by: senderName ?? null,
-    })
-    .in('id', ids)
+  const { error } = await supabase.rpc('mark_summary_accounting_sent', {
+    p_ids: ids,
+    p_sender: senderName ?? null,
+    p_date: dateISO ?? null,
+  })
   if (error) throw error
 }
 
