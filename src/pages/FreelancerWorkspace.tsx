@@ -222,21 +222,34 @@ function StalenessBadge({ row }: { row: FreelancerQueueRow }) {
 function QueueRow({
   sr,
   outsideHours,
+  enforceCallHours = true,
+  actionMode = 'claim',
+  claimingId = null,
   onSelect,
   onClaim,
+  onRelease,
 }: {
   sr: ScoredRow
   outsideHours: boolean
+  // false = แท็บ "งานที่ต้องดูแล" (mine): ปุ่มบันทึกกดได้ตลอด ไม่คุมเวลาทวงถาม (Pete decision)
+  enforceCallHours?: boolean
+  // ปุ่มที่สอง: claim = "ฉันดูแลเคสนี้" (แท็บโทร/คืนเครื่อง) · release = "ทิ้งงาน" (แท็บ mine)
+  actionMode?: 'claim' | 'release'
+  claimingId?: string | null
   onSelect: (r: FreelancerQueueRow) => void
   onClaim: (r: FreelancerQueueRow) => void
+  onRelease?: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
   const isBlocked = r.dnc || r.lawyerEngaged
-  const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
+  // enforceCallHours=false → ไม่ disable ปุ่มบันทึกเลย (แท็บ mine)
+  const disableButton = enforceCallHours && isHardBlocked(outsideHours, sr.suppressReason)
 
   let tooltip = ''
-  if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
-  else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+  if (enforceCallHours) {
+    if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
+    else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+  }
 
   const hasUnseen = hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt)
 
@@ -291,12 +304,15 @@ function QueueRow({
       <td className="px-4 py-3 align-top text-center">
         <div className="flex flex-col items-center gap-1">
           <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-          <span className="inline-flex items-center gap-1 text-[10px] text-ink-soft">
-            คะแนน
-            <span className={`rounded-full px-1.5 py-0.5 font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
-              {TIER_EMOJI[sr.tier]} {sr.score}
+          {/* ซ่อนคะแนน/tier สำหรับเคสคืนเครื่อง — priority score ไม่มีความหมายกับเคสตามยอดปิด */}
+          {!r.isReturned && (
+            <span className="inline-flex items-center gap-1 text-[10px] text-ink-soft">
+              คะแนน
+              <span className={`rounded-full px-1.5 py-0.5 font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
+                {TIER_EMOJI[sr.tier]} {sr.score}
+              </span>
             </span>
-          </span>
+          )}
           <span className="whitespace-nowrap text-xs font-semibold text-red-600">ค้าง {r.daysLate} วัน</span>
         </div>
       </td>
@@ -355,14 +371,24 @@ function QueueRow({
           >
             บันทึกติดตาม
           </button>
-          {/* req7: ฉันดูแลเคสนี้ */}
-          <button
-            onClick={() => onClaim(r)}
-            className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
-          >
-            <UserCheck size={13} />
-            ฉันดูแลเคสนี้
-          </button>
+          {/* ปุ่มที่สอง: claim = ฉันดูแลเคสนี้ · release = ทิ้งงาน (แท็บ mine) */}
+          {actionMode === 'claim' ? (
+            <button
+              onClick={() => onClaim(r)}
+              className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+            >
+              <UserCheck size={13} />
+              ฉันดูแลเคสนี้
+            </button>
+          ) : (
+            <button
+              disabled={claimingId === r.contractId}
+              onClick={() => onRelease?.(r)}
+              className="whitespace-nowrap rounded-xl border border-peach bg-white px-3 py-2 text-xs font-semibold text-ink-soft transition hover:bg-peach-light/50 disabled:opacity-50"
+            >
+              {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
+            </button>
+          )}
         </div>
       </td>
     </tr>
@@ -376,20 +402,30 @@ function QueueRow({
 function QueueCardMobile({
   sr,
   outsideHours,
+  enforceCallHours = true,
+  actionMode = 'claim',
+  claimingId = null,
   onSelect,
   onClaim,
+  onRelease,
 }: {
   sr: ScoredRow
   outsideHours: boolean
+  enforceCallHours?: boolean
+  actionMode?: 'claim' | 'release'
+  claimingId?: string | null
   onSelect: (r: FreelancerQueueRow) => void
   onClaim: (r: FreelancerQueueRow) => void
+  onRelease?: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
   const isBlocked = r.dnc || r.lawyerEngaged
-  const disableButton = isHardBlocked(outsideHours, sr.suppressReason)
+  const disableButton = enforceCallHours && isHardBlocked(outsideHours, sr.suppressReason)
   let tooltip = ''
-  if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
-  else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+  if (enforceCallHours) {
+    if (outsideHours) tooltip = 'นอกเวลาทวงถามตามกฎหมาย'
+    else if (sr.suppressReason) tooltip = SUPPRESS_LABEL[sr.suppressReason]
+  }
 
   const hasUnseen = hasUnseenUpdate(r.myLastTouchAt, r.latestOtherAuthorAt)
 
@@ -453,9 +489,12 @@ function QueueCardMobile({
       <div className="mb-2 mt-2">
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
-            {TIER_EMOJI[sr.tier]} คะแนน {sr.score}
-          </span>
+          {/* ซ่อนคะแนน/tier สำหรับเคสคืนเครื่อง */}
+          {!r.isReturned && (
+            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TIER_SCORE_CLS[sr.tier]}`}>
+              {TIER_EMOJI[sr.tier]} คะแนน {sr.score}
+            </span>
+          )}
           <span className="whitespace-nowrap font-semibold text-red-600">ค้าง {r.daysLate} วัน</span>
           {r.installmentsTotal > 0 && <span className="text-ink-soft">งวด {r.installmentsPaid}/{r.installmentsTotal}</span>}
         </div>
@@ -492,13 +531,23 @@ function QueueCardMobile({
         >
           บันทึกติดตาม
         </button>
-        <button
-          onClick={() => onClaim(r)}
-          className="inline-flex w-full items-center justify-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
-        >
-          <UserCheck size={14} />
-          ฉันดูแลเคสนี้
-        </button>
+        {actionMode === 'claim' ? (
+          <button
+            onClick={() => onClaim(r)}
+            className="inline-flex w-full items-center justify-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+          >
+            <UserCheck size={14} />
+            ฉันดูแลเคสนี้
+          </button>
+        ) : (
+          <button
+            disabled={claimingId === r.contractId}
+            onClick={() => onRelease?.(r)}
+            className="w-full rounded-xl border border-peach bg-white px-3 py-2 text-sm font-semibold text-ink-soft transition hover:bg-peach-light/50 disabled:opacity-50"
+          >
+            {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
+          </button>
+        )}
       </div>
     </div>
   )
@@ -814,6 +863,38 @@ export default function FreelancerWorkspace() {
     () => new Map(scoredRows.map((sr) => [sr.row.contractId, sr])),
     [scoredRows],
   )
+
+  // แท็บ "งานที่ต้องดูแล" (mine): แปลง filteredMyCases → ScoredRow เพื่อ reuse QueueRow/QueueCardMobile
+  // ใช้ computePriorityScore ชุดเดียวกับ scoredRows — score/tier ยังคำนวณไว้ (ถึงแม้จะไม่ได้โชว์เคส returned)
+  const myScoredRows = useMemo((): ScoredRow[] => {
+    return filteredMyCases.map((r) => {
+      const result = computePriorityScore(
+        {
+          grade: r.grade,
+          outstanding: r.outstanding,
+          daysLate: r.daysLate,
+          dnc: r.dnc,
+          lawyerEngaged: r.lawyerEngaged,
+          disputed: r.disputed,
+          promiseToPayDate: r.promiseToPayDate,
+          totalAttempts: r.totalAttempts,
+          successfulAttempts: r.successfulAttempts,
+          lastResult: r.lastResult,
+          lastContactedAt: r.lastContactedAt,
+          contactedToday: r.contactedToday,
+        },
+        today,
+      )
+      return {
+        row: r,
+        score: result.score,
+        tier: result.tier,
+        actionableNow: result.actionableNow,
+        suppressReason: result.suppressReason,
+        promiseToPayDate: r.promiseToPayDate,
+      }
+    })
+  }, [filteredMyCases, today])
 
   // today string (Bangkok UTC+7) สำหรับ sortQueue + promise badge
   const todayStr = useMemo(
@@ -1192,99 +1273,59 @@ export default function FreelancerWorkspace() {
                   />
                 )
               ) : (
-                <>
+                /* reuse QueueRow/QueueCardMobile เดียวกับแท็บ "ที่ต้องโทร" → ข้อมูลครบเหมือนกัน
+                   enforceCallHours=false → ปุ่มบันทึกกดได้ตลอด ไม่คุมนอกเวลา (Pete decision)
+                   actionMode="release" → ปุ่มที่สอง = "ทิ้งงาน" (handleReleaseCase) */
+                <div className="overflow-hidden rounded-2xl border border-peach bg-white shadow-sm">
                   {/* ===== Desktop table (≥ md) ===== */}
-                  <div className="hidden overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm md:block">
+                  <div className="hidden overflow-x-auto md:block">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-peach bg-emerald-50 text-left text-xs font-semibold text-ink-soft">
-                          <th className="px-4 py-3">ลูกค้า / สัญญา</th>
+                          <th className="px-4 py-3">ลูกค้า</th>
                           <th className="px-4 py-3">ร้าน</th>
-                          <th className="px-4 py-3 text-center">เกรด</th>
-                          <th className="px-4 py-3 text-right">ค้าง (วัน)</th>
+                          <th className="px-4 py-3 text-center">เกรด · ค้าง</th>
+                          <th className="px-4 py-3 text-right">งวด</th>
+                          <th className="px-4 py-3 text-right">ยอดต้องชำระวันนี้</th>
+                          <th className="px-4 py-3">รายละเอียด</th>
                           <th className="px-4 py-3" />
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredMyCases.map((r) => (
-                          <tr key={r.contractId} className="border-b border-peach last:border-0 hover:bg-emerald-50/40">
-                            <td className="px-4 py-3">
-                              <p className="font-medium text-ink">{r.customerName}</p>
-                              <p className="text-xs text-ink-soft">{r.contractNo}</p>
-                              <div><StalenessBadge row={r} /></div>
-                            </td>
-                            <td className="px-4 py-3 text-sm text-ink-soft">{r.shopName}</td>
-                            <td className="px-4 py-3 text-center">
-                              <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              {/* เคสคืนเครื่อง: badge ยอดปิด แทน daysLate (วัดวันตั้งแต่คืน ไม่ใช่ค้างงวด) */}
-                              {r.isReturned ? (
-                                <ReturnedClosingBadge row={r} />
-                              ) : (
-                                <span className="font-semibold text-red-600">{r.daysLate}</span>
-                              )}
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex items-center justify-end gap-1.5">
-                                <button
-                                  onClick={() => handleOpenCase(r)}
-                                  className="whitespace-nowrap rounded-xl border border-peach bg-white px-3 py-2 text-xs font-semibold text-ink transition hover:bg-peach-light/50"
-                                >
-                                  บันทึกติดตาม
-                                </button>
-                                <button
-                                  disabled={claimingId === r.contractId}
-                                  onClick={() => handleReleaseCase(r)}
-                                  className="whitespace-nowrap rounded-xl border border-peach bg-white px-3 py-2 text-xs font-semibold text-ink-soft transition hover:bg-peach-light/50 disabled:opacity-50"
-                                >
-                                  {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
+                        {myScoredRows.map((sr) => (
+                          <QueueRow
+                            key={sr.row.contractId}
+                            sr={sr}
+                            outsideHours={outsideHours}
+                            enforceCallHours={false}
+                            actionMode="release"
+                            claimingId={claimingId}
+                            onSelect={handleOpenCase}
+                            onClaim={handleClaimCase}
+                            onRelease={handleReleaseCase}
+                          />
                         ))}
                       </tbody>
                     </table>
                   </div>
 
                   {/* ===== Mobile card stack (< md) ===== */}
-                  <div className="flex flex-col gap-3 md:hidden">
-                    {filteredMyCases.map((r) => (
-                      <div key={r.contractId} className="rounded-2xl border border-peach bg-white p-4 shadow-sm">
-                        <div className="mb-1 flex items-start justify-between gap-2">
-                          <div>
-                            <p className="font-semibold text-ink">{r.customerName}</p>
-                            <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
-                            <div><StalenessBadge row={r} /></div>
-                          </div>
-                          <Badge tone={GRADE_TONE[r.grade]}>เกรด {r.grade}</Badge>
-                        </div>
-                        {/* เคสคืนเครื่อง: badge ยอดปิด แทน daysLate (วัดวันตั้งแต่คืน ไม่ใช่ค้างงวด) */}
-                        {r.isReturned ? (
-                          <div className="mt-1"><ReturnedClosingBadge row={r} /></div>
-                        ) : (
-                          <p className="mt-1 text-xs text-ink-soft">ค้าง <span className="font-semibold text-red-600">{r.daysLate} วัน</span></p>
-                        )}
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            onClick={() => handleOpenCase(r)}
-                            className="flex-1 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-semibold text-ink transition hover:bg-peach-light/50"
-                          >
-                            บันทึกติดตาม
-                          </button>
-                          <button
-                            disabled={claimingId === r.contractId}
-                            onClick={() => handleReleaseCase(r)}
-                            className="flex-1 rounded-xl border border-peach bg-white px-3 py-2 text-sm font-semibold text-ink-soft transition hover:bg-peach-light/50 disabled:opacity-50"
-                          >
-                            {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
-                          </button>
-                        </div>
-                      </div>
+                  <div className="flex flex-col divide-y divide-peach/60 md:hidden">
+                    {myScoredRows.map((sr) => (
+                      <QueueCardMobile
+                        key={sr.row.contractId}
+                        sr={sr}
+                        outsideHours={outsideHours}
+                        enforceCallHours={false}
+                        actionMode="release"
+                        claimingId={claimingId}
+                        onSelect={handleOpenCase}
+                        onClaim={handleClaimCase}
+                        onRelease={handleReleaseCase}
+                      />
                     ))}
                   </div>
-                </>
+                </div>
               )}
             </>
           )}
