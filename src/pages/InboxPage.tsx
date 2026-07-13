@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CalendarClock, PackageOpen, MessageCircle, Pin, History, CheckCircle } from 'lucide-react'
-import { Badge, Button, Card, EmptyState, Loading, PageTitle } from '../components/ui'
+import { CalendarClock, PackageOpen, MessageCircle, Pin, History, CheckCircle, Search, X } from 'lucide-react'
+import { Badge, Button, Card, EmptyState, Input, Loading, PageTitle } from '../components/ui'
 import {
   getInboxCases,
   dismissInboxCase,
@@ -115,6 +115,25 @@ export default function InboxPage() {
   const [error, setError] = useState<string | null>(null)
   const [followUpTarget, setFollowUpTarget] = useState<InboxCase | null>(null)
   const [dismissBusy, setDismissBusy] = useState<string | null>(null) // contractId ที่กำลังเคลียร์ออกจากกล่อง
+  const [query, setQuery] = useState('') // ค้นหา client-side (เคสโหลดมาครบแล้ว)
+
+  // ----- ค้นหา client-side: ชื่อลูกค้า / เลขสัญญา / INV / IMEI / เบอร์โทร -----
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return cases
+    return cases.filter((c) => {
+      const hay = [
+        c.customerName,
+        c.contractNo,
+        c.invNo ?? '',
+        c.imei ?? '',
+        c.phone ?? '',
+      ]
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [cases, query])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -146,7 +165,7 @@ export default function InboxPage() {
     <div>
       <PageTitle
         sub="เคสที่นัดชำระ / คืนเครื่อง / นัดทาง LINE จะเด้งเข้ามาเอง + เคสที่หยิบเข้ามาติดตาม"
-        count={loading ? undefined : { shown: cases.length, total: cases.length }}
+        count={loading ? undefined : { shown: filtered.length, total: cases.length }}
       >
         กล่องรับงาน (Inbox)
       </PageTitle>
@@ -166,6 +185,42 @@ export default function InboxPage() {
 
       {!loading && !error && cases.length > 0 && (
         <>
+          {/* แถบค้นหา — filter client-side (เคสโหลดมาครบแล้ว) */}
+          <div className="mb-4 max-w-xl">
+            <div className="relative">
+              <Search
+                size={16}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft"
+                aria-hidden
+              />
+              <Input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="ค้นหา ชื่อลูกค้า / เลขสัญญา / INV / IMEI / เบอร์โทร"
+                aria-label="ค้นหาเคสในกล่องรับงาน"
+                className="pl-9 pr-9"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  aria-label="ล้างคำค้นหา"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-ink-soft hover:bg-peach-light hover:text-ink"
+                >
+                  <X size={16} aria-hidden />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <EmptyState
+              title={`ไม่พบเคสที่ตรงกับ "${query.trim()}"`}
+              hint="ลองค้นด้วยชื่อลูกค้า เลขสัญญา INV IMEI หรือเบอร์โทร"
+            />
+          ) : (
+          <>
           {/* Desktop table */}
           <div className="hidden overflow-x-auto rounded-2xl border border-peach bg-white shadow-sm md:block">
             <table className="w-full text-sm">
@@ -179,7 +234,7 @@ export default function InboxPage() {
                 </tr>
               </thead>
               <tbody>
-                {cases.map((c) => (
+                {filtered.map((c) => (
                   <tr key={c.contractId} className="border-b border-peach last:border-0 hover:bg-peach-light/20">
                     {/* ลูกค้า */}
                     <td className="px-4 py-3 align-top">
@@ -249,7 +304,7 @@ export default function InboxPage() {
 
           {/* Mobile card stack */}
           <div className="flex flex-col gap-3 md:hidden">
-            {cases.map((c) => (
+            {filtered.map((c) => (
               <Card key={c.contractId}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
@@ -301,6 +356,8 @@ export default function InboxPage() {
               </Card>
             ))}
           </div>
+          </>
+          )}
         </>
       )}
 

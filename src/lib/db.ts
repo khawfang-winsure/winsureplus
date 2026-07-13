@@ -6540,6 +6540,8 @@ export interface InboxCase {
   latestNoteByName: string
   promiseToPayDate: string | null
   pinned: boolean
+  imei: string | null // IMEI/SN ตัวเครื่อง (จาก contracts.imei) — สำหรับค้นหา
+  invNo: string | null // เลขที่ใบแจ้งหนี้ (จาก contracts.inv_no) — สำหรับค้นหา
   // --- ขยาย inbox 2026-06-27: แหล่งเด้งเคส + คืนเครื่อง ---
   hasDeviceReturn: boolean // มี device_returns ที่ยังไม่จบ (non-terminal) ของสัญญานี้หรือไม่
   deviceReturnStatus: string | null // device_status ล่าสุดที่ non-terminal (null ถ้าไม่มี)
@@ -6676,15 +6678,19 @@ export async function getInboxCases(): Promise<InboxCase[]> {
   // Step 4: ดึง phone + promise fields จาก contracts
   const { data: contractData, error: contractErr } = await supabase
     .from('contracts')
-    .select('id, phone, promise_to_pay_date')
+    .select('id, phone, promise_to_pay_date, imei, inv_no')
     .in('id', activeIds)
     .range(0, PAGE_CAP)
   if (contractErr) throw contractErr
 
   const contractMap = new Map(
-    ((contractData ?? []) as { id: string; phone: string | null; promise_to_pay_date: string | null }[]).map(
-      (c) => [c.id, c],
-    ),
+    ((contractData ?? []) as {
+      id: string
+      phone: string | null
+      promise_to_pay_date: string | null
+      imei: string | null
+      inv_no: string | null
+    }[]).map((c) => [c.id, c]),
   )
 
   // Step 5: ดึง follow_up ล่าสุด 1 แถวต่อ contract (สำหรับ latestNote/latestNoteAt/latestNoteByName)
@@ -6762,6 +6768,8 @@ export async function getInboxCases(): Promise<InboxCase[]> {
       latestNoteByName: note?.author_name ?? '',
       promiseToPayDate,
       pinned: pinnedIds.has(r.contract_id),
+      imei: c?.imei ?? null,
+      invNo: c?.inv_no ?? null,
       hasDeviceReturn: ret !== undefined,
       deviceReturnStatus: ret?.device_status ?? null,
       deviceReturnAt: ret?.created_at ?? null,
