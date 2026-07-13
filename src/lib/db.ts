@@ -7678,3 +7678,156 @@ export async function applyPjReviewAsOtherIncome(params: {
     note ? `ลงเป็นรายได้อื่นๆ (${category}): ${note}` : `ลงเป็นรายได้อื่นๆ (${category})`,
   )
 }
+
+// ---------- Freelancer HR report (migration 0108) ----------
+
+/** time 'HH:MM:SS' (PostgREST) → 'HH:MM' ; null คงเป็น null */
+function toHhmm(t: string | null): string | null {
+  return t ? t.slice(0, 5) : null
+}
+
+/** 1 แถวต่อ (author × วัน) จาก RPC get_freelancer_hr_by_day — int/bigint มาเป็น number|string จาก PostgREST */
+interface HrByDayViewRow {
+  author_id: string
+  author_name: string | null
+  day: string
+  logs_total: number | string
+  cases_touched: number | string
+  first_activity: string | null
+  last_activity: string | null
+  morning_count: number | string
+  afternoon_count: number | string
+  evening_count: number | string
+  reached_count: number | string
+  attempts_count: number | string
+  debtor_count: number | string
+  other_count: number | string
+  demands_count: number | string
+  promises_made: number | string
+}
+
+export type HrByDayRow = {
+  authorId: string
+  authorName: string
+  day: string // 'YYYY-MM-DD'
+  logsTotal: number
+  casesTouched: number
+  firstActivity: string | null // 'HH:MM'
+  lastActivity: string | null // 'HH:MM'
+  morningCount: number
+  afternoonCount: number
+  eveningCount: number
+  reachedCount: number
+  attemptsCount: number
+  debtorCount: number
+  otherCount: number
+  demandsCount: number
+  promisesMade: number
+}
+
+/**
+ * รายงาน HR ทีมฟรีแลนซ์ — สรุป 1 แถวต่อ (คน × วัน) ตามช่วงวัน [start, end] (RPC 0108)
+ * frontend นำไป roll up เป็นรายคนเอง. guard is_admin/is_staff/is_executive — freelancer/anon เห็น 0 rows
+ * @param startISO วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param endISO   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getFreelancerHrByDay(
+  startISO: string,
+  endISO: string,
+): Promise<HrByDayRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_freelancer_hr_by_day', { p_start: startISO, p_end: endISO })
+  if (error) throw error
+
+  return ((data ?? []) as HrByDayViewRow[]).map((r) => ({
+    authorId: r.author_id,
+    authorName: r.author_name ?? '-',
+    day: r.day,
+    logsTotal: Number(r.logs_total),
+    casesTouched: Number(r.cases_touched),
+    firstActivity: toHhmm(r.first_activity),
+    lastActivity: toHhmm(r.last_activity),
+    morningCount: Number(r.morning_count),
+    afternoonCount: Number(r.afternoon_count),
+    eveningCount: Number(r.evening_count),
+    reachedCount: Number(r.reached_count),
+    attemptsCount: Number(r.attempts_count),
+    debtorCount: Number(r.debtor_count),
+    otherCount: Number(r.other_count),
+    demandsCount: Number(r.demands_count),
+    promisesMade: Number(r.promises_made),
+  }))
+}
+
+/** 1 แถวต่อ follow_up จาก RPC get_freelancer_hr_daily_log */
+interface HrDailyLogViewRow {
+  id: string
+  created_at: string
+  contract_id: string
+  contract_no: string | null
+  customer_name: string | null
+  contact_method: string | null
+  contact_target: string | null
+  contact_person_name: string | null
+  contact_person_relation: string | null
+  follow_up_result: string | null
+  next_follow_up_at: string | null
+  promised_amount: number | string | null
+  counts_as_demand: boolean
+  note_text: string | null
+}
+
+export type HrDailyLogRow = {
+  id: string
+  createdAt: string
+  contractId: string
+  contractNo: string | null
+  customerName: string | null
+  contactMethod: string
+  contactTarget: string
+  contactPersonName: string | null
+  contactPersonRelation: string | null
+  followUpResult: string
+  nextFollowUpAt: string | null
+  promisedAmount: number | null
+  countsAsDemand: boolean
+  noteText: string
+}
+
+/**
+ * รายงาน HR — drill-down รายเคสของคนคนเดียว ตามช่วงวัน [start, end] (RPC 0108)
+ * guard is_admin/is_staff/is_executive — freelancer/anon เห็น 0 rows
+ * @param authorId uuid ของ freelancer ที่ต้องการดู
+ * @param startISO วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param endISO   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getFreelancerHrDailyLog(
+  authorId: string,
+  startISO: string,
+  endISO: string,
+): Promise<HrDailyLogRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_freelancer_hr_daily_log', { p_author: authorId, p_start: startISO, p_end: endISO })
+  if (error) throw error
+
+  return ((data ?? []) as HrDailyLogViewRow[]).map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    contractId: r.contract_id,
+    contractNo: r.contract_no,
+    customerName: r.customer_name,
+    contactMethod: r.contact_method ?? '',
+    contactTarget: r.contact_target ?? '',
+    contactPersonName: r.contact_person_name,
+    contactPersonRelation: r.contact_person_relation,
+    followUpResult: r.follow_up_result ?? '',
+    nextFollowUpAt: r.next_follow_up_at,
+    promisedAmount: r.promised_amount == null ? null : Number(r.promised_amount),
+    countsAsDemand: r.counts_as_demand,
+    noteText: r.note_text ?? '',
+  }))
+}

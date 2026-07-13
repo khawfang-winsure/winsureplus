@@ -561,7 +561,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
       {/* soft-warn: CAP — เฉพาะตอนกำลังจะบันทึกแบบโทรหาลูกหนี้เอง (โทรผู้ติดต่อไม่นับโควตานี้) */}
       {softWarnReason === 'CAP' && !outsideHours && form.contactTarget === 'debtor' && (
         <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          ติดต่อลูกค้ารายนี้ไปแล้ว 1 ครั้งวันนี้ (ลูกหนี้) — หากบันทึกเพิ่ม ระบบจะแจ้งข้อผิดพลาดขณะบันทึก
+          โทรทวงลูกหนี้รายนี้ของวันนี้ถูกบันทึกแล้ว — บันทึกเพิ่มได้ ระบบจะถือเป็นบันทึกต่อเนื่อง (ไม่นับเป็นการทวงครั้งใหม่ตามกฎหมาย)
         </div>
       )}
 
