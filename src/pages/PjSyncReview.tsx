@@ -1,24 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ExternalLink, Receipt, SkipForward, Wallet } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { AlertTriangle, CalendarClock, CheckCircle2, ExternalLink, Receipt, SkipForward, Wallet } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
 import {
   applyPjReviewAsOtherIncome,
   applyPjReviewPayment,
+  getContractFeeReconcile,
   getPjReviewContext,
   getPjSyncReview,
   getPjSyncRuns,
   resolvePjReviewItem,
 } from '../lib/db'
+import { FEE_INCOME_PRESETS, FEE_INCOME_CUSTOM, type FeeKind } from '../lib/feeReconcile'
 import { spreadPayment } from '../lib/paymentSpread'
 import { detectDuplicatePjReviewRows, detectOddAmountFromContext } from '../lib/pjReviewDup'
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow, PjSyncRunRow } from '../lib/types'
 import { useAuth } from '../lib/auth'
 
-// ===== หมวดรายได้อื่นๆ สำเร็จรูปที่เจอบ่อยจากกล่องรอตรวจ PJ (category ยังเป็น free-text ที่ backend) =====
-const OTHER_INCOME_PRESETS = ['ค่าส่งกล่องพัสดุ', 'ค่าเปลี่ยนวันที่ชำระ'] as const
-const OTHER_INCOME_CUSTOM = 'อื่นๆ (พิมพ์เอง)'
+// ===== หมวดรายได้อื่นๆ สำเร็จรูป + fee_kind (ชื่อ + mapping จาก feeReconcile — single source) =====
+const OTHER_INCOME_CUSTOM = FEE_INCOME_CUSTOM
 
 // ===== ป้ายเหตุผล (reason → ไทย + โทนสี) =====
 const REASON_LABEL: Record<PjSyncReviewReason, string> = {
@@ -607,6 +608,18 @@ function ApplyModal({
   )
 }
 
+/** map fee_kind + สิทธิ์ที่ยัง pending → query param feeAction (deep-link ไปเปิด modal action บน ContractDetail) */
+function feeActionParam(kind: FeeKind, pendingDue: boolean, pendingMonths: boolean): string | null {
+  if (kind === 'settle') return 'settle'
+  if (kind === 'due_day') return 'extend_due_day'
+  if (kind === 'months') return 'extend_months'
+  // both: เลือก param ตามฝั่งที่ยังไม่ได้ทำ
+  if (pendingDue && pendingMonths) return 'extend_both'
+  if (pendingDue) return 'extend_due_day'
+  if (pendingMonths) return 'extend_months'
+  return null
+}
+
 // ===== Modal ลงเป็น "รายได้อื่นๆ" — ยอดที่ PJ ตัดมาแต่ไม่ใช่ค่างวด/ค่าปรับ (เช่น ค่าส่งพัสดุ, ค่าเปลี่ยนวันชำระ) =====
 function OtherIncomeModal({
   row,
@@ -619,13 +632,17 @@ function OtherIncomeModal({
   onClose: () => void
   onDone: () => void
 }) {
-  const [categoryChoice, setCategoryChoice] = useState<string>(OTHER_INCOME_PRESETS[0])
+  const navigate = useNavigate()
+  const [categoryChoice, setCategoryChoice] = useState<string>(FEE_INCOME_PRESETS[0].category)
   const [customCategory, setCustomCategory] = useState('')
   const [amount, setAmount] = useState(String(row.amount))
   const [note, setNote] = useState('')
 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  // หลังบันทึกค่าธรรมเนียมที่ต้องมี action คู่ (ขยาย/ปิดด่วน) แต่ยังไม่ได้ทำ → เด้ง prompt นี้
+  const [followPrompt, setFollowPrompt] = useState<{ feeAction: string; verb: string } | null>(null)
 
   // ปิดเมื่อกด Esc (ตาม pattern modal อื่นในโปรเจกต์)
   useEffect(() => {
@@ -637,6 +654,8 @@ function OtherIncomeModal({
   }, [onClose])
 
   const isCustomCategory = categoryChoice === OTHER_INCOME_CUSTOM
+  const selectedPreset = FEE_INCOME_PRESETS.find((p) => p.category === categoryChoice) ?? null
+  const feeKind: FeeKind | null = isCustomCategory ? null : (selectedPreset?.feeKind ?? null)
   const category = (isCustomCategory ? customCategory : categoryChoice).trim()
   const receivedAt = (row.paidDate ?? '').slice(0, 10)
   const amountNum = Number(amount) || 0
@@ -655,12 +674,69 @@ function OtherIncomeModal({
         receivedAt,
         note: note.trim() || undefined,
         byName,
+        feeKind,
       })
+
+      // ค่าธรรมเนียมที่ต้องมี action จริงบนสัญญา → เช็ก reconcile ว่าทำ action แล้วยัง
+      // ถ้ายัง (pending_action) → เด้ง prompt ให้ไปทำต่อทันที (กันลืม)
+      if (feeKind) {
+        try {
+          const rec = await getContractFeeReconcile(row.contractId)
+          const pendingDue = rec.due_day === 'pending_action'
+          const pendingMonths = rec.months === 'pending_action'
+          const pendingSettle = rec.settle === 'pending_action'
+          const needAction =
+            feeKind === 'settle' ? pendingSettle
+            : feeKind === 'due_day' ? pendingDue
+            : feeKind === 'months' ? pendingMonths
+            : (pendingDue || pendingMonths) // both
+          if (needAction) {
+            const param = feeActionParam(feeKind, pendingDue, pendingMonths)
+            if (param) {
+              setFollowPrompt({ feeAction: param, verb: feeKind === 'settle' ? 'ปิดสัญญาก่อนกำหนด' : 'ขยายระยะเวลา' })
+              setBusy(false)
+              return // ค้าง modal ไว้โชว์ prompt ก่อน (ไม่ปิด/ไม่ reload จนกว่าจะเลือก)
+            }
+          }
+        } catch {
+          // เช็ก reconcile พลาด → ไม่บล็อก แค่ปิดตามปกติ (บันทึกรายได้สำเร็จไปแล้ว)
+        }
+      }
       onDone()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
+  }
+
+  // ---- prompt: บันทึกรายได้แล้ว แต่ยังต้องทำ action บนสัญญา ----
+  if (followPrompt && row.contractId) {
+    return (
+      <Modal title="บันทึกรายได้แล้ว — เหลืออีกขั้น" onClose={onDone}>
+        <div className="flex flex-col gap-4">
+          <div className="flex items-start gap-2 rounded-xl bg-green-50 px-3 py-2.5 text-sm text-green-700">
+            <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
+            <p>ลงค่าธรรมเนียมเป็นรายได้เรียบร้อยแล้ว</p>
+          </div>
+          <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <p>
+              แต่เคสนี้ยัง<b>ไม่ได้{followPrompt.verb}</b>บนสัญญา —
+              ไปทำรายการให้ครบเลยไหมคะ จะได้ไม่ลืม
+            </p>
+          </div>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" onClick={onDone}>ไว้ทีหลัง</Button>
+            <Button
+              onClick={() => navigate(`/contract/${row.contractId}?feeAction=${followPrompt.feeAction}`)}
+            >
+              {followPrompt.verb === 'ปิดสัญญาก่อนกำหนด' ? <Wallet size={14} /> : <CalendarClock size={14} />}
+              ไป{followPrompt.verb}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    )
   }
 
   return (
@@ -688,8 +764,8 @@ function OtherIncomeModal({
             onChange={(e) => setCategoryChoice(e.target.value)}
             className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
           >
-            {OTHER_INCOME_PRESETS.map((c) => (
-              <option key={c} value={c}>{c}</option>
+            {FEE_INCOME_PRESETS.map((p) => (
+              <option key={p.category} value={p.category}>{p.category}</option>
             ))}
             <option value={OTHER_INCOME_CUSTOM}>{OTHER_INCOME_CUSTOM}</option>
           </select>
@@ -701,6 +777,12 @@ function OtherIncomeModal({
               placeholder="พิมพ์ชื่อหมวด เช่น ค่าธรรมเนียมเปลี่ยนเครื่อง"
               className="mt-2 w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
             />
+          )}
+          {feeKind && (
+            <p className="mt-1.5 text-xs text-ink-soft">
+              หมวดนี้ผูกกับการ{feeKind === 'settle' ? 'ปิดสัญญาก่อนกำหนด' : 'ขยายระยะเวลา/เปลี่ยนวันชำระ'} —
+              ถ้ายังไม่ได้ทำบนสัญญา ระบบจะเตือนให้ทำต่อ
+            </p>
           )}
         </div>
 

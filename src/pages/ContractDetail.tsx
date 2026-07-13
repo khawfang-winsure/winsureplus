@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
@@ -20,6 +20,9 @@ import {
   getOtherIncome,
   insertOtherIncome,
   deleteOtherIncome,
+  getContractFeeReconcile,
+  insertFeeWaiver,
+  deleteFeeWaiver,
   adjustPayment,
   cancelPayment,
   restructureContract,
@@ -67,6 +70,15 @@ import {
   termsOf,
   type RateSet,
 } from '../lib/rates'
+import {
+  FEE_INCOME_PRESETS,
+  FEE_INCOME_CUSTOM,
+  presetForFeeKind,
+  type FeeKind,
+  type FeeRight,
+  type RightStatus,
+  type ReconcileResult,
+} from '../lib/feeReconcile'
 import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
 import { computeSettlement, type SettlementTier } from '../lib/settlement'
 import { COURIERS } from '../lib/returnWorkflow'
@@ -83,6 +95,29 @@ export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   due_day: 'เปลี่ยนวันที่ชำระ',
   months: 'ขยายจำนวนงวด',
   both: 'เปลี่ยนวันชำระ + ขยายงวด',
+}
+
+// ===== Fee reconcile banner — ข้อความไทย (แบมเคาะ) =====
+const FEE_RIGHT_LABEL: Record<FeeRight, string> = {
+  due_day: 'เปลี่ยนวันชำระ',
+  months: 'ขยายงวด',
+  settle: 'ปิดก่อนกำหนด',
+}
+/** ข้อความหลักในกล่อง ตาม (right × status) */
+const FEE_PENDING_INCOME_MSG: Record<FeeRight, string> = {
+  due_day: 'สัญญานี้เปลี่ยนวันชำระแล้ว แต่ยังไม่ได้ลงค่าธรรมเนียมเป็นรายได้',
+  months: 'สัญญานี้ขยายจำนวนงวดแล้ว แต่ยังไม่ได้ลงค่าธรรมเนียมเป็นรายได้',
+  settle: 'สัญญานี้ปิดก่อนกำหนดแล้ว แต่ยังไม่ได้ลงค่าปิดด่วนเป็นรายได้',
+}
+const FEE_PENDING_ACTION_MSG: Record<FeeRight, string> = {
+  due_day: 'ลงค่าเปลี่ยนวันที่ชำระไว้แล้ว แต่ยังไม่ได้เปลี่ยนวันชำระบนสัญญา',
+  months: 'ลงค่าขยายระยะเวลาไว้แล้ว แต่ยังไม่ได้ขยายจำนวนงวด',
+  settle: 'ลงค่าปิดด่วนไว้แล้ว แต่ยังไม่ได้ปิดสัญญาก่อนกำหนด',
+}
+const FEE_STATUS_BADGE: Partial<Record<RightStatus, { text: string; tone: 'amber' | 'red' | 'neutral' }>> = {
+  pending_income: { text: 'รอลงค่าธรรมเนียม', tone: 'amber' },
+  pending_action: { text: 'รอทำรายการบนสัญญา', tone: 'red' },
+  waived: { text: 'ยกเว้นแล้ว', tone: 'neutral' },
 }
 
 /** สิทธิ์ที่ใช้ไปแล้วของสัญญา (ขยายได้สิทธิ์ละครั้ง) */
@@ -159,6 +194,7 @@ const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
 export default function ContractDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { role, name: userName } = useAuth()
   const isAdmin = role === 'admin'
   const canStaff = role === 'admin' || role === 'staff'
@@ -171,6 +207,13 @@ export default function ContractDetail() {
   const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
   const [otherIncomeItems, setOtherIncomeItems] = useState<OtherIncome[]>([])
   const [addOtherIncomeOpen, setAddOtherIncomeOpen] = useState(false)
+  // preset ตอนเปิด modal เพิ่มรายได้จาก banner (ลงค่าธรรมเนียม) — category + fee_kind
+  const [addOtherIncomePreset, setAddOtherIncomePreset] = useState<{ category: string; feeKind: FeeKind | null } | null>(null)
+  // ===== Fee reconcile (ค่าธรรมเนียม ↔ action) =====
+  const [feeReconcile, setFeeReconcile] = useState<ReconcileResult | null>(null)
+  const [extendPreset, setExtendPreset] = useState<ExtensionType | null>(null) // preset extType ตอนเปิด ExtendModal จาก banner
+  const [waiveBusy, setWaiveBusy] = useState<FeeRight | null>(null) // right ที่กำลัง waive/unwaive
+  const [waiveErr, setWaiveErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
@@ -245,7 +288,7 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec, poh, oi] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec, poh, oi, fr] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
@@ -254,6 +297,7 @@ export default function ContractDetail() {
       getExtraCharges(id),
       getPenaltyOverrideHistory(id),
       getOtherIncome(id),
+      getContractFeeReconcile(id),
     ])
     setContract(c)
     setInstallments(ins)
@@ -263,12 +307,63 @@ export default function ContractDetail() {
     setExtraCharges(ec)
     setPenaltyOverrideHistory(poh)
     setOtherIncomeItems(oi)
+    setFeeReconcile(fr)
     setLoading(false)
   }, [id])
 
   useEffect(() => {
     load()
   }, [load])
+
+  // ===== Deep-link: ?feeAction=... → เปิด modal action อัตโนมัติ (มาจากกล่องรอตรวจ PJ) =====
+  // ค่า: extend_due_day | extend_months | extend_both | settle
+  useEffect(() => {
+    if (loading) return
+    const feeAction = searchParams.get('feeAction')
+    if (!feeAction) return
+    if (feeAction === 'settle') {
+      setSettleOpen(true)
+    } else if (feeAction.startsWith('extend_')) {
+      const t = feeAction.replace('extend_', '') as ExtensionType
+      if (t === 'due_day' || t === 'months' || t === 'both') {
+        setExtendPreset(t)
+        setExtendOpen(true)
+      }
+    }
+    // เคลียร์ param ทิ้ง (กันเปิดซ้ำเมื่อปิด modal / reload)
+    searchParams.delete('feeAction')
+    setSearchParams(searchParams, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, searchParams])
+
+  // ===== Handlers: ยกเว้น/ยกเลิกยกเว้นค่าธรรมเนียม (admin only) =====
+  const handleWaive = useCallback(async (right: FeeRight) => {
+    if (!id) return
+    setWaiveBusy(right)
+    setWaiveErr(null)
+    try {
+      await insertFeeWaiver(id, right, userName ?? undefined)
+      await load()
+    } catch (e) {
+      setWaiveErr(errMsg(e))
+    } finally {
+      setWaiveBusy(null)
+    }
+  }, [id, userName, load])
+
+  const handleUnwaive = useCallback(async (right: FeeRight) => {
+    if (!id) return
+    setWaiveBusy(right)
+    setWaiveErr(null)
+    try {
+      await deleteFeeWaiver(id, right)
+      await load()
+    } catch (e) {
+      setWaiveErr(errMsg(e))
+    } finally {
+      setWaiveBusy(null)
+    }
+  }, [id, load])
 
   useEffect(() => {
     if (!id) return
@@ -598,6 +693,97 @@ export default function ContractDetail() {
           )}
         </div>
       </div>
+
+      {/* ===== กล่อง "รายการรอดำเนินการ (ค่าธรรมเนียม)" — ผูก action ↔ รายได้ 2 ทิศทาง ===== */}
+      {feeReconcile && (() => {
+        const rows = (['due_day', 'months', 'settle'] as FeeRight[])
+          .map((r) => ({ right: r, status: feeReconcile[r] }))
+          .filter((x) => x.status === 'pending_income' || x.status === 'pending_action' || x.status === 'waived')
+        if (rows.length === 0) return null
+        return (
+          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/60 px-4 py-3">
+            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink">
+              <AlertTriangle size={15} className="text-amber-500" /> รายการรอดำเนินการ (ค่าธรรมเนียม)
+            </h3>
+            <div className="flex flex-col gap-2.5">
+              {rows.map(({ right, status }) => {
+                const badge = FEE_STATUS_BADGE[status]
+                return (
+                  <div
+                    key={right}
+                    className="flex flex-col gap-2 rounded-xl border border-amber-100 bg-white px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="flex-1">
+                      <div className="mb-0.5 flex items-center gap-2">
+                        <Badge tone="neutral">{FEE_RIGHT_LABEL[right]}</Badge>
+                        {badge && <Badge tone={badge.tone}>{badge.text}</Badge>}
+                      </div>
+                      <p className="text-sm text-ink">
+                        {status === 'pending_income'
+                          ? FEE_PENDING_INCOME_MSG[right]
+                          : status === 'pending_action'
+                            ? FEE_PENDING_ACTION_MSG[right]
+                            : 'ยกเว้นค่าธรรมเนียม (ฟรี)'}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                      {status === 'pending_income' && canStaff && (
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            const p = presetForFeeKind(right as FeeKind)
+                            setAddOtherIncomePreset(p ? { category: p.category, feeKind: p.feeKind } : null)
+                            setAddOtherIncomeOpen(true)
+                          }}
+                        >
+                          <Plus size={14} /> ลงค่าธรรมเนียม
+                        </Button>
+                      )}
+                      {status === 'pending_action' && canStaff && (
+                        right === 'settle' ? (
+                          <Button variant="ghost" onClick={() => setSettleOpen(true)}>
+                            <BadgePercent size={14} /> ปิดสัญญาก่อนกำหนด
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            onClick={() => {
+                              setExtendPreset(right === 'months' ? 'months' : 'due_day')
+                              setExtendOpen(true)
+                            }}
+                          >
+                            <CalendarClock size={14} /> ขยายระยะเวลา
+                          </Button>
+                        )
+                      )}
+                      {/* ยกเว้น (ฟรี) — admin เท่านั้น */}
+                      {(status === 'pending_income' || status === 'pending_action') && isAdmin && (
+                        <Button
+                          variant="ghost"
+                          disabled={waiveBusy === right}
+                          onClick={() => void handleWaive(right)}
+                        >
+                          {waiveBusy === right ? 'กำลังบันทึก...' : 'ไม่คิดค่าธรรมเนียม (ฟรี)'}
+                        </Button>
+                      )}
+                      {status === 'waived' && isAdmin && (
+                        <button
+                          disabled={waiveBusy === right}
+                          onClick={() => void handleUnwaive(right)}
+                          className="rounded px-2 py-1 text-xs text-ink-soft underline underline-offset-2 hover:text-ink disabled:opacity-50"
+                        >
+                          {waiveBusy === right ? 'กำลังยกเลิก...' : 'ยกเลิกยกเว้น'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            {waiveErr && <p className="mt-2 text-sm text-red-600">{waiveErr}</p>}
+          </div>
+        )
+      })()}
 
       {/* สรุป — เมื่อคืนเครื่องแล้วให้ซ่อน "ยอดค้างรวม" (เงินต้นเต็ม) เพราะมี breakdown หลังคืนด้านล่างแทน */}
       <div className={`mb-4 grid gap-3 ${returnedOutstanding !== null ? 'sm:grid-cols-4' : 'sm:grid-cols-5'}`}>
@@ -1572,9 +1758,14 @@ export default function ContractDetail() {
           installments={installments}
           extensions={extensions}
           rateSets={rateSets}
-          onClose={() => setExtendOpen(false)}
+          initialExtType={extendPreset ?? undefined}
+          onClose={() => {
+            setExtendOpen(false)
+            setExtendPreset(null)
+          }}
           onDone={async () => {
             setExtendOpen(false)
+            setExtendPreset(null)
             await load()
           }}
         />
@@ -1810,9 +2001,15 @@ export default function ContractDetail() {
         <AddContractOtherIncomeModal
           contractId={id}
           userName={userName ?? ''}
-          onClose={() => setAddOtherIncomeOpen(false)}
+          initialCategory={addOtherIncomePreset?.category}
+          initialFeeKind={addOtherIncomePreset?.feeKind ?? null}
+          onClose={() => {
+            setAddOtherIncomeOpen(false)
+            setAddOtherIncomePreset(null)
+          }}
           onDone={async () => {
             setAddOtherIncomeOpen(false)
+            setAddOtherIncomePreset(null)
             await load()
           }}
         />
@@ -2808,6 +3005,7 @@ function ExtendModal({
   installments,
   extensions,
   rateSets,
+  initialExtType,
   onClose,
   onDone,
 }: {
@@ -2815,6 +3013,7 @@ function ExtendModal({
   installments: Installment[]
   extensions: ExtensionRecord[]
   rateSets: RateSet[]
+  initialExtType?: ExtensionType
   onClose: () => void
   onDone: () => void
 }) {
@@ -2837,7 +3036,10 @@ function ExtendModal({
 
   // ประเภทที่ยังขยายได้ตามสิทธิ์ที่เหลือ (กฎ: ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const allowed = allowedExtTypes(extensions)
-  const [extType, setExtType] = useState<ExtensionType>(allowed[0] ?? 'both')
+  // preset extType จาก deep-link/banner ถ้ายังใช้สิทธิ์นั้นได้ ไม่งั้น fallback งวดแรกที่ยังทำได้
+  const [extType, setExtType] = useState<ExtensionType>(
+    initialExtType && allowed.includes(initialExtType) ? initialExtType : (allowed[0] ?? 'both'),
+  )
   const [newDueDay, setNewDueDay] = useState(contract.dueDay)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -3653,16 +3855,27 @@ function FlagsModal({
 function AddContractOtherIncomeModal({
   contractId,
   userName,
+  initialCategory,
+  initialFeeKind,
   onClose,
   onDone,
 }: {
   contractId: string
   userName: string
+  initialCategory?: string
+  initialFeeKind?: FeeKind | null
   onClose: () => void
   onDone: () => void
 }) {
   const [amount, setAmount] = useState<number>(0)
-  const [category, setCategory] = useState('ค่าเปลี่ยนวันที่ชำระ')
+  // ตั้งค่าเริ่มจาก preset (จาก banner) ถ้า category ตรง preset ใดใน list ก็เลือกอันนั้น ไม่งั้น = พิมพ์เอง
+  const presetMatch = initialCategory
+    ? FEE_INCOME_PRESETS.find((p) => p.category === initialCategory)
+    : undefined
+  const [categoryChoice, setCategoryChoice] = useState<string>(
+    presetMatch ? presetMatch.category : (initialCategory ? FEE_INCOME_CUSTOM : FEE_INCOME_PRESETS[0].category),
+  )
+  const [customCategory, setCustomCategory] = useState(presetMatch ? '' : (initialCategory ?? ''))
   const [note, setNote] = useState('')
   const [receivedAt, setReceivedAt] = useState(
     new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10),
@@ -3670,8 +3883,14 @@ function AddContractOtherIncomeModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  const isCustomCategory = categoryChoice === FEE_INCOME_CUSTOM
+  const selectedPreset = FEE_INCOME_PRESETS.find((p) => p.category === categoryChoice) ?? null
+  const category = (isCustomCategory ? customCategory : categoryChoice).trim()
+  // feeKind: preset มากับตัว; custom = ใช้ initialFeeKind (ถ้า deep-link มา) ไม่งั้น null
+  const feeKind: FeeKind | null = isCustomCategory ? (initialFeeKind ?? null) : (selectedPreset?.feeKind ?? null)
+
   async function save() {
-    if (amount <= 0 || !category.trim()) {
+    if (amount <= 0 || !category) {
       setErr('กรุณาระบุหมวดหมู่และยอดเงิน')
       return
     }
@@ -3685,10 +3904,11 @@ function AddContractOtherIncomeModal({
       await insertOtherIncome({
         contractId,
         amount,
-        category: category.trim(),
+        category,
         note: note.trim() || undefined,
         receivedAt,
         recordedBy: userName,
+        feeKind,
       })
       onDone()
     } catch (e) {
@@ -3701,19 +3921,27 @@ function AddContractOtherIncomeModal({
     <Modal title="เพิ่มรายได้อื่นๆ" onClose={onClose}>
       <div className="flex flex-col gap-3">
         <Field label="หมวดหมู่" required>
-          <Input
-            type="text"
-            autoFocus
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            placeholder="เช่น ค่าเปลี่ยนวันที่ชำระ"
-            list="oi-contract-category-suggestions"
-          />
-          <datalist id="oi-contract-category-suggestions">
-            <option value="ค่าเปลี่ยนวันที่ชำระ" />
-            <option value="ค่าธรรมเนียมอื่นๆ" />
-            <option value="รายได้อื่นๆ" />
-          </datalist>
+          <Select value={categoryChoice} onChange={(e) => setCategoryChoice(e.target.value)}>
+            {FEE_INCOME_PRESETS.map((p) => (
+              <option key={p.category} value={p.category}>{p.category}</option>
+            ))}
+            <option value={FEE_INCOME_CUSTOM}>{FEE_INCOME_CUSTOM}</option>
+          </Select>
+          {isCustomCategory && (
+            <Input
+              type="text"
+              autoFocus
+              value={customCategory}
+              onChange={(e) => setCustomCategory(e.target.value)}
+              placeholder="พิมพ์ชื่อหมวด เช่น ค่าธรรมเนียมอื่นๆ"
+              className="mt-2"
+            />
+          )}
+          {feeKind && (
+            <p className="mt-1.5 text-xs text-ink-soft">
+              หมวดนี้ผูกกับการ{feeKind === 'settle' ? 'ปิดสัญญาก่อนกำหนด' : 'ขยายระยะเวลา/เปลี่ยนวันชำระ'}บนสัญญา
+            </p>
+          )}
         </Field>
         <Field label="ยอดเงิน (บาท)" required>
           <Input
@@ -3741,7 +3969,7 @@ function AddContractOtherIncomeModal({
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="mt-1 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-          <Button onClick={save} disabled={busy || amount <= 0 || !category.trim()}>
+          <Button onClick={save} disabled={busy || amount <= 0 || !category}>
             {busy ? 'กำลังบันทึก...' : 'บันทึกรายได้'}
           </Button>
         </div>

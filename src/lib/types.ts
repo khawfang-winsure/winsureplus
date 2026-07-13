@@ -323,6 +323,7 @@ export interface OtherIncome {
   receivedAt: string            // 'YYYY-MM-DD' — วันรับเงินจริง
   recordedBy?: string | null    // snapshot ชื่อผู้บันทึก
   createdAt: string             // ISO timestamptz
+  feeKind?: import('./feeReconcile').FeeKind | null // ค่าธรรมเนียมสิทธิ์ไหน (migration 0106) — null = รายได้ทั่วไป
 }
 
 /** สำหรับ execDashboard cashflow bucket (เฉพาะ field ที่ต้องการ) */

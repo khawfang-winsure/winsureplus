@@ -57,6 +57,13 @@ import type { SettlementTier } from './settlement'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 import type { DeviceStatus } from './returnWorkflow'
 import { outstandingAfterReturn } from './outstandingExtras'
+import {
+  reconcileContractFees,
+  FEE_RECONCILE_LAUNCH,
+  type FeeKind,
+  type FeeRight,
+  type ReconcileResult,
+} from './feeReconcile'
 import { calcSummary } from './calc'
 import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from './deviceReturnByCollector'
 
@@ -5969,6 +5976,7 @@ interface OtherIncomeRow {
   received_at: string
   recorded_by: string | null
   created_at: string
+  fee_kind: FeeKind | null
 }
 
 function mapOtherIncome(r: OtherIncomeRow): OtherIncome {
@@ -5981,6 +5989,7 @@ function mapOtherIncome(r: OtherIncomeRow): OtherIncome {
     receivedAt: r.received_at,
     recordedBy: r.recorded_by ?? null,
     createdAt: r.created_at,
+    feeKind: r.fee_kind ?? null,
   }
 }
 
@@ -5989,7 +5998,7 @@ export async function getOtherIncome(contractId: string): Promise<OtherIncome[]>
   if (!supabase) return []
   const { data, error } = await supabase
     .from('other_income')
-    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at')
+    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at, fee_kind')
     .eq('contract_id', contractId)
     .order('received_at', { ascending: false })
     .range(0, PAGE_CAP)
@@ -6002,7 +6011,7 @@ export async function getAllOtherIncome(): Promise<OtherIncome[]> {
   if (!supabase) return []
   const { data, error } = await supabase
     .from('other_income')
-    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at')
+    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at, fee_kind')
     .order('received_at', { ascending: false })
     .range(0, PAGE_CAP)
   if (error) throw error
@@ -6020,6 +6029,7 @@ export async function insertOtherIncome(input: {
   note?: string
   receivedAt: string
   recordedBy?: string
+  feeKind?: FeeKind | null // tag ค่าธรรมเนียมสิทธิ์ไหน (migration 0106) — null = รายได้ทั่วไป
 }): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('other_income').insert({
@@ -6029,6 +6039,7 @@ export async function insertOtherIncome(input: {
     note: input.note ?? null,
     received_at: input.receivedAt,
     recorded_by: input.recordedBy ?? null,
+    fee_kind: input.feeKind ?? null,
   })
   if (error) throw error
 }
@@ -6038,6 +6049,75 @@ export async function deleteOtherIncome(id: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('other_income').delete().eq('id', id)
   if (error) throw error
+}
+
+// ---------- Fee reconcile — fee_waivers + reconcile helper (migration 0106) ----------
+
+/** สิทธิ์ค่าธรรมเนียมที่ admin ยกเว้นแล้วของสัญญาหนึ่ง (คืน array ของ fee_right) */
+export async function getFeeWaivers(contractId: string): Promise<FeeRight[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('fee_waivers')
+    .select('fee_right')
+    .eq('contract_id', contractId)
+  if (error) throw error
+  return ((data ?? []) as { fee_right: FeeRight }[]).map((r) => r.fee_right)
+}
+
+/** admin ยกเว้นค่าธรรมเนียมสิทธิ์หนึ่ง (INSERT — admin only ตาม RLS 0106)
+ *  unique(contract_id, fee_right) กันซ้ำ — ยกเว้นซ้ำจะ error 23505 (UI ควรกันก่อน) */
+export async function insertFeeWaiver(
+  contractId: string,
+  right: FeeRight,
+  byName?: string,
+  note?: string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('fee_waivers').insert({
+    contract_id: contractId,
+    fee_right: right,
+    waived_by: byName ?? null,
+    note: note ?? null,
+  })
+  if (error) throw error
+}
+
+/** ยกเลิกการยกเว้น (DELETE — admin only ตาม RLS 0106) */
+export async function deleteFeeWaiver(contractId: string, right: FeeRight): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('fee_waivers')
+    .delete()
+    .eq('contract_id', contractId)
+    .eq('fee_right', right)
+  if (error) throw error
+}
+
+/**
+ * รวมข้อมูล reconcile ค่าธรรมเนียมของสัญญาหนึ่งแล้วคืนสถานะ 3 สิทธิ์ (derive-first)
+ * ดึง extensions + otherIncome(fee_kind) + waivers + settled_at → เรียก reconcileContractFees
+ * ใช้ใน ContractDetail ได้เลย (1 สัญญา — 3 query ขนาน + 1 อ่าน contract)
+ */
+export async function getContractFeeReconcile(contractId: string): Promise<ReconcileResult> {
+  if (!supabase) {
+    return { due_day: 'none', months: 'none', settle: 'none' }
+  }
+  const [exts, income, waivers, contractRow] = await Promise.all([
+    getContractExtensions(contractId),
+    getOtherIncome(contractId),
+    getFeeWaivers(contractId),
+    supabase.from('contracts').select('settled_at').eq('id', contractId).maybeSingle(),
+  ])
+  if (contractRow.error) throw contractRow.error
+  const settledAt = (contractRow.data as { settled_at: string | null } | null)?.settled_at ?? null
+
+  return reconcileContractFees({
+    settledAt,
+    extensions: exts.map((e) => ({ extType: e.extType, createdAt: e.createdAt })),
+    otherIncome: income.map((oi) => ({ feeKind: oi.feeKind ?? null, receivedAt: oi.receivedAt })),
+    dismisses: waivers,
+    launchDate: FEE_RECONCILE_LAUNCH,
+  })
 }
 
 // ---------- helper 6: updateDefectNotes ----------
@@ -7576,9 +7656,10 @@ export async function applyPjReviewAsOtherIncome(params: {
   receivedAt: string  // 'YYYY-MM-DD' วันรับเงินจริง — ปกติใช้ row.paidDate จากกล่องรอตรวจ
   note?: string
   byName: string
+  feeKind?: FeeKind | null // tag ค่าธรรมเนียมสิทธิ์ (migration 0106) — ถ้ายอดนี้คือค่าเปลี่ยนวัน/ขยายงวด/ปิดด่วน
 }): Promise<void> {
   if (!supabase) return
-  const { reviewId, contractId, amount, category, receivedAt, note, byName } = params
+  const { reviewId, contractId, amount, category, receivedAt, note, byName, feeKind } = params
 
   await insertOtherIncome({
     contractId,
@@ -7587,6 +7668,7 @@ export async function applyPjReviewAsOtherIncome(params: {
     note,
     receivedAt,
     recordedBy: byName,
+    feeKind: feeKind ?? null,
   })
 
   await resolvePjReviewItem(
