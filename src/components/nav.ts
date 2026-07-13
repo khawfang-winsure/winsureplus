@@ -1,27 +1,19 @@
 // โครงเมนูด้านซ้าย — แก้ที่เดียว มีผลทั้งเว็บ
-import {
-  AlertTriangle,
-  BarChart3,
-  CalendarRange,
-  Gauge,
-  History,
-  Inbox,
-  LayoutDashboard,
-  Landmark,
-  Percent,
-  Phone,
-  Settings,
-  TrendingUp,
-  Truck,
-  Users,
-  type LucideIcon,
-} from 'lucide-react'
+// โครง "ทำ / ดู / ตั้ง" (Pete เคาะแบบ A 2026-07-13)
+// 3 กลุ่มใหญ่ พับได้ — ไม่มี gate ระดับกลุ่ม. สิทธิ์การมองเห็นย้ายลงไปที่ child ทุกอัน
+// (adminOnly / freelancerOnly / executiveVisible / accountingOnly). กลุ่มโชว์ก็ต่อเมื่อมี child
+// ที่ role นั้นเห็นอย่างน้อย 1 อัน (Sidebar คำนวณให้). ห้ามแตะ route/path ใน App.tsx — path เดิมทุกอัน
+import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
 
 export interface NavChild {
   to: string
   label: string
-  adminOnly?: boolean
-  /** หัวข้อย่อย (เส้นคั่น) ที่จะโชว์เหนือลิงก์นี้ — ใช้แบ่งกลุ่มย่อยภายใน submenu เดียวกัน */
+  adminOnly?: boolean // ซ่อนจากพนักงาน (staff) — เห็นเฉพาะแอดมิน (+exec ถ้าตั้ง executiveVisible ด้วย)
+  freelancerOnly?: boolean // เห็นเฉพาะผู้ติดตามหนี้ (freelancer) — ซ่อนจาก admin/staff
+  executiveVisible?: boolean // executive เห็นด้วยทั้งที่ adminOnly=true
+  accountingOnly?: boolean // เห็นเฉพาะบัญชี (+admin) — ซ่อนจาก staff/freelancer/executive
+  /** หัวข้อย่อย (เส้นคั่น) ที่จะโชว์เหนือลิงก์นี้ — ใช้แบ่ง subsection ภายใน submenu เดียวกัน
+   *  Sidebar จะยกหัวข้อนี้ไปไว้เหนือ child แรกที่ role นั้นยังเห็น (กันหัวข้อลอยโล่ง) */
   sectionLabel?: string
 }
 
@@ -37,86 +29,68 @@ export interface NavItem {
 }
 
 export const NAV: NavItem[] = [
-  // กลุ่ม freelancer — แยกออกมา ไม่อยู่ในกลุ่มหลัก
+  // ── ลิงก์เดี่ยว top-level (นอกกลุ่ม) ─────────────────────────
+  // ภาพรวม = หน้าแรก (admin+staff เห็น เหมือนเดิม ไม่มี role flag)
+  { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
+  // 3 เมนูเฉพาะ role — Pete ขอให้เป็นลิงก์เดี่ยว ไม่ต้องกดกางกลุ่ม (role flag เดิมเป๊ะ)
   { to: '/queue', label: 'คิวติดตาม', icon: Phone, freelancerOnly: true },
   { to: '/my-performance', label: 'ผลงานของฉัน', icon: TrendingUp, freelancerOnly: true },
-
-  // กลุ่ม accounting — แยกออกมา ไม่อยู่ในกลุ่มหลัก (admin เห็นด้วย)
   { to: '/transfers', label: 'โอนเงินร้าน', icon: Landmark, accountingOnly: true },
 
-  // เมนูหลัก — item เดี่ยวบนสุด
-  { to: '/', label: 'ภาพรวม', icon: LayoutDashboard },
-  { to: '/exec', label: 'Dashboard ผู้บริหาร', icon: Gauge, adminOnly: true, executiveVisible: true },
-  { to: '/monthly-report', label: 'รายงานประจำเดือน', icon: CalendarRange, adminOnly: true, executiveVisible: true },
-  { to: '/shop-promo-analysis', label: 'วิเคราะห์ร้านเพื่อจัดโปร', icon: Percent, adminOnly: true, executiveVisible: true },
-  { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', icon: History, adminOnly: true, executiveVisible: true },
-  { to: '/transfer-summary', label: 'สรุปการโอนเงินร้าน', icon: Landmark, adminOnly: true, executiveVisible: true },
-
-  // กลุ่มพับได้: รับเรื่อง/บันทึก
+  // ── กลุ่ม 1: ทำ · งานประจำวัน ─────────────────────────────
   {
-    label: 'รับเรื่อง/บันทึก',
-    icon: Inbox,
+    label: 'ทำ · งานประจำวัน',
+    icon: ListChecks,
     children: [
+      { to: '/add', label: 'เพิ่มข้อมูลสัญญา', sectionLabel: 'รับงานเข้า' },
       { to: '/inbox', label: 'กล่องรับงาน' },
       { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ' },
-      { to: '/add', label: 'เพิ่มข้อมูลสัญญา' },
-      { to: '/waiting-email', label: 'รอส่งอีเมล' },
-      { to: '/waiting-summary', label: 'รอสรุปยอด' },
-      { to: '/other-income', label: 'รายได้อื่นๆ' },
-    ],
-  },
 
-  // กลุ่มพับได้: ลูกค้า & หนี้
-  {
-    label: 'ลูกค้า & หนี้',
-    icon: Users,
-    children: [
-      { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด' },
-      { to: '/customers', label: 'ลูกค้าทั้งหมด' },
-      { to: '/extended', label: 'ลูกค้าขยายระยะเวลา' },
-      { to: '/customer-overview', label: 'วิเคราะห์ลูกค้า (กราฟ)' },
+      { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', sectionLabel: 'ติดตามหนี้' },
+      { to: '/overdue/last', label: 'ลูกค้าล่าช้า-หนี้เสีย' },
       { to: '/letters', label: 'ส่งจดหมาย' },
-    ],
-  },
 
-  // ลูกค้าล่าช้า-หนี้เสีย — เดิมพับ 6 ลิงก์แยกช่วงวัน ยุบเหลือลิงก์เดียว
-  // เข้าหน้าเดียว (/overdue/:bucket) แล้วสลับช่วงด้วยแท็บในหน้าแทน — bucket 'last' = เปิดช่วงที่จำไว้ล่าสุด
-  { to: '/overdue/last', label: 'ลูกค้าล่าช้า-หนี้เสีย', icon: AlertTriangle },
+      { to: '/waiting-summary', label: 'รอสรุปยอด', sectionLabel: 'เงินโอนร้าน' },
+      { to: '/waiting-email', label: 'รอส่งอีเมล' },
+      { to: '/other-income', label: 'รายได้อื่นๆ' },
 
-  // กลุ่มพับได้: เครื่อง & เอกสาร
-  {
-    label: 'เครื่อง & เอกสาร',
-    icon: Truck,
-    children: [
-      { to: '/doc-tracking', label: 'รับเอกสาร/กล่อง' },
+      { to: '/doc-tracking', label: 'รับเอกสาร/กล่อง', sectionLabel: 'เครื่อง & เอกสาร' },
       { to: '/device-pipeline', label: 'ติดตามเครื่อง' },
       { to: '/returns', label: 'ลูกค้าคืนเครื่อง' },
     ],
   },
 
-  // รายงาน (collapsible)
+  // ── กลุ่ม 2: ดู · รายงาน & วิเคราะห์ ──────────────────────
   {
-    label: 'รายงาน',
+    label: 'ดู · รายงาน & วิเคราะห์',
     icon: BarChart3,
-    adminOnly: true, // ซ่อนทั้งกลุ่มจากพนักงาน (staff) — เห็นเฉพาะแอดมิน
-    executiveVisible: true, // exec เห็นกลุ่มนี้ด้วย แต่เห็นเฉพาะ child ที่ไม่ได้ตั้ง adminOnly (ตอนนี้คือ /staff-performance เท่านั้น)
     children: [
+      { to: '/exec', label: 'Dashboard ผู้บริหาร', adminOnly: true, executiveVisible: true, sectionLabel: 'ผู้บริหาร' },
+      { to: '/monthly-report', label: 'รายงานประจำเดือน', adminOnly: true, executiveVisible: true },
+
       { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true, sectionLabel: 'การเงิน' },
       { to: '/settlements', label: 'ปิดสัญญาก่อนกำหนด', adminOnly: true },
+      { to: '/transfer-summary', label: 'สรุปการโอนเงินร้าน', adminOnly: true, executiveVisible: true },
       { to: '/weekly-summary', label: 'สรุปรายสัปดาห์', adminOnly: true },
 
       { to: '/shop-report', label: 'รายงานร้านค้า', adminOnly: true, sectionLabel: 'ร้านค้า-เครื่อง' },
+      { to: '/shop-promo-analysis', label: 'วิเคราะห์ร้านเพื่อจัดโปร', adminOnly: true, executiveVisible: true },
       { to: '/sale-history', label: 'ประวัติการขายเครื่อง', adminOnly: true },
       { to: '/returns-report', label: 'รายงานการคืนเครื่อง', adminOnly: true },
 
-      { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', sectionLabel: 'ทีมตามหนี้' },
-      { to: '/hr-report', label: 'รายงาน HR ทีมโทร' },
+      { to: '/staff-performance', label: 'สรุปภาพรวมการติดตามหนี้', adminOnly: true, executiveVisible: true, sectionLabel: 'ทีมโทร' },
+      { to: '/hr-report', label: 'รายงาน HR ทีมโทร', adminOnly: true, executiveVisible: true },
+      { to: '/staff-daily-report', label: 'รายงานการทำงานพนักงานรายวัน', adminOnly: true, executiveVisible: true },
+
+      { to: '/customers', label: 'ลูกค้าทั้งหมด', sectionLabel: 'ลูกค้า' },
+      { to: '/customer-overview', label: 'วิเคราะห์ลูกค้า (กราฟ)' },
+      { to: '/extended', label: 'ลูกค้าขยายระยะเวลา' },
     ],
   },
 
-  // ตั้งค่า (collapsible)
+  // ── กลุ่ม 3: ตั้ง · ตั้งค่า ────────────────────────────────
   {
-    label: 'ตั้งค่า',
+    label: 'ตั้ง · ตั้งค่า',
     icon: Settings,
     children: [
       { to: '/settings/shops', label: 'ตั้งค่าร้านค้า', sectionLabel: 'ตั้งค่าทั่วไป' },
@@ -131,4 +105,3 @@ export const NAV: NavItem[] = [
     ],
   },
 ]
-

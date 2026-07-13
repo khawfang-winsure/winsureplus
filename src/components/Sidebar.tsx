@@ -1,8 +1,28 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { NAV } from './nav'
+import { NAV, type NavChild, type NavItem } from './nav'
 import { useAuth } from '../lib/auth'
+
+// สิทธิ์การมองเห็นของแต่ละ role (คำนวณครั้งเดียวใน Sidebar แล้วส่งลงไป)
+interface Roles {
+  isAdmin: boolean
+  isFreelancer: boolean
+  isExecutive: boolean
+  isAccounting: boolean
+}
+
+// เกณฑ์เดียว ใช้ได้ทั้ง item เดี่ยวและ child — ตรรกะเดียวกับตัวกรอง top-level เดิมเป๊ะ
+// (ย้ายลงมาระดับ child เพราะโครงใหม่ยุบทุกอย่างเป็น child ใน 3 กลุ่มใหญ่ที่ไม่มี gate ระดับกลุ่ม)
+type Gated = Pick<NavItem | NavChild, 'adminOnly' | 'freelancerOnly' | 'executiveVisible' | 'accountingOnly'>
+function entryVisible(e: Gated, r: Roles): boolean {
+  if (r.isExecutive) return e.executiveVisible === true
+  if (r.isFreelancer) return e.freelancerOnly === true
+  if (r.isAccounting) return e.accountingOnly === true
+  if (e.freelancerOnly) return false
+  if (e.accountingOnly) return r.isAdmin
+  return !e.adminOnly || r.isAdmin
+}
 
 // เมนูซ้าย:
 //   desktop/tablet (≥md) → rail w-16 (icon-only) เมื่อ hover กางเป็น w-60 + ดันเนื้อหา ไม่ overlay
@@ -17,7 +37,7 @@ interface NavContentProps {
   expanded: Record<string, boolean>
   onToggleGroup: (label: string) => void
   items: typeof NAV
-  isAdmin: boolean
+  roles: Roles
   pathname: string
   /** true = ใน mobile drawer (labels โชว์ครบ ไม่มี md: class ซ่อน) */
   isMobile: boolean
@@ -33,7 +53,7 @@ function NavContent({
   expanded,
   onToggleGroup,
   items,
-  isAdmin,
+  roles,
   pathname,
   isMobile,
   isTouch,
@@ -45,21 +65,31 @@ function NavContent({
     <>
       {items.map((item) => {
         if (item.children) {
-          const visibleChildren = item.children.filter((c) => !c.adminOnly || isAdmin)
+          // ผูก sectionLabel ปัจจุบัน (running) ให้ทุก child ก่อนกรอง — เพื่อยกหัวข้อย่อยไปไว้เหนือ
+          // child แรกที่ role นั้น "ยังเห็น" (กันหัวข้อลอยโล่งเมื่อ child ตัวแรกของ subsection ถูกซ่อน)
+          let running: string | undefined
+          const tagged = item.children.map((c) => {
+            if (c.sectionLabel) running = c.sectionLabel
+            return { child: c, section: running }
+          })
+          const visibleChildren = tagged.filter(({ child }) => entryVisible(child, roles))
           if (visibleChildren.length === 0) return null
-          const groupActive = visibleChildren.some((c) => pathname === c.to)
+          const groupActive = visibleChildren.some(({ child }) => pathname === child.to)
           // mobile: accordion — open ถ้า active หรือ expanded; desktop: click-toggle เท่านั้น
           const open = !!expanded[item.label] || (isMobile && groupActive)
 
-          const childLinks = visibleChildren.map((child, idx) => (
+          const childLinks = visibleChildren.map(({ child, section }, idx) => {
+            const prevSection = idx > 0 ? visibleChildren[idx - 1].section : undefined
+            const showHeader = !!section && section !== prevSection
+            return (
             <div key={child.to} className="flex flex-col">
-              {child.sectionLabel && (
+              {showHeader && (
                 <div
                   className={`whitespace-nowrap px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-soft/70 ${
                     idx === 0 ? 'pt-0' : 'mt-1 border-t border-peach pt-2'
                   }`}
                 >
-                  {child.sectionLabel}
+                  {section}
                 </div>
               )}
               <NavLink
@@ -76,7 +106,8 @@ function NavContent({
                 <span className="whitespace-nowrap">{child.label}</span>
               </NavLink>
             </div>
-          ))
+            )
+          })
 
           return (
             <div key={item.label} className="flex flex-col gap-1">
@@ -202,20 +233,19 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
     setExpanded((prev) => ({ ...prev, [label]: !prev[label] }))
   }
 
-  const items = NAV.filter((item) => {
-    if (isExecutive) return item.executiveVisible === true
-    if (isFreelancer) return item.freelancerOnly === true
-    if (isAccounting) return item.accountingOnly === true
-    if (item.freelancerOnly) return false
-    if (item.accountingOnly) return isAdmin
-    return !item.adminOnly || isAdmin
-  })
+  const roles: Roles = { isAdmin, isFreelancer, isExecutive, isAccounting }
+
+  // กลุ่มใหญ่ (มี children) โชว์ก็ต่อเมื่อมี child ที่ role นั้นเห็น ≥1 อัน — ไม่มี gate ระดับกลุ่ม
+  // item เดี่ยว (ถ้ามี) ใช้เกณฑ์ entryVisible เดียวกับ child. โครงปัจจุบันเป็นกลุ่มล้วน 3 กลุ่ม
+  const items = NAV.filter((item) =>
+    item.children ? item.children.some((c) => entryVisible(c, roles)) : entryVisible(item, roles),
+  )
 
   const sharedNavProps = {
     expanded,
     onToggleGroup: toggleGroup,
     items,
-    isAdmin,
+    roles,
     pathname,
   }
 
