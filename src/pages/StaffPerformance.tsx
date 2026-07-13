@@ -905,7 +905,9 @@ function CollectionExecOverview({
 
   const btnClass = (on: boolean) =>
     `rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-      on ? 'bg-peach-deep text-white' : 'text-ink-soft hover:text-ink'
+      on
+        ? 'bg-salmon-deep text-white shadow-sm'
+        : 'text-ink hover:bg-peach-light/60'
     }`
 
   return (
@@ -919,7 +921,7 @@ function CollectionExecOverview({
           </p>
         </div>
         <div
-          className="inline-flex shrink-0 rounded-xl border border-peach bg-white p-0.5"
+          className="inline-flex shrink-0 rounded-xl border border-salmon/30 bg-white p-0.5 shadow-sm"
           role="group"
           aria-label="เลือกมุมมองอัตราเก็บเงิน"
         >
