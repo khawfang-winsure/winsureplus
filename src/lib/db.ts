@@ -2012,25 +2012,6 @@ export async function getAllStatuses(): Promise<ContractStatusRow[]> {
   return ((data ?? []) as StatusRow[]).map(mapStatus)
 }
 
-/** ลูกค้าที่ใกล้/ถึงวันครบกำหนด (next_due ตั้งแต่วันนี้ถึง +7 วัน) */
-export async function getDueSoon(): Promise<ContractStatusRow[]> {
-  if (!supabase) return []
-  const today = new Date()
-  const iso = (d: Date) => d.toISOString().slice(0, 10)
-  const in7 = new Date(today)
-  in7.setDate(in7.getDate() + 7)
-  const { data, error } = await supabase
-    .from('v_contract_status')
-    .select('*')
-    .eq('status', 'active')
-    .gte('next_due', iso(today))
-    .lte('next_due', iso(in7))
-    .order('next_due')
-    .range(0, PAGE_CAP)
-  if (error) throw error
-  return ((data ?? []) as StatusRow[]).map(mapStatus)
-}
-
 // ---------- คืนเครื่อง (Phase 5) ----------
 export interface ReturnInput {
   caseNo: 1 | 2 | 3

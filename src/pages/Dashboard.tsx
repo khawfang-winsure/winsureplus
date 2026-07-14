@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
-  CalendarClock,
   Mail,
   Receipt,
   Users,
@@ -11,13 +10,6 @@ import { Loading, PageTitle } from '../components/ui'
 import { getAllStatuses, getContracts } from '../lib/db'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, ContractStatusRow } from '../lib/types'
-
-const todayISO = new Date().toISOString().slice(0, 10)
-const in7ISO = (() => {
-  const d = new Date()
-  d.setDate(d.getDate() + 7)
-  return d.toISOString().slice(0, 10)
-})()
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -33,15 +25,11 @@ export default function Dashboard() {
   const pendingSummary = data.contracts.filter((c) => !c.summarySentAt).length
   const pendingEmail = data.contracts.filter((c) => !c.emailSentAt).length
   const overdue = data.statuses.filter((s) => s.bucket !== 'normal').length
-  const dueSoon = data.statuses.filter(
-    (s) => s.status === 'active' && s.nextDue && s.nextDue >= todayISO && s.nextDue <= in7ISO,
-  ).length
 
   const cards: { label: string; value: number; icon: LucideIcon; to: string; tone: string; sub?: string }[] = [
     { label: 'ลูกค้าทั้งหมด', value: total, icon: Users, to: '/customers', tone: 'text-ink' },
     { label: 'รอสรุปยอด', value: pendingSummary, icon: Receipt, to: '/waiting-summary', tone: 'text-amber-600', sub: 'รวมทุกเคสค้าง' },
     { label: 'รอส่งอีเมล', value: pendingEmail, icon: Mail, to: '/waiting-email', tone: 'text-amber-600', sub: 'รวมทุกเคสค้าง' },
-    { label: 'ถึงกำหนด (7 วัน)', value: dueSoon, icon: CalendarClock, to: '/due', tone: 'text-salmon-deep' },
     { label: 'ล่าช้า-หนี้เสีย', value: overdue, icon: AlertTriangle, to: '/customers?bucket=overdue', tone: 'text-red-600' },
   ]
 

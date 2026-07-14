@@ -46,8 +46,7 @@ export const NAV: NavItem[] = [
       { to: '/inbox', label: 'กล่องรับงาน' },
       { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ' },
 
-      { to: '/due', label: 'ลูกค้าถึงวันครบกำหนด', sectionLabel: 'ติดตามหนี้' },
-      { to: '/overdue/last', label: 'ลูกค้าล่าช้า-หนี้เสีย' },
+      { to: '/overdue/last', label: 'ลูกค้าล่าช้า-หนี้เสีย', sectionLabel: 'ติดตามหนี้' },
       { to: '/letters', label: 'ส่งจดหมาย' },
 
       { to: '/waiting-summary', label: 'รอสรุปยอด', sectionLabel: 'เงินโอนร้าน' },

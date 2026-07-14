@@ -12,7 +12,6 @@ const AddContract = lazy(() => import('./pages/AddContract'))
 const AllCustomers = lazy(() => import('./pages/AllCustomers'))
 const CustomerOverview = lazy(() => import('./pages/CustomerOverview'))
 const ContractDetail = lazy(() => import('./pages/ContractDetail'))
-const DueToday = lazy(() => import('./pages/DueToday'))
 const Overdue = lazy(() => import('./pages/Overdue'))
 const Returns = lazy(() => import('./pages/Returns'))
 const ExtendedContracts = lazy(() => import('./pages/ExtendedContracts'))
@@ -110,7 +109,6 @@ function Gate() {
           <Route path="/customer-overview" element={isAdminOrStaff ? <CustomerOverview /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/contract/:id" element={isAdminOrStaff ? <ContractDetail /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/customer/:id" element={isAdminOrStaff ? <CustomerDetail /> : <Navigate to={fallbackTo} replace />} />
-          <Route path="/due" element={isAdminOrStaff ? <DueToday /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/overdue/:bucket" element={isAdminOrStaff ? <Overdue /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/letters" element={isAdminOrStaff ? <Letters /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/returns" element={isAdminOrStaff ? <Returns /> : <Navigate to={fallbackTo} replace />} />
