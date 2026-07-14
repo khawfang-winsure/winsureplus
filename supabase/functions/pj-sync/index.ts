@@ -1,6 +1,17 @@
 // Edge Function: pj-sync — Wave 2 ตัวจริง (ดึงยอด PJ → ลงงวด EXACT อัตโนมัติ / ที่เหลือเข้ากล่องรอตรวจ)
 //
-// รันทุก 15 นาที (pg_cron — ครีมตั้งทีหลังหลัง Pete ดู dryRun). gate ด้วย header x-pj-sync-key (verify_jwt:false)
+// รันทุก 15 นาที (pg_cron jobid 6 — ดึงวันเดียว "วันนี้"). gate ด้วย header x-pj-sync-key (verify_jwt:false)
+//
+// ── ช่วงวันที่ (14 ก.ค. 2026 เพิ่ม) — แก้บั๊ก "คีย์ย้อนหลัง" ──────────────────────────────────
+// jobid 6 เดิมดึงแค่ receipts ของ "วันนี้" (start_date=end_date=date) — ถ้าพนักงาน PJ คีย์ใบเสร็จ
+// ย้อนหลัง (paid_date เป็นอดีต แต่กดบันทึกเข้าระบบทีหลัง) รอบของวันนั้นรันไปแล้ว ไม่มีรอบไหนดึงย้อนไปเจอ
+// ใบเสร็จนั้นอีกเลย = เงินหายเงียบ ไม่เข้ากล่องรอตรวจด้วย
+//
+// แก้ด้วย param เสริม (ไม่บังคับ — ไม่ส่งอะไรเลย = พฤติกรรมเดิมเป๊ะ ไม่พัง jobid 6):
+//   - days_back: int → start_date = date(หรือวันนี้) - days_back วัน, end_date = date(หรือวันนี้)
+//   - start_date + end_date: DD-MM-YYYY ตรงตัว (มาก่อน days_back ถ้าส่งมาทั้งคู่)
+// มี pg_cron jobid ใหม่แยกต่างหาก รันทุก 3 วัน ส่ง days_back=30 (ดู migration/SQL คู่กัน) — jobid 6
+// ไม่ถูกแตะ ยังรันทุก 15 นาทีแบบวันเดียวเหมือนเดิม
 //
 // ⚠️ ห้าม log/return ค่า PJ_USERNAME / PJ_PASSWORD / cookie / token / PJ_SYNC_KEY เด็ดขาด
 //    error_detail / response JSON ต้องกรอง credential ออกทุกจุด
@@ -116,6 +127,19 @@ function ddmmyyyyToday(): string {
   return `${dd}-${mm}-${yyyy}`;
 }
 
+// เลื่อนวันที่ DD-MM-YYYY ไป deltaDays วัน (ใช้ UTC ล้วนกันปัญหา DST/timezone ตอนข้ามเดือน/ปี —
+// ไม่เกี่ยวกับเวลาไทยเพราะเทียบแค่ "วันที่" ไม่มีเวลา)
+function shiftDdMmYyyy(ddmmyyyy: string, deltaDays: number): string {
+  const m = ddmmyyyy.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!m) return ddmmyyyy; // defensive — ไม่ควรเกิดเพราะ caller validate regex มาก่อนแล้ว
+  const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+
 // "1,234.50" / "1234" / number → number. กับดัก: PJ ส่ง string มี comma
 function parseAmount(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -172,11 +196,34 @@ export default {
       body = txt ? JSON.parse(txt) : {};
     } catch { /* default {} */ }
     const dryRun: boolean = body?.dryRun === true;
+    const DDMMYYYY_RE = /^\d{2}-\d{2}-\d{4}$/;
     const date: string =
-      typeof body?.date === "string" && /^\d{2}-\d{2}-\d{4}$/.test(body.date)
+      typeof body?.date === "string" && DDMMYYYY_RE.test(body.date)
         ? body.date
         : ddmmyyyyToday();
-    const syncIsoDate = toIsoDate(date); // YYYY-MM-DD ของ date ที่ดึง (fallback window)
+
+    // ── ช่วงวันที่ดึง receipts (14 ก.ค. 2026 เพิ่ม) ──────────────────────────────
+    // ลำดับความสำคัญ: start_date+end_date ระบุตรง > days_back > legacy (ไม่ส่งอะไรเลย
+    // = startDate=endDate=date เป๊ะเหมือนโค้ดเดิม — ต้อง backward-compat กับ jobid 6 ทุก 15 นาที)
+    const MAX_DAYS_BACK = 90; // กัน param มั่ว/ยิง window ใหญ่เกินจำเป็นจนช้า+เสี่ยง timeout
+    let startDate = date;
+    let endDate = date;
+    let daysBackUsed = 0;
+    if (
+      typeof body?.start_date === "string" && DDMMYYYY_RE.test(body.start_date) &&
+      typeof body?.end_date === "string" && DDMMYYYY_RE.test(body.end_date)
+    ) {
+      startDate = body.start_date;
+      endDate = body.end_date;
+    } else {
+      const rawDaysBack = Number(body?.days_back);
+      if (Number.isFinite(rawDaysBack) && rawDaysBack > 0) {
+        daysBackUsed = Math.min(Math.floor(rawDaysBack), MAX_DAYS_BACK);
+        endDate = date;
+        startDate = shiftDdMmYyyy(date, -daysBackUsed);
+      }
+    }
+    const syncIsoDate = toIsoDate(endDate); // YYYY-MM-DD ปลาย window (fallback ใบเสร็จที่ parse paid_date ไม่ได้)
 
     const PJ_USERNAME = Deno.env.get("PJ_USERNAME") ?? "";
     const PJ_PASSWORD = Deno.env.get("PJ_PASSWORD") ?? "";
@@ -275,50 +322,88 @@ export default {
         return await failRun("login_failed", "login: ไม่สำเร็จ (รหัส/validation ไม่ผ่าน)");
       }
 
-      // ── 3) ดึง receipts ของ date (length=500 ครบทุกแถว) ──────────────────────
+      // ── 3) ดึง receipts ของช่วง [startDate, endDate] — เพจ pagination (14 ก.ค. 2026 เพิ่ม) ─────
+      // ⚠️ เดิม length=500 ดึงครั้งเดียวพอเพราะ window=วันเดียว แถวไม่มากพอเกิน 500 อยู่แล้ว
+      //    แต่ window 30 วัน (deep-scan cron) อาจมี receipts รวมเกิน 500 แถว — ถ้าไม่ทำ pagination
+      //    ข้อมูลหน้าหลังๆ หายเงียบ (DataTable ตัดที่ length เสมอ) จึงต้อง loop ดึงทีละหน้าจนครบ
       const xsrfRaw = jar.get("XSRF-TOKEN") ?? "";
       let xsrfToken = "";
       try { xsrfToken = decodeURIComponent(xsrfRaw); } catch { xsrfToken = xsrfRaw; }
 
-      const dtBody = new URLSearchParams();
-      dtBody.set("draw", "1");
-      dtBody.set("start", "0");
-      dtBody.set("length", "500");
-      dtBody.set("_token", token);
-      dtBody.set("start_date", date);
-      dtBody.set("end_date", date);
+      const PAGE_LENGTH = 500;
+      const MAX_PAGES = 100; // safety valve กันวนไม่รู้จบถ้า DataTable ส่ง recordsTotal เพี้ยน (100*500=50,000 แถว เกินจริงมากแล้วสำหรับ 90 วัน)
 
-      const r3 = await fetch(RECEIPTS_URL, {
-        method: "POST",
-        headers: {
-          "User-Agent": UA,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: cookieHeader(jar),
-          Referer: `${PJ_BASE}/manager/home`,
-          Origin: PJ_BASE,
-          Accept: "application/json, text/javascript, */*; q=0.01",
-          "X-Requested-With": "XMLHttpRequest",
-          "X-CSRF-TOKEN": xsrfToken,
-        },
-        body: dtBody.toString(),
-        redirect: "manual",
-      });
+      async function fetchReceiptsPage(
+        startOffset: number,
+      ): Promise<{ rows: any[]; recordsTotal: number; recordsFiltered: number }> {
+        const dtBody = new URLSearchParams();
+        dtBody.set("draw", String(Math.floor(startOffset / PAGE_LENGTH) + 1));
+        dtBody.set("start", String(startOffset));
+        dtBody.set("length", String(PAGE_LENGTH));
+        dtBody.set("_token", token);
+        dtBody.set("start_date", startDate);
+        dtBody.set("end_date", endDate);
 
-      const ct = r3.headers.get("content-type") ?? "";
-      const text3 = await r3.text();
-      let parsed: any = null;
-      if (ct.includes("application/json")) {
-        try { parsed = JSON.parse(text3); } catch { /* not json */ }
-      } else {
-        const trimmed = text3.trim();
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-          try { parsed = JSON.parse(trimmed); } catch { /* not json */ }
+        const res = await fetch(RECEIPTS_URL, {
+          method: "POST",
+          headers: {
+            "User-Agent": UA,
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: cookieHeader(jar),
+            Referer: `${PJ_BASE}/manager/home`,
+            Origin: PJ_BASE,
+            Accept: "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRF-TOKEN": xsrfToken,
+          },
+          body: dtBody.toString(),
+          redirect: "manual",
+        });
+
+        const pageCt = res.headers.get("content-type") ?? "";
+        const pageText = await res.text();
+        let pageParsed: any = null;
+        if (pageCt.includes("application/json")) {
+          try { pageParsed = JSON.parse(pageText); } catch { /* not json */ }
+        } else {
+          const trimmed = pageText.trim();
+          if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            try { pageParsed = JSON.parse(trimmed); } catch { /* not json */ }
+          }
         }
+        if (!pageParsed || typeof pageParsed !== "object") {
+          throw new Error("receipts: response ไม่ใช่ JSON (session/CSRF อาจไม่ผ่าน)");
+        }
+        return {
+          rows: Array.isArray(pageParsed.data) ? pageParsed.data : [],
+          recordsTotal: Number(pageParsed.recordsTotal ?? 0),
+          recordsFiltered: Number(pageParsed.recordsFiltered ?? 0),
+        };
       }
-      if (!parsed || typeof parsed !== "object") {
-        return await failRun("error", "receipts: response ไม่ใช่ JSON (session/CSRF อาจไม่ผ่าน)");
+
+      const rows: any[] = [];
+      let pagesFetched = 0;
+      let offset = 0;
+      while (true) {
+        let page: { rows: any[]; recordsTotal: number; recordsFiltered: number };
+        try {
+          page = await fetchReceiptsPage(offset);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return await failRun("error", msg);
+        }
+        pagesFetched++;
+        rows.push(...page.rows);
+        // เช็คทั้ง recordsFiltered/recordsTotal (DataTable convention) และ "ได้น้อยกว่าที่ขอ" กันเคส
+        // field เหล่านี้เพี้ยน/ไม่ส่งมา (defensive — ยังต้องหยุด loop ได้ถูกต้องอยู่ดี)
+        const known = page.recordsFiltered || page.recordsTotal || 0;
+        const gotFullPage = page.rows.length >= PAGE_LENGTH;
+        const reachedKnownTotal = known > 0 && rows.length >= known;
+        if (!gotFullPage || reachedKnownTotal || page.rows.length === 0 || pagesFetched >= MAX_PAGES) {
+          break;
+        }
+        offset += PAGE_LENGTH;
       }
-      const rows: any[] = Array.isArray(parsed.data) ? parsed.data : [];
 
       // ── aggregate ต่อ invoice_no ─────────────────────────────────────────────
       type Agg = {
@@ -356,7 +441,16 @@ export default {
           continue; // down_payment = สัญญาใหม่ ข้าม
         }
 
-        let a = aggMap.get(inv);
+        // ⚠️ (14 ก.ค. 2026) คีย์ aggMap ต้องเป็น (invoice_no + paid_date) ไม่ใช่ invoice_no เฉยๆ —
+        //    เดิมดึงแค่วันเดียว ทุกแถวในรอบเดียวกัน paid_date ตรงกันอยู่แล้วโดยบังเอิญ คีย์ inv เดี่ยวๆ
+        //    เลยดูเหมือนถูก แต่พอ window กว้างหลายวัน (deep-scan) invoice เดียวกันอาจมีใบเสร็จคนละวัน
+        //    (เช่น จ่ายงวด 2 วันที่ 5 + งวด 3 วันที่ 20) — ถ้ายังรวมเป็นก้อนเดียวจะเอายอด 2 วันไปตัด
+        //    เหมือนเป็นการจ่ายครั้งเดียว ทำให้ idempotency/paid_date ที่บันทึกผิดวัน (ใช้แค่วันแรกที่เจอ)
+        //    และเสี่ยง apply ซ้ำ/พลาดในรอบถัดไป แยกคีย์ตามวันช่วยให้แต่ละ "เหตุการณ์จ่ายเงิน 1 วัน" อิสระ
+        //    จากกัน ตรงกับ granularity ที่ dedup (ledger/uuid) ใช้อยู่แล้วเป๊ะ — ไม่กระทบ single-day call
+        //    เดิมเลย (ทุกแถวในนั้น paid_date เดียวกันอยู่แล้ว คีย์รวมออกมาเหมือนเดิมทุกประการ)
+        const aggKey = `${inv}::${paidDate ?? "unknown"}`;
+        let a = aggMap.get(aggKey);
         if (!a) {
           a = {
             invoice_no: inv,
@@ -370,7 +464,7 @@ export default {
             raw: [],
             receipts: [],
           };
-          aggMap.set(inv, a);
+          aggMap.set(aggKey, a);
         }
         a.raw.push(row);
         if (paidDate && !a.paid_date) a.paid_date = paidDate;
@@ -423,7 +517,26 @@ export default {
         });
       };
 
-      for (const a of aggMap.values()) {
+      // ── time budget (14 ก.ค. 2026 เพิ่ม) — กัน gateway timeout ตอน window กว้าง (30 วัน) ────────
+      // ประมวลผลแต่ละ invoice-วัน ต้องเรียก DB หลายรอบ (lookup contract/installments/ledger + RPC) —
+      // window ยาวอาจมี aggMap หลายร้อยก้อน รันจนหมดอาจเกิน wall-clock limit ของ Edge Function จน
+      // gateway ตัดการเชื่อมต่อทั้งที่ DB ลงสำเร็จไปแล้วบางส่วน (ดู comment เรื่อง run_daily_update ท้ายไฟล์)
+      // ทางแก้: ตั้งงบเวลา ถ้าเกินกลางทาง "หยุดเงียบๆ" (ไม่ทำต่อ ไม่ error) ปล่อยก้อนที่เหลือให้รอบถัดไป
+      // จับต่อเอง — ปลอดภัยเพราะ cron ใหม่รันทุก 3 วันด้วย window 30 วันที่คาบเกี่ยวกันเยอะมาก (ใบเสร็จที่
+      // ไม่ทันประมวลผลรอบนี้ยังอยู่ใน window ของรอบหน้าแน่นอน ไม่มีทางหลุดหาย แค่ช้าไปไม่เกิน 1 รอบ)
+      const PROCESSING_TIME_BUDGET_MS = 45_000;
+      const loopStartedAt = Date.now();
+      let truncated = false;
+      const aggEntries = Array.from(aggMap.values());
+      const aggEntriesTotal = aggEntries.length;
+      let aggEntriesProcessed = 0;
+
+      for (const a of aggEntries) {
+        if (Date.now() - loopStartedAt > PROCESSING_TIME_BUDGET_MS) {
+          truncated = true;
+          break; // ที่เหลือปล่อยรอบถัดไป (ดู comment ด้านบน) — ไม่ error ไม่ crash ทั้งรอบ
+        }
+        aggEntriesProcessed++;
         // เคสไม่มี installment เลย — penalty-only หรือ other-only → review
         if (!a.has_installment) {
           // lookup contract ด้วย inv_no ก่อน — เหมือน path installment (บรรทัด 399-407)
@@ -687,6 +800,8 @@ export default {
       }
 
       // ── 5) จบรอบ ─────────────────────────────────────────────────────────────
+      // ⚠️ ถ้า truncated=true (เกินงบเวลา) — status ยังคงเป็น "success" (ไม่ error) เพราะสิ่งที่ลงไป
+      //    ก่อนหยุดถูก commit เรียบร้อยแล้วทั้งหมด (atomic ต่อก้อน) แค่ "ยังไม่ครบ" — รอบถัดไปจับต่อเอง
       if (!dryRun && runId) {
         await db
           .from("pj_sync_runs")
@@ -697,6 +812,10 @@ export default {
             auto_applied_count: autoApplied.length,
             auto_applied_amount: autoAppliedTotal,
             review_count: review.length,
+            window_start_date: toIsoDate(startDate),
+            window_end_date: toIsoDate(endDate),
+            pages_fetched: pagesFetched,
+            truncated,
           })
           .eq("id", runId);
 
@@ -711,6 +830,10 @@ export default {
         ok: true,
         dryRun,
         date,
+        start_date: startDate,
+        end_date: endDate,
+        days_back: daysBackUsed,
+        pages_fetched: pagesFetched,
         receipts_fetched: rows.length,
         down_skipped: downSkipped,
         skipped_already_synced: skippedAlreadySynced,
@@ -718,6 +841,9 @@ export default {
         auto_applied_total: autoAppliedTotal,
         review,
         review_count: review.length,
+        truncated,
+        aggregated_invoice_days_total: aggEntriesTotal,
+        aggregated_invoice_days_processed: aggEntriesProcessed,
       });
     } catch (e) {
       // ⚠️ กรอง message ไม่ให้มี credential หลุด (URLSearchParams อาจ leak ใน stack บางกรณี)
