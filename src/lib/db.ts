@@ -1607,6 +1607,7 @@ export interface PaymentLogEntry {
   action: 'pay' | 'edit' | 'cancel'
   amount: number
   paidAmountAfter: number
+  penaltyPaidAmount: number
   note: string | null
   byName: string | null
   createdAt: string
@@ -1618,6 +1619,7 @@ interface PaymentLogRow {
   action: 'pay' | 'edit' | 'cancel'
   amount: number | null
   paid_amount_after: number | null
+  penalty_paid_amount: number | null
   note: string | null
   by_name: string | null
   created_at: string
@@ -1628,7 +1630,7 @@ export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry
   if (!supabase) return []
   const { data, error } = await supabase
     .from('payment_log')
-    .select('id, installment_id, action, amount, paid_amount_after, note, by_name, created_at')
+    .select('id, installment_id, action, amount, paid_amount_after, penalty_paid_amount, note, by_name, created_at')
     .eq('contract_id', contractId)
     .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
@@ -1639,6 +1641,7 @@ export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry
     action: r.action,
     amount: Number(r.amount ?? 0),
     paidAmountAfter: Number(r.paid_amount_after ?? 0),
+    penaltyPaidAmount: Number(r.penalty_paid_amount ?? 0),
     note: r.note ?? null,
     byName: r.by_name ?? null,
     createdAt: r.created_at,

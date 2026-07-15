@@ -79,7 +79,7 @@ import {
   type RightStatus,
   type ReconcileResult,
 } from '../lib/feeReconcile'
-import { calcSummary, calcExtensionPrincipal } from '../lib/calc'
+import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment } from '../lib/calc'
 import { computeSettlement, type SettlementMatrix, type SettlementExtensionInfo } from '../lib/settlement'
 import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
@@ -1416,24 +1416,34 @@ export default function ContractDetail() {
                         '-'
                       )}
                     </td>
-                    {/* #3 — ค่าปรับ: admin เห็นไอคอนดินสอแก้ไข/ลบค่าปรับเสมอ, staff เห็น display only */}
+                    {/* #3 — ค่าปรับ: admin เห็นไอคอนดินสอแก้ไข/ลบค่าปรับเสมอ, staff เห็น display only
+                        บรรทัดที่ 2 "จ่ายแล้ว" = ยอดค่าปรับที่ยืนยันรับชำระจริง (คนละเลขกับ "ต้องเรียก" ที่ระบบคิดวันละ 100
+                        โดยตั้งใจ — ไม่จำเป็นต้องเท่ากัน, read-only ไม่มีไอคอนแก้) */}
                     <td className="px-3 py-2.5">
-                      <span className="inline-flex items-center gap-1.5">
-                        {i.penaltyAmount > 0 ? (
-                          <span>{baht(i.penaltyAmount)} ({i.penaltyDays}ว.)</span>
-                        ) : (
-                          <span className="text-ink-soft">-</span>
-                        )}
-                        {isAdmin && (
-                          <button
-                            onClick={() => setPenaltyOverrideTarget(i)}
-                            className="rounded p-1 text-ink-soft hover:bg-amber-50 hover:text-amber-700"
-                            title="แก้ไข/ลบค่าปรับ (admin)"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                        )}
-                      </span>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="inline-flex items-center gap-1.5">
+                          {i.penaltyAmount > 0 ? (
+                            <span>ต้องเรียก {baht(i.penaltyAmount)} ฿ ({i.penaltyDays}ว.)</span>
+                          ) : (
+                            <span className="text-ink-soft">-</span>
+                          )}
+                          {isAdmin && (
+                            <button
+                              onClick={() => setPenaltyOverrideTarget(i)}
+                              className="rounded p-1 text-ink-soft hover:bg-amber-50 hover:text-amber-700"
+                              title="แก้ไข/ลบค่าปรับ (admin)"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                          )}
+                        </span>
+                        {(() => {
+                          const paidPenalty = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
+                          return paidPenalty > 0 ? (
+                            <span className="text-xs text-ink-soft">จ่ายแล้ว {baht(paidPenalty)} ฿</span>
+                          ) : null
+                        })()}
+                      </div>
                     </td>
                     <td className="px-3 py-2.5">
                       {i.paidAt ? (

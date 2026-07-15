@@ -326,3 +326,85 @@ export function formatRecoveryBadge(
 
   return parts.join(' · ')
 }
+
+// ===== penaltyPaidForInstallment — ค่าปรับที่ "จ่ายแล้วจริง" ต่องวด (ตาราง issue #2, req พี่พิธ 16 ก.ค. 2026) =====
+
+/**
+ * โครง payment_log ขั้นต่ำที่ฟังก์ชันนี้ต้องใช้ — ตั้งใจไม่ import PaymentLogEntry จาก db.ts ตรงๆ
+ * (field penaltyPaidAmount ยังไม่มีใน db.ts ตอนเขียนไฟล์นี้ — น้องชีสเพิ่มขนานอยู่คนละ PR)
+ * เมื่อ db.ts เพิ่ม penaltyPaidAmount แล้ว PaymentLogEntry จะ structurally compatible กับ type นี้ทันที
+ * เรียกจาก ContractDetail ได้ตรงๆ โดยไม่ต้องแก้ไฟล์นี้อีก
+ */
+export interface PenaltyPaymentLogEntry {
+  action: 'pay' | 'edit' | 'cancel'
+  penaltyPaidAmount?: number | null
+  createdAt: string
+}
+
+/**
+ * ผลรวมค่าปรับที่ "จ่ายแล้วจริง" สะสมของงวดเดียว — คนละตัวกับ installments.penalty_amount
+ * (= ค่าปรับที่ "ต้องเรียก" คำนวณโดย run_daily_update ทุกวัน 100/วัน เพดาน 700 — ไฟล์นี้ไม่แตะ/ไม่คำนวณ)
+ *
+ * กติกา:
+ *   1) sort entries ตาม createdAt ASC เอง (caller ส่งมาเรียงหรือไม่เรียงก็ได้) — string compare ISO
+ *      timestamp ตรงๆ (pattern เดียวกับ priorityQueue.ts:156 / paymentRecoveryStatus ด้านบน)
+ *   2) action='cancel' → reset running total = 0 ทันที (คนละแนวเดียวกับ cancel_payment RPC ที่ reset
+ *      installments.paid_amount = 0 — คงความหมาย "ยกเลิกทั้งรายการ" ให้ตรงกันระหว่างเงินต้น/ค่าปรับ)
+ *   3) action='pay' → บวก penaltyPaidAmount (?? 0) เข้า running total
+ *   4) action='edit' → ไม่ทำอะไร (0-contribution, ไม่ reset) — adjust_payment RPC ไม่เคยแตะค่าปรับ
+ *      ปัจจุบัน insert penalty_paid_amount=0 เสมอ จึงไม่มีผลต่อผลรวมอยู่แล้ว แต่กันไว้ชัดเจนไม่ให้ reset
+ *   5) penaltyPaidAmount undefined/null (แถวเก่าก่อนคอลัมน์นี้มีอยู่) → ถือเป็น 0 ห้าม throw
+ *   6) entries ว่าง → 0
+ *   7) ไม่ปัดเศษ (Math.round) — ยอดจาก payment_log เป็นจำนวนเต็มบาทอยู่แล้ว
+ *
+ * Trace 1 (เคสลักขณา — 100+400=500, ส่งมาไม่เรียงลำดับตั้งใจ):
+ *   entries = [
+ *     { action:'pay', penaltyPaidAmount:400, createdAt:'2026-07-16T02:00:00Z' },
+ *     { action:'pay', penaltyPaidAmount:100, createdAt:'2026-07-12T03:00:00Z' },
+ *   ]
+ *   sort ASC → [12 ก.ค. pay 100] → [16 ก.ค. pay 400], ไม่มี cancel
+ *   total = 100 + 400 = 500
+ *   → ผลลัพธ์ 500
+ *
+ * Trace 2 (cancel reset — ต้องได้ 50 ไม่ใช่ 150):
+ *   entries = [
+ *     { action:'pay',    penaltyPaidAmount:100, createdAt:'2026-07-01T00:00:00Z' },
+ *     { action:'cancel', penaltyPaidAmount:0,    createdAt:'2026-07-02T00:00:00Z' },
+ *     { action:'pay',    penaltyPaidAmount:50,   createdAt:'2026-07-03T00:00:00Z' },
+ *   ]
+ *   sort ASC (เรียงอยู่แล้ว) → pay 100 (total=100) → cancel (total reset=0) → pay 50 (total=50)
+ *   → ผลลัพธ์ 50
+ *
+ * Trace 3 (entries ว่าง):
+ *   entries = []
+ *   → ผลลัพธ์ 0
+ *
+ * Trace 4 (penaltyPaidAmount undefined/null — แถวเก่าก่อนมีคอลัมน์นี้):
+ *   entries = [
+ *     { action:'pay', penaltyPaidAmount: undefined, createdAt:'2026-01-01T00:00:00Z' },
+ *     { action:'pay', penaltyPaidAmount: null,       createdAt:'2026-01-02T00:00:00Z' },
+ *     { action:'pay', penaltyPaidAmount: 200,        createdAt:'2026-01-03T00:00:00Z' },
+ *   ]
+ *   total = 0 + 0 + 200 = 200 (ไม่ throw)
+ *   → ผลลัพธ์ 200
+ */
+export function penaltyPaidForInstallment(entries: PenaltyPaymentLogEntry[]): number {
+  if (entries.length === 0) return 0
+
+  const sorted = [...entries].sort((a, b) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+  )
+
+  let total = 0
+  for (const e of sorted) {
+    if (e.action === 'cancel') {
+      total = 0
+      continue
+    }
+    if (e.action === 'pay') {
+      total += e.penaltyPaidAmount ?? 0
+    }
+    // action === 'edit' → 0-contribution ตั้งใจ ไม่ reset ไม่บวก
+  }
+  return total
+}
