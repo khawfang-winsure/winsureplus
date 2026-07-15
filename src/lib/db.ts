@@ -53,7 +53,7 @@ import {
   type DeviceReturnTier,
 } from './commission'
 import { DEFAULT_RATE_SETS, type RateSet } from './rates'
-import type { SettlementTier } from './settlement'
+import type { SettlementTier, SettlementMatrix } from './settlement'
 import type { AddressKind, CustomerAddress, LetterRecord, LetterReply } from './letters'
 import type { DeviceStatus } from './returnWorkflow'
 import { outstandingAfterReturn } from './outstandingExtras'
@@ -534,6 +534,43 @@ export async function saveSettlementTiers(tiers: SettlementTier[]): Promise<void
       key: SETTLEMENT_TIERS_KEY,
       value: JSON.stringify(tiers),
       description: 'ชั้นส่วนลดปิดสัญญาก่อนกำหนด (เหลือกี่งวดขึ้นไป → ส่วนลด %)',
+    },
+    { onConflict: 'key' },
+  )
+  if (error) throw error
+}
+
+// ---------- ตารางส่วนลดปิดสัญญาแบบใหม่ (matrix ชนิดสัญญา × งวดที่จ่ายแล้ว) (0112) ----------
+const SETTLEMENT_MATRIX_KEY = 'settlement_matrix'
+
+/** อ่านตารางส่วนลดปิดสัญญาแบบ matrix — ว่าง/พัง/รูปแบบผิด → {} (ห้าม throw) */
+export async function getSettlementMatrix(): Promise<SettlementMatrix> {
+  if (!supabase) return {}
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', SETTLEMENT_MATRIX_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return {}
+  try {
+    const parsed = JSON.parse(data.value as string)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed as SettlementMatrix
+  } catch {
+    return {}
+  }
+}
+
+/** บันทึกตารางส่วนลด matrix — เฉพาะแอดมิน (ตาม RLS). upsert เผื่อ key ยังไม่มี */
+export async function saveSettlementMatrix(matrix: SettlementMatrix): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('app_settings').upsert(
+    {
+      key: SETTLEMENT_MATRIX_KEY,
+      value: JSON.stringify(matrix),
+      description:
+        'ตารางส่วนลดปิดสัญญาก่อนกำหนด (ใหม่) — key ชั้นนอก = จำนวนงวดทั้งหมดของสัญญา (term), key ชั้นใน = จำนวนงวดที่จ่ายแล้ว (paidCount), value = % ส่วนลด',
     },
     { onConflict: 'key' },
   )

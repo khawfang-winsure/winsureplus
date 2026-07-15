@@ -4,7 +4,7 @@ import { BadgePercent, Briefcase, Pencil, Percent, Plus, ShieldCheck, Smartphone
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { ManagedList } from '../components/ManagedList'
 import { RateSetsEditor } from '../components/RateSetsEditor'
-import { SettlementTiersEditor } from '../components/SettlementTiersEditor'
+import { SettlementMatrixEditor } from '../components/SettlementMatrixEditor'
 import { UsersAdmin } from '../components/UsersAdmin'
 import { useAuth } from '../lib/auth'
 import {
@@ -216,7 +216,7 @@ export default function Settings() {
             {cat === 'shops' && renderShops()}
             {cat === 'users' && <UsersAdmin />}
             {cat === 'rates' && <RateSetsEditor canEdit={canEdit} />}
-            {cat === 'settlement' && <SettlementTiersEditor canEdit={canEdit} />}
+            {cat === 'settlement' && <SettlementMatrixEditor canEdit={canEdit} />}
             {cat !== 'shops' &&
               cat !== 'users' &&
               cat !== 'rates' &&
