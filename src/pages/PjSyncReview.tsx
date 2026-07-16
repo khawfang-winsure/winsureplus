@@ -7,6 +7,7 @@ import {
   applyPjReviewAsOtherIncome,
   applyPjReviewPayment,
   getContractFeeReconcile,
+  getPjReceiptDriftDetail,
   getPjReviewContext,
   getPjSyncReview,
   getPjSyncRuns,
@@ -15,8 +16,32 @@ import {
 import { FEE_INCOME_PRESETS, FEE_INCOME_CUSTOM, type FeeKind } from '../lib/feeReconcile'
 import { spreadPayment } from '../lib/paymentSpread'
 import { detectDuplicatePjReviewRows, detectOddAmountFromContext } from '../lib/pjReviewDup'
+import type { DriftKind, PjReceiptDriftSnapshot } from '../lib/pjReceiptDrift'
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow, PjSyncRunRow } from '../lib/types'
 import { useAuth } from '../lib/auth'
+
+/** reason ที่เกิดจากตรวจจับ "ใบเสร็จหาย/ถูกแก้ใน PJ" — ต้องซ่อนปุ่มลงเงินทุกปุ่ม (ดูตรวจ+รายงานเท่านั้น) */
+function isDriftReason(reason: PjSyncReviewReason): boolean {
+  return reason === 'RECEIPT_MISSING' || reason === 'RECEIPT_CHANGED'
+}
+
+/** ประเภทเงินที่จดไว้ (ทั้งฝั่งเราและฝั่ง PJ ใน snapshot) → ไทย */
+const PAYMENT_TYPE_LABEL: Record<string, string> = {
+  installment: 'ค่างวด',
+  penalty: 'ค่าปรับ',
+  other: 'อื่นๆ',
+}
+function paymentTypeLabel(t: string): string {
+  return PAYMENT_TYPE_LABEL[t] ?? t
+}
+
+/** หัวข้อสั้นบอกว่า drift แบบไหน (ใช้โชว์ในกล่องเทียบ — ละเอียดกว่า badge เหตุผลหลัก) */
+const DRIFT_KIND_LABEL: Record<DriftKind, string> = {
+  missing: 'ไม่เจอใบเสร็จนี้ใน PJ',
+  amount: 'ยอดเงินไม่ตรงกัน',
+  type: 'ประเภทเงินไม่ตรงกัน',
+  date: 'วันที่ไม่ตรงกัน',
+}
 
 // ===== หมวดรายได้อื่นๆ สำเร็จรูป + fee_kind (ชื่อ + mapping จาก feeReconcile — single source) =====
 const OTHER_INCOME_CUSTOM = FEE_INCOME_CUSTOM
@@ -28,6 +53,8 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   UNMATCHED: 'หาสัญญาไม่เจอ',
   OTHER: 'ประเภทอื่น',
   AMOUNT_MISMATCH: 'ยอดไม่ตรง',
+  RECEIPT_MISSING: 'ไม่เจอใบเสร็จนี้ใน PJ',
+  RECEIPT_CHANGED: 'ใบเสร็จถูกแก้ใน PJ',
 }
 const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'amber' | 'red'> = {
   MULTI: 'amber',
@@ -35,6 +62,8 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'amber' | 'red'> = {
   UNMATCHED: 'red',
   OTHER: 'neutral',
   AMOUNT_MISMATCH: 'red',
+  RECEIPT_MISSING: 'red',
+  RECEIPT_CHANGED: 'red',
 }
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====
@@ -69,6 +98,7 @@ export default function PjSyncReview() {
 
   const [rows, setRows] = useState<PjSyncReviewRow[]>([])
   const [runs, setRuns] = useState<PjSyncRunRow[]>([])
+  const [driftDetails, setDriftDetails] = useState<Record<string, PjReceiptDriftSnapshot | null>>({})
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
@@ -77,8 +107,16 @@ export default function PjSyncReview() {
       getPjSyncReview('pending'),
       isAdmin ? getPjSyncRuns(10) : Promise.resolve([]),
     ])
+    // แถว drift (ใบเสร็จหาย/ถูกแก้) ต้องโชว์กล่องเทียบ "เราถือ vs PJ ว่า" — ดึงรายละเอียดเพิ่มเฉพาะแถวพวกนี้
+    const driftRows = review.filter((r) => isDriftReason(r.reason))
+    const details = await Promise.all(driftRows.map((r) => getPjReceiptDriftDetail(r.id)))
+    const detailMap: Record<string, PjReceiptDriftSnapshot | null> = {}
+    driftRows.forEach((r, i) => {
+      detailMap[r.id] = details[i]
+    })
     setRows(review)
     setRuns(runList)
+    setDriftDetails(detailMap)
     setLoading(false)
   }, [isAdmin])
 
@@ -92,6 +130,12 @@ export default function PjSyncReview() {
 
   // แถวที่น่าจะซ้ำในกล่อง (contract เดียวกัน + วันจ่ายเดียวกัน + ยอดเท่ากัน) — คำนวณครั้งเดียวต่อการโหลด rows
   const dupMap = useMemo(() => detectDuplicatePjReviewRows(rows), [rows])
+
+  // แถว drift (ใบเสร็จหาย/ถูกแก้ใน PJ) สำคัญกว่าแถวรอตรวจปกติ — เรียงขึ้นบนสุดเสมอ (sort เสถียร คงลำดับเดิมในกลุ่ม)
+  const sortedRows = useMemo(
+    () => [...rows].sort((a, b) => Number(isDriftReason(b.reason)) - Number(isDriftReason(a.reason))),
+    [rows],
+  )
 
   // กันชั้นใน (route ที่ App.tsx guard อยู่แล้ว)
   if (!isAdminOrStaff) return <EmptyState title="เฉพาะพนักงาน/แอดมินเท่านั้น" />
@@ -182,79 +226,103 @@ export default function PjSyncReview() {
                 <th className="py-2 font-medium text-right">จัดการ</th>
               </tr>
             </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b border-peach/50 hover:bg-peach-light/30">
-                  <td className="py-3 pr-4 text-ink-soft whitespace-nowrap">
-                    {r.paidDate ? thaiDate(r.paidDate.slice(0, 10)) : '—'}
-                  </td>
-                  <td className="py-3 pr-4 text-ink whitespace-nowrap">
-                    {r.invoiceNo}
-                    {r.paymentType && <span className="block text-xs text-ink-soft">{r.paymentType}</span>}
-                  </td>
-                  <td className="py-3 pr-4">
-                    {r.contractId ? (
-                      <>
-                        <p className="font-medium text-ink">{r.customerName ?? '—'}</p>
-                        <p className="text-xs text-ink-soft">{r.contractNo ?? '—'}</p>
-                      </>
-                    ) : (
-                      <Badge tone="red">หาสัญญาไม่เจอ</Badge>
-                    )}
-                  </td>
-                  <td className="py-3 pr-4">
-                    <div className="flex flex-col items-start gap-1">
-                      <Badge tone={REASON_TONE[r.reason]}>{REASON_LABEL[r.reason]}</Badge>
-                      {dupMap.get(r.id)?.isDuplicate && <Badge tone="amber">น่าจะซ้ำ</Badge>}
-                    </div>
-                  </td>
-                  <td className="py-3 pr-4 text-right text-ink">
-                    {r.penaltyAmount > 0 ? (
-                      <>
-                        <span className="block whitespace-nowrap">ค่างวด {baht(r.amount)} + ค่าปรับ {baht(r.penaltyAmount)} ฿</span>
-                        <span className="block whitespace-nowrap text-xs font-semibold text-ink">
-                          = {baht(r.amount + r.penaltyAmount)} ฿
-                        </span>
-                      </>
-                    ) : (
-                      <span className="whitespace-nowrap">ค่างวด {baht(r.amount)} ฿</span>
-                    )}
-                  </td>
-                  <td className="py-3 text-right">
-                    <div className="flex items-center justify-end gap-1.5">
-                      {r.contractId && (
-                        <Link to={`/contract/${r.contractId}`}>
-                          <Button variant="ghost">
-                            <ExternalLink size={13} />
-                            ดูสัญญา
+            {sortedRows.map((r) => {
+              const isDrift = isDriftReason(r.reason)
+              const detail = driftDetails[r.id] ?? null
+              return (
+                // แถวละ 1 tbody (ไม่ nested tbody) — ให้แถวเดียวมีทั้งแถวหลัก + แถวกล่องเทียบ drift ต่อท้ายได้
+                <tbody key={r.id}>
+                  <tr className={`border-b ${isDrift ? 'border-red-100 bg-red-50/40' : 'border-peach/50'} hover:bg-peach-light/30`}>
+                    <td className="py-3 pr-4 text-ink-soft whitespace-nowrap">
+                      {r.paidDate ? thaiDate(r.paidDate.slice(0, 10)) : '—'}
+                    </td>
+                    <td className="py-3 pr-4 text-ink whitespace-nowrap">
+                      {r.invoiceNo}
+                      {r.paymentType && <span className="block text-xs text-ink-soft">{r.paymentType}</span>}
+                    </td>
+                    <td className="py-3 pr-4">
+                      {r.contractId ? (
+                        <>
+                          <p className="font-medium text-ink">{r.customerName ?? '—'}</p>
+                          <p className="text-xs text-ink-soft">{r.contractNo ?? '—'}</p>
+                        </>
+                      ) : (
+                        <Badge tone="red">หาสัญญาไม่เจอ</Badge>
+                      )}
+                    </td>
+                    <td className="py-3 pr-4">
+                      <div className="flex flex-col items-start gap-1">
+                        <Badge tone={REASON_TONE[r.reason]}>{REASON_LABEL[r.reason]}</Badge>
+                        {dupMap.get(r.id)?.isDuplicate && <Badge tone="amber">น่าจะซ้ำ</Badge>}
+                      </div>
+                    </td>
+                    <td className="py-3 pr-4 text-right text-ink">
+                      {r.penaltyAmount > 0 ? (
+                        <>
+                          <span className="block whitespace-nowrap">ค่างวด {baht(r.amount)} + ค่าปรับ {baht(r.penaltyAmount)} ฿</span>
+                          <span className="block whitespace-nowrap text-xs font-semibold text-ink">
+                            = {baht(r.amount + r.penaltyAmount)} ฿
+                          </span>
+                        </>
+                      ) : (
+                        <span className="whitespace-nowrap">ค่างวด {baht(r.amount)} ฿</span>
+                      )}
+                    </td>
+                    <td className="py-3 text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {r.contractId && (
+                          <Link to={`/contract/${r.contractId}`}>
+                            <Button variant="ghost">
+                              <ExternalLink size={13} />
+                              ดูสัญญา
+                            </Button>
+                          </Link>
+                        )}
+                        {isDrift ? (
+                          // แถว drift = ตรวจ+รายงานเท่านั้น ห้ามถอนเงิน/ลงเงินเอง — เหลือปุ่มเดียว "รับทราบ"
+                          <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'resolved' })}>
+                            <CheckCircle2 size={13} />
+                            รับทราบ
                           </Button>
-                        </Link>
-                      )}
-                      <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'skipped' })}>
-                        <SkipForward size={13} />
-                        ข้าม
-                      </Button>
-                      {r.contractId && (
-                        <Button onClick={() => setApplyTarget(r)}>
-                          <Wallet size={13} />
-                          ยืนยันลงยอด
-                        </Button>
-                      )}
-                      {r.contractId && (
-                        <Button variant="ghost" onClick={() => setOtherIncomeTarget(r)}>
-                          <Receipt size={13} />
-                          รายได้อื่นๆ
-                        </Button>
-                      )}
-                      <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'resolved' })}>
-                        <CheckCircle2 size={13} />
-                        ทำเสร็จแล้ว
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+                        ) : (
+                          <>
+                            <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'skipped' })}>
+                              <SkipForward size={13} />
+                              ข้าม
+                            </Button>
+                            {r.contractId && (
+                              <Button onClick={() => setApplyTarget(r)}>
+                                <Wallet size={13} />
+                                ยืนยันลงยอด
+                              </Button>
+                            )}
+                            {r.contractId && (
+                              <Button variant="ghost" onClick={() => setOtherIncomeTarget(r)}>
+                                <Receipt size={13} />
+                                รายได้อื่นๆ
+                              </Button>
+                            )}
+                            <Button variant="ghost" onClick={() => setTarget({ row: r, action: 'resolved' })}>
+                              <CheckCircle2 size={13} />
+                              ทำเสร็จแล้ว
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+
+                  {/* กล่องเทียบ "เราถือ vs PJ ว่า" — เฉพาะแถว drift ที่ดึงรายละเอียดมาได้แล้ว */}
+                  {isDrift && detail && (
+                    <tr className="border-b border-red-100 bg-red-50/40">
+                      <td colSpan={6} className="px-4 pb-4">
+                        <DriftCompareBox detail={detail} />
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              )
+            })}
           </table>
         </div>
       )}
@@ -264,6 +332,7 @@ export default function PjSyncReview() {
           row={target.row}
           action={target.action}
           byName={userName ?? 'ไม่ทราบ'}
+          driftDetail={driftDetails[target.row.id] ?? null}
           onClose={() => setTarget(null)}
           onDone={async () => {
             setTarget(null)
@@ -303,17 +372,57 @@ export default function PjSyncReview() {
   )
 }
 
-// ===== Modal ยืนยัน ทำเสร็จแล้ว / ข้าม (note optional) =====
+// ===== กล่องเทียบ "เราถืออยู่ vs PJ ว่า (ตอนตรวจ)" — เฉพาะแถว drift (ใบเสร็จหาย/ถูกแก้ใน PJ) =====
+function DriftCompareBox({ detail }: { detail: PjReceiptDriftSnapshot }) {
+  return (
+    <div className="rounded-xl border border-red-200 bg-cream px-4 py-3 text-sm">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="font-semibold text-red-700">{DRIFT_KIND_LABEL[detail.kind]}</p>
+        <span className="text-xs text-ink-soft">ตรวจล่าสุดเมื่อ {thaiDateTime(detail.checkedAt)}</span>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-peach bg-peach-light/30 px-3 py-2.5">
+          <p className="mb-1.5 text-xs font-medium text-ink-soft">เราถืออยู่</p>
+          <p className="text-ink">ยอด <span className="whitespace-nowrap font-medium">{baht(detail.ours.amount)} ฿</span></p>
+          <p className="text-ink">ประเภท {paymentTypeLabel(detail.ours.paymentType)}</p>
+          <p className="text-ink">วันที่ {thaiDate(detail.ours.pjPaidDate)}</p>
+        </div>
+
+        <div className="rounded-lg border border-peach bg-peach-light/30 px-3 py-2.5">
+          <p className="mb-1.5 text-xs font-medium text-ink-soft">PJ ว่า (ตอนตรวจ)</p>
+          {detail.pj ? (
+            <>
+              <p className="text-ink">ยอด <span className="whitespace-nowrap font-medium">{baht(detail.pj.amount)} ฿</span></p>
+              <p className="text-ink">ประเภท {paymentTypeLabel(detail.pj.paymentType)}</p>
+              <p className="text-ink">วันที่ {thaiDate(detail.pj.pjPaidDate)}</p>
+            </>
+          ) : (
+            <p className="text-red-600">ไม่เจอใบนี้ใน PJ ตอนตรวจ (เช็คแล้ว {detail.missingStreak} รอบ)</p>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-2.5 text-xs text-ink-soft">
+        ระบบตรวจจับและรายงานเท่านั้น ยังไม่ได้แก้ยอดเงินให้อัตโนมัติ — ถ้าต้องแก้ยอดจริงในระบบ แจ้งครีมให้ช่วยตรวจเคสนี้ให้นะคะ
+      </p>
+    </div>
+  )
+}
+
+// ===== Modal ยืนยัน ทำเสร็จแล้ว / ข้าม / รับทราบ (drift) — note optional =====
 function ResolveModal({
   row,
   action,
   byName,
+  driftDetail,
   onClose,
   onDone,
 }: {
   row: PjSyncReviewRow
   action: 'resolved' | 'skipped'
   byName: string
+  driftDetail: PjReceiptDriftSnapshot | null
   onClose: () => void
   onDone: () => void
 }) {
@@ -321,7 +430,8 @@ function ResolveModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const title = action === 'resolved' ? 'ทำเสร็จแล้ว' : 'ข้ามเคสนี้'
+  const isDrift = isDriftReason(row.reason)
+  const title = isDrift ? 'รับทราบเคสนี้' : action === 'resolved' ? 'ทำเสร็จแล้ว' : 'ข้ามเคสนี้'
 
   async function confirm() {
     setBusy(true)
@@ -339,9 +449,11 @@ function ResolveModal({
     <Modal title={title} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-ink">
-          {action === 'resolved'
-            ? 'ยืนยันว่าได้จัดการเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ)'
-            : 'ข้ามเคสนี้ออกจากกล่องรอตรวจโดยไม่ดำเนินการ'}
+          {isDrift
+            ? 'ยืนยันว่ารับทราบเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ) — การรับทราบไม่มีการแก้ไขยอดเงินใดๆ ในระบบ'
+            : action === 'resolved'
+              ? 'ยืนยันว่าได้จัดการเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ)'
+              : 'ข้ามเคสนี้ออกจากกล่องรอตรวจโดยไม่ดำเนินการ'}
         </p>
 
         <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
@@ -354,6 +466,8 @@ function ResolveModal({
           <span className="text-ink-soft">ยอด</span>
           <span className="text-ink whitespace-nowrap">{baht(row.amount)} ฿</span>
         </div>
+
+        {isDrift && driftDetail && <DriftCompareBox detail={driftDetail} />}
 
         <div>
           <label className="mb-1 block text-sm text-ink-soft">หมายเหตุ (ไม่บังคับ)</label>

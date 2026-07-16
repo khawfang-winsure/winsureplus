@@ -519,8 +519,20 @@ export interface LetterOutcomeByRound {
 // กล่องรอตรวจ PJ — เคสที่ระบบ auto-sync (รันทุก 15 นาที) ลงไม่ได้เพราะไม่ตรงเป๊ะ
 // (จ่ายข้ามงวด/บางส่วน/หาสัญญาไม่เจอ/ประเภทอื่น/ยอดไม่ตรง) → admin มาตรวจเอง
 
-/** เหตุผลที่เคสเข้ากล่องรอตรวจ */
-export type PjSyncReviewReason = 'MULTI' | 'PARTIAL' | 'UNMATCHED' | 'OTHER' | 'AMOUNT_MISMATCH'
+/** เหตุผลที่เคสเข้ากล่องรอตรวจ
+ * RECEIPT_MISSING / RECEIPT_CHANGED = ตรวจจับ drift ใบเสร็จ PJ (16 ก.ค. 2026) — ร้านลบ/แก้ใบใน PJ
+ * หลังเราดึงมาลงแล้ว ดู src/lib/pjReceiptDrift.ts (evaluateReceiptDrift + driftKindToReviewReason):
+ *   RECEIPT_MISSING  ← kind='missing' (หา uuid ไม่เจอใน PJ แล้ว, streak>=2 ถึงจะแจ้ง)
+ *   RECEIPT_CHANGED  ← kind='amount'|'type'|'date' (uuid ยังอยู่ใน PJ แต่ค่าต่างจากที่เราจด)
+ * รายละเอียดจริง (เราถือ X / PJ ว่า Y) อยู่ใน raw_json ตาม PjReceiptDriftSnapshot */
+export type PjSyncReviewReason =
+  | 'MULTI'
+  | 'PARTIAL'
+  | 'UNMATCHED'
+  | 'OTHER'
+  | 'AMOUNT_MISMATCH'
+  | 'RECEIPT_MISSING'
+  | 'RECEIPT_CHANGED'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'

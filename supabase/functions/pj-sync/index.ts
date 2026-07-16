@@ -196,6 +196,9 @@ export default {
       body = txt ? JSON.parse(txt) : {};
     } catch { /* default {} */ }
     const dryRun: boolean = body?.dryRun === true;
+    // mode="reconcile" (0114) — ตรวจจับใบเสร็จ PJ ที่หาย/ถูกแก้ (ไม่แตะเงิน) แยกจาก path เดิม (money-in)
+    // ไม่ส่ง mode มาเลย = path เดิมเป๊ะ (mode="sync") ห้ามกระทบ money-in path ที่มีอยู่แล้ว
+    const mode: "sync" | "reconcile" = body?.mode === "reconcile" ? "reconcile" : "sync";
     const DDMMYYYY_RE = /^\d{2}-\d{2}-\d{4}$/;
     const date: string =
       typeof body?.date === "string" && DDMMYYYY_RE.test(body.date)
@@ -256,7 +259,7 @@ export default {
 
       const { data: inserted, error: insErr } = await db
         .from("pj_sync_runs")
-        .insert({ status: "running", lock_owner: lockOwner })
+        .insert({ status: "running", lock_owner: lockOwner, run_kind: mode })
         .select("id")
         .single();
       if (insErr || !inserted) {
@@ -403,6 +406,110 @@ export default {
           break;
         }
         offset += PAGE_LENGTH;
+      }
+
+      // pagination ตัดกลางทางเพราะชน MAX_PAGES (ไม่ใช่ "ดึงครบแล้วพอดี") — ใช้เป็น truncated
+      // signal ของ reconcile mode (evaluateRunSanity ใน pjReceiptDrift.ts: truncated=true → ok=false เสมอ)
+      const pageTruncated = pagesFetched >= MAX_PAGES;
+
+      // ══════════════════════════════════════════════════════════════════════════
+      // mode="reconcile" (0114) — ตรวจจับใบเสร็จ PJ ที่หาย/ถูกแก้ ไม่แตะเงิน/installments เลย
+      // แยกออกจาก path เดิม (money-in, ด้านล่าง) โดยสิ้นเชิง หลัง login+ดึง receipts เสร็จ (share กัน)
+      // ══════════════════════════════════════════════════════════════════════════
+      if (mode === "reconcile") {
+        // normalize เป็น flat list ต่อ "ใบเสร็จ" (ไม่ aggregate ต่อ invoice เหมือน path เงินเข้า — ตรวจ
+        // drift เทียบกัน "รายใบ" ด้วย uuid) ⚠️ ต้องรวม "down" ด้วย — พี่ดิวชี้: ถ้ากรอง down ทิ้งเหมือน
+        // path เงินเข้า (บรรทัด "if (typeRaw.includes('down'))...continue") ใบที่ประเภทถูกเปลี่ยนเป็น
+        // down (จาก installment เดิม) จะดูเหมือน "หายไปเลย" (missing) ทั้งที่จริงคือ "เปลี่ยนประเภท" (type
+        // drift) — ห้าม reuse โค้ด skip down จาก path เงินเข้าที่นี่เด็ดขาด
+        type SnapshotRow = { uuid: string; amount: number; payment_type: string; paid_date: string | null };
+        const snapshotRows: SnapshotRow[] = [];
+        for (const row of rows) {
+          const uuidRaw = pick(row, ["uuid"]);
+          const uuid = uuidRaw ? String(uuidRaw).trim() : null;
+          if (!uuid) continue; // ไม่มี uuid ให้เทียบ — ข้าม (ไม่ error ทั้งรอบ)
+          const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
+          const amt = parseAmount(pick(row, ["amount", "paid_amount", "total"]));
+          const paidDate = toIsoDate(pick(row, ["paid_date", "payment_date", "date", "created_at"]));
+          let category: string;
+          if (typeRaw.includes("down")) category = "down";
+          else if (typeRaw.includes("penalty")) category = "penalty";
+          else if (typeRaw.includes("installment")) category = "installment";
+          else category = "other";
+          snapshotRows.push({ uuid, amount: amt, payment_type: category, paid_date: paidDate });
+        }
+
+        const windowStartIso = toIsoDate(startDate);
+        const windowEndIso = toIsoDate(endDate);
+        const snapshotAtIso = new Date().toISOString();
+
+        const { data: rpcData, error: rpcErr } = await db.rpc("reconcile_pj_receipts", {
+          p_snapshot: { rows: snapshotRows, truncated: pageTruncated },
+          p_window_start: windowStartIso,
+          p_window_end: windowEndIso,
+          p_snapshot_at: snapshotAtIso,
+          p_dry_run: dryRun,
+        });
+
+        if (rpcErr) {
+          return await failRun("error", `db error (reconcile_pj_receipts): ${rpcErr.message}`, 500);
+        }
+
+        const result = (rpcData ?? {}) as {
+          ok: boolean;
+          reason?: string | null;
+          pjRowCount?: number;
+          ourEvaluableCount?: number;
+          evaluated?: number;
+          missingReported?: number;
+          changedReported?: number;
+          details?: unknown[];
+        };
+
+        // finalize run row (bookkeeping เท่านั้น — RPC ไม่แตะ pj_sync_runs เลย ตามที่ comment ไว้ใน
+        // migration 0114 SECTION 4: RPC=diff เงิน/ใบเสร็จ, Edge Function JS=bookkeeping เหมือน mode sync เป๊ะ)
+        if (!dryRun && runId) {
+          await db
+            .from("pj_sync_runs")
+            .update({
+              finished_at: new Date().toISOString(),
+              status: result.ok ? "success" : "error",
+              error_detail: result.ok ? null : (result.reason ?? "reconcile sanity check failed"),
+              receipts_fetched: result.pjRowCount ?? snapshotRows.length,
+              auto_applied_count: 0,
+              auto_applied_amount: 0,
+              review_count: (result.missingReported ?? 0) + (result.changedReported ?? 0),
+              window_start_date: windowStartIso,
+              window_end_date: windowEndIso,
+              pages_fetched: pagesFetched,
+              truncated: pageTruncated,
+            })
+            .eq("id", runId)
+            .catch(() => {});
+        }
+
+        // ⚠️ dryRun ของ reconcile ต้องคืน detail เต็ม (result.details — ไม่ใช่ summary count อย่างเดียว
+        // เหมือน dryRun ของ mode sync เดิม) ไม่งั้น debug ไม่ได้ว่า uuid ไหนโดน kind อะไร
+        return json({
+          ok: result.ok,
+          mode: "reconcile",
+          dryRun,
+          date,
+          start_date: startDate,
+          end_date: endDate,
+          days_back: daysBackUsed,
+          pages_fetched: pagesFetched,
+          receipts_fetched: rows.length,
+          snapshot_row_count: snapshotRows.length,
+          truncated: pageTruncated,
+          reason: result.reason ?? null,
+          pj_row_count: result.pjRowCount ?? 0,
+          our_evaluable_count: result.ourEvaluableCount ?? 0,
+          evaluated: result.evaluated ?? 0,
+          missing_reported: result.missingReported ?? 0,
+          changed_reported: result.changedReported ?? 0,
+          details: result.details ?? [],
+        });
       }
 
       // ── aggregate ต่อ invoice_no ─────────────────────────────────────────────
@@ -761,10 +868,14 @@ export default {
                 applied_at: new Date().toISOString(),
               }, { onConflict: "contract_id,pj_paid_date" });
             }
+            // ⚠️ landmine 2 (0114, พี่ดิว) — ห้าม auto_resolved กลบแถว drift (RECEIPT_MISSING/
+            // RECEIPT_CHANGED) ที่บังเอิญ invoice_no เดียวกัน: เงินเข้าใหม่ไม่ได้แปลว่าใบเสร็จผีที่เคยรายงาน
+            // ไปแล้วหายไปไหน (คนละใบเสร็จ/uuid กันเลย) — exclude reason drift ออกจาก bulk update นี้เสมอ
             await db.from("pj_sync_review")
               .update({ status: "auto_resolved" })
               .eq("pj_invoice_no", a.invoice_no)
-              .eq("status", "pending");
+              .eq("status", "pending")
+              .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED")');
           } catch { /* best-effort — ไม่บล็อกทั้งรอบ (housekeeping เท่านั้น ไม่ใช่เงิน) */ }
           autoApplied.push({ contract_no: contractNo, amount: instAmt + a.pen_amt });
           autoAppliedTotal += instAmt + a.pen_amt;
@@ -785,10 +896,16 @@ export default {
       //    → ข้ามเคสที่มี pending review (pj_invoice_no เดียวกัน) อยู่แล้ว กัน review บวมวันละ ~288 แถวซ้ำ
       //    (ถ้า admin resolve/skip ไปแล้ว แล้วเคสโผล่อีก = flag ใหม่ได้ ถือว่าถูก)
       if (!dryRun && reviewRows.length > 0) {
+        // ⚠️ landmine 1 (0114, พี่ดิว) — reviewRows (path เงินเข้านี้) ไม่มี reason drift อยู่แล้ว (drift
+        // insert ผ่าน RPC reconcile_pj_receipts คนละ path) แต่ "seen" set ต้องไม่นับแถว drift ที่ pending
+        // อยู่ก่อน ไม่งั้นถ้า invoice_no เดียวกันมีแถว RECEIPT_MISSING/RECEIPT_CHANGED ค้างอยู่ จะทำให้เคส
+        // MULTI/PARTIAL/UNMATCHED/OTHER/AMOUNT_MISMATCH ใหม่ของ invoice นั้นถูกมองว่า "ซ้ำ" แล้วข้ามทิ้งไป
+        // เงียบๆ (หายจริง ไม่ใช่แค่ drift หายอย่างเดียว) — exclude reason drift ออกจากการนับ seen เสมอ
         const { data: existing } = await db
           .from("pj_sync_review")
           .select("pj_invoice_no")
-          .eq("status", "pending");
+          .eq("status", "pending")
+          .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED")');
         const seen = new Set((existing || []).map((r: any) => r.pj_invoice_no));
         const fresh = reviewRows.filter((r) => !seen.has(r.pj_invoice_no));
         if (fresh.length > 0) {

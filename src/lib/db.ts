@@ -66,6 +66,7 @@ import {
 } from './feeReconcile'
 import { calcSummary } from './calc'
 import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from './deviceReturnByCollector'
+import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
 
 export type OptionKind =
   | 'phone_model'
@@ -7497,6 +7498,44 @@ export async function getPjSyncReview(
   }))
 }
 
+/** 1 แถวดิบเฉพาะที่ต้องใช้ parse drift snapshot (reason + raw_json เท่านั้น) */
+interface PjSyncReviewDriftViewRow {
+  reason: string
+  raw_json: unknown
+}
+
+/**
+ * ดึงรายละเอียด drift (เราถือ X / PJ ว่า Y) ของ 1 แถวในกล่องรอตรวจ — คืน null ถ้าแถวนี้ไม่ใช่ reason
+ * drift (RECEIPT_MISSING/RECEIPT_CHANGED) หรือ raw_json ไม่ตรง shape ที่ล็อกไว้ (มี.ย. 2026)
+ *
+ * ⚠️ ไม่ได้เพิ่มลง PjSyncReviewRow ใน types.ts ตรงๆ (types.ts เป็นไฟล์ที่แบมทำเสร็จแล้ว ห้ามแตะรอบนี้) —
+ * แยกเป็นฟังก์ชันเรียกเพิ่มแทน (query แยก 1 ก้อนเบาๆ ต่อแถวที่ต้องดูรายละเอียด ไม่ใช่ join ทุกแถวใน
+ * getPjSyncReview เพราะแถวส่วนใหญ่ไม่ใช่ reason drift) น้องวิวเรียกใช้ตอนกดดูรายละเอียดแถว drift ในกล่องรอตรวจ
+ * shape ของ raw_json ล็อกแล้วที่ src/lib/pjReceiptDrift.ts (PjReceiptDriftSnapshot) — เขียนโดย
+ * migration 0114 (RPC reconcile_pj_receipts) เท่านั้น ไม่มี caller อื่นเขียน field นี้
+ */
+export async function getPjReceiptDriftDetail(reviewId: string): Promise<PjReceiptDriftSnapshot | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('pj_sync_review')
+    .select('reason, raw_json')
+    .eq('id', reviewId)
+    .maybeSingle()
+  if (error) throw error
+  const row = data as PjSyncReviewDriftViewRow | null
+  if (!row || (row.reason !== 'RECEIPT_MISSING' && row.reason !== 'RECEIPT_CHANGED')) return null
+
+  const raw = row.raw_json as Partial<PjReceiptDriftSnapshot> | null
+  if (!raw || typeof raw !== 'object' || !raw.kind || !raw.checkedAt || !raw.ours) return null
+  return {
+    kind: raw.kind,
+    checkedAt: raw.checkedAt,
+    missingStreak: raw.missingStreak ?? 0,
+    ours: raw.ours,
+    pj: raw.pj ?? null,
+  }
+}
+
 /** รอบการรัน auto-sync ล่าสุด (default 20 รอบ) — โชว์สถานะ + แจ้งเตือนเมื่อรอบล่าสุดพัง */
 export async function getPjSyncRuns(limit = 20): Promise<PjSyncRunRow[]> {
   if (!supabase) return []
@@ -7697,6 +7736,20 @@ export async function applyPjReviewPayment(params: {
   if (!supabase) return
   const { reviewId, contractId, principal, penalty, paidDate, byName, note } = params
 
+  // 🚨 กันชั้นสอง (defense in depth, migration 0114 landmine 3) — ห้ามลงยอดจากเคส drift (ใบเสร็จ PJ
+  // ที่หาย/ถูกแก้ — reason RECEIPT_MISSING/RECEIPT_CHANGED) เด็ดขาด ต่อให้ UI ซ่อนปุ่มแล้ว (น้องวิว) ก็ต้อง
+  // กันที่ db.ts ด้วย เผื่อบั๊ก UI ในอนาคต/เรียกตรงจาก console — เคสนี้ "ตรวจ+รายงานเท่านั้น" (Pete locked)
+  // ต้องไปให้แอดมินตรวจสอบใน PJ มือ ไม่ใช่กดยืนยันลงยอดซ้ำ (จะลงเงินผีซ้ำเข้าไปอีก) — throw ไม่ swallow
+  const { data: driftGuardRow, error: driftGuardErr } = await supabase
+    .from('pj_sync_review')
+    .select('reason')
+    .eq('id', reviewId)
+    .maybeSingle()
+  if (driftGuardErr) throw driftGuardErr
+  if (driftGuardRow?.reason === 'RECEIPT_MISSING' || driftGuardRow?.reason === 'RECEIPT_CHANGED') {
+    throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามยืนยันลงยอด ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
+  }
+
   // ดึง uuid ต่อใบเสร็จจาก raw_json "ก่อน" เรียก RPC (read-only ไม่กระทบ atomicity ของการลงเงิน)
   let receiptUuidsPayload:
     | { uuid: string; invoice_no: string | null; paid_date: string | null; amount: number; payment_type: string | null; source: string }[]
@@ -7774,6 +7827,18 @@ export async function applyPjReviewAsOtherIncome(params: {
 }): Promise<void> {
   if (!supabase) return
   const { reviewId, contractId, amount, category, receivedAt, note, byName, feeKind } = params
+
+  // 🚨 กันชั้นสอง (defense in depth, migration 0114 landmine 3) — ดู comment เต็มใน applyPjReviewPayment
+  // ด้านบน เหตุผลเดียวกัน: ห้ามลงยอด (แม้เป็นรายได้อื่นๆ) จากเคส drift เด็ดขาด — throw ไม่ swallow
+  const { data: driftGuardRow, error: driftGuardErr } = await supabase
+    .from('pj_sync_review')
+    .select('reason')
+    .eq('id', reviewId)
+    .maybeSingle()
+  if (driftGuardErr) throw driftGuardErr
+  if (driftGuardRow?.reason === 'RECEIPT_MISSING' || driftGuardRow?.reason === 'RECEIPT_CHANGED') {
+    throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามลงเป็นรายได้อื่นๆ ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
+  }
 
   await insertOtherIncome({
     contractId,
