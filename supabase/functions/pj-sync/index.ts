@@ -269,13 +269,18 @@ export default {
     }
 
     // helper: ปิดรอบด้วย error (กรอง credential ไม่ให้หลุดใน error_detail)
+    // ⚠️ (16 ก.ค. 2026 fix) ห้ามเรียก .catch() ต่อท้าย query builder ตรงๆ — PostgrestFilterBuilder
+    //    ของ postgrest-js เป็นแค่ PromiseLike (implement แค่ .then()) ไม่ใช่ Promise จริง ไม่มี method
+    //    .catch() เลย เรียกแล้ว throw TypeError ทันที ("...catch is not a function") ซึ่งเกิดขึ้นตรงนี้
+    //    (จุด best-effort ที่ตั้งใจจะ "ห้าม crash") กลับกลายเป็นต้นเหตุ crash เอง — ต้องห่อด้วย try/catch แทน
     const failRun = async (status: string, safeDetail: string, httpStatus = 200) => {
       if (!dryRun && runId) {
-        await db
-          .from("pj_sync_runs")
-          .update({ status, finished_at: new Date().toISOString(), error_detail: safeDetail })
-          .eq("id", runId)
-          .catch(() => {});
+        try {
+          await db
+            .from("pj_sync_runs")
+            .update({ status, finished_at: new Date().toISOString(), error_detail: safeDetail })
+            .eq("id", runId);
+        } catch { /* best-effort bookkeeping เท่านั้น — ไม่บล็อก error response หลัก */ }
       }
       return json({ ok: false, dryRun, date, error: safeDetail }, httpStatus);
     };
@@ -468,24 +473,29 @@ export default {
 
         // finalize run row (bookkeeping เท่านั้น — RPC ไม่แตะ pj_sync_runs เลย ตามที่ comment ไว้ใน
         // migration 0114 SECTION 4: RPC=diff เงิน/ใบเสร็จ, Edge Function JS=bookkeeping เหมือน mode sync เป๊ะ)
+        // ⚠️ (16 ก.ค. 2026 fix) เดิม .catch(() => {}) ต่อท้าย query builder ตรงๆ — ตัว PostgrestFilterBuilder
+        //    ไม่มี method .catch() (เป็นแค่ PromiseLike, implement แค่ .then()) เรียกแล้ว throw TypeError
+        //    ("...catch is not a function") ทันที ทุกครั้งที่ dryRun=false (นี่คือสาเหตุ 500 ตัวจริงของบั๊ก
+        //    reconcile live mode — ไม่เกี่ยวกับ RPC/sanity check เลย เกิดแม้ RPC สำเร็จ 100%) ต้องห่อ try/catch แทน
         if (!dryRun && runId) {
-          await db
-            .from("pj_sync_runs")
-            .update({
-              finished_at: new Date().toISOString(),
-              status: result.ok ? "success" : "error",
-              error_detail: result.ok ? null : (result.reason ?? "reconcile sanity check failed"),
-              receipts_fetched: result.pjRowCount ?? snapshotRows.length,
-              auto_applied_count: 0,
-              auto_applied_amount: 0,
-              review_count: (result.missingReported ?? 0) + (result.changedReported ?? 0),
-              window_start_date: windowStartIso,
-              window_end_date: windowEndIso,
-              pages_fetched: pagesFetched,
-              truncated: pageTruncated,
-            })
-            .eq("id", runId)
-            .catch(() => {});
+          try {
+            await db
+              .from("pj_sync_runs")
+              .update({
+                finished_at: new Date().toISOString(),
+                status: result.ok ? "success" : "error",
+                error_detail: result.ok ? null : (result.reason ?? "reconcile sanity check failed"),
+                receipts_fetched: result.pjRowCount ?? snapshotRows.length,
+                auto_applied_count: 0,
+                auto_applied_amount: 0,
+                review_count: (result.missingReported ?? 0) + (result.changedReported ?? 0),
+                window_start_date: windowStartIso,
+                window_end_date: windowEndIso,
+                pages_fetched: pagesFetched,
+                truncated: pageTruncated,
+              })
+              .eq("id", runId);
+          } catch { /* best-effort — housekeeping เท่านั้น ไม่ใช่เงิน/reconcile result */ }
         }
 
         // ⚠️ dryRun ของ reconcile ต้องคืน detail เต็ม (result.details — ไม่ใช่ summary count อย่างเดียว
