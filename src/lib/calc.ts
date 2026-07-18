@@ -408,3 +408,178 @@ export function penaltyPaidForInstallment(entries: PenaltyPaymentLogEntry[]): nu
   }
   return total
 }
+
+// ===== computePenaltyAccrual — กติกาค่าปรับใหม่: นับจนกว่าจะจ่ายค่าปรับ "ครบ" ไม่หยุดตอนจ่ายเงินต้น =====
+// (spec แบม 18 ก.ค. 2026, root cause บั๊ก: run_daily_update เดิม (mig 0031) freeze penalty ทันทีที่
+//  paid_at ของงวดถูกเซ็ต แม้ค่าปรับที่เรียกไว้ยังจ่ายไม่ครบ — ฟังก์ชันนี้แทนที่ด้วยตรรกะ "settled = จ่ายค่าปรับ
+//  ทันงวดที่มันค้างจริง ณ วันนั้น" ไม่ใช่ "เงินต้นปิดแล้ว")
+
+export interface PenaltyPayEvent {
+  action: 'pay' | 'edit' | 'cancel'
+  penaltyPaidAmount?: number | null
+  createdAt: string
+}
+
+export interface PenaltyAccrualConfig {
+  perDay?: number // ค่าปรับต่อวัน (บาท) — default 100 (app_settings.penalty_per_day)
+  maxDays?: number // เพดานวันที่คิดค่าปรับต่องวด — default 7 (app_settings.penalty_max_days)
+}
+
+export interface PenaltyAccrualResult {
+  penaltyDays: number // จำนวนวันที่ใช้คิดค่าปรับ (คลิป 0..maxDays) — ถ้า settled = แช่แข็งที่ค่า ณ วัน settle
+  penaltyAmount: number // penaltyDays * perDay
+  settled: boolean // true = จ่ายค่าปรับทันยอดที่ค้าง ณ วันหนึ่งแล้ว (frozen ไม่โตต่อ)
+  settledAt: string | null // วันที่ (yyyy-mm-dd) ที่ settle — null ถ้ายังไม่ settled
+}
+
+const DEFAULT_PENALTY_PER_DAY = 100
+const DEFAULT_PENALTY_MAX_DAYS = 7
+
+/**
+ * จำนวนวันเต็ม (to - from) โดยคำนวณผ่าน Date.UTC ล้วน — ตั้งใจไม่ใช้ `new Date(str)` ตรงๆ
+ * (parse string เป็น local time ได้ถ้า string ไม่มี timezone suffix ชัดเจน = TZ drift trap)
+ * pattern เดียวกับ commission.ts addDays/addMonths (Date.UTC(y, m-1, d))
+ */
+function utcDayDiff(fromISO: string, toISO: string): number {
+  const [fy, fm, fd] = fromISO.slice(0, 10).split('-').map(Number)
+  const [ty, tm, td] = toISO.slice(0, 10).split('-').map(Number)
+  const fromUtc = Date.UTC(fy, fm - 1, fd)
+  const toUtc = Date.UTC(ty, tm - 1, td)
+  return Math.floor((toUtc - fromUtc) / 86_400_000)
+}
+
+/** ค่าปรับที่ "ต้องเรียก" ณ วันหนึ่ง (owed-at-date) — days late คลิป >=0 คูณ perDay เพดาน maxDays */
+function owedAt(
+  dueDate: string,
+  atDate: string,
+  perDay: number,
+  maxDays: number,
+): { days: number; amount: number } {
+  const lateDays = Math.max(0, utcDayDiff(dueDate, atDate))
+  const days = Math.min(lateDays, maxDays)
+  return { days, amount: days * perDay }
+}
+
+/**
+ * ค่าปรับค้างของ 1 งวด ตามกติกาใหม่ (แทน freeze-on-principal-paid ของ run_daily_update เดิม):
+ *
+ *   0) guard แรกสุด (บั๊กที่ 2 ที่ครีมจับได้บนฝั่ง SQL — mirror มาไว้ฝั่งนี้ด้วยกันเพี้ยน): ถ้า paidAt ไม่ null
+ *      และ paidAt (ตัด date) <= dueDate (ตัด date) = เงินต้นจ่ายตรงเวลาหรือก่อนกำหนด → คืนค่าปรับ 0 ทันที
+ *      settled=true, settledAt=null (ไม่มี "เหตุการณ์จ่ายค่าปรับ" จริงให้ผูก — ไม่เคยมีค่าปรับค้างเลยตามนิยาม)
+ *      ไม่ต้อง walk events เลย (ถ้า events ไม่ว่างก็ไม่สำคัญ เพราะไม่มีทางมีค่าปรับค้างให้จ่ายตั้งแต่แรก)
+ *   1) anchor เริ่มนับ = dueDate ของงวด
+ *   2) sort events ('pay'/'edit'/'cancel' จาก payment_log ของงวดนั้น) ตาม createdAt ASC เอง
+ *      (caller ส่งมาเรียงหรือไม่ก็ได้ — เหมือน penaltyPaidForInstallment ด้านบน)
+ *   3) walk ทีละ event สะสม cumPaid:
+ *      - action='cancel' → reset cumPaid=0 **และ** ถ้าเคย settled มาก่อนหน้านี้ ให้ยกเลิกสถานะ settled
+ *        ด้วย (การจ่ายที่ทำให้ settle ถูกยกเลิกไปแล้ว ต้องกลับไปนับต่อ ไม่ใช่แช่แข็งค้างผิดๆ) แล้ว
+ *        เดินต่อจาก event ถัดไปเสมือนเริ่มใหม่
+ *      - action='pay' → บวก penaltyPaidAmount (?? 0) เข้า cumPaid; ถ้ายัง "ไม่ settled" ให้เช็ค
+ *        owed(ณ วันที่ event นี้เกิด) — ถ้า owed > 0 และ cumPaid >= owed ณ วันนั้น = **event แรกที่จ่ายทัน
+ *        ยอดที่ค้างจริง** → settled=true, freeze penaltyDays/penaltyAmount ที่ค่า ณ วันนั้น (ไม่ตรวจซ้ำอีก
+ *        เว้นแต่โดน cancel ทีหลัง)
+ *      - action='edit' → ไม่มีผล (0-contribution เหมือน penaltyPaidForInstallment — adjust_payment ไม่แตะค่าปรับ)
+ *   4) จบ loop แล้ว settled=true → คืนค่าที่ freeze ไว้ (ไม่นับต่อถึง today ต่อให้ late streak ยังเดินอยู่)
+ *   5) จบ loop แล้ว settled=false (ไม่มี event ไหนจ่ายทันยอดค้าง ณ วันนั้นเลย) → คำนวณจาก owed(ณ today)
+ *      คือค่าปรับที่ "ต้องเรียกวันนี้" ตามงวดยังค้างอยู่ตามปกติ
+ *
+ * Trace 1 (ตัวอย่างวิไลรัตน์-style — จ่ายทันที่ ง.4/400 = settled):
+ *   dueDate='2026-06-30', today='2026-07-18'
+ *   events=[{ action:'pay', penaltyPaidAmount:400, createdAt:'2026-07-04T10:00:00Z' }]
+ *   → วันที่ event = 4 วันหลัง due (utcDayDiff=4) → owed(ณ 4ก.ค.)=min(4,7)*100=400
+ *   → cumPaid=400 >= 400 → settled=true, settledAt='2026-07-04', penaltyDays=4, penaltyAmount=400
+ *   → (ไม่นับต่อถึงวันนี้ 18ก.ค. ต่อให้ยังไม่จ่ายเงินต้นงวดนั้นเลยก็ตาม — คนละมิติกับเงินต้น)
+ *
+ * Trace 2 (still-open — ไม่เคยจ่ายค่าปรับเลย เกินเพดาน):
+ *   dueDate='2026-06-01', today='2026-07-18', events=[]
+ *   → utcDayDiff=47 วัน คลิป max_days=7 → owed(today)=700
+ *   → settled=false, settledAt=null, penaltyDays=7, penaltyAmount=700
+ *
+ * Trace 3 (cancel-reset — จ่ายทันแล้วโดนยกเลิก ต้องกลับไปนับต่อ ไม่ค้าง settled ผิดๆ):
+ *   dueDate='2026-06-30', today='2026-07-18'
+ *   events=[
+ *     { action:'pay',    penaltyPaidAmount:400, createdAt:'2026-07-04T10:00:00Z' }, // settle ชั่วคราว ง.4/400
+ *     { action:'cancel',                          createdAt:'2026-07-05T09:00:00Z' }, // ยกเลิก → reset
+ *   ]
+ *   → หลัง cancel: cumPaid=0, settled=false, ไม่มี event ต่อจากนี้ → ตกไป owed(today)
+ *   → utcDayDiff(due,today)=18 คลิป 7 → penaltyDays=7, penaltyAmount=700, settled=false, settledAt=null
+ *
+ * Trace 4 (not-due — ยังไม่ถึงกำหนด ไม่มีค่าปรับ):
+ *   dueDate='2026-07-25', today='2026-07-18', events=[]
+ *   → utcDayDiff=-7 → clamp 0 → penaltyDays=0, penaltyAmount=0, settled=false, settledAt=null
+ *
+ * Trace 5 (partial-never-catch-up — จ่ายบางส่วนหลายครั้งแต่ไม่เคยทันยอดค้าง ณ วันนั้น):
+ *   dueDate='2026-06-01', today='2026-07-18'
+ *   events=[
+ *     { action:'pay', penaltyPaidAmount:100, createdAt:'2026-06-10T00:00:00Z' }, // ง.9 คลิป7=700 owed 700, cumPaid=100 <700
+ *     { action:'pay', penaltyPaidAmount:100, createdAt:'2026-06-20T00:00:00Z' }, // owed ยังคลิป 700, cumPaid=200 <700
+ *   ]
+ *   → ไม่มี event ไหนจ่ายทัน 700 เลย → settled=false → owed(today) คลิป 7 → penaltyDays=7, penaltyAmount=700
+ *
+ * Trace 6 (paid-on-time guard — เงินต้นจ่ายตรงเวลา/ก่อนกำหนด ไม่เคยมีค่าปรับค้างจริง — บั๊กที่ 2 ฝั่ง SQL):
+ *   dueDate='2026-06-30', paidAt='2026-06-30T09:00:00Z' (จ่ายวันครบกำหนดพอดี), today='2026-07-18', events=[]
+ *   → paidAt(ตัด date)='2026-06-30' <= dueDate='2026-06-30' → guard ชน ก่อน walk events เลย
+ *   → penaltyDays=0, penaltyAmount=0, settled=true, settledAt=null (ไม่มี event จ่ายค่าปรับจริงให้ผูกวันที่)
+ *   → (ถ้า paidAt เป็น null หรือ paidAt > dueDate จะไม่ชน guard นี้ — ไหลไป walk events ตามปกติ)
+ */
+export function computePenaltyAccrual(input: {
+  dueDate: string
+  paidAt?: string | null
+  events: PenaltyPayEvent[]
+  today: string
+  cfg?: PenaltyAccrualConfig
+}): PenaltyAccrualResult {
+  const perDay = input.cfg?.perDay ?? DEFAULT_PENALTY_PER_DAY
+  const maxDays = input.cfg?.maxDays ?? DEFAULT_PENALTY_MAX_DAYS
+
+  // guard 0: เงินต้นจ่ายตรงเวลาหรือก่อนกำหนด → ไม่เคยมีค่าปรับค้างจริงตามนิยาม ไม่ต้อง walk events
+  if (input.paidAt != null && input.paidAt.slice(0, 10) <= input.dueDate.slice(0, 10)) {
+    return { penaltyDays: 0, penaltyAmount: 0, settled: true, settledAt: null }
+  }
+
+  const sorted = [...input.events].sort((a, b) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+  )
+
+  let cumPaid = 0
+  let settled = false
+  let settledAt: string | null = null
+  let settledDays = 0
+  let settledAmount = 0
+
+  for (const e of sorted) {
+    if (e.action === 'cancel') {
+      cumPaid = 0
+      settled = false
+      settledAt = null
+      settledDays = 0
+      settledAmount = 0
+      continue
+    }
+    if (e.action === 'pay') {
+      cumPaid += e.penaltyPaidAmount ?? 0
+      if (!settled) {
+        const owedAtEvent = owedAt(input.dueDate, e.createdAt, perDay, maxDays)
+        if (owedAtEvent.amount > 0 && cumPaid >= owedAtEvent.amount) {
+          settled = true
+          settledAt = e.createdAt.slice(0, 10)
+          settledDays = owedAtEvent.days
+          settledAmount = owedAtEvent.amount
+        }
+      }
+    }
+    // action === 'edit' → 0-contribution ตั้งใจ ไม่ reset ไม่บวก ไม่กระทบ settled
+  }
+
+  if (settled) {
+    return { penaltyDays: settledDays, penaltyAmount: settledAmount, settled: true, settledAt }
+  }
+
+  const owedToday = owedAt(input.dueDate, input.today, perDay, maxDays)
+  return {
+    penaltyDays: owedToday.days,
+    penaltyAmount: owedToday.amount,
+    settled: false,
+    settledAt: null,
+  }
+}
