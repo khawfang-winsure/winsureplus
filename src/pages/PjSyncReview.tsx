@@ -443,7 +443,10 @@ function ReviewLineItem({
 }) {
   const isDrift = isDriftReason(row.reason)
   const chip = reviewRowTypeChip(row)
-  const totalAmount = row.amount + row.penaltyAmount
+  // ค่าปรับล้วน (paymentType='penalty'): row.amount กับ row.penaltyAmount เป็นเลขเดียวกัน (ยอด PJ ใบเดียว)
+  // ห้ามบวกกัน ไม่งั้นยอดเบิ้ล (เช่น 229 → โชว์ 458) — ใช้ตรรกะเดียวกับ isPenaltyOnly ใน ApplyPjModal
+  const isPenaltyOnly = row.paymentType === 'penalty'
+  const totalAmount = isPenaltyOnly ? row.amount : row.amount + row.penaltyAmount
   const pjLinkUuid = row.receiptUuids[0] ?? null
 
   return (
@@ -464,10 +467,14 @@ function ReviewLineItem({
         </div>
         <div className="shrink-0 text-right">
           <p className="whitespace-nowrap text-sm font-semibold text-ink">{baht(totalAmount)} ฿</p>
-          {row.penaltyAmount > 0 && (
-            <p className="whitespace-nowrap text-xs text-ink-soft">
-              ค่างวด {baht(row.amount)} + ค่าปรับ {baht(row.penaltyAmount)}
-            </p>
+          {isPenaltyOnly ? (
+            <p className="whitespace-nowrap text-xs text-ink-soft">ค่าปรับ {baht(row.amount)}</p>
+          ) : (
+            row.penaltyAmount > 0 && (
+              <p className="whitespace-nowrap text-xs text-ink-soft">
+                ค่างวด {baht(row.amount)} + ค่าปรับ {baht(row.penaltyAmount)}
+              </p>
+            )
           )}
         </div>
       </div>

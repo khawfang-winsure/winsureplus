@@ -7822,12 +7822,13 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
  *    รอบถัดไปเห็นว่ายังไม่เคยลง → apply ซ้ำ = เงินเบิ้ล) — ถ้าอ่าน raw_json ไม่สำเร็จ (best-effort)
  *    ยังส่ง null ต่อได้ตามปกติ (แค่ไม่มี uuid ไว้กัน auto-sync ซ้ำ ไม่กระทบการลงเงินหลัก)
  *
- * (ถอดออก 18 ก.ค. 2026) เดิมมีขั้น "align penalty_amount ตาม PJ" ผ่าน admin_set_installment_penalty
- *    หลัง record_payment_spread สำเร็จ — ถอดออกเพราะ (1) admin_set_installment_penalty บังคับ is_admin()
- *    (0096) แต่หน้ากล่องรอตรวจเปิดให้ staff ใช้ด้วย → align เงียบๆ fail ไม่มีผลจริง (2) migration 0116
- *    (run_daily_update + penalty_accrual_for_installment) auto-settle penalty_amount ให้ตรงยอดจ่ายจริงอยู่
- *    แล้วทุกวันผ่าน cron ไม่ต้อง override มือซ้ำ (3) admin_set_installment_penalty ตั้ง
- *    penalty_overridden=true ถาวร → freeze งวดนั้นไม่ให้ 0116 แตะอีกเลย ซึ่งไม่จำเป็น
+ * (คืนกลับ 18 ก.ค. 2026, mig 0117) "align penalty_amount ตาม PJ" — เคส AMOUNT_MISMATCH ประเภทค่าปรับ
+ *    (Pete ยึด PJ เป็นหลัก: PJ คิดต่างจากที่ระบบเราคิด → ต้อง set penalty_amount ของงวดเป้าหมาย = ยอด PJ)
+ *    เดิมถอดออกเพราะเรียก admin_set_installment_penalty (0096) ที่บังคับ is_admin() → staff (ซึ่งใช้หน้า
+ *    กล่องรอตรวจนี้ได้ตามปกติ, 0087) กดแล้ว fail เงียบ ไม่มีผลจริง — ตอนนี้เปลี่ยนไปเรียก
+ *    pj_review_set_penalty (mig 0117) แทน ซึ่ง grant authenticated (staff+admin) โดยตั้งใจ scope แคบกว่า
+ *    0096 (ใช้เฉพาะ path นี้) ไม่ทับ/ไม่แทนที่ 0096 หรือ auto-settle ของ 0116 (0116 ยัง freeze/reconcile
+ *    ตามปกติ — penalty_overridden=true ที่ align ตั้งไว้กันแค่ cron รอบถัดไปคิดทับค่าที่ยึด PJ มา)
  */
 export async function applyPjReviewPayment(params: {
   reviewId: string
@@ -7876,6 +7877,48 @@ export async function applyPjReviewPayment(params: {
     }
   } catch { /* best-effort อ่าน raw_json — ไม่มี uuid ก็ยังลงเงินได้ปกติ แค่ไม่มี exact-dedup เสริม */ }
 
+  // (18 ก.ค. 2026, mig 0117) เคส align ค่าปรับตาม PJ — ต้องคำนวณ "งวดเป้าหมายค่าปรับ" จากสภาพก่อนลงเงิน
+  // ให้ตรงกับที่ record_payment_spread (0115) จะเลือกเองข้างใน RPC (RPC ไม่คืน target กลับมาให้) —
+  // reuse pickPenaltyTargetInstallment (mirror ตรงตัวของ SQL, ใช้ซ้ำจาก getPjReviewContext ด้านบน)
+  const isPenaltyAlign =
+    reviewRow?.reason === 'AMOUNT_MISMATCH' &&
+    reviewRow?.pj_payment_type === 'penalty' &&
+    penalty > 0
+
+  let alignTargetId: string | null = null
+  if (isPenaltyAlign) {
+    const [instRes, penaltyLogRes] = await Promise.all([
+      supabase
+        .from('installments')
+        .select('id, installment_no, due_date, paid_at, penalty_amount')
+        .eq('contract_id', contractId)
+        .order('installment_no'),
+      supabase
+        .from('payment_log')
+        .select('installment_id, action, penalty_paid_amount, created_at')
+        .eq('contract_id', contractId)
+        .in('action', ['pay', 'cancel'])
+        .order('created_at', { ascending: true }),
+    ])
+    if (instRes.error) throw instRes.error
+    if (penaltyLogRes.error) throw penaltyLogRes.error
+    const candidates: PenaltyTargetCandidate[] = ((instRes.data ?? []) as {
+      id: string
+      installment_no: number
+      due_date: string
+      paid_at: string | null
+      penalty_amount: string | number | null
+    }[]).map(r => ({
+      id: r.id,
+      installmentNo: r.installment_no,
+      dueDate: r.due_date,
+      paidAt: r.paid_at,
+      penaltyAmount: parsePjAmount(r.penalty_amount),
+    }))
+    const eventsById = groupPenaltyEventsByInstallment((penaltyLogRes.data ?? []) as PjPenaltyLogRow[])
+    alignTargetId = pickPenaltyTargetInstallment(candidates, eventsById)?.id ?? null
+  }
+
   const { error } = await supabase.rpc('record_payment_spread', {
     p_contract_id:    contractId,
     p_principal:      principal,
@@ -7885,6 +7928,17 @@ export async function applyPjReviewPayment(params: {
     p_receipt_uuids:  receiptUuidsPayload,
   })
   if (error) throw error
+
+  // align penalty_amount ของงวดเป้าหมาย = ยอด PJ (mig 0117, grant authenticated ทั้ง staff+admin) — เงิน
+  // ลงไปแล้วที่ RPC ด้านบน ถ้า align fail ต้องให้เห็น error ชัด ไม่ swallow เงียบ (ต่างจากก่อนถอดที่เคย fail
+  // เพราะสิทธิ์ — ตอนนี้ error ที่เหลือคือบั๊กจริงที่ต้องรู้ ไม่ใช่ permission)
+  if (isPenaltyAlign && alignTargetId) {
+    const { error: alignErr } = await supabase.rpc('pj_review_set_penalty', {
+      p_installment_id: alignTargetId,
+      p_amount: penalty,
+    })
+    if (alignErr) throw alignErr
+  }
 
   // จด ledger กันลงซ้ำ (legacy safety net คนละกลไกจาก pj_applied_receipts — คงไว้เหมือนเดิม ห้ามลบ
   // แยก tx เหมือนเดิมทุกประการ ไม่ใช่ scope ของ atomic fix รอบนี้): cron รอบถัดไป (< DEDUP_CUTOFF ใน
