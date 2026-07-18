@@ -1416,34 +1416,62 @@ export default function ContractDetail() {
                         '-'
                       )}
                     </td>
-                    {/* #3 — ค่าปรับ: admin เห็นไอคอนดินสอแก้ไข/ลบค่าปรับเสมอ, staff เห็น display only
-                        บรรทัดที่ 2 "จ่ายแล้ว" = ยอดค่าปรับที่ยืนยันรับชำระจริง (คนละเลขกับ "ต้องเรียก" ที่ระบบคิดวันละ 100
-                        โดยตั้งใจ — ไม่จำเป็นต้องเท่ากัน, read-only ไม่มีไอคอนแก้) */}
+                    {/* #3 — ค่าปรับ: admin เห็นไอคอนดินสอแก้ไข/ลบค่าปรับเสมอ ทุกสถานะ
+                        "ต้องเรียก" (i.penaltyAmount) คิดสดตามวันช้าปัจจุบัน ส่วน "เก็บแล้ว" (paidPenalty)
+                        คือเงินที่เก็บจริงในอดีต — เลขทั้งสองไม่จำเป็นต้องเท่ากันตลอดเวลา (charged ลดได้เมื่อจ่ายแล้ว/ถูก override)
+                        ดังนั้นแยกแสดงเป็น 4 สถานะ: ไม่มีค่าปรับ / เก็บครบแล้ว / เก็บบางส่วน (ยังค้าง) / ยังไม่เก็บ (ค้างเรียก) */}
                     <td className="px-3 py-2.5">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="inline-flex items-center gap-1.5">
-                          {i.penaltyAmount > 0 ? (
-                            <span>ต้องเรียก {baht(i.penaltyAmount)} ฿ ({i.penaltyDays}ว.)</span>
-                          ) : (
-                            <span className="text-ink-soft">-</span>
-                          )}
-                          {isAdmin && (
-                            <button
-                              onClick={() => setPenaltyOverrideTarget(i)}
-                              className="rounded p-1 text-ink-soft hover:bg-amber-50 hover:text-amber-700"
-                              title="แก้ไข/ลบค่าปรับ (admin)"
-                            >
-                              <Pencil size={13} />
-                            </button>
-                          )}
-                        </span>
-                        {(() => {
-                          const paidPenalty = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
-                          return paidPenalty > 0 ? (
-                            <span className="text-xs text-ink-soft">จ่ายแล้ว {baht(paidPenalty)} ฿</span>
-                          ) : null
-                        })()}
-                      </div>
+                      {(() => {
+                        const charged = i.penaltyAmount
+                        const days = i.penaltyDays
+                        const paid = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
+                        const editBtn = isAdmin ? (
+                          <button
+                            onClick={() => setPenaltyOverrideTarget(i)}
+                            className="rounded p-1 text-ink-soft hover:bg-amber-50 hover:text-amber-700"
+                            title="แก้ไข/ลบค่าปรับ (admin)"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        ) : null
+
+                        if (charged === 0 && paid === 0) {
+                          return (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="text-ink-soft">-</span>
+                              {editBtn}
+                            </span>
+                          )
+                        }
+
+                        if (paid > 0 && paid >= charged) {
+                          return (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="text-green-700">เก็บแล้ว {baht(paid)} ฿ ✓</span>
+                              {editBtn}
+                            </span>
+                          )
+                        }
+
+                        if (paid > 0 && paid < charged) {
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="text-amber-700">เก็บแล้ว {baht(paid)} ฿</span>
+                                {editBtn}
+                              </span>
+                              <span className="text-xs text-amber-700">ยังค้าง {baht(charged - paid)} ฿</span>
+                            </div>
+                          )
+                        }
+
+                        return (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span>ต้องเรียก {baht(charged)} ฿ ({days}ว.)</span>
+                            {editBtn}
+                          </span>
+                        )
+                      })()}
                     </td>
                     <td className="px-3 py-2.5">
                       {i.paidAt ? (
