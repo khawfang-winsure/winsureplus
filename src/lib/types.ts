@@ -586,6 +586,15 @@ export interface PjReviewContext {
     penaltyAmount: number
     reason: PjSyncReviewReason
   }[]
+  /** งวดที่ค่าปรับจะไปลง (18 ก.ค. 2026, mig 0115/0116) — เลียนแบบ target-selection ของ record_payment_spread:
+   *  งวดเก่าสุด (installment_no น้อยสุด) ที่ penalty_amount > ค่าปรับที่จ่ายแล้วสะสม, fallback งวด unpaid แรกสุด
+   *  ถ้าไม่มีงวดไหนเลย (สัญญาไม่มีงวด/ปิดหมดแล้วไม่มีที่ลง) = null — ให้หน้าจออธิบาย "ระบบเราคิด Y" เทียบกับ PJ ได้ */
+  penaltyTarget: {
+    installmentNo: number
+    chargedPenalty: number  // ค่าปรับที่ระบบเราคิด ณ วันนี้ของงวดนี้ (penalty_accrual_for_installment mig 0116 — sticky ถ้า settled)
+    penaltyPaid: number     // ค่าปรับที่จ่ายแล้วจริงสะสมของงวดนี้ (penalty_paid_for_installment mig 0115)
+    settled: boolean        // true = จ่ายค่าปรับทันยอดที่ค้าง ณ วันหนึ่งแล้ว (แช่แข็ง ไม่โตต่อ)
+  } | null
 }
 
 /** 1 รอบการรัน auto-sync (จาก pj_sync_runs) */

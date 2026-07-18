@@ -64,7 +64,7 @@ import {
   type FeeRight,
   type ReconcileResult,
 } from './feeReconcile'
-import { calcSummary } from './calc'
+import { calcSummary, computePenaltyAccrual, penaltyPaidForInstallment, type PenaltyPayEvent } from './calc'
 import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from './deviceReturnByCollector'
 import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
 
@@ -7457,6 +7457,62 @@ function extractPjReceiptUuids(raw: PjRawReceipt[] | null | undefined): string[]
     .filter((u): u is string => !!u)
 }
 
+// ===== เป้าหมายงวดค่าปรับ (18 ก.ค. 2026, mig 0115/0116) =====
+// mirror ตรงตัวของ target-selection ใน record_payment_spread (0115):
+//   งวดเก่าสุด (installment_no น้อยสุด) ที่ penalty_amount > penalty_paid_for_installment(id)
+//   ไม่มี → fallback งวด unpaid (paid_at is null) แรกสุด
+// ใช้ใน getPjReviewContext (อ่านอย่างเดียว — อธิบาย "ระบบเราคิดเท่าไร" ในหน้าจอกล่องรอตรวจ)
+// (ถอดออกจาก applyPjReviewPayment 18 ก.ค. 2026 — align penalty_amount ตาม PJ ซ้ำซ้อนกับ mig 0116 + ปัญหาสิทธิ์ staff)
+
+/** 1 งวดที่เป็นตัวเลือกเป้าหมายค่าปรับ — ต้องเรียงมาแล้วตาม installment_no ascending ก่อนส่งเข้าฟังก์ชันนี้ */
+interface PenaltyTargetCandidate {
+  id: string
+  installmentNo: number
+  dueDate: string
+  paidAt: string | null
+  penaltyAmount: number
+}
+
+function pickPenaltyTargetInstallment(
+  rows: PenaltyTargetCandidate[],
+  eventsById: Map<string, PenaltyPayEvent[]>,
+): PenaltyTargetCandidate | null {
+  const withPenaltyOwed = rows.find(
+    r => r.penaltyAmount > penaltyPaidForInstallment(eventsById.get(r.id) ?? []),
+  )
+  if (withPenaltyOwed) return withPenaltyOwed
+  const firstUnpaid = rows.find(r => r.paidAt === null)
+  return firstUnpaid ?? null
+}
+
+interface PjPenaltyLogRow {
+  installment_id: string | null
+  action: string
+  penalty_paid_amount: string | number | null
+  created_at: string
+}
+
+/** group payment_log (action pay/cancel) ต่องวด → PenaltyPayEvent[] ไว้ป้อน penaltyPaidForInstallment/computePenaltyAccrual */
+function groupPenaltyEventsByInstallment(rows: PjPenaltyLogRow[]): Map<string, PenaltyPayEvent[]> {
+  const map = new Map<string, PenaltyPayEvent[]>()
+  for (const r of rows) {
+    if (!r.installment_id) continue
+    const list = map.get(r.installment_id) ?? []
+    list.push({
+      action: r.action as 'pay' | 'cancel',
+      penaltyPaidAmount: parsePjAmount(r.penalty_paid_amount),
+      createdAt: r.created_at,
+    })
+    map.set(r.installment_id, list)
+  }
+  return map
+}
+
+/** วันนี้ (UTC yyyy-mm-dd) — ใช้เทียบกับ due_date แบบเดียวกับ computePenaltyAccrual/utcDayDiff (calc.ts) */
+function todayUtcDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 interface PjSyncRunViewRow {
   id: string
   started_at: string
@@ -7586,6 +7642,9 @@ interface PjCtxInstallmentRow {
   amount: string | number | null
   paid_amount: string | number | null
   status: string
+  penalty_amount: string | number | null
+  paid_at: string | null
+  due_date: string
 }
 
 interface PjCtxPaymentRow {
@@ -7618,14 +7677,15 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     recentPayments: [],
     unpaidInstallments: [],
     siblingReviewRows: [],
+    penaltyTarget: null,
   }
   if (!supabase) return empty
 
-  const [contractRes, instRes, payRes, siblingRes] = await Promise.all([
+  const [contractRes, instRes, payRes, siblingRes, penaltyLogRes] = await Promise.all([
     supabase.from('contracts').select('monthly_payment').eq('id', contractId).maybeSingle(),
     supabase
       .from('installments')
-      .select('id, installment_no, amount, paid_amount, status')
+      .select('id, installment_no, amount, paid_amount, status, penalty_amount, paid_at, due_date')
       .eq('contract_id', contractId)
       .order('installment_no'),
     supabase
@@ -7641,11 +7701,20 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
       .eq('matched_contract_id', contractId)
       .eq('status', 'pending')
       .order('pj_paid_date', { ascending: false }),
+    // (18 ก.ค. 2026) 1 query เพิ่ม — ประวัติ pay/cancel เต็มของทุกงวดในสัญญานี้ ไว้หาเป้าหมายค่าปรับ
+    // (pickPenaltyTargetInstallment) เหมือน record_payment_spread ตัดสินใจ — payRes ด้านบน limit 8 ไม่พอ
+    supabase
+      .from('payment_log')
+      .select('installment_id, action, penalty_paid_amount, created_at')
+      .eq('contract_id', contractId)
+      .in('action', ['pay', 'cancel'])
+      .order('created_at', { ascending: true }),
   ])
   if (contractRes.error) throw contractRes.error
   if (instRes.error) throw instRes.error
   if (payRes.error) throw payRes.error
   if (siblingRes.error) throw siblingRes.error
+  if (penaltyLogRes.error) throw penaltyLogRes.error
 
   const instRows = (instRes.data ?? []) as PjCtxInstallmentRow[]
 
@@ -7697,6 +7766,34 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     reason: r.reason as PjSyncReviewRow['reason'],
   }))
 
+  // งวดเป้าหมายค่าปรับ (18 ก.ค. 2026) — เลียนแบบ record_payment_spread (0115), ค่าปรับ "ระบบเราคิด"
+  // จาก penalty_accrual_for_installment (0116, mirror ผ่าน computePenaltyAccrual ฝั่ง TS)
+  const penaltyEventsByInst = groupPenaltyEventsByInstallment((penaltyLogRes.data ?? []) as PjPenaltyLogRow[])
+  const penaltyCandidates: PenaltyTargetCandidate[] = instRows.map(r => ({
+    id: r.id,
+    installmentNo: r.installment_no,
+    dueDate: r.due_date,
+    paidAt: r.paid_at,
+    penaltyAmount: parsePjAmount(r.penalty_amount),
+  }))
+  const penaltyTargetRow = pickPenaltyTargetInstallment(penaltyCandidates, penaltyEventsByInst)
+  let penaltyTarget: PjReviewContext['penaltyTarget'] = null
+  if (penaltyTargetRow) {
+    const targetEvents = penaltyEventsByInst.get(penaltyTargetRow.id) ?? []
+    const accrual = computePenaltyAccrual({
+      dueDate: penaltyTargetRow.dueDate,
+      paidAt: penaltyTargetRow.paidAt,
+      events: targetEvents,
+      today: todayUtcDate(),
+    })
+    penaltyTarget = {
+      installmentNo: penaltyTargetRow.installmentNo,
+      chargedPenalty: accrual.penaltyAmount,
+      penaltyPaid: penaltyPaidForInstallment(targetEvents),
+      settled: accrual.settled,
+    }
+  }
+
   return {
     monthly: parsePjAmount((contractRes.data as { monthly_payment: string | number | null } | null)?.monthly_payment),
     nextUnpaid,
@@ -7705,6 +7802,7 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     recentPayments,
     unpaidInstallments,
     siblingReviewRows,
+    penaltyTarget,
   }
 }
 
@@ -7723,6 +7821,13 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
  *    ห้ามแยก insert หลัง RPC เป็นคนละ tx อีก (เดิมทำแบบนั้น → insert fail แล้ว uuid ไม่ถูกจด → auto-sync
  *    รอบถัดไปเห็นว่ายังไม่เคยลง → apply ซ้ำ = เงินเบิ้ล) — ถ้าอ่าน raw_json ไม่สำเร็จ (best-effort)
  *    ยังส่ง null ต่อได้ตามปกติ (แค่ไม่มี uuid ไว้กัน auto-sync ซ้ำ ไม่กระทบการลงเงินหลัก)
+ *
+ * (ถอดออก 18 ก.ค. 2026) เดิมมีขั้น "align penalty_amount ตาม PJ" ผ่าน admin_set_installment_penalty
+ *    หลัง record_payment_spread สำเร็จ — ถอดออกเพราะ (1) admin_set_installment_penalty บังคับ is_admin()
+ *    (0096) แต่หน้ากล่องรอตรวจเปิดให้ staff ใช้ด้วย → align เงียบๆ fail ไม่มีผลจริง (2) migration 0116
+ *    (run_daily_update + penalty_accrual_for_installment) auto-settle penalty_amount ให้ตรงยอดจ่ายจริงอยู่
+ *    แล้วทุกวันผ่าน cron ไม่ต้อง override มือซ้ำ (3) admin_set_installment_penalty ตั้ง
+ *    penalty_overridden=true ถาวร → freeze งวดนั้นไม่ให้ 0116 แตะอีกเลย ซึ่งไม่จำเป็น
  */
 export async function applyPjReviewPayment(params: {
   reviewId: string
@@ -7740,13 +7845,15 @@ export async function applyPjReviewPayment(params: {
   // ที่หาย/ถูกแก้ — reason RECEIPT_MISSING/RECEIPT_CHANGED) เด็ดขาด ต่อให้ UI ซ่อนปุ่มแล้ว (น้องวิว) ก็ต้อง
   // กันที่ db.ts ด้วย เผื่อบั๊ก UI ในอนาคต/เรียกตรงจาก console — เคสนี้ "ตรวจ+รายงานเท่านั้น" (Pete locked)
   // ต้องไปให้แอดมินตรวจสอบใน PJ มือ ไม่ใช่กดยืนยันลงยอดซ้ำ (จะลงเงินผีซ้ำเข้าไปอีก) — throw ไม่ swallow
-  const { data: driftGuardRow, error: driftGuardErr } = await supabase
+  // (18 ก.ค. 2026) รวม query เดียวกับที่เคยแยกอ่าน raw_json ด้านล่าง — ประหยัด 1 round-trip
+  // pj_payment_type ยังใช้เติม payment_type fallback ใน receiptUuidsPayload ด้านล่าง
+  const { data: reviewRow, error: reviewRowErr } = await supabase
     .from('pj_sync_review')
-    .select('reason')
+    .select('reason, pj_invoice_no, pj_payment_type, raw_json')
     .eq('id', reviewId)
     .maybeSingle()
-  if (driftGuardErr) throw driftGuardErr
-  if (driftGuardRow?.reason === 'RECEIPT_MISSING' || driftGuardRow?.reason === 'RECEIPT_CHANGED') {
+  if (reviewRowErr) throw reviewRowErr
+  if (reviewRow?.reason === 'RECEIPT_MISSING' || reviewRow?.reason === 'RECEIPT_CHANGED') {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามยืนยันลงยอด ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
   }
 
@@ -7755,11 +7862,6 @@ export async function applyPjReviewPayment(params: {
     | { uuid: string; invoice_no: string | null; paid_date: string | null; amount: number; payment_type: string | null; source: string }[]
     | null = null
   try {
-    const { data: reviewRow } = await supabase
-      .from('pj_sync_review')
-      .select('pj_invoice_no, pj_payment_type, raw_json')
-      .eq('id', reviewId)
-      .maybeSingle()
     const rawReceipts = (reviewRow?.raw_json ?? []) as PjRawReceipt[]
     const receiptsFound = Array.isArray(rawReceipts) ? rawReceipts.filter(r => r?.uuid) : []
     if (receiptsFound.length > 0) {
