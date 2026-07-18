@@ -94,8 +94,10 @@ const TYPE_CHIP_CLS: Record<'blue' | 'amber' | 'neutral', string> = {
   neutral: 'bg-peach-soft text-ink',
 }
 
-/** ฐาน URL เปิดใบเสร็จใน PJ ตรงๆ (ต้อง login PJ ในแท็บนั้นอยู่แล้ว — เป็นแค่ทางลัด ไม่ได้ auto-login ให้) */
-const PJ_INVOICE_URL = (uuid: string) => `https://pj-soft.net/manager/invoices/${uuid}`
+/** ฐาน URL เปิดใบเสร็จใน PJ ตรงๆ (ต้อง login PJ ในแท็บนั้นอยู่แล้ว — เป็นแค่ทางลัด ไม่ได้ auto-login ให้)
+ *  uuid ที่ส่งเข้ามาคือ receipt uuid (row.receiptUuids[0]) — ต้องใช้ path /manager/receipts/ ไม่ใช่ /manager/invoices/
+ *  (invoices path ผิด → 404 เพราะ uuid นี้ไม่ใช่ invoice uuid) */
+const PJ_RECEIPT_URL = (uuid: string) => `https://pj-soft.net/manager/receipts/${uuid}`
 
 /** เวลาแบบไทย dd/mm/yyyy HH:MM จาก ISO timestamp */
 function thaiDateTime(iso: string): string {
@@ -487,7 +489,7 @@ function ReviewLineItem({
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5 border-t border-peach/60 pt-2.5">
         {pjLinkUuid && (
-          <a href={PJ_INVOICE_URL(pjLinkUuid)} target="_blank" rel="noreferrer">
+          <a href={PJ_RECEIPT_URL(pjLinkUuid)} target="_blank" rel="noreferrer">
             <Button variant="ghost">
               <Link2 size={13} />
               เปิดใน PJ
