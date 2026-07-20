@@ -5,7 +5,7 @@ import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
-import { getAllInstallments, getAllStatuses, getContracts, getShops } from '../lib/db'
+import { getAllStatuses, getContractAggregates, getContracts, getShops } from '../lib/db'
 import type { Contract, ContractStatus, ContractStatusRow, OverdueBucket } from '../lib/types'
 import { useAsync } from '../lib/useAsync'
 
@@ -44,15 +44,15 @@ function StatusPills({ contract, st }: { contract: Contract; st: ContractStatusR
 export default function AllCustomers() {
   const { data, loading } = useAsync(
     async () => {
-      const [contracts, shops, statuses, installments] = await Promise.all([
+      const [contracts, shops, statuses, aggregates] = await Promise.all([
         getContracts(),
         getShops(),
         getAllStatuses(),
-        getAllInstallments(),
+        getContractAggregates(),
       ])
-      return { contracts, shops, statuses, installments }
+      return { contracts, shops, statuses, aggregates }
     },
-    { contracts: [], shops: [], statuses: [], installments: [] },
+    { contracts: [], shops: [], statuses: [], aggregates: new Map() },
   )
 
   const navigate = useNavigate()
@@ -78,16 +78,15 @@ export default function AllCustomers() {
     [data.statuses],
   )
   // ความคืบหน้างวด: ชำระแล้ว = งวดที่ปิด (paidAt != null) / ทั้งหมด = จำนวนงวดในตาราง
+  // ใช้ getContractAggregates() (view v_contract_aggregates) แทนการดึงงวดทั้งหมดมานับเอง —
+  // เดิม getAllInstallments() ดึง 29,000+ แถวติด PAGE_CAP 4,999 ทำให้ลูกค้าท้ายๆ นับผิด
   const progressBy = useMemo(() => {
     const m = new Map<string, { paid: number; total: number }>()
-    for (const ins of data.installments) {
-      const cur = m.get(ins.contractId) ?? { paid: 0, total: 0 }
-      cur.total++
-      if (ins.paidAt) cur.paid++
-      m.set(ins.contractId, cur)
+    for (const [contractId, agg] of data.aggregates) {
+      m.set(contractId, { paid: agg.paidCount, total: agg.totalInstallments })
     }
     return m
-  }, [data.installments])
+  }, [data.aggregates])
 
   // รุ่นทั้งหมดที่มีจริง (สำหรับดรอปดาวน์)
   const models = useMemo(() => {

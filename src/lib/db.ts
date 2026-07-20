@@ -2,6 +2,7 @@
 // หน้าเว็บเรียกฟังก์ชันในไฟล์นี้เสมอ — ภายในจะเลือกเองว่าจะดึงจาก Supabase จริง
 // หรือใช้ข้อมูลตัวอย่าง (mock) ตามว่าใส่กุญแจใน .env แล้วหรือยัง
 import { supabase } from './supabase'
+import type { PostgrestError } from '@supabase/supabase-js'
 import type {
   AuditEvent,
   AuditEventType,
@@ -86,6 +87,39 @@ const DEFAULT_SETTINGS: AppSettings = { docFee: 100, penaltyPerDay: 100, penalty
 /** PostgREST default cap = 1000 rows (index 0-999). ขยายเป็น 5000 rows เพื่อรองรับการเติบโต 1+ ปี
  *  ใช้ .range(0, PAGE_CAP) บน query ที่ return list (ไม่ใช่ .single() / .maybeSingle() / count) */
 const PAGE_CAP = 4999
+
+/**
+ * ดึงข้อมูลทั้งตาราง/view แบบวนหน้า (loop .range ทีละ PAGE_CAP+1 แถว จนกว่าจะได้แถวไม่เต็มหน้า)
+ * ใช้กับ query ที่ "ไม่มี filter" ช่วยลดจำนวนแถวให้ต่ำกว่า PAGE_CAP แน่นอน — เดี่ยว .range(0, PAGE_CAP)
+ * จะตัดข้อมูลทิ้งเงียบๆ เมื่อตารางโตเกิน 5,000 แถว โดยไม่มี error ให้เห็น
+ *
+ * บั๊กอ้างอิง (21 ก.ค. 2569): getAllAddresses ใช้ .range(0, PAGE_CAP) ครั้งเดียว ตอนตาราง
+ * customer_addresses โต 7,216 แถว (เกิน 4,999) → ลูกค้าลำดับ 6,186+ เช่น น.ส.ธมลวรรณ พัศกุล
+ * หลุดออกจากผลลัพธ์เงียบๆ ทำให้หน้า /letters ขึ้น "ยังไม่มีที่อยู่" ทั้งที่มีที่อยู่จริงใน DB
+ * (กระทบ 616 สัญญา) — ใช้ helper นี้แทนทุกครั้งที่ query ไม่มี filter ลดแถว
+ *
+ * orderBy: จำเป็นต้อง .order() ด้วยคอลัมน์ที่ไม่ซ้ำ (ปกติใช้ 'id' — ทุกตารางมี uuid PK ชื่อนี้)
+ * ก่อน .range() เสมอ เพราะ Postgres/PostgREST "ไม่การันตี" ลำดับแถวคงที่ข้ามหลาย .range() ถ้าไม่สั่ง
+ * ORDER BY ชัดเจน — ถ้ามีคน insert/update แถวพอดีจังหวะที่กำลัง paginate อาจมีแถวถูกข้ามหรือได้ซ้ำ
+ * ระหว่างหน้า (อาการหน้าตาเหมือนบั๊กที่ helper นี้ตั้งใจแก้พอดี ห้ามลบ .order() ทิ้ง)
+ */
+async function fetchAllPaged<T>(
+  build: (from: number, to: number, orderBy: string) => PromiseLike<{ data: T[] | null; error: PostgrestError | null }>,
+  orderBy = 'id',
+): Promise<T[]> {
+  const pageSize = PAGE_CAP + 1 // 5,000 แถวต่อหน้า
+  const rows: T[] = []
+  let from = 0
+  for (;;) {
+    const { data, error } = await build(from, from + pageSize - 1, orderBy)
+    if (error) throw error
+    const batch = data ?? []
+    rows.push(...batch)
+    if (batch.length < pageSize) break
+    from += pageSize
+  }
+  return rows
+}
 
 // ---------- ตัวแปลงแถวฐานข้อมูล (snake_case) -> ชนิดข้อมูลในเว็บ (camelCase) ----------
 interface ContractRow {
@@ -3003,17 +3037,21 @@ export async function getContractAddresses(contractId: string): Promise<Contract
 }
 
 /**
- * ที่อยู่ทุกสัญญา (สำหรับหน้าส่งจดหมาย) → { contractId: { current, id_card, ... } }
- * @deprecated for bulk — ใช้ getCurrentAddresses() แทนสำหรับที่อยู่ปัจจุบันในหน้า bulk
- *             ที่ 2,400+ สัญญา × 3 ที่อยู่ = 7,200+ แถว — เกิน PAGE_CAP 4,999 แล้ว
- *             ยังใช้ได้สำหรับ single-contract context (ดูที่อยู่ครบทุก kind)
+ * ที่อยู่ทุกสัญญา ทุกชนิด (current/id_card/registry ฯลฯ — ใช้พิมพ์จดหมาย 3 ชุดต่อรอบ)
+ * → { contractId: { current, id_card, ... } }
+ * ใช้ fetchAllPaged วนดึงทุกแถว เพราะตารางนี้โตเกิน PAGE_CAP แล้ว (7,200+ แถว ที่ 2,400+ สัญญา
+ * × 3 ที่อยู่/สัญญา) — เดิม .range(0, PAGE_CAP) ครั้งเดียวทำให้ลูกค้าลำดับหลังๆ หลุดเงียบๆ
+ * (ดูบั๊กธมลวรรณ พัศกุลที่ comment ของ fetchAllPaged)
  */
 export async function getAllAddresses(): Promise<Record<string, ContractAddresses>> {
   if (!supabase) return {}
-  const { data, error } = await supabase.from('customer_addresses').select('*').range(0, PAGE_CAP)
-  if (error) throw error
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  // order ด้วย id (uuid PK ของ customer_addresses — mig 0010) กันแถวสลับ/ข้ามระหว่างหน้า
+  const rows = await fetchAllPaged<AddressRow>((from, to, orderBy) =>
+    client.from('customer_addresses').select('*').order(orderBy).range(from, to),
+  )
   const out: Record<string, ContractAddresses> = {}
-  for (const r of (data ?? []) as AddressRow[]) {
+  for (const r of rows) {
     ;(out[r.contract_id] ??= {})[r.kind] = mapAddress(r)
   }
   return out
