@@ -7,6 +7,7 @@ import type {
   AuditEvent,
   AuditEventType,
   CashCollectedToday,
+  CollectorBucketRow,
   CollectorCallOutcome,
   Contract,
   ContractStatus,
@@ -68,6 +69,7 @@ import {
 import { calcSummary, computePenaltyAccrual, penaltyPaidForInstallment, type PenaltyPayEvent } from './calc'
 import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from './deviceReturnByCollector'
 import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
+import { LATE_BUCKETS, type LateBucket } from './collectorPeriod'
 
 export type OptionKind =
   | 'phone_model'
@@ -5007,6 +5009,46 @@ export async function getCollectorCallOutcomes(
     promisesKept: Number(row.promises_kept),
     promisesBroken: Number(row.promises_broken),
     promisesPending: Number(row.promises_pending),
+  }))
+}
+
+// ---------- Collector collection by late-bucket (migration 0118) ----------
+
+/** ชุดกลุ่มค้างที่ RPC คืนได้ (LateBucket ทุกค่ารวม 'ไม่ทราบช่วง') — ใช้ตรวจ fallback แถวแปลก */
+const KNOWN_LATE_BUCKETS = new Set<string>(LATE_BUCKETS)
+
+/** 1 row ต่อ (author, bucket) จาก RPC get_collector_collection_by_bucket — numeric/int มาเป็น number|string จาก PostgREST */
+interface CollectorBucketViewRow {
+  author_id: string
+  author_name: string | null
+  bucket: string
+  payments: number | string
+  collected_baht: number | string
+}
+
+/**
+ * ยอดเก็บของคนติดตามหนี้ แยกตามกลุ่มค้าง (LateBucket) ตามช่วงวัน [start, end]
+ * RPC aggregate ให้แล้ว (≤8 แถวต่อคน ตาม LATE_BUCKETS) — ห้าม page ห้าม aggregate ซ้ำฝั่งนี้
+ * bucket แปลกที่ไม่รู้จัก (ไม่อยู่ใน LATE_BUCKETS) → fallback 'ไม่ทราบช่วง' แทนการ throw/ทิ้งแถว
+ * @param start วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param end   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getCollectorCollectionByBucket(
+  start: string,
+  end: string,
+): Promise<CollectorBucketRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_collector_collection_by_bucket', { p_start: start, p_end: end })
+  if (error) throw error
+
+  return ((data ?? []) as CollectorBucketViewRow[]).map((row) => ({
+    authorId: row.author_id,
+    authorName: row.author_name ?? '-',
+    bucket: (KNOWN_LATE_BUCKETS.has(row.bucket) ? row.bucket : 'ไม่ทราบช่วง') as LateBucket,
+    payments: Number(row.payments),
+    collectedBaht: Number(row.collected_baht),
   }))
 }
 

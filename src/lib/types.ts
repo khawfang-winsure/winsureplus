@@ -2,6 +2,8 @@
 // ไฟล์นี้เป็น "พิมพ์เขียว" ของข้อมูล ใช้ร่วมกันทั้งเว็บ
 // ภายหลังจะ map ตรงกับตารางใน Supabase
 
+import type { LateBucket } from './collectorPeriod'
+
 /** สถานะหลัก (lifecycle) ของสัญญา — กลุ่มล่าช้าเป็นค่าที่ "คำนวณ" จากวันครบกำหนด ไม่ได้เก็บตรงนี้ */
 export type ContractStatus =
   | 'active' // ผ่อนปกติ
@@ -626,6 +628,19 @@ export interface CollectorCallOutcome {
   promisesKept: number       // นัดที่ลูกค้าจ่ายในกรอบเวลานัด
   promisesBroken: number     // นัดที่ไม่จ่าย และเลยวันนัดแล้ว (ผิดนัด)
   promisesPending: number    // นัดที่ยังไม่ถึงวันนัด (ยังไม่ตัดสิน)
+}
+
+// ---------- Collector collection by late-bucket — per คนติดตามหนี้ (migration 0118) ----------
+// 1 row ต่อ (author, bucket) จาก RPC get_collector_collection_by_bucket(p_start, p_end)
+// ≤8 แถวต่อคน (LATE_BUCKETS length) — aggregate มาจาก DB แล้ว ห้าม aggregate ซ้ำฝั่ง client
+
+/** ยอดเก็บของคนติดตามหนี้ แยกตามกลุ่มค้าง (LateBucket) ตามช่วงวัน */
+export interface CollectorBucketRow {
+  authorId: string
+  authorName: string
+  bucket: LateBucket
+  payments: number       // จำนวนครั้งที่จ่าย
+  collectedBaht: number  // ยอดเงินรวม
 }
 
 /**

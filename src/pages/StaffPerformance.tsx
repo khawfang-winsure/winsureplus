@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, ChevronDown, Download, X, Users, Wallet, CalendarClock, AlertTriangle } from 'lucide-react'
+import {
+  ChevronRight,
+  ChevronDown,
+  Download,
+  X,
+  Users,
+  Wallet,
+  CalendarClock,
+  AlertTriangle,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+} from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
   DateRangePicker,
@@ -21,6 +33,7 @@ import {
   getPjRecoveryOutcomeSummary,
   getCollectorCallOutcomes,
   getCollectionMonthly,
+  getCollectorCollectionByBucket,
   type CollectorScorecardRow,
 } from '../lib/db'
 import type {
@@ -31,10 +44,20 @@ import type {
   PjRecoveryOutcomeSummary,
   CollectorCallOutcome,
   CollectionMonthlyRow,
+  CollectorBucketRow,
 } from '../lib/types'
 import type { DeviceReturnByCollectorResult } from '../lib/deviceReturnByCollector'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
 import { computeCallOutcomeTotals, type CallOutcomeTotals } from '../lib/callOutcomes'
+import {
+  previousRange,
+  deltaPct,
+  LATE_BUCKETS,
+  PROMISE_KEPT_RATIO,
+  PROMISE_GRACE_DAYS,
+  type DeltaResult,
+  type LateBucket,
+} from '../lib/collectorPeriod'
 import { baht } from '../lib/format'
 import TeamCallTodayWidget from '../components/TeamCallTodayWidget'
 import CashCollectedTodayWidget from '../components/CashCollectedTodayWidget'
@@ -103,6 +126,31 @@ const GRADE_TONE: Record<ContractGrade, 'neutral' | 'amber' | 'red'> = {
 }
 function gradeStr(grades: string[]): string {
   return grades.length > 0 ? grades.slice().sort().join(', ') : '-'
+}
+
+// ===== Delta badge — เทียบช่วงก่อนหน้า (ดีขึ้น/แย่ลง) =====
+// tone 'good-up' = ขึ้น(เขียว)/ลง(แดง) · tone 'neutral' = ขึ้นเฉยๆไม่ได้แปลว่าดี ใช้สีเดียวทั้งคู่
+type DeltaTone = 'good-up' | 'neutral'
+
+function DeltaBadge({ delta, tone }: { delta: DeltaResult | null; tone: DeltaTone }) {
+  if (!delta || delta.dir === 'na') return null
+  if (delta.dir === 'flat') {
+    return (
+      <span className="ml-1.5 inline-flex items-center gap-0.5 text-xs font-medium text-ink-soft">
+        <Minus className="h-3 w-3" />
+        ไม่เปลี่ยน
+      </span>
+    )
+  }
+  const isUp = delta.dir === 'up'
+  const Icon = isUp ? TrendingUp : TrendingDown
+  const colorCls = tone === 'neutral' ? 'text-ink-soft' : isUp ? 'text-green-700' : 'text-red-600'
+  return (
+    <span className={`ml-1.5 inline-flex items-center gap-0.5 text-xs font-medium ${colorCls}`}>
+      <Icon className="h-3 w-3" />
+      {delta.pct.toFixed(1)}%
+    </span>
+  )
 }
 
 // ===== Team summary =====
@@ -1180,9 +1228,13 @@ function fmtInt(n: number): string {
 function CallOutcomeSection({
   rows,
   totals,
+  promisesMadeDelta,
+  promisesKeptDelta,
 }: {
   rows: CollectorCallOutcome[]
   totals: CallOutcomeTotals
+  promisesMadeDelta: DeltaResult | null
+  promisesKeptDelta: DeltaResult | null
 }) {
   const sorted = useMemo(
     () => [...rows].sort((a, b) => b.casesFollowed - a.casesFollowed),
@@ -1223,11 +1275,17 @@ function CallOutcomeSection({
               <div className="mt-1 text-xs text-ink-soft">ติดต่อไม่ได้เลย</div>
             </div>
             <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
-              <div className="text-2xl font-bold text-ink">{totals.promisesMade.toLocaleString('th-TH')}</div>
+              <div className="flex items-center justify-center">
+                <div className="text-2xl font-bold text-ink">{totals.promisesMade.toLocaleString('th-TH')}</div>
+                <DeltaBadge delta={promisesMadeDelta} tone="neutral" />
+              </div>
               <div className="mt-1 text-xs text-ink-soft">นัดจ่าย</div>
             </div>
             <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-center">
-              <div className="text-2xl font-bold text-green-700">{totals.promisesKept.toLocaleString('th-TH')}</div>
+              <div className="flex items-center justify-center">
+                <div className="text-2xl font-bold text-green-700">{totals.promisesKept.toLocaleString('th-TH')}</div>
+                <DeltaBadge delta={promisesKeptDelta} tone="good-up" />
+              </div>
               <div className="mt-1 text-xs text-green-700/80">✅ ชำระตามนัด</div>
             </div>
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center">
@@ -1275,11 +1333,166 @@ function CallOutcomeSection({
           </div>
 
           <p className="text-xs leading-relaxed text-ink-soft">
-            ติดต่อไม่ได้เลย = โทรแล้วเจอแต่ไม่รับสาย ไม่เคยติดต่อได้เลย · ตามนัด = จ่ายภายใน/ก่อนวันนัด ·
-            ผิดนัด = เลยวันนัดแล้วยังไม่จ่าย · รอถึงนัด = ยังไม่ถึงวันนัด
+            ติดต่อไม่ได้เลย = โทรแล้วเจอแต่ไม่รับสาย ไม่เคยติดต่อได้เลย · ตามนัด = จ่ายได้อย่างน้อย{' '}
+            {Math.round(PROMISE_KEPT_RATIO * 100)}% ของยอดที่นัด ภายใน {PROMISE_GRACE_DAYS} วันหลังวันนัด ·
+            ผิดนัด = เลยวันนัดแล้วยังไม่จ่ายถึงเกณฑ์ · รอถึงนัด = ยังไม่ถึงวันนัด
           </p>
         </div>
       )}
+    </Card>
+  )
+}
+
+// ===== ยอดเก็บแยกตามกลุ่มค้าง (รายคน) — ก.ค. 2026 =====
+
+interface BucketCell {
+  payments: number
+  collectedBaht: number
+}
+
+interface BucketPivotRow {
+  authorId: string
+  authorName: string
+  cells: Partial<Record<LateBucket, BucketCell>>
+  total: BucketCell
+}
+
+/** จัดแถวดิบ (1 แถวต่อ author×bucket) ให้เป็นตาราง pivot: แถว=คน, คอลัมน์=กลุ่มค้าง */
+function buildBucketPivot(rows: CollectorBucketRow[]): BucketPivotRow[] {
+  const map = new Map<string, BucketPivotRow>()
+  for (const r of rows) {
+    let entry = map.get(r.authorId)
+    if (!entry) {
+      entry = {
+        authorId: r.authorId,
+        authorName: r.authorName,
+        cells: {},
+        total: { payments: 0, collectedBaht: 0 },
+      }
+      map.set(r.authorId, entry)
+    }
+    entry.cells[r.bucket] = { payments: r.payments, collectedBaht: r.collectedBaht }
+    entry.total.payments += r.payments
+    entry.total.collectedBaht += r.collectedBaht
+  }
+  return [...map.values()].sort((a, b) => b.total.collectedBaht - a.total.collectedBaht)
+}
+
+/** รวมท้ายตาราง ต่อคอลัมน์ (กลุ่มค้าง) จากทุกคน */
+function bucketColumnTotals(pivot: BucketPivotRow[]): Record<LateBucket, BucketCell> {
+  const totals = {} as Record<LateBucket, BucketCell>
+  for (const b of LATE_BUCKETS) totals[b] = { payments: 0, collectedBaht: 0 }
+  for (const row of pivot) {
+    for (const b of LATE_BUCKETS) {
+      const c = row.cells[b]
+      if (c) {
+        totals[b].payments += c.payments
+        totals[b].collectedBaht += c.collectedBaht
+      }
+    }
+  }
+  return totals
+}
+
+/** เซลล์เดียว: เงินตัวใหญ่ + จำนวนครั้งตัวเล็กใต้ (Pete เลือกแบบนี้) */
+function BucketCellView({ cell }: { cell: BucketCell | undefined }) {
+  const payments = cell?.payments ?? 0
+  const collectedBaht = cell?.collectedBaht ?? 0
+  return (
+    <td className="px-3 py-2 text-right align-middle">
+      <div className="text-sm font-semibold text-ink">
+        {collectedBaht > 0 ? `฿${baht(collectedBaht)}` : '—'}
+      </div>
+      <div className="text-[10px] text-ink-soft">{payments > 0 ? `${payments} ครั้ง` : ''}</div>
+    </td>
+  )
+}
+
+function CollectorBucketSection({ rows }: { rows: CollectorBucketRow[] }) {
+  const pivot = useMemo(() => buildBucketPivot(rows), [rows])
+  const totals = useMemo(() => bucketColumnTotals(pivot), [pivot])
+  const grandTotal = useMemo(
+    () => pivot.reduce((sum, r) => sum + r.total.collectedBaht, 0),
+    [pivot],
+  )
+
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">ยอดเก็บแยกตามกลุ่มค้าง (รายคน)</h2>
+        <p className="text-sm text-ink-soft">
+          เงินที่จ่ายเข้ามาในช่วงวันที่เลือกด้านบน จัดกลุ่มตาม “ช้ากี่วัน ณ วันที่จ่ายจริง” ของแต่ละงวด —
+          คนละเกณฑ์กับกราฟ “จ่ายช้ากี่วัน (แยกช่วง)” ด้านล่าง ซึ่งแบ่งช่วงคนละแบบและมาจากข้อมูลระบบ PJ
+        </p>
+      </div>
+
+      {pivot.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูลการจ่ายในช่วงนี้
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 pr-3 font-medium">พนักงาน</th>
+                {LATE_BUCKETS.map((b) => (
+                  <th
+                    key={b}
+                    className={`px-3 pb-2 text-right font-medium ${
+                      b === 'ไม่ทราบช่วง' ? 'cursor-help underline decoration-dotted decoration-ink-soft/50' : ''
+                    }`}
+                    title={
+                      b === 'ไม่ทราบช่วง'
+                        ? 'จ่ายของงวดที่ถูกลบไปตอนขยายสัญญา จับคู่กลุ่มไม่ได้'
+                        : undefined
+                    }
+                  >
+                    {b}
+                  </th>
+                ))}
+                <th className="pb-2 pl-3 text-right font-medium">รวม</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pivot.map((row) => (
+                <tr key={row.authorId} className="border-b border-peach/40 last:border-0">
+                  <td className="py-2 pr-3 font-medium text-ink">{row.authorName}</td>
+                  {LATE_BUCKETS.map((b) => (
+                    <BucketCellView key={b} cell={row.cells[b]} />
+                  ))}
+                  <td className="py-2 pl-3 text-right">
+                    <div className="text-sm font-bold text-ink">
+                      {row.total.collectedBaht > 0 ? `฿${baht(row.total.collectedBaht)}` : '—'}
+                    </div>
+                    <div className="text-[10px] text-ink-soft">
+                      {row.total.payments > 0 ? `${row.total.payments} ครั้ง` : ''}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-peach bg-peach-light/30">
+                <td className="py-2 pr-3 font-semibold text-ink">รวมทั้งหมด</td>
+                {LATE_BUCKETS.map((b) => (
+                  <BucketCellView key={b} cell={totals[b]} />
+                ))}
+                <td className="py-2 pl-3 text-right">
+                  <div className="text-sm font-bold text-ink">
+                    {grandTotal > 0 ? `฿${baht(grandTotal)}` : '—'}
+                  </div>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs leading-relaxed text-ink-soft">
+        * กลุ่มค้างคิดจาก “ช้ากี่วัน ณ วันที่จ่ายจริง” ไม่ใช่สถานะค้างปัจจุบันของสัญญา ·
+        “ไม่ทราบช่วง” = จ่ายของงวดที่ถูกลบไปตอนขยายสัญญา จับคู่กลุ่มไม่ได้
+      </p>
     </Card>
   )
 }
@@ -1361,15 +1574,23 @@ export default function StaffPerformance() {
     loadStoredRange('staff-performance.dateRange', 'thisMonth'),
   )
 
+  // สรุปทีมของ "ช่วงก่อนหน้าที่ยาวเท่ากัน" — ใช้คำนวณลูกศรดีขึ้น/แย่ลง (null = ไม่มีช่วงให้เทียบ เช่นเลือก "ทั้งหมด")
+  const [prevTeamSummary, setPrevTeamSummary] = useState<TeamSummary | null>(null)
+
   // ค่าคอมคืนเครื่อง: โหลด 1 ครั้ง (ไม่ขึ้นกับช่วงวัน — เป็นยอดเดือนนี้เสมอ)
   const [deviceCountMap, setDeviceCountMap] = useState<Map<string, number>>(new Map())
   const [deviceTiers, setDeviceTiers] = useState<DeviceReturnTier[]>([])
 
   // ผลการโทร & การนัดชำระ (รายคน): โหลดตามช่วงวันที่เลือก (เหมือน scorecard)
   const [callOutcomes, setCallOutcomes] = useState<CollectorCallOutcome[]>([])
+  // ยอดรวมทีมของ "ช่วงก่อนหน้า" (นัดจ่าย/ตามนัด) — ลูกศรดีขึ้น/แย่ลง เหมือน prevTeamSummary
+  const [prevCallOutcomeTotals, setPrevCallOutcomeTotals] = useState<CallOutcomeTotals | null>(null)
 
   // เครื่องที่ตามคืนได้ต่อคน (attributed_freelancer_id — คนละตัวกับค่าคอมคืนเครื่อง): โหลดตามช่วงวันที่เลือก
   const [deviceReturnByCollector, setDeviceReturnByCollector] = useState<DeviceReturnByCollectorResult[]>([])
+
+  // ยอดเก็บแยกตามกลุ่มค้าง (รายคน): โหลดตามช่วงวันที่เลือก (ก.ค. 2026)
+  const [bucketRows, setBucketRows] = useState<CollectorBucketRow[]>([])
 
   // อัตราเก็บเงินย้อนหลัง (รายเดือน): โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [collectionMonthly, setCollectionMonthly] = useState<CollectionMonthlyRow[]>([])
@@ -1424,10 +1645,16 @@ export default function StaffPerformance() {
   useEffect(() => {
     if (!loading) setRefreshing(true)
     const eff = effectiveRange(range)
-    getCollectorScorecard(eff.start, eff.end)
-      .then((d) => {
+    // ดึงช่วงก่อนหน้า (ยาวเท่ากัน) ในชุด Promise.all เดียวกัน — กันยิง useEffect ซ้ำ; null ("ทั้งหมด") → ไม่มีช่วงให้เทียบ
+    const prev = previousRange(range)
+    Promise.all([
+      getCollectorScorecard(eff.start, eff.end),
+      prev ? getCollectorScorecard(prev.start, prev.end).catch(() => null) : Promise.resolve(null),
+    ])
+      .then(([d, prevD]) => {
         setRows(d.rows)
         setUncreditedBaht(d.uncreditedBaht)
+        setPrevTeamSummary(prevD ? computeTeamSummary(prevD.rows) : null)
         setSelectedId(null)
         setLoading(false)
         setRefreshing(false)
@@ -1440,11 +1667,18 @@ export default function StaffPerformance() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range])
 
-  // ผลการโทร & การนัดชำระ — โหลดตามช่วงวันที่เลือก (เหมือน scorecard)
+  // ผลการโทร & การนัดชำระ — โหลดตามช่วงวันที่เลือก (เหมือน scorecard) + ช่วงก่อนหน้าในชุดเดียวกัน (ลูกศร)
   useEffect(() => {
     const eff = effectiveRange(range)
-    getCollectorCallOutcomes(eff.start, eff.end)
-      .then(setCallOutcomes)
+    const prev = previousRange(range)
+    Promise.all([
+      getCollectorCallOutcomes(eff.start, eff.end),
+      prev ? getCollectorCallOutcomes(prev.start, prev.end).catch(() => null) : Promise.resolve(null),
+    ])
+      .then(([d, prevD]) => {
+        setCallOutcomes(d)
+        setPrevCallOutcomeTotals(prevD ? computeCallOutcomeTotals(prevD) : null)
+      })
       .catch(() => {
         // silent — ไม่กระทบ scorecard หลัก
       })
@@ -1462,9 +1696,44 @@ export default function StaffPerformance() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range])
 
+  // ยอดเก็บแยกตามกลุ่มค้าง (รายคน) — โหลดตามช่วงวันที่เลือก
+  useEffect(() => {
+    const eff = effectiveRange(range)
+    getCollectorCollectionByBucket(eff.start, eff.end)
+      .then(setBucketRows)
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range])
+
   const teamSummary = useMemo(() => computeTeamSummary(rows), [rows])
   const callOutcomeTotals = useMemo(() => computeCallOutcomeTotals(callOutcomes), [callOutcomes])
   const totalWithUncredited = teamSummary.totalCollected + uncreditedBaht
+
+  // ลูกศรเทียบช่วงก่อนหน้า — เฉพาะ 4 ตัว: ยอดเก็บ / โทรติด% / นัดจ่าย / ตามนัด (Pete lock)
+  const collectedDelta = useMemo(
+    () => (prevTeamSummary ? deltaPct(teamSummary.totalCollected, prevTeamSummary.totalCollected) : null),
+    [teamSummary, prevTeamSummary],
+  )
+  const contactRateDelta = useMemo(() => {
+    if (teamSummary.avgContactRate === null || !prevTeamSummary) return null
+    return deltaPct(teamSummary.avgContactRate, prevTeamSummary.avgContactRate)
+  }, [teamSummary, prevTeamSummary])
+  const promisesMadeDelta = useMemo(
+    () =>
+      prevCallOutcomeTotals
+        ? deltaPct(callOutcomeTotals.promisesMade, prevCallOutcomeTotals.promisesMade)
+        : null,
+    [callOutcomeTotals, prevCallOutcomeTotals],
+  )
+  const promisesKeptDelta = useMemo(
+    () =>
+      prevCallOutcomeTotals
+        ? deltaPct(callOutcomeTotals.promisesKept, prevCallOutcomeTotals.promisesKept)
+        : null,
+    [callOutcomeTotals, prevCallOutcomeTotals],
+  )
 
   const rangeLabel = useMemo(() => {
     if (!range) return 'ทั้งหมด'
@@ -1533,7 +1802,10 @@ export default function StaffPerformance() {
         </p>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div className="rounded-xl border border-peach bg-white px-4 py-3">
-            <div className="text-2xl font-bold text-ink">{fmtBaht(teamSummary.totalCollected)}</div>
+            <div className="flex items-center">
+              <div className="text-2xl font-bold text-ink">{fmtBaht(teamSummary.totalCollected)}</div>
+              <DeltaBadge delta={collectedDelta} tone="good-up" />
+            </div>
             <div className="mt-1 text-xs text-ink-soft">💰 ยอดเก็บจากการโทร (รวมทีม)</div>
           </div>
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
@@ -1545,8 +1817,11 @@ export default function StaffPerformance() {
             <div className="mt-1 text-xs text-ink-soft">📞 จำนวนสายรวม</div>
           </div>
           <div className="rounded-xl border border-peach bg-white px-4 py-3">
-            <div className="text-2xl font-bold text-ink">
-              {teamSummary.avgContactRate !== null ? `${teamSummary.avgContactRate.toFixed(1)}%` : 'N/A'}
+            <div className="flex items-center">
+              <div className="text-2xl font-bold text-ink">
+                {teamSummary.avgContactRate !== null ? `${teamSummary.avgContactRate.toFixed(1)}%` : 'N/A'}
+              </div>
+              <DeltaBadge delta={contactRateDelta} tone="good-up" />
             </div>
             <div className="mt-1 text-xs text-ink-soft">อัตราโทรติดเฉลี่ย</div>
           </div>
@@ -1557,6 +1832,11 @@ export default function StaffPerformance() {
           จึงไม่ถูกนับให้ใคร — ยอดเก็บรวมทีม {fmtBaht(teamSummary.totalCollected)} + ยอดที่ไม่มีสายนำ{' '}
           {fmtBaht(uncreditedBaht)} = ยอดที่ลูกค้าจ่ายทั้งหมดในช่วงนี้ {fmtBaht(totalWithUncredited)}
         </p>
+        {(collectedDelta || contactRateDelta) && (
+          <p className="mt-1 text-xs text-ink-soft">
+            * ลูกศรเทียบกับช่วงก่อนหน้าที่ยาวเท่ากัน นับเฉพาะคนที่ยังทำงานอยู่ตอนนี้ (คนที่ลาออกระหว่างทางจะไม่ถูกนับในทั้งสองช่วง)
+          </p>
+        )}
       </Card>
 
       {/* Section 2: Leaderboard */}
@@ -1667,11 +1947,24 @@ export default function StaffPerformance() {
               })}
             </table>
           </div>
+          <p className="border-t border-peach px-4 py-3 text-xs leading-relaxed text-ink-soft">
+            <span className="font-medium text-ink">นิยาม:</span>{' '}
+            โทรติด = นับรายสาย เฉพาะสายที่ได้คุยกับคนจริง (ไม่รับสาย / อื่นๆ ไม่นับ) · ตามนัด = จ่ายได้อย่างน้อย{' '}
+            {Math.round(PROMISE_KEPT_RATIO * 100)}% ของยอดที่นัด ภายใน {PROMISE_GRACE_DAYS} วันหลังวันนัด
+          </p>
         </Card>
       )}
 
       {/* Section 2.5: ผลการโทร & การนัดชำระ (รายคน) — อิง /queue ช่วงที่เลือก */}
-      <CallOutcomeSection rows={callOutcomes} totals={callOutcomeTotals} />
+      <CallOutcomeSection
+        rows={callOutcomes}
+        totals={callOutcomeTotals}
+        promisesMadeDelta={promisesMadeDelta}
+        promisesKeptDelta={promisesKeptDelta}
+      />
+
+      {/* Section 2.55: ยอดเก็บแยกตามกลุ่มค้าง (รายคน) */}
+      <CollectorBucketSection rows={bucketRows} />
 
       {/* Section 2.6: เครื่องที่ตามคืนได้ ต่อคน (attribution — คนละตัวกับค่าคอมคืนเครื่อง) */}
       <DeviceReturnByCollectorSection rows={deviceReturnByCollector} />
