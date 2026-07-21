@@ -9,6 +9,8 @@ import type {
   CashCollectedToday,
   CollectorBucketRow,
   CollectorCallOutcome,
+  CollectorOwnershipRow,
+  CollectorRecoveryRow,
   Contract,
   ContractStatus,
   ContractStatusRow,
@@ -42,6 +44,7 @@ import type {
   TransferSlip,
   TransferSlipItem,
   TransferSlipSummaryRow,
+  UnownedArrearsRow,
 } from './types'
 import * as mock from './mockData'
 import {
@@ -5049,6 +5052,103 @@ export async function getCollectorCollectionByBucket(
     bucket: (KNOWN_LATE_BUCKETS.has(row.bucket) ? row.bucket : 'ไม่ทราบช่วง') as LateBucket,
     payments: Number(row.payments),
     collectedBaht: Number(row.collected_baht),
+  }))
+}
+
+// ---------- Collector ownership + recovery (migration 0120) ----------
+
+/** 1 row ต่อ freelancer จาก RPC get_collector_ownership — numeric/int มาเป็น number|string จาก PostgREST */
+interface CollectorOwnershipViewRow {
+  author_id: string
+  author_name: string | null
+  grades: string | null
+  scope_cases: number | string
+  scope_baht: number | string
+  max_sharers: number | string
+  claimed_cases: number | string
+  claimed_baht: number | string
+  touched_cases: number | string
+}
+
+/**
+ * ความเป็นเจ้าของเคสต่อคนตามหนี้ (ขอบเขตเกรด vs กดรับจริง) ช่วง [start, end]
+ * ⚠️ scopeBaht นับซ้ำข้ามคนที่ถือเกรดเดียวกันตั้งใจ — ห้าม sum(scopeBaht) ข้ามแถวแล้วอ้างเป็นยอดพอร์ตจริง
+ * @param start วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param end   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getCollectorOwnership(
+  start: string,
+  end: string,
+): Promise<CollectorOwnershipRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_collector_ownership', { p_start: start, p_end: end })
+  if (error) throw error
+
+  return ((data ?? []) as CollectorOwnershipViewRow[]).map((row) => ({
+    authorId: row.author_id,
+    authorName: row.author_name ?? '-',
+    grades: row.grades ?? '-',
+    scopeCases: Number(row.scope_cases),
+    scopeBaht: Number(row.scope_baht),
+    maxSharers: Number(row.max_sharers),
+    claimedCases: Number(row.claimed_cases),
+    claimedBaht: Number(row.claimed_baht),
+    touchedCases: Number(row.touched_cases),
+  }))
+}
+
+/** 1 row ต่อเกรด จาก RPC get_unowned_arrears */
+interface UnownedArrearsViewRow {
+  grade: string
+  cases: number | string
+  baht: number | string
+}
+
+/** กองกลาง — เคสค้างที่เกรดไม่มีใครถือเลย ณ ปัจจุบัน (ไม่มีพารามิเตอร์ — ไม่ใช่ช่วงวัน) */
+export async function getUnownedArrears(): Promise<UnownedArrearsRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase.rpc('get_unowned_arrears')
+  if (error) throw error
+
+  return ((data ?? []) as UnownedArrearsViewRow[]).map((row) => ({
+    grade: row.grade,
+    cases: Number(row.cases),
+    baht: Number(row.baht),
+  }))
+}
+
+/** 1 row ต่อ freelancer (หรือ null = ไม่มีสายนำ) จาก RPC get_collector_recoveries */
+interface CollectorRecoveryViewRow {
+  author_id: string | null
+  author_name: string | null
+  recoveries: number | string
+  recovered_baht: number | string
+}
+
+/**
+ * ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้างสนิท) ต่อคนตามหนี้ ช่วง [start, end]
+ * authorId = null → ไม่มีสายนำใน 7 วันก่อนปิด — ห้ามซ่อนแถวนี้บน UI (ต้องโชว์ว่ามีเคสที่ไม่มีคนได้เครดิต)
+ * @param start วันเริ่ม 'YYYY-MM-DD' (inclusive)
+ * @param end   วันสุดท้าย 'YYYY-MM-DD' (inclusive)
+ */
+export async function getCollectorRecoveries(
+  start: string,
+  end: string,
+): Promise<CollectorRecoveryRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_collector_recoveries', { p_start: start, p_end: end })
+  if (error) throw error
+
+  return ((data ?? []) as CollectorRecoveryViewRow[]).map((row) => ({
+    authorId: row.author_id,
+    authorName: row.author_name ?? '-',
+    recoveries: Number(row.recoveries),
+    recoveredBaht: Number(row.recovered_baht),
   }))
 }
 

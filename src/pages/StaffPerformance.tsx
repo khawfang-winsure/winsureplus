@@ -34,6 +34,9 @@ import {
   getCollectorCallOutcomes,
   getCollectionMonthly,
   getCollectorCollectionByBucket,
+  getCollectorOwnership,
+  getUnownedArrears,
+  getCollectorRecoveries,
   type CollectorScorecardRow,
 } from '../lib/db'
 import type {
@@ -45,6 +48,9 @@ import type {
   CollectorCallOutcome,
   CollectionMonthlyRow,
   CollectorBucketRow,
+  CollectorOwnershipRow,
+  UnownedArrearsRow,
+  CollectorRecoveryRow,
 } from '../lib/types'
 import type { DeviceReturnByCollectorResult } from '../lib/deviceReturnByCollector'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
@@ -1554,6 +1560,273 @@ function DeviceReturnByCollectorSection({ rows }: { rows: DeviceReturnByCollecto
   )
 }
 
+// ===== ความรับผิดชอบเคสค้าง (รายคน) + กองกลาง + ปิดเคสสำเร็จ =====
+
+/** % ปลอดภัยจากหาร 0 → null (fmtRate/rateCls ที่มีอยู่แล้วรองรับ null เป็น "N/A") */
+function pctOrNull(num: number, den: number): number | null {
+  if (den <= 0) return null
+  return Math.round((num / den) * 1000) / 10
+}
+
+/** เซลล์ "จำนวนเคส + เงิน" — เงินตัวใหญ่ด้านบน จำนวนเคสตัวเล็กด้านล่าง (โทนเดียวกับ BucketCellView) */
+function OwnershipMoneyCell({
+  cases,
+  bahtAmt,
+  emphasize,
+}: {
+  cases: number
+  bahtAmt: number
+  emphasize?: boolean
+}) {
+  return (
+    <td className="px-3 py-2 text-right align-middle">
+      <div className={`text-sm font-semibold ${emphasize ? 'text-ink' : 'text-ink-soft'}`}>
+        {bahtAmt > 0 ? fmtBahtM(bahtAmt) : '—'}
+      </div>
+      <div className="text-[10px] text-ink-soft">{cases > 0 ? `${cases.toLocaleString('th-TH')} เคส` : ''}</div>
+    </td>
+  )
+}
+
+// งานที่ 1: การ์ด "ความรับผิดชอบเคสค้าง (รายคน)"
+function CollectorOwnershipSection({ rows }: { rows: CollectorOwnershipRow[] }) {
+  const sorted = useMemo(() => [...rows].sort((a, b) => b.scopeBaht - a.scopeBaht), [rows])
+  const claimedTotals = useMemo(() => {
+    let cases = 0, bahtAmt = 0
+    for (const r of sorted) {
+      cases += r.claimedCases
+      bahtAmt += r.claimedBaht
+    }
+    return { cases, bahtAmt }
+  }, [sorted])
+
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">ความรับผิดชอบเคสค้าง (รายคน)</h2>
+        <p className="text-sm text-ink-soft">
+          ใครดูแลเกรดไหน กดรับเคสไว้เองกี่เคส และได้โทรจริงกี่เคส ในช่วงวันที่เลือกด้านบน
+        </p>
+      </div>
+
+      {sorted.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูลผู้ติดตามหนี้ที่ถือเกรดอยู่ในช่วงนี้
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 pr-3 font-medium">พนักงาน</th>
+                <th className="pb-2 pr-3 font-medium">เกรดที่ดูแล</th>
+                <th className="px-3 pb-2 text-right font-medium">ยอดในขอบเขต</th>
+                <th className="px-3 pb-2 text-right font-medium">กดรับไว้เอง</th>
+                <th className="px-3 pb-2 text-right font-medium">% กดรับ</th>
+                <th className="px-3 pb-2 text-right font-medium">โทรจริง (เคส)</th>
+                <th className="pl-3 pb-2 text-right font-medium">% ที่ได้โทร</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => {
+                const grades = r.grades.split(',').map((g) => g.trim()).filter(Boolean)
+                const pctClaimed = pctOrNull(r.claimedCases, r.scopeCases)
+                const pctTouched = pctOrNull(r.touchedCases, r.scopeCases)
+                return (
+                  <tr key={r.authorId} className="border-b border-peach/40 last:border-0">
+                    <td className="py-2 pr-3 font-medium text-ink">{r.authorName}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex flex-wrap items-center gap-1">
+                        {grades.map((g) => (
+                          <Badge key={g} tone={GRADE_TONE[g as ContractGrade] ?? 'neutral'}>
+                            {g}
+                          </Badge>
+                        ))}
+                        {r.maxSharers > 1 && <Badge tone="amber">แชร์ {r.maxSharers} คน</Badge>}
+                      </div>
+                    </td>
+                    <OwnershipMoneyCell cases={r.scopeCases} bahtAmt={r.scopeBaht} />
+                    <OwnershipMoneyCell cases={r.claimedCases} bahtAmt={r.claimedBaht} emphasize />
+                    <td className={`px-3 py-2 text-right ${rateCls(pctClaimed)}`}>{fmtRate(pctClaimed)}</td>
+                    <td className="px-3 py-2 text-right text-ink">{fmtInt(r.touchedCases)}</td>
+                    <td className={`pl-3 py-2 text-right ${rateCls(pctTouched)}`}>{fmtRate(pctTouched)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-peach bg-peach-light/30">
+                <td className="py-2 pr-3 font-semibold text-ink" colSpan={2}>
+                  รวมทั้งหมด (เฉพาะ “กดรับไว้เอง”)
+                </td>
+                <td className="px-3 py-2 text-right text-ink-soft">—</td>
+                <OwnershipMoneyCell cases={claimedTotals.cases} bahtAmt={claimedTotals.bahtAmt} emphasize />
+                <td className="px-3 py-2 text-right text-ink-soft" colSpan={3} />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs leading-relaxed text-amber-800">
+        “ยอดในขอบเขต” คือยอดของเกรดนั้นทั้งก้อน — ถ้าเกรดมีหลายคนดูแล ทุกคนจะเห็นยอดเดียวกันเต็มจำนวน
+        ไม่ได้แบ่งกัน เอายอดทุกคนมาบวกกันจึงมากกว่ายอดค้างจริงทั้งหมด · ถ้าต้องการยอดที่ไม่ซ้ำให้ดูช่อง “กดรับไว้เอง”
+      </p>
+    </Card>
+  )
+}
+
+// งานที่ 2: กล่อง "กองกลาง (ยังไม่มีใครดูแล)"
+function UnownedArrearsSection({ rows }: { rows: UnownedArrearsRow[] }) {
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">กองกลาง (ยังไม่มีใครดูแล)</h2>
+        <p className="text-sm text-ink-soft">เคสค้างที่เกรดนั้นไม่มีผู้ติดตามหนี้คนไหนถืออยู่เลย ณ ตอนนี้</p>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          ✅ ทุกเกรดมีคนดูแลครบแล้ว — ไม่มีเกรดไหนตกหล่นตอนนี้
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                  <th className="pb-2 font-medium">เกรด</th>
+                  <th className="pb-2 text-right font-medium">จำนวนเคส</th>
+                  <th className="pb-2 text-right font-medium">ยอดบาท</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.grade} className="border-b border-peach/40 last:border-0">
+                    <td className="py-2">
+                      <Badge tone={GRADE_TONE[r.grade as ContractGrade] ?? 'neutral'}>{r.grade}</Badge>
+                    </td>
+                    <td className="py-2 text-right font-semibold text-ink">{fmtInt(r.cases)}</td>
+                    <td className="py-2 text-right font-semibold text-red-600">{fmtBahtM(r.baht)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            ต้องหาคนมาดูแลเกรดที่ค้างอยู่นี้ — ไม่งั้นจะไม่มีใครโทรตามเลย
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// งานที่ 3: การ์ด "ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง)"
+interface RecoveryTotals {
+  count: number
+  baht: number
+  creditedCount: number
+}
+function computeRecoveryTotals(rows: CollectorRecoveryRow[]): RecoveryTotals {
+  let count = 0, bahtSum = 0, creditedCount = 0
+  for (const r of rows) {
+    count += r.recoveries
+    bahtSum += r.recoveredBaht
+    if (r.authorId !== null) creditedCount += r.recoveries
+  }
+  return { count, baht: bahtSum, creditedCount }
+}
+
+function CollectorRecoverySection({
+  rows,
+  countDelta,
+  bahtDelta,
+}: {
+  rows: CollectorRecoveryRow[]
+  countDelta: DeltaResult | null
+  bahtDelta: DeltaResult | null
+}) {
+  const totals = useMemo(() => computeRecoveryTotals(rows), [rows])
+  const creditedPct = pctOrNull(totals.creditedCount, totals.count)
+  const sorted = useMemo(() => [...rows].sort((a, b) => b.recoveredBaht - a.recoveredBaht), [rows])
+
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง)</h2>
+        <p className="text-sm text-ink-soft">
+          สัญญาที่เคยค้างแล้วลูกค้าจ่ายจนหายค้างสนิท ในช่วงวันที่เลือกด้านบน — ใครมีสายโทรนำก่อนบ้าง
+        </p>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีเคสที่หายค้างในช่วงนี้
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className="flex items-center justify-center">
+                <div className="text-2xl font-bold text-ink">{fmtInt(totals.count)}</div>
+                <DeltaBadge delta={countDelta} tone="good-up" />
+              </div>
+              <div className="mt-1 text-xs text-ink-soft">ครั้งที่หายค้าง</div>
+            </div>
+            <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-center">
+              <div className="flex items-center justify-center">
+                <div className="text-2xl font-bold text-green-700">{fmtBaht(totals.baht)}</div>
+                <DeltaBadge delta={bahtDelta} tone="good-up" />
+              </div>
+              <div className="mt-1 text-xs text-green-700/80">มูลค่ารวม</div>
+            </div>
+            <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+              <div className={`text-2xl font-bold ${rateCls(creditedPct)}`}>{fmtRate(creditedPct)}</div>
+              <div className="mt-1 text-xs text-ink-soft">% ที่ทีมโทรมีส่วน</div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                  <th className="pb-2 font-medium">พนักงาน</th>
+                  <th className="pb-2 text-right font-medium">ครั้งที่หายค้าง</th>
+                  <th className="pb-2 text-right font-medium">มูลค่ารวม</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((r) => {
+                  const isUncredited = r.authorId === null
+                  return (
+                    <tr
+                      key={r.authorId ?? 'uncredited'}
+                      className={`border-b border-peach/40 last:border-0 ${isUncredited ? 'bg-amber-50/60' : ''}`}
+                    >
+                      <td className={`py-2 font-medium ${isUncredited ? 'text-amber-800' : 'text-ink'}`}>
+                        {isUncredited ? 'ไม่มีสายโทรนำ' : r.authorName}
+                      </td>
+                      <td className="py-2 text-right text-ink">{fmtInt(r.recoveries)}</td>
+                      <td className="py-2 text-right font-semibold text-ink">{fmtBaht(r.recoveredBaht)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-xs leading-relaxed text-ink-soft">
+            นับเฉพาะสัญญาที่ไม่เคยขยายสัญญา / ปิดก่อนกำหนด / คืนเครื่อง — เพราะกลุ่มนั้นระบบไม่เหลือข้อมูลย้อนหลังให้คำนวณ
+            (ปัจจุบันเป็นสัดส่วนน้อยมาก) · นับเป็นจำนวนครั้งที่หายค้าง ไม่ใช่จำนวนลูกค้า
+            ลูกค้าคนเดียวอาจหายค้างแล้วค้างใหม่ได้หลายครั้ง
+          </p>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ===== Main Page =====
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
@@ -1591,6 +1864,15 @@ export default function StaffPerformance() {
 
   // ยอดเก็บแยกตามกลุ่มค้าง (รายคน): โหลดตามช่วงวันที่เลือก (ก.ค. 2026)
   const [bucketRows, setBucketRows] = useState<CollectorBucketRow[]>([])
+
+  // ความรับผิดชอบเคสค้าง (รายคน): โหลดตามช่วงวันที่เลือก
+  const [ownershipRows, setOwnershipRows] = useState<CollectorOwnershipRow[]>([])
+  // กองกลาง (ยังไม่มีใครดูแล): โหลด 1 ครั้ง (สถานะ ณ ปัจจุบัน ไม่ผูกช่วงวัน)
+  const [unownedRows, setUnownedRows] = useState<UnownedArrearsRow[]>([])
+  // ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง): โหลดตามช่วงวันที่เลือก + ยอดรวมช่วงก่อนหน้า (ลูกศร)
+  const [recoveryRows, setRecoveryRows] = useState<CollectorRecoveryRow[]>([])
+  const [prevRecoveryBaht, setPrevRecoveryBaht] = useState<number | null>(null)
+  const [prevRecoveryCount, setPrevRecoveryCount] = useState<number | null>(null)
 
   // อัตราเก็บเงินย้อนหลัง (รายเดือน): โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [collectionMonthly, setCollectionMonthly] = useState<CollectionMonthlyRow[]>([])
@@ -1707,6 +1989,45 @@ export default function StaffPerformance() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range])
 
+  // ความรับผิดชอบเคสค้าง (รายคน) — โหลดตามช่วงวันที่เลือก
+  useEffect(() => {
+    const eff = effectiveRange(range)
+    getCollectorOwnership(eff.start, eff.end)
+      .then(setOwnershipRows)
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range])
+
+  // กองกลาง (ยังไม่มีใครดูแล) — โหลด 1 ครั้ง (ไม่มีพารามิเตอร์ ไม่ผูกช่วงวัน)
+  useEffect(() => {
+    getUnownedArrears()
+      .then(setUnownedRows)
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
+  }, [])
+
+  // ปิดเคสสำเร็จ — โหลดตามช่วงวันที่เลือก + ยอดรวมช่วงก่อนหน้าในชุดเดียวกัน (ลูกศร)
+  useEffect(() => {
+    const eff = effectiveRange(range)
+    const prev = previousRange(range)
+    Promise.all([
+      getCollectorRecoveries(eff.start, eff.end),
+      prev ? getCollectorRecoveries(prev.start, prev.end).catch(() => null) : Promise.resolve(null),
+    ])
+      .then(([d, prevD]) => {
+        setRecoveryRows(d)
+        setPrevRecoveryBaht(prevD ? prevD.reduce((sum, r) => sum + r.recoveredBaht, 0) : null)
+        setPrevRecoveryCount(prevD ? prevD.reduce((sum, r) => sum + r.recoveries, 0) : null)
+      })
+      .catch(() => {
+        // silent — ไม่กระทบ scorecard หลัก
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range])
+
   const teamSummary = useMemo(() => computeTeamSummary(rows), [rows])
   const callOutcomeTotals = useMemo(() => computeCallOutcomeTotals(callOutcomes), [callOutcomes])
   const totalWithUncredited = teamSummary.totalCollected + uncreditedBaht
@@ -1734,6 +2055,14 @@ export default function StaffPerformance() {
         : null,
     [callOutcomeTotals, prevCallOutcomeTotals],
   )
+  const recoveryBahtDelta = useMemo(() => {
+    const totalBaht = recoveryRows.reduce((sum, r) => sum + r.recoveredBaht, 0)
+    return prevRecoveryBaht !== null ? deltaPct(totalBaht, prevRecoveryBaht) : null
+  }, [recoveryRows, prevRecoveryBaht])
+  const recoveryCountDelta = useMemo(() => {
+    const totalCount = recoveryRows.reduce((sum, r) => sum + r.recoveries, 0)
+    return prevRecoveryCount !== null ? deltaPct(totalCount, prevRecoveryCount) : null
+  }, [recoveryRows, prevRecoveryCount])
 
   const rangeLabel = useMemo(() => {
     if (!range) return 'ทั้งหมด'
@@ -1963,11 +2292,18 @@ export default function StaffPerformance() {
         promisesKeptDelta={promisesKeptDelta}
       />
 
+      {/* Section 2.52: ความรับผิดชอบเคสค้าง (รายคน) + กองกลาง */}
+      <CollectorOwnershipSection rows={ownershipRows} />
+      <UnownedArrearsSection rows={unownedRows} />
+
       {/* Section 2.55: ยอดเก็บแยกตามกลุ่มค้าง (รายคน) */}
       <CollectorBucketSection rows={bucketRows} />
 
       {/* Section 2.6: เครื่องที่ตามคืนได้ ต่อคน (attribution — คนละตัวกับค่าคอมคืนเครื่อง) */}
       <DeviceReturnByCollectorSection rows={deviceReturnByCollector} />
+
+      {/* Section 2.7: ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง) */}
+      <CollectorRecoverySection rows={recoveryRows} countDelta={recoveryCountDelta} bahtDelta={recoveryBahtDelta} />
 
       {/* ===== โซนเก็บหนี้ภาพรวม ===== */}
       {/* ชั้น 1+2: มุมมองผู้บริหาร (ตัวเลขใหญ่ + การ์ด + กราฟเส้น) */}

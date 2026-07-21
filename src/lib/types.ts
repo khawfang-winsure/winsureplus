@@ -643,6 +643,44 @@ export interface CollectorBucketRow {
   collectedBaht: number  // ยอดเงินรวม
 }
 
+// ---------- Collector ownership + recovery — migration 0120 ----------
+// 3 RPC: ความเป็นเจ้าของเคส (ขอบเขตเกรด vs กดรับจริง) / กองกลาง / ปิดเคสสำเร็จ
+
+/**
+ * 1 แถวต่อ freelancer ที่ถือเกรดอยู่ตอนนี้ จาก RPC get_collector_ownership(p_start, p_end)
+ * ⚠️ scopeCases/scopeBaht นับซ้ำข้ามคนตั้งใจ (เกรดเดียวหลายคนถือ = เห็นก้อนเดียวกันเต็ม) —
+ * ใช้ maxSharers เตือนบน UI ห้ามเอา scopeBaht ของแต่ละคนไปรวมกันแล้วอ้างว่าเป็นยอดพอร์ตค้างจริง
+ */
+export interface CollectorOwnershipRow {
+  authorId: string
+  authorName: string
+  grades: string          // เกรดที่ถืออยู่ เช่น 'A, B'
+  scopeCases: number       // เคสค้างในเกรดที่ตัวเองถือ (นับซ้ำข้ามคนที่ถือเกรดเดียวกัน)
+  scopeBaht: number
+  maxSharers: number       // จำนวนคนมากสุดที่แชร์เกรดเดียวกับตัวเอง
+  claimedCases: number     // เคสค้างที่กดรับจริง (assigned_to = ตัวเอง)
+  claimedBaht: number
+  touchedCases: number     // เคสในขอบเขตที่มี follow-up ของตัวเองอย่างน้อย 1 ครั้งในช่วง
+}
+
+/** กองกลาง — เคสค้างที่เกรดไม่มีใครถือเลย จาก RPC get_unowned_arrears() (ไม่มีพารามิเตอร์ — สถานะ ณ ปัจจุบัน) */
+export interface UnownedArrearsRow {
+  grade: string    // '(ไม่มีเกรด)' ถ้าสัญญาไม่มีเกรด
+  cases: number
+  baht: number
+}
+
+/**
+ * ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้างสนิท) จาก RPC get_collector_recoveries(p_start, p_end)
+ * authorId = null → ไม่มีสายนำ (ไม่มีใครโทรใน 7 วันก่อนปิด) — ห้ามซ่อนแถวนี้บน UI
+ */
+export interface CollectorRecoveryRow {
+  authorId: string | null
+  authorName: string
+  recoveries: number       // จำนวนครั้งที่ปิดรอยค้างสำเร็จ (ไม่ dedupe — สัญญาเดียวหายค้างซ้ำได้)
+  recoveredBaht: number
+}
+
 /**
  * เงินเก็บได้จริงวันนี้ — ทุกช่องทาง (ทีมโทรตามได้ + ลูกค้าจ่ายเอง + PJ auto-sync)
  * นับตาม record date (วันบันทึกเข้าระบบ, Asia/Bangkok) จาก v_cashflow_daily (migration 0056)
