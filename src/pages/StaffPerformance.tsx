@@ -11,6 +11,7 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  RefreshCw,
 } from 'lucide-react'
 import { Button, Card, PageTitle, Badge, Loading, EmptyState } from '../components/ui'
 import {
@@ -156,6 +157,36 @@ function DeltaBadge({ delta, tone }: { delta: DeltaResult | null; tone: DeltaTon
       <Icon className="h-3 w-3" />
       {delta.pct.toFixed(1)}%
     </span>
+  )
+}
+
+// ===== สถานะโหลดข้อมูลของการ์ด/ตารางย่อย (แยกอิสระต่อ section — พังกันไม่ได้) =====
+type SectionStatus = 'loading' | 'error' | 'ok'
+
+/** แถบกำลังโหลด — ใช้แทนพื้นที่การ์ด/ตารางระหว่างรอข้อมูล */
+function SectionLoading() {
+  return (
+    <div className="flex items-center justify-center gap-2 py-8 text-sm text-ink-soft">
+      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-peach border-t-salmon-deep" />
+      กำลังโหลดข้อมูล...
+    </div>
+  )
+}
+
+/** กล่องแจ้งโหลดไม่สำเร็จ (โทนแดงเดียวกับ error หลักของหน้านี้) + ปุ่มลองใหม่ */
+function SectionError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+      <p>โหลดข้อมูลส่วนนี้ไม่สำเร็จ — ลองเลือกช่วงเวลาสั้นลง หรือกดโหลดใหม่</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition-colors hover:bg-red-100"
+      >
+        <RefreshCw className="h-3.5 w-3.5" />
+        ลองใหม่
+      </button>
+    </div>
   )
 }
 
@@ -1414,7 +1445,15 @@ function BucketCellView({ cell }: { cell: BucketCell | undefined }) {
   )
 }
 
-function CollectorBucketSection({ rows }: { rows: CollectorBucketRow[] }) {
+function CollectorBucketSection({
+  rows,
+  status,
+  onRetry,
+}: {
+  rows: CollectorBucketRow[]
+  status: SectionStatus
+  onRetry: () => void
+}) {
   const pivot = useMemo(() => buildBucketPivot(rows), [rows])
   const totals = useMemo(() => bucketColumnTotals(pivot), [pivot])
   const grandTotal = useMemo(
@@ -1432,7 +1471,11 @@ function CollectorBucketSection({ rows }: { rows: CollectorBucketRow[] }) {
         </p>
       </div>
 
-      {pivot.length === 0 ? (
+      {status === 'loading' ? (
+        <SectionLoading />
+      ) : status === 'error' ? (
+        <SectionError onRetry={onRetry} />
+      ) : pivot.length === 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           ยังไม่มีข้อมูลการจ่ายในช่วงนี้
         </div>
@@ -1589,7 +1632,15 @@ function OwnershipMoneyCell({
 }
 
 // งานที่ 1: การ์ด "ความรับผิดชอบเคสค้าง (รายคน)"
-function CollectorOwnershipSection({ rows }: { rows: CollectorOwnershipRow[] }) {
+function CollectorOwnershipSection({
+  rows,
+  status,
+  onRetry,
+}: {
+  rows: CollectorOwnershipRow[]
+  status: SectionStatus
+  onRetry: () => void
+}) {
   const sorted = useMemo(() => [...rows].sort((a, b) => b.scopeBaht - a.scopeBaht), [rows])
   const claimedTotals = useMemo(() => {
     let cases = 0, bahtAmt = 0
@@ -1609,7 +1660,11 @@ function CollectorOwnershipSection({ rows }: { rows: CollectorOwnershipRow[] }) 
         </p>
       </div>
 
-      {sorted.length === 0 ? (
+      {status === 'loading' ? (
+        <SectionLoading />
+      ) : status === 'error' ? (
+        <SectionError onRetry={onRetry} />
+      ) : sorted.length === 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           ยังไม่มีข้อมูลผู้ติดตามหนี้ที่ถือเกรดอยู่ในช่วงนี้
         </div>
@@ -1677,7 +1732,15 @@ function CollectorOwnershipSection({ rows }: { rows: CollectorOwnershipRow[] }) 
 }
 
 // งานที่ 2: กล่อง "กองกลาง (ยังไม่มีใครดูแล)"
-function UnownedArrearsSection({ rows }: { rows: UnownedArrearsRow[] }) {
+function UnownedArrearsSection({
+  rows,
+  status,
+  onRetry,
+}: {
+  rows: UnownedArrearsRow[]
+  status: SectionStatus
+  onRetry: () => void
+}) {
   return (
     <Card>
       <div className="mb-4">
@@ -1685,7 +1748,11 @@ function UnownedArrearsSection({ rows }: { rows: UnownedArrearsRow[] }) {
         <p className="text-sm text-ink-soft">เคสค้างที่เกรดนั้นไม่มีผู้ติดตามหนี้คนไหนถืออยู่เลย ณ ตอนนี้</p>
       </div>
 
-      {rows.length === 0 ? (
+      {status === 'loading' ? (
+        <SectionLoading />
+      ) : status === 'error' ? (
+        <SectionError onRetry={onRetry} />
+      ) : rows.length === 0 ? (
         <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
           ✅ ทุกเกรดมีคนดูแลครบแล้ว — ไม่มีเกรดไหนตกหล่นตอนนี้
         </div>
@@ -1742,10 +1809,14 @@ function CollectorRecoverySection({
   rows,
   countDelta,
   bahtDelta,
+  status,
+  onRetry,
 }: {
   rows: CollectorRecoveryRow[]
   countDelta: DeltaResult | null
   bahtDelta: DeltaResult | null
+  status: SectionStatus
+  onRetry: () => void
 }) {
   const totals = useMemo(() => computeRecoveryTotals(rows), [rows])
   const creditedPct = pctOrNull(totals.creditedCount, totals.count)
@@ -1760,7 +1831,11 @@ function CollectorRecoverySection({
         </p>
       </div>
 
-      {rows.length === 0 ? (
+      {status === 'loading' ? (
+        <SectionLoading />
+      ) : status === 'error' ? (
+        <SectionError onRetry={onRetry} />
+      ) : rows.length === 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           ยังไม่มีเคสที่หายค้างในช่วงนี้
         </div>
@@ -1864,15 +1939,23 @@ export default function StaffPerformance() {
 
   // ยอดเก็บแยกตามกลุ่มค้าง (รายคน): โหลดตามช่วงวันที่เลือก (ก.ค. 2026)
   const [bucketRows, setBucketRows] = useState<CollectorBucketRow[]>([])
+  const [bucketStatus, setBucketStatus] = useState<SectionStatus>('loading')
+  const [bucketReloadKey, setBucketReloadKey] = useState(0)
 
   // ความรับผิดชอบเคสค้าง (รายคน): โหลดตามช่วงวันที่เลือก
   const [ownershipRows, setOwnershipRows] = useState<CollectorOwnershipRow[]>([])
+  const [ownershipStatus, setOwnershipStatus] = useState<SectionStatus>('loading')
+  const [ownershipReloadKey, setOwnershipReloadKey] = useState(0)
   // กองกลาง (ยังไม่มีใครดูแล): โหลด 1 ครั้ง (สถานะ ณ ปัจจุบัน ไม่ผูกช่วงวัน)
   const [unownedRows, setUnownedRows] = useState<UnownedArrearsRow[]>([])
+  const [unownedStatus, setUnownedStatus] = useState<SectionStatus>('loading')
+  const [unownedReloadKey, setUnownedReloadKey] = useState(0)
   // ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง): โหลดตามช่วงวันที่เลือก + ยอดรวมช่วงก่อนหน้า (ลูกศร)
   const [recoveryRows, setRecoveryRows] = useState<CollectorRecoveryRow[]>([])
   const [prevRecoveryBaht, setPrevRecoveryBaht] = useState<number | null>(null)
   const [prevRecoveryCount, setPrevRecoveryCount] = useState<number | null>(null)
+  const [recoveryStatus, setRecoveryStatus] = useState<SectionStatus>('loading')
+  const [recoveryReloadKey, setRecoveryReloadKey] = useState(0)
 
   // อัตราเก็บเงินย้อนหลัง (รายเดือน): โหลด 1 ครั้ง (ข้อมูลทั้งหมด ไม่ผูกช่วงวัน)
   const [collectionMonthly, setCollectionMonthly] = useState<CollectionMonthlyRow[]>([])
@@ -1979,38 +2062,53 @@ export default function StaffPerformance() {
   }, [range])
 
   // ยอดเก็บแยกตามกลุ่มค้าง (รายคน) — โหลดตามช่วงวันที่เลือก
+  // ⚠️ error ของการ์ดนี้แสดงเป็นสถานะในการ์ดเอง ไม่ทำให้ตารางหลัก/การ์ดอื่นพัง
   useEffect(() => {
+    setBucketStatus('loading')
     const eff = effectiveRange(range)
     getCollectorCollectionByBucket(eff.start, eff.end)
-      .then(setBucketRows)
+      .then((d) => {
+        setBucketRows(d)
+        setBucketStatus('ok')
+      })
       .catch(() => {
-        // silent — ไม่กระทบ scorecard หลัก
+        setBucketStatus('error')
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range])
+  }, [range, bucketReloadKey])
 
   // ความรับผิดชอบเคสค้าง (รายคน) — โหลดตามช่วงวันที่เลือก
   useEffect(() => {
+    setOwnershipStatus('loading')
     const eff = effectiveRange(range)
     getCollectorOwnership(eff.start, eff.end)
-      .then(setOwnershipRows)
+      .then((d) => {
+        setOwnershipRows(d)
+        setOwnershipStatus('ok')
+      })
       .catch(() => {
-        // silent — ไม่กระทบ scorecard หลัก
+        setOwnershipStatus('error')
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range])
+  }, [range, ownershipReloadKey])
 
   // กองกลาง (ยังไม่มีใครดูแล) — โหลด 1 ครั้ง (ไม่มีพารามิเตอร์ ไม่ผูกช่วงวัน)
   useEffect(() => {
+    setUnownedStatus('loading')
     getUnownedArrears()
-      .then(setUnownedRows)
-      .catch(() => {
-        // silent — ไม่กระทบ scorecard หลัก
+      .then((d) => {
+        setUnownedRows(d)
+        setUnownedStatus('ok')
       })
-  }, [])
+      .catch(() => {
+        setUnownedStatus('error')
+      })
+  }, [unownedReloadKey])
 
   // ปิดเคสสำเร็จ — โหลดตามช่วงวันที่เลือก + ยอดรวมช่วงก่อนหน้าในชุดเดียวกัน (ลูกศร)
+  // ช่วงก่อนหน้าล้มเหลว → ไม่ต้องขึ้น error แค่ไม่โชว์ลูกศร (ของเสริม); ช่วงหลักล้มเหลว → ขึ้น error ทั้งการ์ด
   useEffect(() => {
+    setRecoveryStatus('loading')
     const eff = effectiveRange(range)
     const prev = previousRange(range)
     Promise.all([
@@ -2021,12 +2119,13 @@ export default function StaffPerformance() {
         setRecoveryRows(d)
         setPrevRecoveryBaht(prevD ? prevD.reduce((sum, r) => sum + r.recoveredBaht, 0) : null)
         setPrevRecoveryCount(prevD ? prevD.reduce((sum, r) => sum + r.recoveries, 0) : null)
+        setRecoveryStatus('ok')
       })
       .catch(() => {
-        // silent — ไม่กระทบ scorecard หลัก
+        setRecoveryStatus('error')
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range])
+  }, [range, recoveryReloadKey])
 
   const teamSummary = useMemo(() => computeTeamSummary(rows), [rows])
   const callOutcomeTotals = useMemo(() => computeCallOutcomeTotals(callOutcomes), [callOutcomes])
@@ -2293,17 +2392,35 @@ export default function StaffPerformance() {
       />
 
       {/* Section 2.52: ความรับผิดชอบเคสค้าง (รายคน) + กองกลาง */}
-      <CollectorOwnershipSection rows={ownershipRows} />
-      <UnownedArrearsSection rows={unownedRows} />
+      <CollectorOwnershipSection
+        rows={ownershipRows}
+        status={ownershipStatus}
+        onRetry={() => setOwnershipReloadKey((k) => k + 1)}
+      />
+      <UnownedArrearsSection
+        rows={unownedRows}
+        status={unownedStatus}
+        onRetry={() => setUnownedReloadKey((k) => k + 1)}
+      />
 
       {/* Section 2.55: ยอดเก็บแยกตามกลุ่มค้าง (รายคน) */}
-      <CollectorBucketSection rows={bucketRows} />
+      <CollectorBucketSection
+        rows={bucketRows}
+        status={bucketStatus}
+        onRetry={() => setBucketReloadKey((k) => k + 1)}
+      />
 
       {/* Section 2.6: เครื่องที่ตามคืนได้ ต่อคน (attribution — คนละตัวกับค่าคอมคืนเครื่อง) */}
       <DeviceReturnByCollectorSection rows={deviceReturnByCollector} />
 
       {/* Section 2.7: ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง) */}
-      <CollectorRecoverySection rows={recoveryRows} countDelta={recoveryCountDelta} bahtDelta={recoveryBahtDelta} />
+      <CollectorRecoverySection
+        rows={recoveryRows}
+        countDelta={recoveryCountDelta}
+        bahtDelta={recoveryBahtDelta}
+        status={recoveryStatus}
+        onRetry={() => setRecoveryReloadKey((k) => k + 1)}
+      />
 
       {/* ===== โซนเก็บหนี้ภาพรวม ===== */}
       {/* ชั้น 1+2: มุมมองผู้บริหาร (ตัวเลขใหญ่ + การ์ด + กราฟเส้น) */}
