@@ -265,39 +265,49 @@ export default function LettersPrint() {
            ต้องมี @page ของตัวเองแยกจาก @page letter เพราะเอกสารเดียวกันมีทั้งจดหมาย (A4 แนวตั้ง)
            กับซอง (แนวนอน เล็กกว่ามาก) ผสมกัน — ถ้าไม่มี named page ของซอง เบราว์เซอร์จะใช้ @page
            default (คือ @page letter = A4) แทน ทำให้ซองพิมพ์เป็น A4 (บั๊กเดิม)
-           margin 8mm รอบด้าน (เผื่อระยะที่เครื่องพิมพ์ส่วนใหญ่พิมพ์ไม่ถึงขอบ ~5mm) →
-           พื้นที่พิมพ์จริงเหลือ 204×94mm เหมือน .letter-page เราไม่ตรึง width เป็น mm ตายตัว
-           ใช้ width: 100% ยืดเต็มพื้นที่พิมพ์ที่เหลือจาก @page เสมอ (บั๊กเดิม: ตรึง width: 210mm
-           ซึ่งเท่าความกว้างเต็มของ A4 พอวางบน A4 ที่มี margin อีกชั้น เลยล้นพื้นที่พิมพ์จนบล็อก
-           ผู้ส่งถูกตัดหาย) height ตรึงเป็น mm ได้ตามพื้นที่พิมพ์จริงของซอง (ไม่เหมือนจดหมายที่ต้อง
-           reflow หลายหน้า — ซองมีเนื้อหาสั้น คงที่ 1 ใบ/สัญญาเสมอ จึงต้องมีความสูงจริงให้ margin
-           อัตโนมัติของผู้รับด้านล่างคำนวณตำแหน่งได้) */
+
+           ⚠️ margin: 0 ที่ @page envelope (เดิมเคยตั้ง margin: 8mm ตรงนี้) — Chrome ไม่สามารถสั่ง
+           ขนาดกระดาษจริงได้จาก @page เอง (ขนาดจริงมาจาก driver/print dialog เท่านั้น) พอ driver
+           ตีความ margin ต่างจากที่เราประกาศ ทำให้ตัวหนังสือฝั่งซ้ายโดนตัดหายทุกบรรทัด (ผู้ใช้ยืนยัน
+           ด้วยรูปจริง — "ร้านวินชัวร์พลัส" ออกมาเป็น "ชัวร์พลัส") จึงย้ายระยะขอบทั้งหมดมาไว้ที่
+           padding ของ .envelope-page แทน เพราะ padding เป็นกล่องที่เราคุมได้แน่นอน 100% ไม่ผ่าน
+           การตีความของ driver อีกชั้น — ห้ามย้าย margin กลับไปที่ @page envelope */
         @page envelope {
           size: 220mm 110mm;
-          margin: 8mm;
+          margin: 0;
         }
         .envelope-page {
           page: envelope;
           box-sizing: border-box;
-          width: 100%; height: 94mm; margin: 12px auto; background: white;
-          padding: 5mm 6mm; box-shadow: 0 1px 6px rgba(0,0,0,.15);
-          page-break-after: always; color: #1f2937; position: relative;
+          /* width/height: 100% (ไม่ตรึง mm ตายตัว) ให้ยืดเต็ม page box จริงที่ได้มา ไม่ว่า driver
+             จะตีความขนาดกระดาษต่างจากที่เราประกาศแค่ไหนก็ตาม — padding ด้านล่างเป็นคนกันขอบแทน
+             @page margin (ดูคอมเมนต์ที่ @page envelope ด้านบน)
+             padding ซ้าย 24mm กว้างกว่าด้านอื่นเพราะเจอจริงว่าโดนตัดฝั่งซ้าย ~12-15mm ทุกบรรทัด
+             เผื่อไว้เกินพอสำหรับ non-printable area ของเครื่องพิมพ์ทั่วไป (เช่น Epson) */
+          width: 100%; height: 100%; margin: 12px auto; background: white;
+          padding: 16mm 16mm 12mm 24mm; box-shadow: 0 1px 6px rgba(0,0,0,.15);
+          page-break-after: always; page-break-inside: avoid; color: #1f2937; position: relative;
           font-family: 'Sarabun', 'TH Sarabun New', 'Noto Sans Thai', system-ui, sans-serif;
           display: flex; flex-direction: column;
+          /* กันเนื้อหาล้นไปหน้าถัดไปเด็ดขาด (เคยเจอเบอร์โทรผู้รับหลุดไปอีกแผ่นตอนที่อยู่ยาว) */
+          overflow: hidden;
         }
-        /* จอปกติ: จำลองเป็นซอง DL ขนาดจริง (220×110mm) ให้พรีวิวตรงกับของจริงที่จะพิมพ์ */
+        /* จอปกติ: จำลองเป็นซอง DL ขนาดจริง (220×110mm) ให้พรีวิวตรงกับของจริงที่จะพิมพ์
+           padding ใช้ค่าเดียวกับตอนพิมพ์ (ไม่ override) เพื่อให้พรีวิวตรงกับผลจริง */
         @media screen {
-          .envelope-page { width: 220mm; height: 110mm; padding: 10mm; }
+          .envelope-page { width: 220mm; height: 110mm; }
         }
         /* ผู้ส่ง: มุมซ้ายบน ตัวเล็ก ต้องพิมพ์ติดครบทุกบรรทัด (จุดที่เคยหลุดหาย) */
         .env-sender { font-size: 11.5px; line-height: 1.55; color: #374151; }
         .env-sender-label { font-weight: 600; }
         /* ผู้รับ: ตามธรรมเนียมซองไทย — ค่อนไปทางขวา + กลางค่อนล่าง ตัวใหญ่กว่าผู้ส่ง
-           margin-top: auto ดันลงมาให้มากที่สุดเท่าที่มีพื้นที่เหลือจากผู้ส่ง, margin-bottom คงที่
-           กันไม่ให้ชิดขอบล่างสุดจนเกินไป (ยังเหลือ "ค่อนล่าง" ไม่ใช่ "ติดขอบล่าง") */
+           เดิมใช้ margin-top: auto (ดันลงล่างสุดเท่าที่มีที่ว่าง) แต่ถ้าที่อยู่ยาวหลายบรรทัด
+           จะดันจนล้นไปหน้าถัดไป จึงเปลี่ยนเป็นค่าคงที่ที่ควบคุมได้แทน + ลดฟอนต์ลงเล็กน้อย
+           (เดิม 15px) ให้มีที่ว่างเผื่อที่อยู่ยาวมากขึ้นก่อนจะโดน overflow:hidden ตัด */
         .env-recipient {
-          margin-left: auto; margin-top: auto; margin-bottom: 6mm;
-          max-width: 60%; font-size: 15px; line-height: 1.7;
+          margin-left: auto; margin-top: 24mm;
+          max-width: 62%; font-size: 14px; line-height: 1.6;
+          page-break-inside: avoid;
         }
       `}</style>
 
@@ -324,6 +334,18 @@ export default function LettersPrint() {
             <Mail size={16} /> ปริ้นซอง
           </button>
         </div>
+      </div>
+
+      {/* คำแนะนำวิธีปริ้นซองให้ได้ขนาดจริง — โชว์บนจอเท่านั้น (no-print) ไม่ออกกระดาษ
+          เพราะขนาดกระดาษจริงต้องตั้งที่กล่องโต้ตอบของระบบ (@page คุมไม่ได้ 100%) */}
+      <div className="no-print mx-auto mt-3 max-w-2xl rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <p className="font-semibold">วิธีปริ้นซองให้ได้ขนาดจริง</p>
+        <ol className="mt-1.5 list-decimal space-y-1 pl-5">
+          <li>กด "ปริ้นซอง" แล้วในหน้าตัวอย่าง กด "พิมพ์โดยใช้กล่องโต้ตอบระบบ" (Ctrl+Shift+P)</li>
+          <li>ตั้งขนาดกระดาษ = Envelope DL และประเภทกระดาษ = Envelope</li>
+          <li>ใส่ซองที่ถาดด้านหลัง ด้านสั้นเข้าก่อน ฝาพับคว่ำลง</li>
+          <li>ตั้ง Scale/มาตราส่วน = 100% และปิด "ปรับให้พอดีหน้า"</li>
+        </ol>
       </div>
 
       {items.length === 0 ? (
