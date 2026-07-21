@@ -172,12 +172,25 @@ export default function LettersPrint() {
 
   useEffect(() => {
     if (!printMode) return
-    // รอ DOM อัปเดต className ก่อนสั่งปริ้น
-    const t = window.setTimeout(() => {
-      window.print()
+    let resolved = false
+    const finish = () => {
+      if (resolved) return
+      resolved = true
       setPrintMode(null)
-    }, 80)
-    return () => window.clearTimeout(t)
+    }
+    // เคลียร์ mode หลังปิดกล่องปริ้นจริง (ไม่ว่าจะกดปริ้นหรือยกเลิก) แทนการเคลียร์ทันทีหลัง
+    // window.print() คืนค่า — บาง browser คืนค่าก่อน preview render เสร็จ ทำให้ class
+    // mode-envelopes/mode-letters หลุดเร็วเกินไป เสี่ยงพิมพ์ปนกัน
+    window.addEventListener('afterprint', finish)
+    // รอ DOM อัปเดต className ก่อนสั่งปริ้น
+    const t = window.setTimeout(() => window.print(), 80)
+    // กันค้าง เผื่อบาง browser ไม่ยิง afterprint
+    const fallback = window.setTimeout(finish, 5000)
+    return () => {
+      window.clearTimeout(t)
+      window.clearTimeout(fallback)
+      window.removeEventListener('afterprint', finish)
+    }
   }, [printMode])
 
   const modeClass = printMode === 'letters' ? 'mode-letters' : printMode === 'envelopes' ? 'mode-envelopes' : ''
@@ -248,19 +261,43 @@ export default function LettersPrint() {
           text-align: center; line-height: 1.8;
         }
 
-        /* --- หน้าซอง: แนวนอน --- */
+        /* --- หน้าซอง: ซองยาว DL แนวนอน 220×110mm (ขนาดจริงที่ Pete ยืนยัน) ---
+           ต้องมี @page ของตัวเองแยกจาก @page letter เพราะเอกสารเดียวกันมีทั้งจดหมาย (A4 แนวตั้ง)
+           กับซอง (แนวนอน เล็กกว่ามาก) ผสมกัน — ถ้าไม่มี named page ของซอง เบราว์เซอร์จะใช้ @page
+           default (คือ @page letter = A4) แทน ทำให้ซองพิมพ์เป็น A4 (บั๊กเดิม)
+           margin 8mm รอบด้าน (เผื่อระยะที่เครื่องพิมพ์ส่วนใหญ่พิมพ์ไม่ถึงขอบ ~5mm) →
+           พื้นที่พิมพ์จริงเหลือ 204×94mm เหมือน .letter-page เราไม่ตรึง width เป็น mm ตายตัว
+           ใช้ width: 100% ยืดเต็มพื้นที่พิมพ์ที่เหลือจาก @page เสมอ (บั๊กเดิม: ตรึง width: 210mm
+           ซึ่งเท่าความกว้างเต็มของ A4 พอวางบน A4 ที่มี margin อีกชั้น เลยล้นพื้นที่พิมพ์จนบล็อก
+           ผู้ส่งถูกตัดหาย) height ตรึงเป็น mm ได้ตามพื้นที่พิมพ์จริงของซอง (ไม่เหมือนจดหมายที่ต้อง
+           reflow หลายหน้า — ซองมีเนื้อหาสั้น คงที่ 1 ใบ/สัญญาเสมอ จึงต้องมีความสูงจริงให้ margin
+           อัตโนมัติของผู้รับด้านล่างคำนวณตำแหน่งได้) */
+        @page envelope {
+          size: 220mm 110mm;
+          margin: 8mm;
+        }
         .envelope-page {
-          width: 210mm; min-height: 148mm; margin: 12px auto; background: white;
-          padding: 18mm; box-shadow: 0 1px 6px rgba(0,0,0,.15);
+          page: envelope;
+          box-sizing: border-box;
+          width: 100%; height: 94mm; margin: 12px auto; background: white;
+          padding: 5mm 6mm; box-shadow: 0 1px 6px rgba(0,0,0,.15);
           page-break-after: always; color: #1f2937; position: relative;
           font-family: 'Sarabun', 'TH Sarabun New', 'Noto Sans Thai', system-ui, sans-serif;
           display: flex; flex-direction: column;
         }
-        .env-sender { font-size: 13px; line-height: 1.6; color: #374151; }
+        /* จอปกติ: จำลองเป็นซอง DL ขนาดจริง (220×110mm) ให้พรีวิวตรงกับของจริงที่จะพิมพ์ */
+        @media screen {
+          .envelope-page { width: 220mm; height: 110mm; padding: 10mm; }
+        }
+        /* ผู้ส่ง: มุมซ้ายบน ตัวเล็ก ต้องพิมพ์ติดครบทุกบรรทัด (จุดที่เคยหลุดหาย) */
+        .env-sender { font-size: 11.5px; line-height: 1.55; color: #374151; }
         .env-sender-label { font-weight: 600; }
+        /* ผู้รับ: ตามธรรมเนียมซองไทย — ค่อนไปทางขวา + กลางค่อนล่าง ตัวใหญ่กว่าผู้ส่ง
+           margin-top: auto ดันลงมาให้มากที่สุดเท่าที่มีพื้นที่เหลือจากผู้ส่ง, margin-bottom คงที่
+           กันไม่ให้ชิดขอบล่างสุดจนเกินไป (ยังเหลือ "ค่อนล่าง" ไม่ใช่ "ติดขอบล่าง") */
         .env-recipient {
-          margin-left: auto; margin-top: auto; margin-bottom: auto;
-          max-width: 58%; font-size: 16px; line-height: 1.8;
+          margin-left: auto; margin-top: auto; margin-bottom: 6mm;
+          max-width: 60%; font-size: 15px; line-height: 1.7;
         }
       `}</style>
 
