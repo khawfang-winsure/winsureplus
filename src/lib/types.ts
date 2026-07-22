@@ -682,6 +682,21 @@ export interface CollectorRecoveryRow {
 }
 
 /**
+ * สะสมตลอดกาล (ไม่ผูกช่วงวันที่) จาก RPC get_collector_ever_held() — ไม่รับพารามิเตอร์
+ * everHeld = distinct สัญญาที่เคยมี follow_up x มูลค่า est_outstanding "ปัจจุบัน" (ไม่ใช่ตอนดูแล)
+ * lost = subset ที่ status ปัจจุบันเป็น returned/returned_closed x overdue_amount ปัจจุบัน
+ * ⚠️ ไม่ dedupe ข้ามคน — เคสเดียวหลายคนเคยโทร = ทุกคนได้เครดิตเต็ม (เหมือน CollectorOwnershipRow)
+ */
+export interface CollectorEverHeldRow {
+  authorId: string
+  authorName: string
+  everHeldCases: number
+  everHeldBaht: number
+  lostCases: number
+  lostBaht: number
+}
+
+/**
  * เงินเก็บได้จริงวันนี้ — ทุกช่องทาง (ทีมโทรตามได้ + ลูกค้าจ่ายเอง + PJ auto-sync)
  * นับตาม record date (วันบันทึกเข้าระบบ, Asia/Bangkok) จาก v_cashflow_daily (migration 0056)
  * ไม่มี breakdown 5 หมวด (installment/down/docFee/other) เพราะต้อง join contracts + other_income หนัก —

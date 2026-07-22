@@ -102,6 +102,31 @@ function daysSinceAnchor(anchorDate: string, todayBkk: string): number {
   return Math.max(1, Math.floor((todayMs - anchorMs) / 86400000) + 1)
 }
 
+// ===== Pete: เคส "เลยนัด"/"ถึงนัดวันนี้" ต้องปักหมุดบนสุดเสมอ แม้เรียงตามวันค้าง (sortMode=daysLateAsc/Desc) =====
+// priorityQueue.ts เป็น pure lib ห้ามแตะ (ต้องส่งแบม) → ทำ logic ปักหมุดตรงนี้ในหน้า component แทน
+// reuse getPromiseDateStatus (pure fn มีอยู่แล้ว) เพื่อแยกกลุ่มก่อน sort ภายในกลุ่มที่เหลือด้วย compareFn ที่ส่งเข้ามา
+function pinDuePromise(
+  rowsIn: ScoredRow[],
+  todayStr: string,
+  compareFn: (a: ScoredRow, b: ScoredRow) => number,
+): ScoredRow[] {
+  const pinned: ScoredRow[] = []
+  const rest: ScoredRow[] = []
+  for (const sr of rowsIn) {
+    const { status } = getPromiseDateStatus(sr.row.promiseToPayDate, todayStr)
+    if (status === 'overdue' || status === 'due_today') pinned.push(sr)
+    else rest.push(sr)
+  }
+  // ภายในกลุ่มปักหมุด: เลยนัดนานสุดก่อน (เหมือน group P1 ของ sortQueue) — promiseToPayDate ASC (null ไปท้ายกลุ่มปักหมุด)
+  pinned.sort((a, b) => {
+    const da = a.row.promiseToPayDate ?? ''
+    const db = b.row.promiseToPayDate ?? ''
+    return da < db ? -1 : da > db ? 1 : 0
+  })
+  rest.sort(compareFn)
+  return [...pinned, ...rest]
+}
+
 // ===== Banner นอกเวลาทวงถาม =====
 function OutsideHoursBanner() {
   return (
@@ -904,16 +929,20 @@ export default function FreelancerWorkspace() {
 
   // รายชื่อเดียวเรียงตามโหมดที่เลือก (ข้อ 6):
   // priority (default) = sortQueue เดิม (เลยนัด → ใกล้นัด≤7วัน → tier+score)
-  // daysLateAsc/Desc = เรียงตามวันค้างชำระอย่างเดียว
+  // daysLateAsc/Desc = เรียงตามวันค้างชำระ แต่ปักหมุดเคส "เลยนัด/ถึงนัดวันนี้" ไว้บนสุดเสมอ (Pete: จะได้ไม่ต้องเลื่อนหา)
   const sortedRows = useMemo(() => {
     if (sortMode === 'daysLateAsc') {
-      return [...scoredRows].sort((a, b) => a.row.daysLate - b.row.daysLate)
+      return pinDuePromise(scoredRows, todayStr, (a, b) => a.row.daysLate - b.row.daysLate)
     }
     if (sortMode === 'daysLateDesc') {
-      return [...scoredRows].sort((a, b) => b.row.daysLate - a.row.daysLate)
+      return pinDuePromise(scoredRows, todayStr, (a, b) => b.row.daysLate - a.row.daysLate)
     }
     return sortQueue(scoredRows, todayStr)
   }, [scoredRows, todayStr, sortMode])
+
+  // แท็บ "งานที่ต้องดูแล" (mine): เรียงด้วย sortQueue เดียวกับแท็บ "ที่ต้องโทร"
+  // เพื่อให้เคสเลยนัด/ถึงนัดวันนี้เด้งขึ้นบนสุด — reuse sortQueue เดิม (Pete: "เคสถึงนัดแล้วขึ้นบนสุด")
+  const sortedMyScoredRows = useMemo(() => sortQueue(myScoredRows, todayStr), [myScoredRows, todayStr])
 
   // === Pagination ของแท็บ "ที่ต้องโทร" ===
   const pagedSortedRows = useMemo(
@@ -1292,7 +1321,7 @@ export default function FreelancerWorkspace() {
                         </tr>
                       </thead>
                       <tbody>
-                        {myScoredRows.map((sr) => (
+                        {sortedMyScoredRows.map((sr) => (
                           <QueueRow
                             key={sr.row.contractId}
                             sr={sr}
@@ -1311,7 +1340,7 @@ export default function FreelancerWorkspace() {
 
                   {/* ===== Mobile card stack (< md) ===== */}
                   <div className="flex flex-col divide-y divide-peach/60 md:hidden">
-                    {myScoredRows.map((sr) => (
+                    {sortedMyScoredRows.map((sr) => (
                       <QueueCardMobile
                         key={sr.row.contractId}
                         sr={sr}

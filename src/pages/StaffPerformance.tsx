@@ -38,6 +38,7 @@ import {
   getCollectorOwnership,
   getUnownedArrears,
   getCollectorRecoveries,
+  getCollectorEverHeld,
   type CollectorScorecardRow,
 } from '../lib/db'
 import type {
@@ -52,6 +53,7 @@ import type {
   CollectorOwnershipRow,
   UnownedArrearsRow,
   CollectorRecoveryRow,
+  CollectorEverHeldRow,
 } from '../lib/types'
 import type { DeviceReturnByCollectorResult } from '../lib/deviceReturnByCollector'
 import { deviceReturnCommissionMonthly, type DeviceReturnTier } from '../lib/commission'
@@ -1731,6 +1733,100 @@ function CollectorOwnershipSection({
   )
 }
 
+// งานที่ 1.5: การ์ด "เคยดูแล & หลุดมือ (สะสมทั้งหมด)" — สะสมตลอดกาล ไม่ผูกช่วงวันที่
+function CollectorEverHeldSection({
+  rows,
+  status,
+  onRetry,
+}: {
+  rows: CollectorEverHeldRow[]
+  status: SectionStatus
+  onRetry: () => void
+}) {
+  const sorted = useMemo(() => [...rows].sort((a, b) => b.everHeldBaht - a.everHeldBaht), [rows])
+  const totals = useMemo(() => {
+    let everHeldCases = 0, everHeldBaht = 0, lostCases = 0, lostBaht = 0
+    for (const r of sorted) {
+      everHeldCases += r.everHeldCases
+      everHeldBaht += r.everHeldBaht
+      lostCases += r.lostCases
+      lostBaht += r.lostBaht
+    }
+    return { everHeldCases, everHeldBaht, lostCases, lostBaht }
+  }, [sorted])
+  const totalLostPct = pctOrNull(totals.lostCases, totals.everHeldCases)
+
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">เคยดูแล &amp; หลุดมือ (สะสมทั้งหมด)</h2>
+        <p className="text-sm text-ink-soft">
+          ทุกเคสที่แต่ละคนเคยบันทึกติดตามไว้ตลอดการทำงาน เทียบกับส่วนที่สุดท้ายลูกค้าคืนเครื่อง
+        </p>
+      </div>
+
+      {status === 'loading' ? (
+        <SectionLoading />
+      ) : status === 'error' ? (
+        <SectionError onRetry={onRetry} />
+      ) : sorted.length === 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ยังไม่มีข้อมูลการบันทึกติดตามในระบบนี้
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-xs text-ink-soft">
+                <th className="pb-2 pr-3 font-medium">พนักงาน</th>
+                <th className="px-3 pb-2 text-right font-medium">เคยดูแล</th>
+                <th className="px-3 pb-2 text-right font-medium">หลุดมือ → คืนเครื่อง</th>
+                <th className="pl-3 pb-2 text-right font-medium">% หลุดมือ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => {
+                const lostPct = pctOrNull(r.lostCases, r.everHeldCases)
+                return (
+                  <tr key={r.authorId} className="border-b border-peach/40 last:border-0">
+                    <td className="py-2 pr-3 font-medium text-ink">{r.authorName}</td>
+                    <OwnershipMoneyCell cases={r.everHeldCases} bahtAmt={r.everHeldBaht} emphasize />
+                    <OwnershipMoneyCell cases={r.lostCases} bahtAmt={r.lostBaht} />
+                    <td className="pl-3 py-2 text-right font-medium text-ink">
+                      {lostPct !== null ? `${lostPct.toFixed(1)}%` : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-peach bg-peach-light/30">
+                <td className="py-2 pr-3 font-semibold text-ink">รวมทั้งหมด</td>
+                <OwnershipMoneyCell cases={totals.everHeldCases} bahtAmt={totals.everHeldBaht} emphasize />
+                <OwnershipMoneyCell cases={totals.lostCases} bahtAmt={totals.lostBaht} />
+                <td className="pl-3 py-2 text-right font-semibold text-ink">
+                  {totalLostPct !== null ? `${totalLostPct.toFixed(1)}%` : '—'}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs leading-relaxed text-ink-soft">
+        นับจากบันทึกติดตามในระบบนี้เท่านั้น ไม่รวมช่วงก่อนย้ายจาก DEBTFLOW · มูลค่า = ยอดค้างปัจจุบัน ไม่ใช่ยอดตอนที่ดูแล
+        <br />
+        หลุดมือ = เคสที่คืนเครื่องแล้ว จากทั้งหมดที่เคยดูแล · ถ้ายกเลิกคืนเครื่องภายหลัง ตัวเลขนี้จะลดลงเอง
+        <br />
+        “รวมทั้งหมด” อาจนับซ้ำถ้าเคสเดียวเคยมีหลายคนโทรตาม (เหมือนตาราง “ความรับผิดชอบเคสค้าง” ด้านบน)
+      </p>
+      <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+        ⚠️ เป็นตัวเลขสะสมตลอดกาล ไม่ขึ้นกับช่วงวันที่ที่เลือกด้านบน
+      </div>
+    </Card>
+  )
+}
+
 // งานที่ 2: กล่อง "กองกลาง (ยังไม่มีใครดูแล)"
 function UnownedArrearsSection({
   rows,
@@ -1946,6 +2042,10 @@ export default function StaffPerformance() {
   const [ownershipRows, setOwnershipRows] = useState<CollectorOwnershipRow[]>([])
   const [ownershipStatus, setOwnershipStatus] = useState<SectionStatus>('loading')
   const [ownershipReloadKey, setOwnershipReloadKey] = useState(0)
+  // เคยดูแล & หลุดมือ (สะสมทั้งหมด): โหลด 1 ครั้ง (RPC ไม่รับพารามิเตอร์ ไม่ผูกช่วงวัน)
+  const [everHeldRows, setEverHeldRows] = useState<CollectorEverHeldRow[]>([])
+  const [everHeldStatus, setEverHeldStatus] = useState<SectionStatus>('loading')
+  const [everHeldReloadKey, setEverHeldReloadKey] = useState(0)
   // กองกลาง (ยังไม่มีใครดูแล): โหลด 1 ครั้ง (สถานะ ณ ปัจจุบัน ไม่ผูกช่วงวัน)
   const [unownedRows, setUnownedRows] = useState<UnownedArrearsRow[]>([])
   const [unownedStatus, setUnownedStatus] = useState<SectionStatus>('loading')
@@ -2091,6 +2191,19 @@ export default function StaffPerformance() {
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, ownershipReloadKey])
+
+  // เคยดูแล & หลุดมือ (สะสมทั้งหมด) — โหลด 1 ครั้ง (ไม่มีพารามิเตอร์ ไม่ผูกช่วงวัน — ห้ามใส่ range ใน deps)
+  useEffect(() => {
+    setEverHeldStatus('loading')
+    getCollectorEverHeld()
+      .then((d) => {
+        setEverHeldRows(d)
+        setEverHeldStatus('ok')
+      })
+      .catch(() => {
+        setEverHeldStatus('error')
+      })
+  }, [everHeldReloadKey])
 
   // กองกลาง (ยังไม่มีใครดูแล) — โหลด 1 ครั้ง (ไม่มีพารามิเตอร์ ไม่ผูกช่วงวัน)
   useEffect(() => {
@@ -2396,6 +2509,11 @@ export default function StaffPerformance() {
         rows={ownershipRows}
         status={ownershipStatus}
         onRetry={() => setOwnershipReloadKey((k) => k + 1)}
+      />
+      <CollectorEverHeldSection
+        rows={everHeldRows}
+        status={everHeldStatus}
+        onRetry={() => setEverHeldReloadKey((k) => k + 1)}
       />
       <UnownedArrearsSection
         rows={unownedRows}

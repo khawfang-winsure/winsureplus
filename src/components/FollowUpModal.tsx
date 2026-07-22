@@ -175,9 +175,12 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const [closeError, setCloseError] = useState<string | null>(null)
   const [clearInbox, setClearInbox] = useState(false)  // ติ๊ก "จัดการเรียบร้อย" — เอาออกจากกล่องรับงานหลังบันทึก
   const [addresses, setAddresses] = useState<ContractAddresses>({})
+  // progressive render: modal เปิดพร้อมข้อมูลจาก queue row (props) ทันที — ที่อยู่/งวด โหลดทีหลังแบบไม่บล็อกทั้งจอ
+  const [addressesLoading, setAddressesLoading] = useState(true)
 
   // req9: งวดของสัญญานี้ — ใช้คำนวณ paymentRecoveryStatus
   const [recoveryInstallments, setRecoveryInstallments] = useState<RecoveryInstallmentInput[]>([])
+  const [installmentsLoading, setInstallmentsLoading] = useState(true)
 
   // req10: ตั้งค่า SMS บริษัท (เบอร์บริษัท + ที่อยู่คืนเครื่อง)
   const [smsSettings, setSmsSettings] = useState({ companyName: '', companyPhone: '', returnAddress: '' })
@@ -188,15 +191,18 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const contactWindow = isContactWindowOpen(new Date(), publicHolidays)
   const outsideHours = !adminOverride && !contactWindow.ok
 
-  // โหลดที่อยู่ตามบัตรประชาชน เพื่อแสดงอำเภอ/จังหวัดให้คนตามหนี้
+  // โหลดที่อยู่ตามบัตรประชาชน เพื่อแสดงอำเภอ/จังหวัดให้คนตามหนี้ — progressive: modal เปิดได้ทันที ส่วนนี้เติมทีหลัง
   useEffect(() => {
+    setAddressesLoading(true)
     getContractAddresses(contract.contractId)
       .then(setAddresses)
       .catch(() => setAddresses({}))
+      .finally(() => setAddressesLoading(false))
   }, [contract.contractId])
 
-  // req9: โหลดงวดของสัญญานี้ — ใช้คำนวณสถานะ "กลับเป็นปกติ"
+  // req9: โหลดงวดของสัญญานี้ — ใช้คำนวณสถานะ "กลับเป็นปกติ" — progressive เช่นกัน (ไม่บล็อกทั้ง modal)
   useEffect(() => {
+    setInstallmentsLoading(true)
     getInstallments(contract.contractId)
       .then((list) => {
         setRecoveryInstallments(
@@ -210,6 +216,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         )
       })
       .catch(() => setRecoveryInstallments([]))
+      .finally(() => setInstallmentsLoading(false))
   }, [contract.contractId])
 
   // req10: โหลดตั้งค่าบริษัทสำหรับ SMS (ครั้งเดียวตอนเปิด modal)
@@ -357,8 +364,27 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
       setCustomPhoneDialed('')
       setCustomRelation('')
       setSaved(true)
-      await loadHistory()
+      // optimistic: มีข้อมูลครบในมืออยู่แล้ว (input ที่เพิ่ง submit) — เติม list ทันทีแทนรอ round-trip โหลดใหม่
+      // id ชั่วคราว (ไม่ใช่ id จริงจาก DB — addFollowUp ไม่ได้ .select() คืนแถวที่ insert) แทนที่ด้วยของจริงตอน background refetch ด้านล่าง
+      const optimisticEntry: FollowUpEntry = {
+        id: `optimistic-${Date.now()}`,
+        contractId: contract.contractId,
+        authorId: '',
+        authorName: authName ?? '',
+        noteText: input.noteText,
+        contactMethod: input.contactMethod,
+        followUpResult: input.followUpResult,
+        nextFollowUpAt: input.nextFollowUpAt ?? null,
+        promisedAmount: input.promisedAmount ?? null,
+        createdAt: new Date().toISOString(),
+        contactTarget: input.contactTarget ?? 'debtor',
+        contactPersonName: input.contactPersonName ?? null,
+        contactPersonRelation: input.contactPersonRelation ?? null,
+      }
+      setHistory((prev) => [optimisticEntry, ...prev])
       onSaved?.()
+      // sync กับของจริงแบบ background — ไม่ toggle histLoading ไม่ค้างจอ
+      void getFollowUps(contract.contractId).then(setHistory).catch(() => {})
     } catch (e) {
       // แปล compliance error P0001 → ภาษาไทย ถ้าไม่ใช่ compliance error → fallback ข้อความเดิม
       const complianceMsg = getComplianceErrorMessage(e)
@@ -453,11 +479,18 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           {contract.color && (
             <p className="text-ink-soft">สีเครื่อง: <span className="text-ink">{contract.color}</span></p>
           )}
-          {addresses.id_card?.district && (
-            <p className="text-ink-soft">อำเภอ: <span className="text-ink">{addresses.id_card.district}</span></p>
-          )}
-          {addresses.id_card?.province && (
-            <p className="text-ink-soft">จังหวัด: <span className="text-ink">{addresses.id_card.province}</span></p>
+          {/* progressive: ยังโหลดที่อยู่ไม่เสร็จ → โชว์ loader เล็กๆ แทนที่จะรอทั้ง modal */}
+          {addressesLoading ? (
+            <p className="col-span-2 text-xs text-ink-soft">📍 กำลังโหลดที่อยู่...</p>
+          ) : (
+            <>
+              {addresses.id_card?.district && (
+                <p className="text-ink-soft">อำเภอ: <span className="text-ink">{addresses.id_card.district}</span></p>
+              )}
+              {addresses.id_card?.province && (
+                <p className="text-ink-soft">จังหวัด: <span className="text-ink">{addresses.id_card.province}</span></p>
+              )}
+            </>
           )}
           {contract.installmentsPaid !== undefined &&
             contract.installmentsTotal !== undefined &&
@@ -501,9 +534,12 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           )}
         </div>
 
-        {/* req9: สถานะ "กลับเป็นปกติ" — ซ่อนสำหรับเคสคืนเครื่อง (เหลือจ่ายแค่ยอดปิด ไม่ใช่ค้าง N งวด) */}
+        {/* req9: สถานะ "กลับเป็นปกติ" — ซ่อนสำหรับเคสคืนเครื่อง (เหลือจ่ายแค่ยอดปิด ไม่ใช่ค้าง N งวด)
+            progressive: ยังโหลดตารางงวดไม่เสร็จ → โชว์ loader แทน badgeText (คำนวณจาก [] ว่างจะเข้าใจผิดว่า "ปกติ") */}
         {!contract.isReturned && (
-          <p className="mt-2 text-xs text-ink-soft">{recoveryStatus.badgeText}</p>
+          <p className="mt-2 text-xs text-ink-soft">
+            {installmentsLoading ? 'กำลังโหลดสถานะงวด...' : recoveryStatus.badgeText}
+          </p>
         )}
         {/* req11: จ่ายล่าสุด (เฉพาะเมื่อมี recovered episode) */}
         {recoveryStatus.recoveredThisEpisode.lastPaidAt && (
@@ -549,15 +585,18 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
             <Button
               variant="ghost"
               onClick={handleSendSms}
-              disabled={recoveryStatus.overdueCount === 0 || !smsTargetPhone}
+              disabled={installmentsLoading || recoveryStatus.overdueCount === 0 || !smsTargetPhone}
               className="self-start"
             >
               <MessageSquare size={15} />
               ส่ง SMS
             </Button>
-            {recoveryStatus.overdueCount === 0 && (
+            {/* progressive: ยังโหลดตารางงวดไม่เสร็จ → บอกว่ากำลังโหลด แทนข้อความ "ไม่มีงวดค้าง" ที่อาจผิด */}
+            {installmentsLoading ? (
+              <p className="text-xs text-ink-soft">กำลังโหลดข้อมูลงวด...</p>
+            ) : recoveryStatus.overdueCount === 0 ? (
               <p className="text-xs text-ink-soft">ไม่มีงวดค้างชำระ — ไม่ต้องส่ง SMS ทวงหนี้</p>
-            )}
+            ) : null}
           </div>
         </div>
       )}

@@ -9,6 +9,7 @@ import type {
   CashCollectedToday,
   CollectorBucketRow,
   CollectorCallOutcome,
+  CollectorEverHeldRow,
   CollectorOwnershipRow,
   CollectorRecoveryRow,
   Contract,
@@ -4006,13 +4007,19 @@ export async function assignCase(contractId: string, assigneeId: string): Promis
 }
 
 /** เคสที่ตัวเอง (ผู้ใช้ปัจจุบัน) ถือครองอยู่ — reuse getFreelancerQueue shape (FreelancerQueueRow)
- *  รวม 2 แหล่ง แล้ว dedupe ด้วย contractId:
- *   1) เคสในเกรดที่ตัวเองได้รับมอบหมาย (getFreelancerQueue(grades)) filter assignedTo=me — เดิม
- *   2) เคส "ข้ามเกรด" ที่ถูก assign_case (0099) มอบให้ตรงๆ โดยไม่ผูก grade เลย —
- *      getFreelancerQueue กรองด้วย grades เสมอ จึงไม่มีทางเจอเคสข้ามเกรด ต้อง query แยก:
- *      ดึง contracts.id ที่ assigned_to=me ตรงๆ ก่อน (RLS 0099 เปิด clause นี้ไม่ผูก grade แล้ว)
- *      แล้วค่อยดึงสถานะจาก v_contract_status + ประกอบด้วย buildFreelancerQueueRows เดียวกับคิวปกติ
- *      (reuse สูตรคำนวณ principalDue/aggregate เดิม ไม่เขียนซ้ำ กันเพี้ยน 2 ที่) */
+ *
+ *  Perf (2026-07-22, แก้ช้าตอนสลับแท็บ "งานที่ต้องดูแล" /queue): เดิมทำ 2 เส้นทางทับซ้อนกัน —
+ *   1) ดึงคิวเต็มทั้งเกรดผ่าน getFreelancerQueue(grades) (2x v_contract_status + buildFreelancerQueueRows
+ *      ทั้งชุด) แล้ว filter assignedTo=me ทีหลัง — ทั้งที่หน้า /queue โหลดคิวหลักไปแล้วตอน mount ก็ทำซ้ำอีกรอบ
+ *   2) query แยกอีกชุดสำหรับเคส "ข้ามเกรด" ที่ assign_case (0099) มอบตรงๆ (getFreelancerQueue ผูก grade
+ *      เสมอ หาเคสข้ามเกรดไม่เจอ)
+ *  พิสูจน์แล้วว่าเซตผลลัพธ์รวม (1)∪(2) ของเดิม ⟺ "ทุกสัญญาที่ assigned_to=me ยกเว้น active+bucket=normal"
+ *  เพราะเงื่อนไขเส้นทาง (2) เดิม (!(active&&normal)) เป็น superset ของเงื่อนไขเส้นทาง (1) เดิม
+ *  ((active&&!normal) OR returned) เสมอ — ไม่ต้องพึ่ง grade เลย เพราะ RLS 0099 บน contracts/
+ *  v_contract_status (security_invoker) กรอง status ให้ freelancer อยู่แล้ว (assigned_to=me ต้อง
+ *  status in (active,returned) ถึงจะมองเห็นแถว) → query ทางเดียวพอ ได้ผลลัพธ์ชุดเดิมเป๊ะ
+ *  ลด round-trip จาก ~25 เหลือ ~12 และที่สำคัญกว่าจำนวน round-trip คือ buildFreelancerQueueRows
+ *  ทำงานแค่ 1 รอบ เฉพาะ "เคสของฉัน" (เซตเล็ก) แทนที่จะรันทับทั้งคิวทั้งเกรด (เซตใหญ่) แล้วทิ้งผลส่วนใหญ่ทันที */
 export async function getMyCases(): Promise<FreelancerQueueRow[]> {
   if (!supabase) return []
   const {
@@ -4020,41 +4027,31 @@ export async function getMyCases(): Promise<FreelancerQueueRow[]> {
   } = await supabase.auth.getUser()
   if (!user) return []
 
-  const grades = await getMyAssignedGrades()
-  const inGradeQueue = grades.length > 0 ? await getFreelancerQueue(grades) : []
-  const inGradeMine = inGradeQueue.filter((r) => r.assignedTo === user.id)
-  const inGradeIds = new Set(inGradeMine.map((r) => r.contractId))
-
-  // เคสที่ assigned_to=me ตรงๆ (ไม่ผูก grade) — RLS 0099 เปิดให้อ่าน contracts แถวนี้ได้แล้ว
+  // เคสที่ assigned_to=me ทั้งหมด (ไม่ผูก grade) — RLS 0099 เปิดให้อ่าน contracts แถวนี้ได้แล้ว
   const { data: assignedContracts, error: assignedErr } = await supabase
     .from('contracts')
     .select('id')
     .eq('assigned_to', user.id)
     .range(0, PAGE_CAP)
   if (assignedErr) throw assignedErr
-  const crossGradeIds = ((assignedContracts ?? []) as { id: string }[])
-    .map((r) => r.id)
-    .filter((id) => !inGradeIds.has(id))
-
-  if (crossGradeIds.length === 0) return inGradeMine
+  const myIds = ((assignedContracts ?? []) as { id: string }[]).map((r) => r.id)
+  if (myIds.length === 0) return []
 
   const { data: statusData, error: statusErr } = await supabase
     .from('v_contract_status')
     .select(
       'contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount, bucket',
     )
-    .in('contract_id', crossGradeIds)
+    .in('contract_id', myIds)
     .range(0, PAGE_CAP)
   if (statusErr) throw statusErr
 
-  // mirror เงื่อนไข getFreelancerQueue: active+bucket='normal' (ยังไม่ล่าช้า) ไม่เข้าคิว
-  // returned เข้าเสมอไม่ว่า bucket ไหน — buildFreelancerQueueRows ตัด returnClosingAmount<=0 ทีหลังเอง
+  // mirror union ของเงื่อนไขเดิม (ดูหมายเหตุด้านบน): active+bucket='normal' (ยังไม่ล่าช้า) ไม่เข้าคิว
+  // status/bucket อื่นเข้าหมด — buildFreelancerQueueRows ตัด returned ที่ returnClosingAmount<=0 ทีหลังเอง
   const filteredStatus = ((statusData ?? []) as (QueueStatusRow & { bucket: string | null })[]).filter(
     (r) => !(r.status === 'active' && r.bucket === 'normal'),
   )
-  const crossGradeRows = await buildFreelancerQueueRows(filteredStatus)
-
-  return [...inGradeMine, ...crossGradeRows]
+  return buildFreelancerQueueRows(filteredStatus)
 }
 
 interface CaseOwnershipCountRow {
@@ -5149,6 +5146,39 @@ export async function getCollectorRecoveries(
     authorName: row.author_name ?? '-',
     recoveries: Number(row.recoveries),
     recoveredBaht: Number(row.recovered_baht),
+  }))
+}
+
+// ---------- Collector ever-held — สะสมตลอดกาล (migration 0123) ----------
+
+/** 1 row ต่อ author จาก RPC get_collector_ever_held — numeric/int มาเป็น number|string จาก PostgREST */
+interface CollectorEverHeldViewRow {
+  author_id: string
+  author_name: string | null
+  ever_held_cases: number | string
+  ever_held_baht: number | string
+  lost_cases: number | string
+  lost_baht: number | string
+}
+
+/**
+ * สะสมตลอดกาล (ไม่ผูกช่วงวันที่ — ไม่รับพารามิเตอร์) ต่อคนตามหนี้: เคยถือกี่เคส/มูลค่าเท่าไหร่ (ปัจจุบัน)
+ * + subset ที่หลุดมือไปเป็นคืนเครื่อง (returned/returned_closed)
+ * ⚠️ ไม่ dedupe ข้ามคน — เคสเดียวหลายคนเคยโทร = ทุกคนได้เครดิตเต็ม (เหมือน getCollectorOwnership)
+ */
+export async function getCollectorEverHeld(): Promise<CollectorEverHeldRow[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase.rpc('get_collector_ever_held')
+  if (error) throw error
+
+  return ((data ?? []) as CollectorEverHeldViewRow[]).map((row) => ({
+    authorId: row.author_id,
+    authorName: row.author_name ?? '-',
+    everHeldCases: Number(row.ever_held_cases),
+    everHeldBaht: Number(row.ever_held_baht),
+    lostCases: Number(row.lost_cases),
+    lostBaht: Number(row.lost_baht),
   }))
 }
 
