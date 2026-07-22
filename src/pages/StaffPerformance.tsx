@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ChevronRight,
   ChevronDown,
@@ -39,8 +40,10 @@ import {
   getUnownedArrears,
   getCollectorRecoveries,
   getCollectorEverHeld,
+  getDeviceReturnReportRows,
   type CollectorScorecardRow,
 } from '../lib/db'
+import { buildReturnReport, type ReturnKpi } from '../lib/returnReport'
 import type {
   PjRecoverySummary,
   PjRecoveryMonth,
@@ -1605,6 +1608,67 @@ function DeviceReturnByCollectorSection({ rows }: { rows: DeviceReturnByCollecto
   )
 }
 
+// งานที่ X: การ์ด "รอปิดจากคืนเครื่อง" — สถานะปัจจุบันทั้งพอร์ต ไม่ผูกช่วงวันที่ (ดูเต็มที่ /returns-report)
+const EMPTY_RETURN_KPI: ReturnKpi = {
+  totalReturns: 0,
+  open: 0,
+  closed: 0,
+  closeRatePct: 0,
+  sumPrincipalRemaining: 0,
+  sumCollectible: 0,
+  sumRepair: 0,
+  sumResale: 0,
+  netDamage: 0,
+}
+
+function ReturnPendingSection({
+  kpi,
+  status,
+  onRetry,
+}: {
+  kpi: ReturnKpi
+  status: SectionStatus
+  onRetry: () => void
+}) {
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-base font-bold text-ink">รอปิดจากคืนเครื่อง</h2>
+        <p className="text-sm text-ink-soft">
+          เคสที่ลูกค้าคืนเครื่องแล้วแต่ยังไม่ปิดสัญญา — สถานะปัจจุบันทั้งพอร์ต ไม่ผูกกับช่วงวันที่ที่เลือกด้านบน
+        </p>
+      </div>
+
+      {status === 'loading' ? (
+        <SectionLoading />
+      ) : status === 'error' ? (
+        <SectionError onRetry={onRetry} />
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-center">
+            <div className="text-2xl font-bold text-amber-700">{fmtInt(kpi.open)}</div>
+            <div className="mt-1 text-xs text-ink-soft">เคสรอปิด</div>
+          </div>
+          <div className="rounded-xl border border-peach bg-white px-4 py-3 text-center">
+            <div className="text-2xl font-bold text-ink">{fmtBaht(kpi.sumCollectible)}</div>
+            <div className="mt-1 text-xs text-ink-soft">ยอดที่ต้องตามเก็บ</div>
+          </div>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs leading-relaxed text-ink-soft">
+        ยอดที่ต้องตามเก็บ = ค้าง 1 งวด + ค่าปรับ + ค่าซ่อม (ตามกฎคืนเครื่อง) — ดูรายละเอียดเต็มที่{' '}
+        <Link to="/returns-report" className="font-medium text-salmon-deep underline-offset-2 hover:underline">
+          รายงานการคืนเครื่อง
+        </Link>
+      </p>
+      <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+        ⚠️ เป็นสถานะปัจจุบันทั้งพอร์ต ไม่ขึ้นกับช่วงวันที่เลือกด้านบน · คนละระบบกับ DEBTFLOW ตัวเลขไม่ตรงกันเป๊ะ
+      </div>
+    </Card>
+  )
+}
+
 // ===== ความรับผิดชอบเคสค้าง (รายคน) + กองกลาง + ปิดเคสสำเร็จ =====
 
 /** % ปลอดภัยจากหาร 0 → null (fmtRate/rateCls ที่มีอยู่แล้วรองรับ null เป็น "N/A") */
@@ -2050,6 +2114,10 @@ export default function StaffPerformance() {
   const [unownedRows, setUnownedRows] = useState<UnownedArrearsRow[]>([])
   const [unownedStatus, setUnownedStatus] = useState<SectionStatus>('loading')
   const [unownedReloadKey, setUnownedReloadKey] = useState(0)
+  // รอปิดจากคืนเครื่อง: โหลด 1 ครั้ง (สถานะปัจจุบันทั้งพอร์ต ไม่ผูกช่วงวัน)
+  const [returnPendingKpi, setReturnPendingKpi] = useState<ReturnKpi>(EMPTY_RETURN_KPI)
+  const [returnPendingStatus, setReturnPendingStatus] = useState<SectionStatus>('loading')
+  const [returnPendingReloadKey, setReturnPendingReloadKey] = useState(0)
   // ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง): โหลดตามช่วงวันที่เลือก + ยอดรวมช่วงก่อนหน้า (ลูกศร)
   const [recoveryRows, setRecoveryRows] = useState<CollectorRecoveryRow[]>([])
   const [prevRecoveryBaht, setPrevRecoveryBaht] = useState<number | null>(null)
@@ -2217,6 +2285,19 @@ export default function StaffPerformance() {
         setUnownedStatus('error')
       })
   }, [unownedReloadKey])
+
+  // รอปิดจากคืนเครื่อง — โหลด 1 ครั้ง (ไม่มีพารามิเตอร์ ไม่ผูกช่วงวัน — ห้ามใส่ range ใน deps)
+  useEffect(() => {
+    setReturnPendingStatus('loading')
+    getDeviceReturnReportRows()
+      .then((rows) => {
+        setReturnPendingKpi(buildReturnReport(rows, []).kpi)
+        setReturnPendingStatus('ok')
+      })
+      .catch(() => {
+        setReturnPendingStatus('error')
+      })
+  }, [returnPendingReloadKey])
 
   // ปิดเคสสำเร็จ — โหลดตามช่วงวันที่เลือก + ยอดรวมช่วงก่อนหน้าในชุดเดียวกัน (ลูกศร)
   // ช่วงก่อนหน้าล้มเหลว → ไม่ต้องขึ้น error แค่ไม่โชว์ลูกศร (ของเสริม); ช่วงหลักล้มเหลว → ขึ้น error ทั้งการ์ด
@@ -2530,6 +2611,13 @@ export default function StaffPerformance() {
 
       {/* Section 2.6: เครื่องที่ตามคืนได้ ต่อคน (attribution — คนละตัวกับค่าคอมคืนเครื่อง) */}
       <DeviceReturnByCollectorSection rows={deviceReturnByCollector} />
+
+      {/* Section 2.65: รอปิดจากคืนเครื่อง (พอร์ตรวม ไม่ผูกช่วงวัน) */}
+      <ReturnPendingSection
+        kpi={returnPendingKpi}
+        status={returnPendingStatus}
+        onRetry={() => setReturnPendingReloadKey((k) => k + 1)}
+      />
 
       {/* Section 2.7: ปิดเคสสำเร็จ (ลูกค้าจ่ายจนหายค้าง) */}
       <CollectorRecoverySection
