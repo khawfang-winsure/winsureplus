@@ -1,11 +1,45 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Badge, EmptyState, Loading, PageTitle } from '../components/ui'
+import { Download } from 'lucide-react'
+import { Badge, Button, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
 import { getOverdueByBucket } from '../lib/db'
 import { useFilter } from '../lib/useFilter'
 import type { ContractStatusRow, OverdueBucket } from '../lib/types'
 import Pagination from '../components/Pagination'
+import { escCell, downloadCSV } from '../lib/csv'
+
+const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+
+// ===== CSV Export =====
+function overdueCSV(rows: ContractStatusRow[]): string {
+  const headers = [
+    'ลูกค้า', 'เลขที่สัญญา', 'ร้าน', 'ครบกำหนด',
+    'ชำระแล้ว (งวด)', 'ชำระแล้ว (บาท)', 'ค้างชำระ (งวด)', 'เลยกำหนด (เดือน)',
+    'ล่าช้า (วัน)', 'รวมคงเหลือ', 'เกินกำหนด', 'ยังไม่ถึงกำหนด', 'ค้างชำระ+ค่าปรับ',
+  ]
+  const out: string[] = [headers.map(escCell).join(',')]
+  for (const r of rows) {
+    const notYetDue = Math.max(0, r.estOutstanding - r.overdueAmount)
+    const dueTotal = r.overdueAmount + r.penaltyDue
+    out.push([
+      escCell(r.customerName),
+      escCell(r.contractNo),
+      escCell(r.shopName),
+      escCell(r.nextDue ? thaiDate(r.nextDue) : '-'),
+      escCell(r.paidInstallments),
+      escCell(r.paidAmountTotal),
+      escCell(r.remainingInstallments),
+      escCell(r.lateInstallments),
+      escCell(r.daysLate),
+      escCell(r.estOutstanding),
+      escCell(r.overdueAmount),
+      escCell(notYetDue),
+      escCell(dueTotal),
+    ].join(','))
+  }
+  return '﻿' + out.join('\r\n')
+}
 
 const LABELS: Record<OverdueBucket, string> = {
   normal: 'ปกติ (ยังไม่ครบกำหนด)',
@@ -86,21 +120,31 @@ export default function Overdue() {
       <PageTitle sub="กลุ่มนี้คำนวณอัตโนมัติจากจำนวนวันเลยกำหนด (อัปเดตทุกวันโดยระบบ)" count={loading ? undefined : { shown: rows.length }}>{label}</PageTitle>
 
       {/* แท็บสลับช่วงล่าช้า — เปลี่ยน URL + จำไว้ใน localStorage สำหรับครั้งถัดไป */}
-      <div className="mb-4 flex flex-wrap gap-2">
-        {TAB_BUCKETS.map((b) => (
-          <button
-            key={b}
-            type="button"
-            onClick={() => navigate(`/overdue/${b}`)}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              bucket === b
-                ? 'bg-salmon-deep text-white'
-                : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
-            }`}
-          >
-            {TAB_LABELS[b]}
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          {TAB_BUCKETS.map((b) => (
+            <button
+              key={b}
+              type="button"
+              onClick={() => navigate(`/overdue/${b}`)}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                bucket === b
+                  ? 'bg-salmon-deep text-white'
+                  : 'border border-peach bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              {TAB_LABELS[b]}
+            </button>
+          ))}
+        </div>
+        <Button
+          variant="ghost"
+          disabled={loading || rows.length === 0}
+          onClick={() => downloadCSV(overdueCSV(rows), `overdue_${bucket}_${todayISO}.csv`)}
+        >
+          <Download className="h-4 w-4" />
+          ส่งออก CSV
+        </Button>
       </div>
 
       {loading ? (

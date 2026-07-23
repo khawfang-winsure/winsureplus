@@ -17,6 +17,7 @@ import {
   type HrDailyLogRow,
 } from '../lib/db'
 import type { CollectorCallOutcome } from '../lib/types'
+import { escCell, downloadCSV } from '../lib/csv'
 
 // ===== ตัวช่วยแสดงผล =====
 
@@ -229,25 +230,6 @@ function rollup(
 }
 
 // ===== CSV =====
-function escCell(v: string | number | null | undefined): string {
-  if (v === null || v === undefined) return ''
-  const s = String(v)
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`
-  }
-  return s
-}
-function downloadCSV(content: string, filename: string): void {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-}
 function summaryCSV(rows: PersonSummary[]): string {
   const headers = [
     'ชื่อ', 'วันทำงาน', 'บันทึกรวม', 'เคสที่ดูแล', 'เฉลี่ย/วัน',

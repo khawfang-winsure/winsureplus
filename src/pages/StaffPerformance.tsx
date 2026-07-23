@@ -71,6 +71,7 @@ import {
   type LateBucket,
 } from '../lib/collectorPeriod'
 import { baht } from '../lib/format'
+import { escCell, downloadCSV } from '../lib/csv'
 import TeamCallTodayWidget from '../components/TeamCallTodayWidget'
 import CashCollectedTodayWidget from '../components/CashCollectedTodayWidget'
 
@@ -226,16 +227,6 @@ function computeTeamSummary(rows: CollectorScorecardRow[]): TeamSummary {
 
 // ===== CSV Export =====
 
-/** escape CSV cell: wrap in quotes if contains comma, quote, or newline */
-function escCell(v: string | number | null | undefined): string {
-  if (v === null || v === undefined) return ''
-  const s = String(v)
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`
-  }
-  return s
-}
-
 function generateCSV(rows: CollectorScorecardRow[]): string {
   const headers = [
     'ชื่อ',
@@ -270,18 +261,6 @@ function generateCSV(rows: CollectorScorecardRow[]): string {
 
   // '﻿' = UTF-8 BOM — ensures Excel reads Thai characters correctly
   return '﻿' + csvRows.join('\r\n')
-}
-
-function downloadCSV(content: string, filename: string): void {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
 }
 
 // ===== DrillDown Panel =====
