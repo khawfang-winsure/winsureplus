@@ -177,6 +177,16 @@ function pick(row: any, keys: string[]): any {
   return null;
 }
 
+// ⚠️ DEPRECATED (23 ก.ค. 2026 รอบ 4) — ห้าม flow ปกติเรียกใช้ฟังก์ชันนี้อีกต่อไป: พิสูจน์แล้วผ่าน debug
+// probe ว่าตาราง #invoiceItemTable ใน HTML ดิบมี `<tbody></tbody>` ว่างเปล่าเสมอ (server-side DataTable
+// ajax ต่อ invoice — แถวถูกเติมทีหลังฝั่ง browser ด้วย JS ไม่ได้ฝังมากับ HTML) parser regex ด้านล่างนี้จึง
+// ได้ rowCount=0 เท็จทุกครั้ง ทำให้ mode returned_watch เข้าใจผิดว่า PJ ไม่มียอดเลย (false OVERAGE flag
+// ทุกใบ) — endpoint จริงคือ /manager/ajax/invoice-items/{invoice_uuid} (ดู fetchInvoiceItems +
+// mapInvoiceItemRows ด้านล่าง ใช้แทนคู่นี้ใน flow ปกติแล้ว)
+//
+// คงฟังก์ชันนี้ไว้เฉพาะให้ debug branch (debugInv) เรียกเทียบผล HTML-parse กับ ajax-parse เท่านั้น — ถ้า
+// จะลบทิ้งจริง ต้องลบจุดเรียกใน debug branch ด้วย (mode="returned_watch", ค้นหา "dbgParsed")
+//
 // ── (0125) parse invoice detail page (server-rendered HTML, GET /manager/invoices/{uuid}) ──────────
 // ตารางแรกในหน้า header: # | เลขที่ใบแจ้งหนี้ | ประเภทการชำระเงิน | จำนวนเงิน | ภาษี |
 //   จำนวนเงินที่ชำระแล้ว | จำนวนเงินที่เหลือ | วันที่ผ่อนชำระ | สถานะ (9 คอลัมน์ 0-index)
@@ -230,6 +240,60 @@ function parseInvoiceDetailHtml(html: string): {
     while ((hrefMatch = hrefRe.exec(rowHtml)) !== null) {
       receiptUuids.add(hrefMatch[1]);
     }
+  }
+
+  return {
+    pjInstPaidTotal,
+    pjPenaltyPaidTotal,
+    receiptUuids: Array.from(receiptUuids),
+    rowCount,
+  };
+}
+
+// ── (0125 รอบ 4, 23 ก.ค. 2026) map rows จาก /manager/ajax/invoice-items/{invoice_uuid} — endpoint จริง
+// ที่แทน parseInvoiceDetailHtml เดิมทั้งหมดใน flow ปกติ ── shape ผลลัพธ์เดียวกับ parseInvoiceDetailHtml
+// เป๊ะ (เพื่อไม่ต้องแก้ caller ฝั่ง loop มากเกินจำเป็น) ── ยังไม่ยืนยัน field name จริงจาก PJ (รอผล debug
+// sampleKeys/sampleRows) จึงใช้ pick() แบบ defensive กว้างๆ ตาม convention เดียวกับ pick() ที่ใช้กับ
+// receipts/invoices feed ทั้งไฟล์ — ถ้าชื่อ field ไม่ตรงจริง ครีมจะส่งมาแก้ candidate list ตรงนี้จุดเดียว
+//
+// ⚠️ ยอดที่นับต้องเป็น "จำนวนเงินที่ชำระแล้ว" ต่อแถว ไม่ใช่ยอดเต็มของแถว (คอลัมน์หน้าเว็บแยกกันชัดเจน
+// "จำนวนเงิน" vs "จำนวนเงินที่ชำระแล้ว") — เจตนาไม่ fallback ไป field "amount"/"total" (ยอดเต็ม) เด็ดขาด
+// เพราะจะทำให้ overcounting เงียบๆ ถ้า PJ มีแถวจ่ายบางส่วน (ประเด็นเดียวกับที่ครีมเตือนเรื่องตารางงวด
+// ไม่มียอดจ่ายบางส่วน) — ไม่เจอ field ที่ตรงจริงๆ ปล่อยเป็น 0 ดีกว่าเดายอดเต็มมั่วๆ
+function mapInvoiceItemRows(rows: any[]): {
+  pjInstPaidTotal: number;
+  pjPenaltyPaidTotal: number;
+  receiptUuids: string[];
+  rowCount: number;
+} {
+  const receiptUuids = new Set<string>();
+  let pjInstPaidTotal = 0;
+  let pjPenaltyPaidTotal = 0;
+  let rowCount = 0;
+
+  for (const row of rows) {
+    rowCount++;
+
+    const typeRaw = String(
+      pick(row, ["payment_type", "type", "item_type", "category", "paymentType"]) ?? "",
+    ).toLowerCase();
+    const paidAmt = parseAmount(
+      pick(row, [
+        "paid_amount", "amount_paid", "paidAmount", "amountPaid",
+        "total_paid", "totalPaid", "paid",
+      ]),
+    );
+
+    if (typeRaw.includes("down") || typeRaw.includes("ดาวน์")) {
+      // เงินดาวน์ — ไม่รวมใน comparison เลยทั้ง 2 ฝั่ง (ตามที่แบมสั่งเดิม เหมือน parseInvoiceDetailHtml)
+    } else if (typeRaw.includes("penalty") || typeRaw.includes("ปรับ")) {
+      pjPenaltyPaidTotal += paidAmt;
+    } else {
+      pjInstPaidTotal += paidAmt;
+    }
+
+    const uuidRaw = pick(row, ["receipt_uuid", "receiptUuid", "receipt", "uuid"]);
+    if (uuidRaw) receiptUuids.add(String(uuidRaw).trim());
   }
 
   return {
@@ -528,6 +592,87 @@ export default {
           };
         }
 
+        // ── fetchInvoiceItems (23 ก.ค. 2026 รอบ 4 — ครีมยืนยัน root cause จาก debug ajaxPaths) ─────────
+        // ตาราง #invoiceItemTable ใน invoice detail page เป็น DataTable server-side ajax ต่อใบจริง
+        // (<tbody></tbody> ว่างเปล่าใน HTML ดิบเสมอ — แถวถูกเติมทีหลังฝั่ง browser ด้วย JS ไม่ได้ฝังมากับ
+        // HTML) endpoint จริง: /manager/ajax/invoice-items/{invoice_uuid} — ใช้ DataTable protocol
+        // เดียวกับ fetchReceiptsPage/fetchInvoicesPage เป๊ะ (POST form-urlencoded draw/start/length/_token
+        // + Cookie + X-CSRF-TOKEN + X-Requested-With) length=200 พอ (รายการเงินต่อใบไม่เกิน ~35 แถว)
+        //
+        // ถ้า POST ไม่ผ่าน (response ไม่ใช่ JSON) → fallback ลอง GET แบบ XHR header เดียวกัน (query string
+        // แทน body) ก่อนยอมแพ้ — ยังไม่ได้พิสูจน์ว่า endpoint นี้รับ POST เหมือน endpoint อื่นทุกตัว เผื่อไว้
+        async function fetchInvoiceItems(
+          invUuid: string,
+        ): Promise<{ ok: boolean; rows: any[]; via: "post" | "get" | "none" }> {
+          const itemsUrl = `${PJ_BASE}/manager/ajax/invoice-items/${invUuid}`;
+
+          async function parseJsonResponse(res: Response): Promise<any> {
+            const ct = res.headers.get("content-type") ?? "";
+            const text = await res.text();
+            if (ct.includes("application/json")) {
+              try { return JSON.parse(text); } catch { return null; }
+            }
+            const trimmed = text.trim();
+            if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+              try { return JSON.parse(trimmed); } catch { return null; }
+            }
+            return null;
+          }
+
+          // ── ลอง POST ก่อน (convention DataTable server-side ของ PJ ทุก endpoint อื่นที่พิสูจน์แล้ว) ──
+          try {
+            const dtBody = new URLSearchParams();
+            dtBody.set("draw", "1");
+            dtBody.set("start", "0");
+            dtBody.set("length", "200");
+            dtBody.set("_token", token);
+
+            const res = await fetch(itemsUrl, {
+              method: "POST",
+              headers: {
+                "User-Agent": UA,
+                "Content-Type": "application/x-www-form-urlencoded",
+                Cookie: cookieHeader(jar),
+                Referer: `${PJ_BASE}/manager/home`,
+                Origin: PJ_BASE,
+                Accept: "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRF-TOKEN": xsrfTokenRw,
+              },
+              body: dtBody.toString(),
+              redirect: "manual",
+            });
+            const parsed = await parseJsonResponse(res);
+            if (parsed && typeof parsed === "object") {
+              const rows = Array.isArray(parsed.data) ? parsed.data : (Array.isArray(parsed) ? parsed : []);
+              return { ok: true, rows, via: "post" };
+            }
+          } catch { /* fall through ไป GET fallback */ }
+
+          // ── fallback: GET แบบ XHR header เดียวกัน (query string แทน body) ──
+          try {
+            const getUrl = `${itemsUrl}?draw=1&start=0&length=200`;
+            const res = await fetch(getUrl, {
+              method: "GET",
+              headers: {
+                "User-Agent": UA,
+                Cookie: cookieHeader(jar),
+                Referer: `${PJ_BASE}/manager/home`,
+                Accept: "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+              },
+              redirect: "manual",
+            });
+            const parsed = await parseJsonResponse(res);
+            if (parsed && typeof parsed === "object") {
+              const rows = Array.isArray(parsed.data) ? parsed.data : (Array.isArray(parsed) ? parsed : []);
+              return { ok: true, rows, via: "get" };
+            }
+          } catch { /* หมดทาง ให้ caller นับเป็น error */ }
+
+          return { ok: false, rows: [], via: "none" };
+        }
+
         const invoiceRows: any[] = [];
         let invPagesFetched = 0;
         let invOffset = 0;
@@ -654,6 +799,11 @@ export default {
             ...new Set((dbgHtml.match(/\/manager\/ajax\/[a-zA-Z0-9\-\/]{1,60}/g) ?? [])),
           ].slice(0, 15);
 
+          // (23 ก.ค. 2026 รอบ 4 — ครีมยืนยัน root cause แล้ว) ยิง fetchInvoiceItems จริงด้วย เพิ่มจากของเดิม
+          // ให้ครีมยืนยัน field name จริงรอบเดียว (sampleKeys/sampleRows) ก่อนไปแก้ mapInvoiceItemRows —
+          // ไม่แตะของเดิมเลย แค่เพิ่ม key ใหม่ต่อท้าย response
+          const dbgItems = await fetchInvoiceItems(dbgInvUuid);
+
           return json({
             debug: true,
             invUuid: dbgInvUuid,
@@ -675,6 +825,10 @@ export default {
             tableSlice,
             scopeInfo: dbgScopeInfo,
             ajaxPaths,
+            itemsStatus: dbgItems.ok ? dbgItems.via : "failed",
+            itemsRowCount: dbgItems.rows.length,
+            sampleKeys: Object.keys(dbgItems.rows[0] ?? {}),
+            sampleRows: dbgItems.rows.slice(0, 2),
           });
         }
 
@@ -702,30 +856,21 @@ export default {
           }
           contractsChecked++;
 
-          let detailHtml: string;
-          try {
-            const detailRes = await fetch(`${PJ_BASE}/manager/invoices/${invUuid}`, {
-              method: "GET",
-              headers: {
-                "User-Agent": UA,
-                Cookie: cookieHeader(jar),
-                Referer: `${PJ_BASE}/manager/home`,
-                Accept: "text/html",
-              },
-              redirect: "manual",
-            });
-            if (detailRes.status >= 300 && detailRes.status < 400) {
-              // redirect (เช่น session หลุด/uuid ไม่ถูกต้อง) — ข้ามเคสนี้ ไม่ล้มทั้งรอบ
-              fetchErrors++;
-              continue;
-            }
-            detailHtml = await detailRes.text();
-          } catch {
+          // (23 ก.ค. 2026 รอบ 4 — ครีมยืนยัน root cause) เปลี่ยนจาก parseInvoiceDetailHtml (HTML ดิบ
+          // #invoiceItemTable <tbody> ว่างเปล่าเสมอ — ตารางเติมทีหลังด้วย ajax ฝั่ง browser) เป็น
+          // fetchInvoiceItems (ยิง endpoint จริง /manager/ajax/invoice-items/{uuid}) + mapInvoiceItemRows
+          //
+          // ⚠️ fetch fail หรือ rows ว่าง → นับ fetchErrors + ข้ามเคสนี้เฉยๆ ไม่ตัดสิน/ไม่ flag เข้ากล่อง
+          // รอตรวจเด็ดขาด (ต่างจาก parseInvoiceDetailHtml เดิมที่ rowCount=0 ถูกตีความเป็น "PJ ไม่มียอด
+          // จริง" แล้วไปเทียบกับยอดเราต่อ — นั่นคือบั๊กต้นเรื่องที่ทำให้ flag ผิดทั้ง 93 ใบ ตอนนี้ไม่มั่นใจ
+          // ข้อมูล = ข้าม ไม่ใช่ตัดสินว่า diff=full amount)
+          const items = await fetchInvoiceItems(invUuid);
+          if (!items.ok || items.rows.length === 0) {
             fetchErrors++;
             continue;
           }
 
-          const parsed = parseInvoiceDetailHtml(detailHtml);
+          const parsed = mapInvoiceItemRows(items.rows);
           const ours = ourPaidMap.get(cand.id) ?? { instPaid: 0, penaltyPaid: 0 };
           const ourPaidTotal = ours.instPaid + ours.penaltyPaid;
           const pjPaidTotal = parsed.pjInstPaidTotal + parsed.pjPenaltyPaidTotal;
