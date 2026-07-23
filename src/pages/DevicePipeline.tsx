@@ -61,6 +61,12 @@ function resolveStatus(r: DeviceReturnRow): DeviceStatus {
   return r.deviceStatus ?? 'pending_check'
 }
 
+// ===== ตำหนิเครื่องแก้ไขได้ตั้งแต่ "ตรวจสอบเรียบร้อยแล้ว" จนกว่าร้านค้าจะโอนเงิน =====
+// (checked / pending_sale / priced) — ล็อกอัตโนมัติทันทีที่เข้าสถานะ transferred/shipped
+function canEditDefect(status: DeviceStatus): boolean {
+  return status === 'checked' || status === 'pending_sale' || status === 'priced'
+}
+
 // ===== ฟิลเตอร์ฝั่ง client =====
 function applyFilter(
   rows: DeviceReturnRow[],
@@ -219,17 +225,42 @@ function EditSalePriceModal({
   )
 }
 
-// ===== Modal ดูรายละเอียด/ตำหนิเครื่อง (อ่านอย่างเดียว) =====
+// ===== Modal ดูรายละเอียด/ตำหนิเครื่อง =====
+// แก้ไขตำหนิได้ตั้งแต่สถานะ "ตรวจสอบเรียบร้อยแล้ว" จนถึงก่อน "ร้านโอนแล้วรอจัดส่ง" (canEditDefect)
+// นอกช่วงนั้น (ยังไม่ตรวจ / ร้านโอนเงินแล้ว) แสดงอ่านอย่างเดียว
 function DeviceDetailModal({
   row,
   onClose,
+  onSaved,
 }: {
   row: DeviceReturnRow
   onClose: () => void
+  onSaved: () => Promise<void>
 }) {
   const status = resolveStatus(row)
+  const editable = canEditDefect(status)
   const hasDefect = !!row.defectNotes && row.defectNotes.trim().length > 0
   const repair = row.repairCost ?? 0
+
+  const [notes, setNotes] = useState(row.defectNotes ?? '')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    setSaved(false)
+    try {
+      await updateDefectNotes(row.id, notes.trim())
+      await onSaved()
+      setSaved(true)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด กรุณาลองใหม่')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <Modal title={`รายละเอียดเครื่อง — ${row.customerName}`} onClose={onClose}>
@@ -271,14 +302,48 @@ function DeviceDetailModal({
             <AlertCircle size={15} className="text-salmon-deep" />
             ตำหนิตัวเครื่อง
           </p>
-          {hasDefect ? (
-            <div className="whitespace-pre-line rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink">
-              {row.defectNotes}
+          {editable ? (
+            <div className="flex flex-col gap-2">
+              <Textarea
+                value={notes}
+                onChange={(e) => {
+                  setNotes(e.target.value)
+                  setSaved(false)
+                }}
+                placeholder="เช่น รอยขีดข่วนขอบซ้าย, หน้าจอมีรอยจาง..."
+                rows={3}
+              />
+              <p className="text-xs text-ink-soft">
+                แก้ไขได้จนกว่าร้านค้าจะโอนเงิน (สถานะ &quot;{DEVICE_STATUS_LABEL.transferred}&quot;) — หลังจากนั้นจะล็อกอัตโนมัติ
+              </p>
+              {err && (
+                <p className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600">{err}</p>
+              )}
+              <div className="flex items-center gap-2">
+                <Button onClick={save} disabled={busy}>
+                  <Pencil size={13} />
+                  {busy ? 'กำลังบันทึก...' : 'บันทึกตำหนิ'}
+                </Button>
+                {saved && <span className="text-xs text-ink-soft">บันทึกแล้ว</span>}
+              </div>
             </div>
           ) : (
-            <p className="rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink-soft">
-              ยังไม่มีบันทึกตำหนิ
-            </p>
+            <div className="flex flex-col gap-1">
+              {hasDefect ? (
+                <div className="whitespace-pre-line rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink">
+                  {row.defectNotes}
+                </div>
+              ) : (
+                <p className="rounded-xl bg-peach-light/40 px-4 py-3 text-sm text-ink-soft">
+                  ยังไม่มีบันทึกตำหนิ
+                </p>
+              )}
+              <p className="text-xs text-ink-soft">
+                {status === 'transferred' || status === 'shipped'
+                  ? 'ล็อกแล้ว — ร้านค้าโอนเงินแล้ว'
+                  : 'แก้ไขได้หลังตรวจสอบเรียบร้อยแล้ว (สถานะ "ตรวจสอบเรียบร้อยแล้ว" เป็นต้นไป)'}
+              </p>
+            </div>
           )}
         </div>
 
@@ -478,10 +543,10 @@ export default function DevicePipeline() {
                         <Button
                           variant="ghost"
                           onClick={() => setDetailTarget(r)}
-                          aria-label="ดูรายละเอียด/ตำหนิเครื่อง"
+                          aria-label={canEditDefect(status) ? 'ดู/แก้ไขตำหนิเครื่อง' : 'ดูรายละเอียด/ตำหนิเครื่อง'}
                         >
-                          <FileText size={13} />
-                          ดูตำหนิ
+                          {canEditDefect(status) ? <Pencil size={13} /> : <FileText size={13} />}
+                          {canEditDefect(status) ? 'ดู/แก้ตำหนิ' : 'ดูตำหนิ'}
                         </Button>
                         {nexts.length > 0 ? (
                           <Button variant="ghost" onClick={() => setSelected(r)}>
@@ -526,6 +591,7 @@ export default function DevicePipeline() {
         <DeviceDetailModal
           row={detailTarget}
           onClose={() => setDetailTarget(null)}
+          onSaved={load}
         />
       )}
     </div>
