@@ -32,6 +32,13 @@ function isDriftReason(reason: PjSyncReviewReason): boolean {
   return reason === 'RECEIPT_MISSING' || reason === 'RECEIPT_CHANGED'
 }
 
+/** reason ที่ต้องลงเงินด้วยมือเสมอ (เปิด PJ เทียบยอดเอง แล้วลงชำระที่หน้าสัญญาโดยตรง) — ต่างจาก drift ตรงที่
+ *  ยังโชว์คำอธิบายปกติ (explainReviewRow) แต่ต้องซ่อนปุ่ม "ลงตาม PJ" / "รายได้อื่นๆ" เพราะ pj-sync ไม่ได้
+ *  คำนวณยอดให้ลงอัตโนมัติ (แค่ตรวจพบส่วนต่าง) — คงไว้แค่ "ข้าม" / "ทำเสร็จแล้ว" */
+function isManualOnlyReason(reason: PjSyncReviewReason): boolean {
+  return reason === 'RETURNED_CONTRACT_PAYMENT' || reason === 'RETURNED_CONTRACT_OVERAGE'
+}
+
 /** ประเภทเงินที่จดไว้ (ทั้งฝั่งเราและฝั่ง PJ ใน snapshot) → ไทย */
 const PAYMENT_TYPE_LABEL: Record<string, string> = {
   installment: 'ค่างวด',
@@ -62,8 +69,10 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   AMOUNT_MISMATCH: 'ยอดไม่ตรง',
   RECEIPT_MISSING: 'ไม่เจอใบเสร็จนี้ใน PJ',
   RECEIPT_CHANGED: 'ใบเสร็จถูกแก้ใน PJ',
+  RETURNED_CONTRACT_PAYMENT: 'คืนเครื่อง — เงินไม่เข้าระบบ',
+  RETURNED_CONTRACT_OVERAGE: 'คืนเครื่อง — ยอดเราเกิน PJ',
 }
-const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'amber' | 'red'> = {
+const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'red'> = {
   MULTI: 'amber',
   PARTIAL: 'amber',
   UNMATCHED: 'red',
@@ -71,6 +80,12 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'amber' | 'red'> = {
   AMOUNT_MISMATCH: 'red',
   RECEIPT_MISSING: 'red',
   RECEIPT_CHANGED: 'red',
+  // สีเขียว = แยกจาก drift(แดง, แค่รายงาน) และ PARTIAL/MULTI(เหลือง, มีปุ่มลงเงินอัตโนมัติ) —
+  // เคสนี้ต้องลงมือทำเอง (เปิด PJ เทียบยอด) ไม่ใช่ error ของระบบ แค่ PJ ซ่อนใบเสร็จจาก feed
+  RETURNED_CONTRACT_PAYMENT: 'green',
+  // เหลือง = ต่างจาก RETURNED_CONTRACT_PAYMENT (เขียว) ตรงที่กลับด้าน — ระบบเราบันทึกเกินยอด PJ จริง
+  // ต้องคนตรวจว่าเป็นการลงซ้ำฝั่งเราหรือใบเสร็จถูกลบฝั่ง PJ (เตือนแรงกว่า ไม่ใช่แค่ PJ ซ่อนใบให้ดู)
+  RETURNED_CONTRACT_OVERAGE: 'amber',
 }
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====
@@ -94,10 +109,13 @@ const TYPE_CHIP_CLS: Record<'blue' | 'amber' | 'neutral', string> = {
   neutral: 'bg-peach-soft text-ink',
 }
 
-/** ฐาน URL เปิดใบเสร็จใน PJ ตรงๆ (ต้อง login PJ ในแท็บนั้นอยู่แล้ว — เป็นแค่ทางลัด ไม่ได้ auto-login ให้)
- *  uuid ที่ส่งเข้ามาคือ receipt uuid (row.receiptUuids[0]) — ต้องใช้ path /manager/receipts/ ไม่ใช่ /manager/invoices/
- *  (invoices path ผิด → 404 เพราะ uuid นี้ไม่ใช่ invoice uuid) */
-const PJ_RECEIPT_URL = (uuid: string) => `https://pj-soft.net/manager/receipts/${uuid}`
+/** ฐาน URL ฝั่ง manager ของ PJ (ต้อง login PJ ในแท็บนั้นอยู่แล้ว — เป็นแค่ทางลัด ไม่ได้ auto-login ให้) */
+const PJ_MANAGER_BASE_URL = 'https://pj-soft.net/manager'
+/** เปิดใบเสร็จตรงๆ — uuid ที่ส่งเข้ามาคือ receipt uuid (row.receiptUuids[0]) ต้องใช้ path /receipts/
+ *  ไม่ใช่ /invoices/ (invoices path ผิด → 404 เพราะ uuid นี้ไม่ใช่ invoice uuid) */
+const PJ_RECEIPT_URL = (uuid: string) => `${PJ_MANAGER_BASE_URL}/receipts/${uuid}`
+/** เปิดหน้า invoice ตรงๆ — ใช้ row.invUuid (มีเฉพาะแถว mode "returned_watch") คนละ uuid กับ receipt uuid */
+const PJ_INVOICE_URL = (uuid: string) => `${PJ_MANAGER_BASE_URL}/invoices/${uuid}`
 
 /** เวลาแบบไทย dd/mm/yyyy HH:MM จาก ISO timestamp */
 function thaiDateTime(iso: string): string {
@@ -444,12 +462,19 @@ function ReviewLineItem({
   onResolve: (action: 'resolved' | 'skipped') => void
 }) {
   const isDrift = isDriftReason(row.reason)
+  const isManualOnly = isManualOnlyReason(row.reason)
   const chip = reviewRowTypeChip(row)
   // ค่าปรับล้วน (paymentType='penalty'): row.amount กับ row.penaltyAmount เป็นเลขเดียวกัน (ยอด PJ ใบเดียว)
   // ห้ามบวกกัน ไม่งั้นยอดเบิ้ล (เช่น 229 → โชว์ 458) — ใช้ตรรกะเดียวกับ isPenaltyOnly ใน ApplyPjModal
   const isPenaltyOnly = row.paymentType === 'penalty'
   const totalAmount = isPenaltyOnly ? row.amount : row.amount + row.penaltyAmount
-  const pjLinkUuid = row.receiptUuids[0] ?? null
+  // ลิงก์เปิดใน PJ — มี invUuid (มีเฉพาะแถว mode "returned_watch") ให้เปิดหน้า invoice ตรงๆ ก่อน
+  // ไม่มีค่อย fallback ไปเปิดใบเสร็จแรกจาก receiptUuids (แถวปกติ)
+  const pjLinkHref = row.invUuid
+    ? PJ_INVOICE_URL(row.invUuid)
+    : row.receiptUuids[0]
+      ? PJ_RECEIPT_URL(row.receiptUuids[0])
+      : null
 
   return (
     <div className={`rounded-xl border px-4 py-3 ${isDrift ? 'border-red-200 bg-red-50/40' : 'border-peach bg-cream'}`}>
@@ -488,8 +513,8 @@ function ReviewLineItem({
       )}
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5 border-t border-peach/60 pt-2.5">
-        {pjLinkUuid && (
-          <a href={PJ_RECEIPT_URL(pjLinkUuid)} target="_blank" rel="noreferrer">
+        {pjLinkHref && (
+          <a href={pjLinkHref} target="_blank" rel="noreferrer">
             <Button variant="ghost">
               <Link2 size={13} />
               เปิดใน PJ
@@ -501,6 +526,19 @@ function ReviewLineItem({
             <CheckCircle2 size={13} />
             รับทราบ
           </Button>
+        ) : isManualOnly ? (
+          // ต้องลงมือทำเอง (เปิด PJ เทียบยอด แล้วลงชำระที่หน้าสัญญาโดยตรง) — ไม่มีปุ่มลงเงิน/รายได้อื่นๆ
+          // เพราะ pj-sync ไม่ได้คำนวณยอดที่ควรลงให้ (แค่ตรวจพบส่วนต่าง)
+          <>
+            <Button variant="ghost" onClick={() => onResolve('skipped')}>
+              <SkipForward size={13} />
+              ข้าม
+            </Button>
+            <Button variant="ghost" onClick={() => onResolve('resolved')}>
+              <CheckCircle2 size={13} />
+              ทำเสร็จแล้ว
+            </Button>
+          </>
         ) : (
           <>
             <Button variant="ghost" onClick={() => onResolve('skipped')}>

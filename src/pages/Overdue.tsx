@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Badge, EmptyState, Loading, PageTitle } from '../components/ui'
-import { baht } from '../lib/format'
+import { baht, thaiDate } from '../lib/format'
 import { getOverdueByBucket } from '../lib/db'
 import { useFilter } from '../lib/useFilter'
 import type { ContractStatusRow, OverdueBucket } from '../lib/types'
@@ -109,24 +109,96 @@ export default function Overdue() {
         <EmptyState title="ไม่มีลูกค้าในกลุ่มนี้" hint="ลูกค้าจะถูกจัดเข้ากลุ่มเองตามจำนวนวันที่ค้างชำระ" />
       ) : (
         <>
-          <ul className="flex flex-col gap-2">
-            {pagedRows.map((r) => (
-              <li
-                key={r.contractId}
-                onClick={() => navigate(`/contract/${r.contractId}`)}
-                className="flex cursor-pointer items-center justify-between rounded-xl border border-peach bg-white px-4 py-3 hover:bg-peach-light/30"
-              >
-                <div>
-                  <p className="font-medium text-ink">{r.customerName} — {r.contractNo}</p>
-                  <p className="text-sm text-ink-soft">{r.shopName} · ค้าง {r.remainingInstallments} งวด</p>
+          {/* ===== Desktop table (≥ md) ===== */}
+          <div className="scrollbar-thin hidden overflow-x-auto rounded-2xl border border-peach md:block">
+            <table className="w-full min-w-[1400px] border-collapse text-sm">
+              <thead>
+                <tr className="bg-peach-light text-left text-ink">
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold">ลูกค้า</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold">ร้าน</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold">ครบกำหนด</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ชำระแล้ว</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ค้างชำระ (งวด)</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">เลยกำหนด (เดือน)</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ล่าช้า (วัน)</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">รวมคงเหลือ</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">เกินกำหนด</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ยังไม่ถึงกำหนด</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ค้างชำระ+ค่าปรับ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedRows.map((r, i) => {
+                  const notYetDue = Math.max(0, r.estOutstanding - r.overdueAmount)
+                  const dueTotal = r.overdueAmount + r.penaltyDue
+                  const zebra = i % 2 ? 'bg-white' : 'bg-peach-light/20'
+                  return (
+                    <tr
+                      key={r.contractId}
+                      onClick={() => navigate(`/contract/${r.contractId}`)}
+                      className={`cursor-pointer border-b border-peach/60 hover:bg-peach-light/40 ${zebra}`}
+                    >
+                      <td className="whitespace-nowrap px-3 py-2.5 align-top">
+                        <p className="font-medium text-ink">{r.customerName}</p>
+                        <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 align-top">{r.shopName}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 align-top">{r.nextDue ? thaiDate(r.nextDue) : '-'}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">
+                        {r.paidInstallments} งวด <span className="text-ink-soft">· {baht(r.paidAmountTotal)}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{r.remainingInstallments}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{r.lateInstallments}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">
+                        <Badge tone="red">{r.daysLate} วัน</Badge>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(r.estOutstanding)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(r.overdueAmount)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(notYetDue)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top font-semibold text-salmon-deep">
+                        {baht(dueTotal)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ===== Mobile card stack (< md) ===== */}
+          <div className="flex flex-col gap-3 md:hidden">
+            {pagedRows.map((r) => {
+              const notYetDue = Math.max(0, r.estOutstanding - r.overdueAmount)
+              const dueTotal = r.overdueAmount + r.penaltyDue
+              return (
+                <div
+                  key={r.contractId}
+                  onClick={() => navigate(`/contract/${r.contractId}`)}
+                  className="cursor-pointer rounded-2xl border border-peach bg-white p-4 shadow-sm hover:bg-peach-light/30"
+                >
+                  <div className="mb-1 flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-medium text-ink">{r.customerName}</p>
+                      <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                    </div>
+                    <Badge tone="red">ล่าช้า {r.daysLate} วัน</Badge>
+                  </div>
+                  <p className="mb-2 text-xs text-ink-soft">
+                    ครบกำหนด {r.nextDue ? thaiDate(r.nextDue) : '-'} · ชำระแล้ว {r.paidInstallments} งวด ({baht(r.paidAmountTotal)}) · ค้าง {r.remainingInstallments} งวด ({r.lateInstallments} เดือน)
+                  </p>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-soft">
+                    <span>รวมคงเหลือ {baht(r.estOutstanding)}</span>
+                    <span>เกินกำหนด {baht(r.overdueAmount)}</span>
+                    <span>ยังไม่ถึงกำหนด {baht(notYetDue)}</span>
+                  </div>
+                  <p className="mt-2 text-sm font-semibold text-salmon-deep">
+                    ค้างชำระ+ค่าปรับ {baht(dueTotal)} ฿
+                  </p>
                 </div>
-                <div className="text-right">
-                  <Badge tone="red">ล่าช้า {r.daysLate} วัน</Badge>
-                  {r.penaltyDue > 0 && <p className="mt-1 text-sm text-ink-soft whitespace-nowrap">ค่าปรับ {baht(r.penaltyDue)} ฿</p>}
-                </div>
-              </li>
-            ))}
-          </ul>
+              )
+            })}
+          </div>
+
           <Pagination
             total={rows.length}
             page={page}

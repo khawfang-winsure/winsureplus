@@ -2052,6 +2052,10 @@ interface StatusRow {
   bucket: OverdueBucket
   grade: string | null
   overdue_amount: number // ยอดงวดที่เลยกำหนด (0055) — numeric จาก DB มาเป็น string ต้อง Number()
+  est_outstanding: number | string | null // รวมยอดคงเหลือ (มีมาตั้งแต่ 0024 แต่ยังไม่ map) — เพิ่มใน 0126
+  paid_installments: number | string | null // งวดที่จ่ายแล้ว — เพิ่มใน 0126
+  paid_amount_total: number | string | null // ยอดเงินที่จ่ายแล้วรวม — เพิ่มใน 0126
+  late_installments: number | string | null // จำนวนงวดที่เลยกำหนด — เพิ่มใน 0126
 }
 
 function mapStatus(r: StatusRow): ContractStatusRow {
@@ -2069,6 +2073,10 @@ function mapStatus(r: StatusRow): ContractStatusRow {
     bucket: r.bucket,
     grade: r.grade ?? null,
     overdueAmount: Number(r.overdue_amount),
+    estOutstanding: Number(r.est_outstanding ?? 0),
+    paidInstallments: Number(r.paid_installments ?? 0),
+    paidAmountTotal: Number(r.paid_amount_total ?? 0),
+    lateInstallments: Number(r.late_installments ?? 0),
   }
 }
 
@@ -7629,6 +7637,18 @@ interface PjRawReceipt {
   uuid?: string | null
 }
 
+/** raw_json shape ของ mode "returned_watch" (23 ก.ค. 2026) — สัญญาคืนเครื่องที่ pj-sync ตรวจเจอส่วนต่าง
+ *  เทียบ "เรา" vs "PJ" ทั้งก้อน (object เดียว ไม่ใช่ array ต่อใบเสร็จแบบ PjRawReceipt เดิม) ผูกทั้ง 2 reason:
+ *  RETURNED_CONTRACT_PAYMENT (PJ ได้มากกว่าเรา) และ RETURNED_CONTRACT_OVERAGE (เรามากกว่า PJ) */
+interface PjReturnedWatchRawJson {
+  kind: 'returned_watch'
+  invUuid: string
+  receiptUuids: string[]
+  ours: Record<string, unknown>
+  pj: Record<string, unknown>
+  checkedAt: string
+}
+
 interface PjSyncReviewViewRow {
   id: string
   created_at: string
@@ -7639,7 +7659,7 @@ interface PjSyncReviewViewRow {
   matched_contract_id: string | null
   reason: string
   status: string
-  raw_json: PjRawReceipt[] | null
+  raw_json: PjRawReceipt[] | PjReturnedWatchRawJson | null
   contracts: { contract_no: string | null; customer_name: string | null } | null
 }
 
@@ -7650,8 +7670,9 @@ function parsePjAmount(v: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0
 }
 
-/** รวม amount ของ receipt ที่ payment_type='penalty' ใน raw_json (ว่าง/พัง = 0) */
-function sumPjPenalty(raw: PjRawReceipt[] | null | undefined): number {
+/** รวม amount ของ receipt ที่ payment_type='penalty' ใน raw_json (ว่าง/พัง = 0) — raw_json shape object
+ *  (mode "returned_watch") ไม่มี breakdown ค่าปรับต่อรายการแบบนี้ คืน 0 เสมอ (Array.isArray guard) */
+function sumPjPenalty(raw: PjRawReceipt[] | PjReturnedWatchRawJson | null | undefined): number {
   if (!Array.isArray(raw)) return 0
   return raw.reduce(
     (sum, r) => (r?.payment_type === 'penalty' ? sum + parsePjAmount(r.amount) : sum),
@@ -7659,12 +7680,30 @@ function sumPjPenalty(raw: PjRawReceipt[] | null | undefined): number {
   )
 }
 
-/** ดึง uuid ดิบต่อใบเสร็จทุกตัวจาก raw_json (migration 0100 pj_applied_receipts ใช้เป็น dedup key) — [] ถ้าไม่มี */
-function extractPjReceiptUuids(raw: PjRawReceipt[] | null | undefined): string[] {
-  if (!Array.isArray(raw)) return []
-  return raw
-    .map(r => (r?.uuid ? String(r.uuid).trim() : null))
-    .filter((u): u is string => !!u)
+/** ดึง uuid ดิบต่อใบเสร็จทุกตัวจาก raw_json (migration 0100 pj_applied_receipts ใช้เป็น dedup key) — [] ถ้าไม่มี
+ *  รองรับทั้ง 2 shape: array ปกติ (field "uuid" ต่อแถว) และ object mode "returned_watch"
+ *  (field "receiptUuids" ตรงตัว ไม่ต้อง map) */
+function extractPjReceiptUuids(raw: PjRawReceipt[] | PjReturnedWatchRawJson | null | undefined): string[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map(r => (r?.uuid ? String(r.uuid).trim() : null))
+      .filter((u): u is string => !!u)
+  }
+  if (raw && raw.kind === 'returned_watch' && Array.isArray(raw.receiptUuids)) {
+    return raw.receiptUuids
+      .map(u => (u ? String(u).trim() : null))
+      .filter((u): u is string => !!u)
+  }
+  return []
+}
+
+/** ดึง uuid ใบ invoice ฝั่ง PJ จาก raw_json shape object (mode "returned_watch") — null ถ้า raw_json เป็น
+ *  array แบบเดิม (ไม่มี invoice uuid ต่อแถว) ไว้ให้หน้ากล่องรอตรวจเปิดหน้า invoice ใน PJ ตรงๆ */
+function extractPjInvUuid(raw: PjRawReceipt[] | PjReturnedWatchRawJson | null | undefined): string | null {
+  if (raw && !Array.isArray(raw) && raw.kind === 'returned_watch' && raw.invUuid) {
+    return String(raw.invUuid).trim()
+  }
+  return null
 }
 
 // ===== เป้าหมายงวดค่าปรับ (18 ก.ค. 2026, mig 0115/0116) =====
@@ -7761,6 +7800,7 @@ export async function getPjSyncReview(
     status: (r.status as PjSyncReviewRow['status']),
     penaltyAmount: sumPjPenalty(r.raw_json),
     receiptUuids: extractPjReceiptUuids(r.raw_json),
+    invUuid: extractPjInvUuid(r.raw_json),
   }))
 }
 
@@ -8067,6 +8107,12 @@ export async function applyPjReviewPayment(params: {
   if (reviewRow?.reason === 'RECEIPT_MISSING' || reviewRow?.reason === 'RECEIPT_CHANGED') {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามยืนยันลงยอด ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
   }
+  // 🚨 กันชั้นสอง เหมือนกัน — สัญญาคืนเครื่องที่ pj-sync ตรวจเจอส่วนต่าง (RETURNED_CONTRACT_PAYMENT/
+  // RETURNED_CONTRACT_OVERAGE, mode "returned_watch") ไม่มี flow ลงเงินอัตโนมัติเช่นกัน (isManualOnlyReason
+  // ฝั่ง UI ซ่อนปุ่มอยู่แล้ว — กันเผื่อบั๊ก UI ในอนาคต/เรียกตรงจาก console)
+  if (reviewRow?.reason === 'RETURNED_CONTRACT_PAYMENT' || reviewRow?.reason === 'RETURNED_CONTRACT_OVERAGE') {
+    throw new Error('เคสนี้ต้องตรวจใน PJ แล้วลงชำระเองที่หน้าสัญญาโดยตรง — ห้ามยืนยันลงยอดจากกล่องรอตรวจนี้')
+  }
 
   // ดึง uuid ต่อใบเสร็จจาก raw_json "ก่อน" เรียก RPC (read-only ไม่กระทบ atomicity ของการลงเงิน)
   let receiptUuidsPayload:
@@ -8204,6 +8250,11 @@ export async function applyPjReviewAsOtherIncome(params: {
   if (driftGuardErr) throw driftGuardErr
   if (driftGuardRow?.reason === 'RECEIPT_MISSING' || driftGuardRow?.reason === 'RECEIPT_CHANGED') {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามลงเป็นรายได้อื่นๆ ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
+  }
+  // 🚨 กันชั้นสอง เหมือนกัน — ดู comment เต็มใน applyPjReviewPayment ด้านบน (RETURNED_CONTRACT_PAYMENT/
+  // RETURNED_CONTRACT_OVERAGE ไม่มี flow ลงเงินอัตโนมัติ ต้องตรวจมือเท่านั้น)
+  if (driftGuardRow?.reason === 'RETURNED_CONTRACT_PAYMENT' || driftGuardRow?.reason === 'RETURNED_CONTRACT_OVERAGE') {
+    throw new Error('เคสนี้ต้องตรวจใน PJ แล้วลงชำระเองที่หน้าสัญญาโดยตรง — ห้ามลงเป็นรายได้อื่นๆ จากกล่องรอตรวจนี้')
   }
 
   await insertOtherIncome({

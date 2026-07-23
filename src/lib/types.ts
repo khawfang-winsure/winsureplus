@@ -81,6 +81,10 @@ export interface ContractStatusRow {
   bucket: OverdueBucket
   grade: string | null // A-E หรือ null (ปกติ/ปิดแล้ว) — เพิ่มใน 0018
   overdueAmount: number // ยอดงวดที่เลยกำหนดและยังไม่ชำระ (ไม่รวมค่าปรับ) — เพิ่มใน 0055
+  estOutstanding: number // รวมยอดคงเหลือ (มีใน view อยู่แล้วแต่ยังไม่ map) — เพิ่มใน 0126
+  paidInstallments: number // งวดที่จ่ายแล้ว — เพิ่มใน 0126
+  paidAmountTotal: number // ยอดเงินที่จ่ายแล้วรวม (ไม่รวมค่าปรับ) — เพิ่มใน 0126
+  lateInstallments: number // จำนวนงวดที่เลยกำหนดและยังไม่จ่ายครบ — เพิ่มใน 0126
 }
 
 export interface DeviceReturnRow {
@@ -526,7 +530,14 @@ export interface LetterOutcomeByRound {
  * หลังเราดึงมาลงแล้ว ดู src/lib/pjReceiptDrift.ts (evaluateReceiptDrift + driftKindToReviewReason):
  *   RECEIPT_MISSING  ← kind='missing' (หา uuid ไม่เจอใน PJ แล้ว, streak>=2 ถึงจะแจ้ง)
  *   RECEIPT_CHANGED  ← kind='amount'|'type'|'date' (uuid ยังอยู่ใน PJ แต่ค่าต่างจากที่เราจด)
- * รายละเอียดจริง (เราถือ X / PJ ว่า Y) อยู่ใน raw_json ตาม PjReceiptDriftSnapshot */
+ * รายละเอียดจริง (เราถือ X / PJ ว่า Y) อยู่ใน raw_json ตาม PjReceiptDriftSnapshot
+ * RETURNED_CONTRACT_PAYMENT = mode "returned_watch" ของ pj-sync (23 ก.ค. 2026) — PJ ซ่อนใบเสร็จของ
+ * สัญญาคืนเครื่องจาก feed ปกติ ทำให้ auto-sync มองไม่เห็นเงินที่เข้าจริง. แถวนี้ pj_amount = ส่วนต่างที่
+ * PJ ได้รับเกินกว่าที่เราบันทึก — ไม่มี flow ลงเงินอัตโนมัติ (ต่างจาก MULTI/PARTIAL) ต้องให้พนักงานเปิด PJ
+ * เทียบยอดแล้วลงเงินเองที่หน้าสัญญา
+ * RETURNED_CONTRACT_OVERAGE = mode "returned_watch" เหมือนกัน แต่กลับด้าน — สัญญาคืนเครื่องที่ระบบเรา
+ * บันทึกไว้ "มากกว่า" ที่ PJ ได้รับจริง (อาจลงซ้ำฝั่งเรา หรือใบเสร็จถูกลบฝั่ง PJ) — เหมือนกัน คือต้องคน
+ * ตรวจมือเท่านั้น ห้ามมี flow ลงเงินอัตโนมัติ (isManualOnlyReason ต้องคุมทั้งคู่) */
 export type PjSyncReviewReason =
   | 'MULTI'
   | 'PARTIAL'
@@ -535,6 +546,8 @@ export type PjSyncReviewReason =
   | 'AMOUNT_MISMATCH'
   | 'RECEIPT_MISSING'
   | 'RECEIPT_CHANGED'
+  | 'RETURNED_CONTRACT_PAYMENT'
+  | 'RETURNED_CONTRACT_OVERAGE'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'
@@ -555,6 +568,10 @@ export interface PjSyncReviewRow {
   penaltyAmount: number              // Σ amount ของ raw_json ที่ payment_type='penalty' (ค่าปรับใน batch นี้)
   /** uuid ดิบต่อใบเสร็จจาก PJ (field "uuid" ใน raw_json — migration 0100 pj_applied_receipts) — [] = ไม่มี (แถวเก่า/raw_json ไม่มี field นี้) */
   receiptUuids: string[]
+  /** uuid ใบ invoice ฝั่ง PJ (23 ก.ค. 2026) — มีเฉพาะแถวจาก mode "returned_watch" (raw_json เป็น object
+   *  ไม่ใช่ array — reason RETURNED_CONTRACT_PAYMENT/RETURNED_CONTRACT_OVERAGE) ไว้เปิดหน้า invoice ใน PJ
+   *  ตรงๆ ให้พนักงานเทียบยอด — null = ไม่มี (แถวปกติจาก raw_json array ไม่มี invoice uuid ต่อแถว) */
+  invUuid: string | null
 }
 
 /** บริบทประกอบการตัดสินใจในกล่องรอตรวจ — งวดถัดไป + ยอดรวม + ประวัติชำระล่าสุด */

@@ -41,6 +41,9 @@ const json = (body: unknown, status = 200) =>
 const PJ_BASE = "https://pj-soft.net";
 const LOGIN_URL = `${PJ_BASE}/manager/login`;
 const RECEIPTS_URL = `${PJ_BASE}/manager/ajax/receipts`;
+// (0125) mode="returned_watch" — endpoint คนละตัวกับ receipts feed เดิม (PJ ซ่อนใบเสร็จของ invoice
+// สถานะ "คืนเครื่อง" ออกจาก RECEIPTS_URL ทั้งหมด — ต้องอ่านจาก invoice list + invoice detail page แทน)
+const INVOICES_URL = `${PJ_BASE}/manager/ajax/invoices/all`;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -174,6 +177,69 @@ function pick(row: any, keys: string[]): any {
   return null;
 }
 
+// ── (0125) parse invoice detail page (server-rendered HTML, GET /manager/invoices/{uuid}) ──────────
+// ตารางแรกในหน้า header: # | เลขที่ใบแจ้งหนี้ | ประเภทการชำระเงิน | จำนวนเงิน | ภาษี |
+//   จำนวนเงินที่ชำระแล้ว | จำนวนเงินที่เหลือ | วันที่ผ่อนชำระ | สถานะ (9 คอลัมน์ 0-index)
+// ใช้ regex ล้วน (ไม่มี HTML parser lib ใน Deno edge runtime นี้) — defensive สไตล์เดียวกับ extractToken:
+//   - ตัด scope เฉพาะ table แรกที่มี header "เลขที่ใบแจ้งหนี้" กันจับ table อื่นในหน้าเดียวกันผิด
+//   - แถวที่ <td> น้อยกว่า 8 = ไม่ใช่แถวข้อมูลจริง (เช่น thead ใช้ <th> ไม่ตรง regex <td> อยู่แล้ว) ข้าม
+//   - เงินดาวน์ (คอลัมน์ประเภทมีคำว่า "ดาวน์") ไม่นับเข้า comparison เลยทั้ง 2 ฝั่ง (ดาวน์อยู่นอก scope)
+//   - "งวดผ่อนชำระ 0.00 สถานะ Paid" (placeholder ใน PJ) — จำนวนเงิน 0 บวกเท่าไหร่ก็ 0 อยู่แล้ว ไม่กระทบยอด
+function parseInvoiceDetailHtml(html: string): {
+  pjInstPaidTotal: number;
+  pjPenaltyPaidTotal: number;
+  receiptUuids: string[];
+  rowCount: number;
+} {
+  const receiptUuids = new Set<string>();
+  let pjInstPaidTotal = 0;
+  let pjPenaltyPaidTotal = 0;
+  let rowCount = 0;
+
+  const tableMatch = html.match(/<table[^>]*>[\s\S]*?เลขที่ใบแจ้งหนี้[\s\S]*?<\/table>/i);
+  const scope = tableMatch ? tableMatch[0] : html; // fallback ทั้งหน้า ถ้าหา table เป้าหมายไม่เจอ (defensive)
+
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(scope)) !== null) {
+    const rowHtml = rowMatch[1];
+    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const cells: string[] = [];
+    let cellMatch: RegExpExecArray | null;
+    while ((cellMatch = cellRe.exec(rowHtml)) !== null) {
+      const text = cellMatch[1].replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").trim();
+      cells.push(text);
+    }
+    if (cells.length < 8) continue; // ไม่ใช่แถวข้อมูล (header ใช้ <th> ไม่เข้า regex นี้อยู่แล้ว)
+    rowCount++;
+
+    const typeCell = cells[2] ?? "";
+    const paidAmt = parseAmount(cells[5] ?? "");
+
+    if (typeCell.includes("ดาวน์")) {
+      // เงินดาวน์ — ไม่รวมใน comparison เลยทั้ง 2 ฝั่ง (ตามที่แบมสั่ง)
+    } else if (typeCell.includes("ปรับ")) {
+      pjPenaltyPaidTotal += paidAmt;
+    } else {
+      // ค่างวด/ประเภทอื่นที่ไม่ใช่ดาวน์ → นับฝั่ง installment
+      pjInstPaidTotal += paidAmt;
+    }
+
+    const hrefRe = /\/manager\/receipts\/([0-9a-f-]{36})/gi;
+    let hrefMatch: RegExpExecArray | null;
+    while ((hrefMatch = hrefRe.exec(rowHtml)) !== null) {
+      receiptUuids.add(hrefMatch[1]);
+    }
+  }
+
+  return {
+    pjInstPaidTotal,
+    pjPenaltyPaidTotal,
+    receiptUuids: Array.from(receiptUuids),
+    rowCount,
+  };
+}
+
 export default {
   async fetch(req: Request): Promise<Response> {
     if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -197,8 +263,19 @@ export default {
     } catch { /* default {} */ }
     const dryRun: boolean = body?.dryRun === true;
     // mode="reconcile" (0114) — ตรวจจับใบเสร็จ PJ ที่หาย/ถูกแก้ (ไม่แตะเงิน) แยกจาก path เดิม (money-in)
+    // mode="returned_watch" (0125) — ตรวจเงินคืนเครื่องที่ PJ ซ่อนใบเสร็จออกจาก feed ทั้งหมด (ไม่แตะเงิน)
     // ไม่ส่ง mode มาเลย = path เดิมเป๊ะ (mode="sync") ห้ามกระทบ money-in path ที่มีอยู่แล้ว
-    const mode: "sync" | "reconcile" = body?.mode === "reconcile" ? "reconcile" : "sync";
+    const mode: "sync" | "reconcile" | "returned_watch" =
+      body?.mode === "reconcile" ? "reconcile" :
+      body?.mode === "returned_watch" ? "returned_watch" :
+      "sync";
+    // (0125 debug probe — 23 ก.ค. 2026 ชั่วคราว) mode="returned_watch" เท่านั้นที่รับ debug_inv — ตรวจ
+    // invoice เดียว คืน raw HTML signal แทน flow ปกติ ไม่แตะเงิน/pj_sync_review/pj_sync_runs เลย — เหตุผล
+    // ดู comment ที่จุดใช้งานด้านล่าง (หลัง invoiceMap สร้างเสร็จ)
+    const debugInv: string | null =
+      mode === "returned_watch" && typeof body?.debug_inv === "string" && body.debug_inv.trim().length > 0
+        ? body.debug_inv.trim()
+        : null;
     const DDMMYYYY_RE = /^\d{2}-\d{2}-\d{4}$/;
     const date: string =
       typeof body?.date === "string" && DDMMYYYY_RE.test(body.date)
@@ -242,7 +319,11 @@ export default {
     let runId: string | null = null;
     const lockOwner = crypto.randomUUID();
 
-    if (!dryRun) {
+    // (0125 debug probe) debugInv → ห้ามเขียน pj_sync_runs เลย (จะไม่มีใครมาปิดรอบให้ เพราะ debug path
+    // return ก่อนถึง bookkeeping ท้ายไฟล์เสมอ) — เพิ่ม `&& !debugInv` เข้าเงื่อนไขเดิม behave เหมือน
+    // dryRun=true เฉพาะจุดนี้ ไม่แตะ logic ของ dryRun ปกติที่จุดอื่นเลย (runId ยังคงเป็น null ต่อไป
+    // ทำให้ failRun/finalize block ท้ายไฟล์ทั้งหมดที่เช็ค `if (!dryRun && runId)` เป็น no-op อัตโนมัติอยู่แล้ว)
+    if (!dryRun && !debugInv) {
       const staleCut = new Date(Date.now() - LOCK_STALE_MINUTES * 60 * 1000).toISOString();
       const { data: running, error: lockErr } = await db
         .from("pj_sync_runs")
@@ -328,6 +409,440 @@ export default {
       const redirectAwayFromLogin = !!location && !/\/manager\/login\/?($|\?)/i.test(location);
       if (!(is302 && redirectAwayFromLogin)) {
         return await failRun("login_failed", "login: ไม่สำเร็จ (รหัส/validation ไม่ผ่าน)");
+      }
+
+      // ══════════════════════════════════════════════════════════════════════════
+      // mode="returned_watch" (0125) — ตรวจเงินที่ลูกค้าจ่ายหลังคืนเครื่องแล้ว ที่ PJ ซ่อนใบเสร็จออกจาก
+      // /manager/ajax/receipts ทั้งหมด (ดู comment หัวไฟล์ + migration 0125) แยก path จาก sync/reconcile
+      // โดยสิ้นเชิง — คนละ endpoint (invoice list + invoice detail page แทน receipts feed) วางไว้ก่อน
+      // ── 3) ดึง receipts (ด้านล่าง) เพราะ mode นี้ไม่ต้องเรียก RECEIPTS_URL เลย
+      //
+      // ⚠️ queue เข้า pj_sync_review เท่านั้น — ห้าม auto-apply เด็ดขาด (แบมชี้: ตารางงวด returned
+      // ซับซ้อน + ค่าปรับ PJ 800 vs เรา 700 + อาจเป็นค่าซ่อม ต้องให้ admin ตัดสินใจเอง)
+      // ══════════════════════════════════════════════════════════════════════════
+      if (mode === "returned_watch") {
+        // ── 1) สัญญาที่ status='returned' และยังมีงวดค้าง (pending/late) — เป้าตรวจรอบนี้ ───────────
+        const { data: openInstRows, error: openInstErr } = await db
+          .from("installments")
+          .select("contract_id, contracts!inner(id, status, contract_no, inv_no)")
+          .in("status", ["pending", "late"])
+          .eq("contracts.status", "returned");
+        if (openInstErr) {
+          return await failRun("error", `db error (returned candidates): ${openInstErr.message}`, 500);
+        }
+        type CandidateContract = { id: string; contractNo: string | null; invNo: string | null };
+        const candidateMap = new Map<string, CandidateContract>();
+        for (const row of (openInstRows ?? []) as any[]) {
+          const c = row.contracts;
+          if (!c?.id || !c?.inv_no) continue; // ไม่มี inv_no เทียบกับ PJ ไม่ได้ — ข้าม (defensive)
+          if (!candidateMap.has(c.id)) {
+            candidateMap.set(c.id, { id: c.id, contractNo: c.contract_no ?? null, invNo: c.inv_no });
+          }
+        }
+        const candidates = Array.from(candidateMap.values());
+        const contractIds = candidates.map((c) => c.id);
+
+        // ── 2) ยอดของเรา (ต่อสัญญา) — เงินต้น sum(installments.paid_amount) ทุกงวด (ไม่ใช่แค่งวดค้าง) +
+        //    ค่าปรับ cancel-aware ต่องวด (ไม่รวมเงินดาวน์ — ดาวน์ไม่อยู่ใน 2 ตารางนี้อยู่แล้ว ไม่ต้องกรองเพิ่ม)
+        //
+        // ⚠️ (0125 review fix — ติ๊ก RED2) ห้าม sum(payment_log.penalty_paid_amount where action='pay')
+        //    ตรงๆ: cancel_payment (0011) insert แถว action='cancel' เพื่อ "รีเซ็ตยอด" แต่ไม่ negate/ลบแถว
+        //    'pay' เก่าที่เคยลงไปก่อนหน้า → sum ตรงๆ จะเฟ้อทุกครั้งที่มีการยกเลิกแล้วจ่ายใหม่ → ยอดเราสูงเกินจริง
+        //    → diff (pjPaidTotal - ourPaidTotal) หดตัวลงหรือกลับด้าน → พลาดไม่เห็นเงินที่หายจริง (false negative)
+        //    ใช้ RPC public.returned_watch_our_paid (migration 0125 SECTION 4) แทน — ภายในมันเรียก
+        //    penalty_paid_for_installment(uuid) (0115, cancel-aware ต่องวด) ต่อทุกงวดของทุกสัญญาให้แล้ว
+        //    ในคำสั่งเดียว (set-based query ฝั่ง Postgres) — Edge Function ยิงแค่ 1 RPC call รวมทุกสัญญา
+        //    (ไม่ใช่ทีละงวด/ทีละสัญญา กัน N+1 round-trip จากฝั่งนี้)
+        const ourPaidMap = new Map<string, { instPaid: number; penaltyPaid: number }>();
+        for (const id of contractIds) ourPaidMap.set(id, { instPaid: 0, penaltyPaid: 0 });
+
+        if (contractIds.length > 0) {
+          const { data: paidRows, error: paidErr } = await db.rpc("returned_watch_our_paid", {
+            p_contract_ids: contractIds,
+          });
+          if (paidErr) {
+            return await failRun("error", `db error (returned_watch_our_paid): ${paidErr.message}`, 500);
+          }
+          for (const row of (paidRows ?? []) as any[]) {
+            const entry = ourPaidMap.get(row.contract_id);
+            if (entry) {
+              entry.instPaid = parseAmount(row.inst_paid);
+              entry.penaltyPaid = parseAmount(row.pen_paid);
+            }
+          }
+        }
+
+        // ── 3) ดึง PJ invoice list (POST /manager/ajax/invoices/all, pagination 500/หน้า เหมือน
+        //    fetchReceiptsPage) — ใช้แค่ map invoice_no → uuid (ไม่ใช้ยอดจาก list เลย ยอดต้องเปิด
+        //    detail page ทีละใบเท่านั้น — paid_installments/unpaid_installments นับ "งวด" ไม่มีจำนวนเงิน) ──
+        const xsrfRawRw = jar.get("XSRF-TOKEN") ?? "";
+        let xsrfTokenRw = "";
+        try { xsrfTokenRw = decodeURIComponent(xsrfRawRw); } catch { xsrfTokenRw = xsrfRawRw; }
+
+        const INV_PAGE_LENGTH = 500;
+        const INV_MAX_PAGES = 20; // recordsTotal ~2,429 / 500 ≈ 5 หน้า — เผื่อโตในอนาคต กันวนไม่รู้จบ
+
+        async function fetchInvoicesPage(
+          startOffset: number,
+        ): Promise<{ rows: any[]; recordsTotal: number; recordsFiltered: number }> {
+          const dtBody = new URLSearchParams();
+          dtBody.set("draw", String(Math.floor(startOffset / INV_PAGE_LENGTH) + 1));
+          dtBody.set("start", String(startOffset));
+          dtBody.set("length", String(INV_PAGE_LENGTH));
+          dtBody.set("_token", token);
+
+          const res = await fetch(INVOICES_URL, {
+            method: "POST",
+            headers: {
+              "User-Agent": UA,
+              "Content-Type": "application/x-www-form-urlencoded",
+              Cookie: cookieHeader(jar),
+              Referer: `${PJ_BASE}/manager/home`,
+              Origin: PJ_BASE,
+              Accept: "application/json, text/javascript, */*; q=0.01",
+              "X-Requested-With": "XMLHttpRequest",
+              "X-CSRF-TOKEN": xsrfTokenRw,
+            },
+            body: dtBody.toString(),
+            redirect: "manual",
+          });
+
+          const pageCt = res.headers.get("content-type") ?? "";
+          const pageText = await res.text();
+          let pageParsed: any = null;
+          if (pageCt.includes("application/json")) {
+            try { pageParsed = JSON.parse(pageText); } catch { /* not json */ }
+          } else {
+            const trimmed = pageText.trim();
+            if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+              try { pageParsed = JSON.parse(trimmed); } catch { /* not json */ }
+            }
+          }
+          if (!pageParsed || typeof pageParsed !== "object") {
+            throw new Error("invoices/all: response ไม่ใช่ JSON (session/CSRF อาจไม่ผ่าน)");
+          }
+          return {
+            rows: Array.isArray(pageParsed.data) ? pageParsed.data : [],
+            recordsTotal: Number(pageParsed.recordsTotal ?? 0),
+            recordsFiltered: Number(pageParsed.recordsFiltered ?? 0),
+          };
+        }
+
+        const invoiceRows: any[] = [];
+        let invPagesFetched = 0;
+        let invOffset = 0;
+        let invListTruncated = false;
+        while (true) {
+          let page: { rows: any[]; recordsTotal: number; recordsFiltered: number };
+          try {
+            page = await fetchInvoicesPage(invOffset);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            return await failRun("error", msg);
+          }
+          invPagesFetched++;
+          invoiceRows.push(...page.rows);
+          const known = page.recordsFiltered || page.recordsTotal || 0;
+          const gotFullPage = page.rows.length >= INV_PAGE_LENGTH;
+          const reachedKnownTotal = known > 0 && invoiceRows.length >= known;
+          if (!gotFullPage || reachedKnownTotal || page.rows.length === 0) break;
+          if (invPagesFetched >= INV_MAX_PAGES) { invListTruncated = true; break; }
+          invOffset += INV_PAGE_LENGTH;
+        }
+
+        const invoiceMap = new Map<string, string>(); // invoice_no → uuid
+        for (const row of invoiceRows) {
+          const invNoRaw = pick(row, ["invoice_no", "inv_no", "invoiceNo"]);
+          const uuidRaw = pick(row, ["uuid"]);
+          if (!invNoRaw || !uuidRaw) continue;
+          invoiceMap.set(String(invNoRaw).trim(), String(uuidRaw).trim());
+        }
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // (0125 debug probe — 23 ก.ค. 2026 ชั่วคราว) debugInv ตั้งไว้ → ตรวจ invoice เดียว คืน raw HTML
+        // signal แทน flow ปกติทั้งหมด ใช้หา root cause ว่าทำไม parseInvoiceDetailHtml ได้ pjRowCount=0
+        // ทั้ง 93 ใบ ทั้งที่ browser จริงเห็นตาราง #invoiceItemTable เต็ม (server-rendered, ไม่มี ajax) —
+        // early return ก่อนถึง "── 4) ต่อสัญญา" loop ปกติเลย ไม่แตะ pj_sync_review/pj_sync_runs (runId
+        // เป็น null อยู่แล้วเพราะ lock section ข้างบนกัน insert ไว้ตั้งแต่ต้น) ลบ block นี้ทิ้งได้เมื่อ
+        // debug เสร็จ ไม่ใช่โค้ดถาวร
+        // ══════════════════════════════════════════════════════════════════════════
+        if (debugInv) {
+          const dbgInvUuid = invoiceMap.get(debugInv);
+          if (!dbgInvUuid) {
+            return json({
+              debug: true,
+              invUuid: null,
+              error: `debug_inv "${debugInv}" ไม่พบใน invoiceMap (${invoiceMap.size} invoices จาก PJ, ${invPagesFetched} หน้า, truncated=${invListTruncated})`,
+            });
+          }
+
+          let dbgHttpStatus = 0;
+          let dbgHtml = "";
+          try {
+            const dbgRes = await fetch(`${PJ_BASE}/manager/invoices/${dbgInvUuid}`, {
+              method: "GET",
+              headers: {
+                "User-Agent": UA,
+                Cookie: cookieHeader(jar),
+                Referer: `${PJ_BASE}/manager/home`,
+                Accept: "text/html",
+              },
+              redirect: "manual",
+            });
+            dbgHttpStatus = dbgRes.status;
+            dbgHtml = await dbgRes.text();
+          } catch (e) {
+            return json({
+              debug: true,
+              invUuid: dbgInvUuid,
+              httpStatus: dbgHttpStatus,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+
+          // strip tag+whitespace ก่อนตัด 300 ตัวอักษรแรก — กันหลุด token/cookie โดยเจตนา (แม้ HTML จาก
+          // server ปกติไม่มี credential ปนอยู่แล้ว แต่ตัดเผื่อไว้ตามที่ครีมสั่ง)
+          const bodySample = dbgHtml
+            .replace(/<[^>]*>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 300);
+
+          // ── (23 ก.ค. 2026 รอบ 2 — ครีมสั่งขยาย) parsedSummary/idx/tableSlice/scopeInfo ──────────────
+          // เรียก parseInvoiceDetailHtml จริงตรงๆ (read-only — ไม่ได้แก้ตัว parser เลย) ดูว่า rowCount=0
+          // จริงหรือเปล่าเมื่อ EF เห็น HTML ชุดนี้ + ก๊อป regex ตัดขอบเขต scope ตัวเดียวกับใน
+          // parseInvoiceDetailHtml มาทำซ้ำที่นี่เฉยๆ เพื่อ introspect (ไม่ใช่จุดที่ flow ปกติเรียกใช้จริง)
+          const dbgParsed = parseInvoiceDetailHtml(dbgHtml);
+          const dbgIdx = {
+            firstTable: dbgHtml.indexOf("<table"),
+            thaiHeader: dbgHtml.indexOf("เลขที่ใบแจ้งหนี้"),
+            itemTable: dbgHtml.indexOf("invoiceItemTable"),
+            firstTr: dbgHtml.indexOf("<tr"),
+            firstTd: dbgHtml.indexOf("<td"),
+          };
+          const dbgTableMatch = dbgHtml.match(/<table[^>]*>[\s\S]*?เลขที่ใบแจ้งหนี้[\s\S]*?<\/table>/i);
+          const dbgScopeInfo = {
+            matched: !!dbgTableMatch,
+            matchStart: dbgTableMatch?.index ?? null,
+            matchLen: dbgTableMatch ? dbgTableMatch[0].length : null,
+          };
+          // ตัด 2500 ตัวอักษรรอบตำแหน่ง invoiceItemTable ตรงตัว (ค่า default เดิม) — ถ้าหา literal นี้
+          // ไม่เจอ (idx=-1) fallback เริ่มที่ 0 กัน slice(-1, 2499) ตีความ index ติดลบเป็น "นับจากท้าย
+          // string" (ผลลัพธ์งง)
+          //
+          // (23 ก.ค. 2026 รอบ 3 — ครีมสั่งขยาย) รับ override params เพิ่ม slice_at/slice_len — ให้ครีม
+          // ส่องตำแหน่งอื่นในหน้า HTML ได้เอง (เช่น firstTd ที่ 257,664 ในโซน Contract Preview Tab) โดยไม่
+          // ต้อง deploy ใหม่ทุกครั้ง — ถ้าไม่ส่ง slice_at มา ใช้ default เดิมเป๊ะ (anchor ที่ itemTable, ยาว 2500)
+          const dbgSliceAtRaw = Number(body?.slice_at);
+          const dbgSliceAtOverride =
+            Number.isFinite(dbgSliceAtRaw) && dbgSliceAtRaw >= 0 ? Math.floor(dbgSliceAtRaw) : null;
+          const dbgSliceLenRaw = Number(body?.slice_len);
+          const dbgSliceLenOverride =
+            Number.isFinite(dbgSliceLenRaw) && dbgSliceLenRaw > 0
+              ? Math.min(Math.floor(dbgSliceLenRaw), 4000) // cap 4000
+              : 2000; // default เมื่อส่ง slice_at มาแต่ไม่ส่ง slice_len
+
+          const dbgSliceStart =
+            dbgSliceAtOverride !== null ? dbgSliceAtOverride : (dbgIdx.itemTable >= 0 ? dbgIdx.itemTable : 0);
+          const dbgSliceLen = dbgSliceAtOverride !== null ? dbgSliceLenOverride : 2500;
+          const tableSlice = dbgHtml.slice(dbgSliceStart, dbgSliceStart + dbgSliceLen);
+
+          // สกัด endpoint /manager/ajax/... จาก HTML ดิบ — path ล้วนไม่มี query/token ปน (ถ้าเจอ เช่น
+          // /manager/ajax/invoice-items/... = สัญญาณว่าตารางนี้เติมด้วย DataTables server-side ajax
+          // จริง ต้องเปลี่ยนไปยิง endpoint นั้นแทนแกะ HTML เหมือนที่ทำกับ RECEIPTS_URL/INVOICES_URL อยู่แล้ว)
+          const ajaxPaths = [
+            ...new Set((dbgHtml.match(/\/manager\/ajax\/[a-zA-Z0-9\-\/]{1,60}/g) ?? [])),
+          ].slice(0, 15);
+
+          return json({
+            debug: true,
+            invUuid: dbgInvUuid,
+            httpStatus: dbgHttpStatus,
+            htmlLength: dbgHtml.length,
+            hasItemTable: dbgHtml.includes("invoiceItemTable"),
+            hasThaiHeader: dbgHtml.includes("เลขที่ใบแจ้งหนี้"),
+            hasTbody: dbgHtml.includes("<tbody"),
+            hasLoginForm: /manager\/login|name="password"/.test(dbgHtml),
+            title: (dbgHtml.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? null,
+            bodySample,
+            parsedSummary: {
+              rowCount: dbgParsed.rowCount,
+              pjInstPaidTotal: dbgParsed.pjInstPaidTotal,
+              pjPenaltyPaidTotal: dbgParsed.pjPenaltyPaidTotal,
+              receiptCount: dbgParsed.receiptUuids.length,
+            },
+            idx: dbgIdx,
+            tableSlice,
+            scopeInfo: dbgScopeInfo,
+            ajaxPaths,
+          });
+        }
+
+        // ── 4) ต่อสัญญา (sequential + time budget) — เปิด invoice detail page, parse ตารางแรก,
+        //    เทียบยอด, queue เข้า pj_sync_review เท่านั้น (ห้าม auto-apply เด็ดขาด) ──────────────────
+        const RW_TIME_BUDGET_MS = 45_000;
+        const rwLoopStartedAt = Date.now();
+        let rwTruncated = invListTruncated;
+        let contractsChecked = 0;
+        let notFoundInPj = 0;
+        let fetchErrors = 0;
+        let driftQueued = 0;
+        let overAppliedQueued = 0;
+        const rwDetails: any[] = [];
+
+        for (const cand of candidates) {
+          if (Date.now() - rwLoopStartedAt > RW_TIME_BUDGET_MS) {
+            rwTruncated = true;
+            break; // ที่เหลือปล่อยรอบถัดไป (cron รายวัน — จับต่อเอง ไม่มีข้อมูลหาย แค่ช้าไปไม่เกิน 1 รอบ)
+          }
+          const invUuid = cand.invNo ? invoiceMap.get(cand.invNo) : undefined;
+          if (!invUuid) {
+            notFoundInPj++;
+            continue;
+          }
+          contractsChecked++;
+
+          let detailHtml: string;
+          try {
+            const detailRes = await fetch(`${PJ_BASE}/manager/invoices/${invUuid}`, {
+              method: "GET",
+              headers: {
+                "User-Agent": UA,
+                Cookie: cookieHeader(jar),
+                Referer: `${PJ_BASE}/manager/home`,
+                Accept: "text/html",
+              },
+              redirect: "manual",
+            });
+            if (detailRes.status >= 300 && detailRes.status < 400) {
+              // redirect (เช่น session หลุด/uuid ไม่ถูกต้อง) — ข้ามเคสนี้ ไม่ล้มทั้งรอบ
+              fetchErrors++;
+              continue;
+            }
+            detailHtml = await detailRes.text();
+          } catch {
+            fetchErrors++;
+            continue;
+          }
+
+          const parsed = parseInvoiceDetailHtml(detailHtml);
+          const ours = ourPaidMap.get(cand.id) ?? { instPaid: 0, penaltyPaid: 0 };
+          const ourPaidTotal = ours.instPaid + ours.penaltyPaid;
+          const pjPaidTotal = parsed.pjInstPaidTotal + parsed.pjPenaltyPaidTotal;
+          const diff = pjPaidTotal - ourPaidTotal;
+
+          rwDetails.push({
+            contractId: cand.id,
+            contractNo: cand.contractNo,
+            invNo: cand.invNo,
+            invUuid,
+            ourPaidTotal,
+            pjPaidTotal,
+            diff,
+            pjRowCount: parsed.rowCount,
+            receiptCount: parsed.receiptUuids.length,
+          });
+
+          if (Math.abs(diff) <= 0.01) continue; // ตรงกันอยู่แล้ว ไม่ต้องทำอะไร
+
+          // pjPaidTotal > ourPaidTotal → มีเงินที่เราไม่เห็น (คืนเครื่องแล้ว PJ ซ่อนใบเสร็จ) — reason
+          //   RETURNED_CONTRACT_PAYMENT
+          // pjPaidTotal < ourPaidTotal → เราลงเกิน PJ บนสัญญาคืนเครื่อง — reason ใหม่
+          //   RETURNED_CONTRACT_OVERAGE (0125 review fix — ติ๊ก RED1: ห้าม reuse AMOUNT_MISMATCH เพราะ
+          //   หน้า /pj-sync-review เปิด ApplyPjModal ให้ reason นั้นได้ตรงๆ — สัญญากลุ่มนี้ status='returned'
+          //   มี nextUnpaid เสมอ ทำให้คนกด "ลงตาม PJ"/"รายได้อื่นๆ" ใส่เงินเข้าสัญญาคืนเครื่องจาก diff
+          //   สังเคราะห์ได้ ขัด spec แบมที่ห้าม auto-apply/manual-apply เงินบนสัญญากลุ่มนี้เด็ดขาด — reason
+          //   ใหม่นี้ไม่มี guard ฝั่ง UI ให้กดลงเงิน (น้องวิวเพิ่ม type/label/guard คู่กัน))
+          const reasonToUse = diff > 0 ? "RETURNED_CONTRACT_PAYMENT" : "RETURNED_CONTRACT_OVERAGE";
+
+          // shape ล็อกร่วมกับน้องวิว (0125 review fix — YELLOW 5): kind คงที่ 'returned_watch' เสมอ (ไม่
+          // แยกตาม diff อีกต่อไป — ฝั่ง UI เช็ค reason เพื่อแยก 2 เคสแทน) + receiptUuids ต้องอยู่ top-level
+          // (ไม่ซ้อนใต้ pj) ให้ตรงกับ shape ที่ตกลงกันไว้ {kind, invUuid, receiptUuids, ours, pj, checkedAt}
+          const rawJson = {
+            kind: "returned_watch",
+            invUuid,
+            receiptUuids: parsed.receiptUuids,
+            ours: { instPaid: ours.instPaid, penaltyPaid: ours.penaltyPaid, total: ourPaidTotal },
+            pj: {
+              instPaid: parsed.pjInstPaidTotal,
+              penaltyPaid: parsed.pjPenaltyPaidTotal,
+              total: pjPaidTotal,
+              rowCount: parsed.rowCount,
+            },
+            checkedAt: new Date().toISOString(),
+          };
+
+          if (!dryRun) {
+            // dedup: ถ้ามี pending review ของ invoice นี้ + reason เดียวกันอยู่แล้ว → update ยอด/raw_json
+            // แทน insert ซ้ำ (ยอดต่างอาจเปลี่ยนทุกวันที่ PJ ยังไม่บันทึกอะไรเพิ่ม/ลูกค้าจ่ายเพิ่ม)
+            const { data: existingPending } = await db
+              .from("pj_sync_review")
+              .select("id")
+              .eq("pj_invoice_no", cand.invNo)
+              .eq("reason", reasonToUse)
+              .eq("status", "pending")
+              .limit(1);
+
+            if (existingPending && existingPending.length > 0) {
+              await db.from("pj_sync_review")
+                .update({ pj_amount: Math.abs(diff), raw_json: rawJson })
+                .eq("id", existingPending[0].id);
+            } else {
+              await db.from("pj_sync_review").insert({
+                run_id: runId,
+                pj_invoice_no: cand.invNo,
+                pj_payment_type: "installment",
+                pj_amount: Math.abs(diff),
+                pj_paid_date: null,
+                matched_contract_id: cand.id,
+                reason: reasonToUse,
+                raw_json: rawJson,
+                status: "pending",
+              });
+            }
+          }
+
+          if (diff > 0) driftQueued++; else overAppliedQueued++;
+        }
+
+        if (!dryRun && runId) {
+          try {
+            await db
+              .from("pj_sync_runs")
+              .update({
+                finished_at: new Date().toISOString(),
+                status: "success",
+                receipts_fetched: invoiceRows.length,
+                auto_applied_count: 0,
+                auto_applied_amount: 0,
+                review_count: driftQueued + overAppliedQueued,
+                // (0125 review fix — YELLOW 7) mode นี้ไม่มี "ช่วงวันที่" จริง (ตรวจทุกสัญญา returned ที่ยัง
+                // มีงวดค้าง ไม่ใช่ scan ตามวันที่รับ) — ใส่ null แทนการยัด syncIsoDate (ปลาย window ของ
+                // param date ที่ไม่ได้ใช้จริงใน mode นี้เลย) กันอ่านผิดว่าเป็นช่วงที่กวาดจริง
+                window_start_date: null,
+                window_end_date: null,
+                pages_fetched: invPagesFetched,
+                truncated: rwTruncated,
+              })
+              .eq("id", runId);
+          } catch { /* best-effort — housekeeping เท่านั้น */ }
+        }
+
+        return json({
+          ok: true,
+          mode: "returned_watch",
+          dryRun,
+          candidates_total: candidates.length,
+          contracts_checked: contractsChecked,
+          not_found_in_pj: notFoundInPj,
+          fetch_errors: fetchErrors,
+          drift_found: driftQueued,
+          over_applied_found: overAppliedQueued,
+          truncated: rwTruncated,
+          inv_pages_fetched: invPagesFetched,
+          inv_list_truncated: invListTruncated,
+          details: rwDetails,
+        });
       }
 
       // ── 3) ดึง receipts ของช่วง [startDate, endDate] — เพจ pagination (14 ก.ค. 2026 เพิ่ม) ─────
