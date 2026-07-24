@@ -6090,7 +6090,10 @@ export async function overridePenalty(
 }
 
 /**
- * แก้/ลบค่าปรับของงวดผ่าน RPC admin_set_installment_penalty (admin เท่านั้น — guard ฝั่ง DB ด้วย is_admin())
+ * แก้/ลบค่าปรับของงวดผ่าน RPC staff_set_installment_penalty (admin+staff — เปิดสิทธิ์ staff 24 ก.ค. 2026
+ * ตามคำสั่ง Pete เพื่อให้แก้ยอดค่าปรับก่อนรับชำระได้เอง; guard ฝั่ง DB เดิม admin_set_installment_penalty
+ * (0096, is_admin() only) ยังอยู่ ไม่ถูกแทนที่ — staff_set_installment_penalty (mig 0127) เป็น RPC ใหม่คนละตัว
+ * ที่เปิดกว้างกว่าเฉพาะ path นี้)
  * ต่างจาก overridePenalty() ด้านบน (เขียนตรงผ่าน RLS installments_write ที่ staff เขียนได้ด้วย):
  * ทางนี้ guard เข้มกว่า + คำนวณ penalty_days ให้เอง + validate ช่วงยอด + ผูกชื่อผู้แก้จาก profiles ฝั่ง server
  * "ลบค่าปรับ" = เรียกด้วย penaltyAmount = 0
@@ -6101,7 +6104,7 @@ export async function setInstallmentPenalty(
   reason: string,
 ): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase.rpc('admin_set_installment_penalty', {
+  const { error } = await supabase.rpc('staff_set_installment_penalty', {
     p_installment_id: installmentId,
     p_penalty_amount: penaltyAmount,
     p_reason: reason || null,

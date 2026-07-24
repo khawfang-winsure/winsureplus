@@ -1425,11 +1425,13 @@ export default function ContractDetail() {
                         const charged = i.penaltyAmount
                         const days = i.penaltyDays
                         const paid = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
-                        const editBtn = isAdmin ? (
+                        const canEditPenalty =
+                          isAdmin || (canStaff && !returnNotCollect && !returnedClosedUnpaid)
+                        const editBtn = canEditPenalty ? (
                           <button
                             onClick={() => setPenaltyOverrideTarget(i)}
                             className="rounded p-1 text-ink-soft hover:bg-amber-50 hover:text-amber-700"
-                            title="แก้ไข/ลบค่าปรับ (admin)"
+                            title="แก้ไข/ลบค่าปรับ"
                           >
                             <Pencil size={13} />
                           </button>
@@ -2707,9 +2709,10 @@ function CancelModal({ ins, onClose, onDone }: { ins: Installment; onClose: () =
 }
 
 /**
- * #3 — PenaltyOverrideModal (admin only)
- * แก้ไข/ลบค่าปรับของงวดที่เลือก — เรียก setInstallmentPenalty() ผ่าน RPC admin_set_installment_penalty
- * (guard เข้มฝั่ง DB ด้วย is_admin() + validate ยอด + เขียน audit log + กัน cron คิดค่าปรับทับ)
+ * #3 — PenaltyOverrideModal (admin+staff — เปิดสิทธิ์ staff 24 ก.ค. 2026)
+ * แก้ไข/ลบค่าปรับของงวดที่เลือก — เรียก setInstallmentPenalty() ผ่าน RPC staff_set_installment_penalty
+ * (mig 0127, validate ยอด + เขียน audit log + กัน cron คิดค่าปรับทับ; DB ยัง guard สัญญาที่คืนเครื่อง/ปิดแล้ว
+ * ด้วย status='active' — ฝั่ง UI กัน staff ซ้ำอีกชั้นด้วย canEditPenalty ด้านบน admin ยังแก้ได้แม้ returned)
  */
 function PenaltyOverrideModal({
   ins,
