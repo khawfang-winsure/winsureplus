@@ -11,10 +11,29 @@ import { escCell, downloadCSV } from '../lib/csv'
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
 
+// ===== สถานะสัญญา (active/returned เท่านั้นที่ปรากฏในหน้านี้ — bucket อื่น view suppress เป็น normal หมด) =====
+const STATUS_LABELS: Record<string, string> = {
+  active: 'ผ่อนอยู่',
+  returned: 'คืนเครื่อง',
+}
+function statusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status
+}
+function statusTone(status: string): 'neutral' | 'amber' {
+  return status === 'returned' ? 'amber' : 'neutral'
+}
+
+type StatusFilterValue = 'all' | 'active' | 'returned'
+const STATUS_FILTERS: { key: StatusFilterValue; label: string }[] = [
+  { key: 'all', label: 'ทั้งหมด' },
+  { key: 'active', label: 'เฉพาะผ่อนอยู่' },
+  { key: 'returned', label: 'เฉพาะคืนเครื่อง' },
+]
+
 // ===== CSV Export =====
 function overdueCSV(rows: ContractStatusRow[]): string {
   const headers = [
-    'ลูกค้า', 'เลขที่สัญญา', 'เลข INV', 'รุ่น', 'จำนวนเดือนในสัญญา', 'ร้าน', 'ครบกำหนด',
+    'ลูกค้า', 'สถานะ', 'เลขที่สัญญา', 'เลข INV', 'รุ่น', 'จำนวนเดือนในสัญญา', 'ร้าน', 'ครบกำหนด',
     'ชำระแล้ว (งวด)', 'ชำระแล้ว (บาท)', 'ค้างชำระ (งวด)', 'เลยกำหนด (เดือน)',
     'ล่าช้า (วัน)', 'รวมคงเหลือ', 'เกินกำหนด', 'ยังไม่ถึงกำหนด', 'ค้างชำระ+ค่าปรับ',
   ]
@@ -25,6 +44,7 @@ function overdueCSV(rows: ContractStatusRow[]): string {
     const modelText = [r.model, r.storage].filter((v) => v && v.trim()).join(' ')
     out.push([
       escCell(r.customerName),
+      escCell(statusLabel(r.status)),
       escCell(r.contractNo),
       escCell(r.invNo ?? ''),
       escCell(modelText),
@@ -100,6 +120,7 @@ export default function Overdue() {
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [statusFilter, setStatusFilter] = useState<StatusFilterValue>('all')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -111,17 +132,33 @@ export default function Overdue() {
     load()
   }, [load])
 
-  // reset page เมื่อเปลี่ยน bucket
-  useEffect(() => { setPage(1) }, [bucket])
+  // เปลี่ยน bucket แล้วรีเซ็ตตัวกรองสถานะกลับ "ทั้งหมด" ด้วย — กันเลือก "เฉพาะคืนเครื่อง" ค้างข้ามช่วง แล้วเข้าใจผิดว่าไม่มีข้อมูล
+  useEffect(() => { setStatusFilter('all') }, [bucket])
+
+  // กรองตามสถานะ (ผ่อนอยู่/คืนเครื่อง) ก่อนแบ่งหน้า
+  const filteredRows = useMemo(
+    () => (statusFilter === 'all' ? rows : rows.filter((r) => r.status === statusFilter)),
+    [rows, statusFilter],
+  )
+
+  // reset page เมื่อเปลี่ยน bucket หรือเปลี่ยนตัวกรองสถานะ (กันหน้าค้างเกินจำนวนหลังกรอง)
+  useEffect(() => { setPage(1) }, [bucket, statusFilter])
 
   const pagedRows = useMemo(
-    () => rows.slice((page - 1) * pageSize, page * pageSize),
-    [rows, page, pageSize],
+    () => filteredRows.slice((page - 1) * pageSize, page * pageSize),
+    [filteredRows, page, pageSize],
   )
+
+  const filenameSuffix = statusFilter === 'all' ? '' : `_${statusFilter}`
 
   return (
     <div>
-      <PageTitle sub="กลุ่มนี้คำนวณอัตโนมัติจากจำนวนวันเลยกำหนด (อัปเดตทุกวันโดยระบบ)" count={loading ? undefined : { shown: rows.length }}>{label}</PageTitle>
+      <PageTitle
+        sub="กลุ่มนี้คำนวณอัตโนมัติจากจำนวนวันเลยกำหนด (อัปเดตทุกวันโดยระบบ)"
+        count={loading ? undefined : { shown: filteredRows.length, total: rows.length }}
+      >
+        {label}
+      </PageTitle>
 
       {/* แท็บสลับช่วงล่าช้า — เปลี่ยน URL + จำไว้ใน localStorage สำหรับครั้งถัดไป */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -141,20 +178,42 @@ export default function Overdue() {
             </button>
           ))}
         </div>
-        <Button
-          variant="ghost"
-          disabled={loading || rows.length === 0}
-          onClick={() => downloadCSV(overdueCSV(rows), `overdue_${bucket}_${todayISO}.csv`)}
-        >
-          <Download className="h-4 w-4" />
-          ส่งออก CSV
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* ตัวกรองสถานะ — แยกลูกค้าผ่อนอยู่ ออกจากลูกค้าคืนเครื่อง */}
+          <div className="inline-flex rounded-xl border border-peach bg-white p-1">
+            {STATUS_FILTERS.map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setStatusFilter(f.key)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  statusFilter === f.key
+                    ? 'bg-peach text-ink'
+                    : 'text-ink-soft hover:bg-peach-light'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <Button
+            variant="ghost"
+            disabled={loading || filteredRows.length === 0}
+            onClick={() => downloadCSV(overdueCSV(filteredRows), `overdue_${bucket}${filenameSuffix}_${todayISO}.csv`)}
+          >
+            <Download className="h-4 w-4" />
+            ส่งออก CSV
+          </Button>
+        </div>
       </div>
 
       {loading ? (
         <Loading />
-      ) : rows.length === 0 ? (
-        <EmptyState title="ไม่มีลูกค้าในกลุ่มนี้" hint="ลูกค้าจะถูกจัดเข้ากลุ่มเองตามจำนวนวันที่ค้างชำระ" />
+      ) : filteredRows.length === 0 ? (
+        <EmptyState
+          title={rows.length === 0 ? 'ไม่มีลูกค้าในกลุ่มนี้' : 'ไม่มีลูกค้าตรงกับตัวกรองสถานะที่เลือก'}
+          hint={rows.length === 0 ? 'ลูกค้าจะถูกจัดเข้ากลุ่มเองตามจำนวนวันที่ค้างชำระ' : 'ลองเลือก "ทั้งหมด" เพื่อดูทุกสถานะ'}
+        />
       ) : (
         <>
           {/* ===== Desktop table (≥ md) ===== */}
@@ -163,6 +222,7 @@ export default function Overdue() {
               <thead>
                 <tr className="bg-peach-light text-left text-ink">
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold">ลูกค้า</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold">สถานะ</th>
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold">ร้าน</th>
                   <th className="whitespace-nowrap px-3 py-2.5 font-semibold">ครบกำหนด</th>
                   <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ชำระแล้ว</th>
@@ -189,6 +249,9 @@ export default function Overdue() {
                       <td className="whitespace-nowrap px-3 py-2.5 align-top">
                         <p className="font-medium text-ink">{r.customerName}</p>
                         <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 align-top">
+                        <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>
                       </td>
                       <td className="whitespace-nowrap px-3 py-2.5 align-top">{r.shopName}</td>
                       <td className="whitespace-nowrap px-3 py-2.5 align-top">{r.nextDue ? thaiDate(r.nextDue) : '-'}</td>
@@ -229,7 +292,10 @@ export default function Overdue() {
                       <p className="font-medium text-ink">{r.customerName}</p>
                       <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
                     </div>
-                    <Badge tone="red">ล่าช้า {r.daysLate} วัน</Badge>
+                    <div className="flex flex-col items-end gap-1">
+                      <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>
+                      <Badge tone="red">ล่าช้า {r.daysLate} วัน</Badge>
+                    </div>
                   </div>
                   <p className="mb-2 text-xs text-ink-soft">
                     ครบกำหนด {r.nextDue ? thaiDate(r.nextDue) : '-'} · ชำระแล้ว {r.paidInstallments} งวด ({baht(r.paidAmountTotal)}) · ค้าง {r.remainingInstallments} งวด ({r.lateInstallments} เดือน)
@@ -248,7 +314,7 @@ export default function Overdue() {
           </div>
 
           <Pagination
-            total={rows.length}
+            total={filteredRows.length}
             page={page}
             pageSize={pageSize}
             onPageChange={setPage}
