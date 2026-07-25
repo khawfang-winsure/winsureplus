@@ -441,12 +441,12 @@ export default function ContractDetail() {
   const extraChargesSum = sumExtraCharges(extraCharges)
   const principalRemaining = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
   const totalOutstandingAmt = calcTotalOutstanding(penaltyDue, extraChargesSum, principalRemaining)
-  // เงินดาวน์ + ค่าเอกสาร (ชำระ ณ วันเริ่มสัญญา — ไม่ดันเข้า installments state)
+  // เงินดาวน์ (ชำระ ณ วันเริ่มสัญญา — ไม่ดันเข้า installments state)
+  // หมายเหตุ: ค่าเอกสารแยกไปแสดงใน section "รายได้อื่นๆ" แทนแล้ว ไม่รวมในแถวนี้
   const _summary = contract.devicePrice
     ? calcSummary(contract.devicePrice, contract.downPercent, contract.commissionPercent, contract.docFee)
     : null
   const downPayment = _summary ? Math.round(contract.devicePrice - _summary.afterDown) : 0
-  const downPlusDoc = downPayment + contract.docFee
   const downRowDate = contract.transactionDate ?? installments[0]?.dueDate
   // ยอดคงค้างหลังคืนเครื่อง (แสดงแทน totalOutstanding เมื่อคืนเครื่อง — ทั้งยังตามเก็บ + ปิดเคสแล้ว)
   const isReturned = contract.status === 'returned' || contract.status === 'returned_closed'
@@ -1379,13 +1379,13 @@ export default function ContractDetail() {
               </tr>
             </thead>
             <tbody>
-              {/* บรรทัดพิเศษ: เงินดาวน์ + ค่าเอกสาร — ชำระแล้ว ณ วันเริ่มสัญญา */}
-              {downPlusDoc > 0 && (
+              {/* บรรทัดพิเศษ: เงินดาวน์ — ชำระแล้ว ณ วันเริ่มสัญญา (ค่าเอกสารแยกไปแสดงใน "รายได้อื่นๆ" แล้ว) */}
+              {downPayment > 0 && (
                 <tr className="bg-green-50/40">
-                  <td className="px-3 py-2.5 whitespace-nowrap text-xs text-ink-soft">เงินดาวน์ + ค่าเอกสาร</td>
+                  <td className="px-3 py-2.5 whitespace-nowrap text-xs text-ink-soft">เงินดาวน์</td>
                   <td className="px-3 py-2.5">{downRowDate ? thaiDate(downRowDate) : '—'}</td>
-                  <td className="px-3 py-2.5">{baht(downPlusDoc)}</td>
-                  <td className="px-3 py-2.5">{baht(downPlusDoc)}</td>
+                  <td className="px-3 py-2.5">{baht(downPayment)}</td>
+                  <td className="px-3 py-2.5">{baht(downPayment)}</td>
                   <td className="px-3 py-2.5 text-ink-soft">-</td>
                   <td className="px-3 py-2.5"><Badge tone="green">ชำระแล้ว</Badge></td>
                   <td className="px-3 py-2.5" />

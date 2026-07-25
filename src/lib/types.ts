@@ -336,10 +336,17 @@ export interface OtherIncome {
   feeKind?: import('./feeReconcile').FeeKind | null // ค่าธรรมเนียมสิทธิ์ไหน (migration 0106) — null = รายได้ทั่วไป
 }
 
-/** สำหรับ execDashboard cashflow bucket (เฉพาะ field ที่ต้องการ) */
+/**
+ * สำหรับ execDashboard cashflow bucket (เฉพาะ field ที่ต้องการ)
+ * contractId/category เพิ่มเข้ามา (Wave 1 doc_fee reclassify) — ใช้สร้าง docFeeMovedSet
+ * กันนับซ้ำตอน backfill ค่าเอกสารจาก "รายได้คำนวณสด" → other_income แถวจริง
+ * nullable ตรงกับ OtherIncome เดิม (contractId อาจไม่ผูกสัญญา, category เป็น free-text)
+ */
 export interface OtherIncomeLite {
   amount: number
   receivedAt: string // 'YYYY-MM-DD'
+  contractId?: string | null // สัญญาไหน — null/undefined = ไม่ผูกสัญญา (optional ตรงกับ OtherIncome.contractId เดิม)
+  category: string | null   // เช่น 'ค่าเอกสาร' — marker guard กันนับซ้ำ
 }
 
 // ---------- Grade Mobility (migration 0030) ----------

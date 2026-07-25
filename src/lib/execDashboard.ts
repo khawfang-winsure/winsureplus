@@ -219,6 +219,22 @@ function netTransferOf(c: Contract): number {
   return afterDown + commission - (c.docFee || 0)
 }
 
+/** category marker ของ other_income แถวที่ backfill มาจากค่าเอกสาร (Wave 1 doc_fee reclassify) */
+const DOC_FEE_CATEGORY = 'ค่าเอกสาร'
+
+/**
+ * เซ็ต contractId ที่ค่าเอกสารถูก backfill เป็น other_income แถวจริงแล้ว (category='ค่าเอกสาร')
+ * ใช้กันนับซ้ำ: สัญญาที่อยู่ใน set นี้ → ไม่นับ c.docFee จาก contract อีก เพราะ other_income แถวจริงนับแทนแล้ว
+ * ก่อน backfill: ไม่มี other_income category นี้เลย → set ว่างเปล่า → พฤติกรรมเดิม 100% (backward compat)
+ */
+function buildDocFeeMovedSet(otherIncome: OtherIncomeLite[] | undefined): Set<string> {
+  const set = new Set<string>()
+  for (const oi of (otherIncome ?? [])) {
+    if (oi.category === DOC_FEE_CATEGORY && oi.contractId) set.add(oi.contractId)
+  }
+  return set
+}
+
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
 /** ตีความ ISO เป็นเวลาท้องถิ่น: 'YYYY-MM-DD' = วันท้องถิ่น, timestamp = แปลงตาม TZ เครื่อง (ไทย UTC+7) */
@@ -298,20 +314,29 @@ export function buildCashflow(
     rows[i].incomeInstallment += dr.income - dr.penaltyIncome
   }
   // เงินเข้า — รายได้อื่นๆ (other_income bucket by received_at; paymentsCount ไม่นับ — metric นั้นนับ collection ค่างวดล้วน)
+  // Wave 1 guard: แถวที่ category='ค่าเอกสาร' (backfill แล้ว) นับเข้า incomeDocFee ไม่ใช่ incomeOther
+  // กันไม่ให้ค่าเอกสารโผล่ปนในบรรทัด "รายได้อื่นๆ" — ต้องแยกบรรทัดของตัวเองเสมอ
+  const docFeeMovedSet = buildDocFeeMovedSet(otherIncome)
   for (const oi of (otherIncome ?? [])) {
     const i = idx.get(keyOf(localDate(oi.receivedAt)))
     if (i == null) continue
     rows[i].income += oi.amount
-    rows[i].incomeOther += oi.amount
+    if (oi.category === DOC_FEE_CATEGORY) {
+      rows[i].incomeDocFee += oi.amount
+    } else {
+      rows[i].incomeOther += oi.amount
+    }
   }
   // เงินเข้า — เงินดาวน์ + ค่าเอกสาร (bucket ตาม transactionDate ของสัญญา)
   // docFee reclassify: เดิมถูกหักออกจากยอดโอนร้าน → ย้ายมาเป็น income stream แยก (net เท่าเดิม)
+  // Wave 1 guard: ถ้าสัญญาถูก backfill เป็น other_income แล้ว (docFeeMovedSet) → ไม่นับ c.docFee ซ้ำที่นี่
+  //   (other_income loop ด้านบนนับให้แล้ว) — ก่อน backfill set ว่าง → นับจาก contract เหมือนเดิมทุกประการ
   // down: รายได้ใหม่ที่ไม่เคยนับมาก่อน (net เพิ่มขึ้นตาม Σdown จริง — ตั้งใจ)
   for (const c of contracts) {
     const i = idx.get(keyOf(localDate(c.transactionDate)))
     if (i == null) continue
     const down = downOf(c)
-    const doc = c.docFee || 0
+    const doc = docFeeMovedSet.has(c.id) ? 0 : (c.docFee || 0)
     rows[i].income += down + doc
     rows[i].incomeDown += down
     rows[i].incomeDocFee += doc
@@ -685,14 +710,20 @@ export function buildExecDashboard(input: ExecInput): ExecDashboard {
     if (inRange(dr.payDate)) receivedThisMonth += dr.income
   }
   // รวมรายได้อื่นๆ ที่ received_at ตกในช่วง effective (inRange ใช้ ISO date ได้ตรงๆ)
+  // receivedThisMonth เป็น flat total (ไม่แยกหมวด) — รวมทุก category รวมถึง 'ค่าเอกสาร' ที่ backfill แล้ว
   for (const oi of (input.otherIncome ?? [])) {
     if (inRange(oi.receivedAt)) receivedThisMonth += oi.amount
   }
   // รวมเงินดาวน์ + ค่าเอกสาร bucket ตาม transactionDate (mirror buildCashflow income loop)
   // docFee reclassify: net เท่าเดิม (ดูหมายเหตุใน shopCashOut)
+  // Wave 1 guard: ถ้าสัญญาถูก backfill เป็น other_income แล้ว (docFeeMovedSet) → ไม่นับ c.docFee ซ้ำที่นี่
+  //   (other_income loop ด้านบนนับให้แล้ว) — ก่อน backfill set ว่าง → นับจาก contract เหมือนเดิมทุกประการ
   // down: รายได้ใหม่ที่เพิ่ม receivedThisMonth จริง (ตั้งใจ)
+  const docFeeMovedSet = buildDocFeeMovedSet(input.otherIncome)
   for (const c of contracts) {
-    if (inRange(c.transactionDate)) receivedThisMonth += downOf(c) + (c.docFee || 0)
+    if (inRange(c.transactionDate)) {
+      receivedThisMonth += downOf(c) + (docFeeMovedSet.has(c.id) ? 0 : (c.docFee || 0))
+    }
   }
 
   const penaltyTotal = active.reduce((s, c) => s + (statusBy.get(c.id)?.penaltyDue ?? 0), 0)
