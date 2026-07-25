@@ -2056,6 +2056,10 @@ interface StatusRow {
   paid_installments: number | string | null // งวดที่จ่ายแล้ว — เพิ่มใน 0126
   paid_amount_total: number | string | null // ยอดเงินที่จ่ายแล้วรวม — เพิ่มใน 0126
   late_installments: number | string | null // จำนวนงวดที่เลยกำหนด — เพิ่มใน 0126
+  inv_no: string | null // เลขที่ INV — เพิ่มใน 0128
+  model: string | null // รุ่นเครื่อง — เพิ่มใน 0128
+  storage: string | null // ความจุ — เพิ่มใน 0128
+  term_months: number | string | null // จำนวนเดือนในสัญญา — เพิ่มใน 0128
 }
 
 function mapStatus(r: StatusRow): ContractStatusRow {
@@ -2077,6 +2081,10 @@ function mapStatus(r: StatusRow): ContractStatusRow {
     paidInstallments: Number(r.paid_installments ?? 0),
     paidAmountTotal: Number(r.paid_amount_total ?? 0),
     lateInstallments: Number(r.late_installments ?? 0),
+    invNo: r.inv_no ?? null,
+    model: r.model ?? null,
+    storage: r.storage ?? null,
+    termMonths: Number(r.term_months ?? 0),
   }
 }
 

@@ -85,6 +85,10 @@ export interface ContractStatusRow {
   paidInstallments: number // งวดที่จ่ายแล้ว — เพิ่มใน 0126
   paidAmountTotal: number // ยอดเงินที่จ่ายแล้วรวม (ไม่รวมค่าปรับ) — เพิ่มใน 0126
   lateInstallments: number // จำนวนงวดที่เลยกำหนดและยังไม่จ่ายครบ — เพิ่มใน 0126
+  invNo: string | null // เลขที่ INV — เพิ่มใน 0128
+  model: string | null // รุ่นเครื่อง — เพิ่มใน 0128
+  storage: string | null // ความจุ — เพิ่มใน 0128
+  termMonths: number // จำนวนเดือนในสัญญา — เพิ่มใน 0128
 }
 
 export interface DeviceReturnRow {

@@ -14,7 +14,7 @@ const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }
 // ===== CSV Export =====
 function overdueCSV(rows: ContractStatusRow[]): string {
   const headers = [
-    'ลูกค้า', 'เลขที่สัญญา', 'ร้าน', 'ครบกำหนด',
+    'ลูกค้า', 'เลขที่สัญญา', 'เลข INV', 'รุ่น', 'จำนวนเดือนในสัญญา', 'ร้าน', 'ครบกำหนด',
     'ชำระแล้ว (งวด)', 'ชำระแล้ว (บาท)', 'ค้างชำระ (งวด)', 'เลยกำหนด (เดือน)',
     'ล่าช้า (วัน)', 'รวมคงเหลือ', 'เกินกำหนด', 'ยังไม่ถึงกำหนด', 'ค้างชำระ+ค่าปรับ',
   ]
@@ -22,9 +22,13 @@ function overdueCSV(rows: ContractStatusRow[]): string {
   for (const r of rows) {
     const notYetDue = Math.max(0, r.estOutstanding - r.overdueAmount)
     const dueTotal = r.overdueAmount + r.penaltyDue
+    const modelText = [r.model, r.storage].filter((v) => v && v.trim()).join(' ')
     out.push([
       escCell(r.customerName),
       escCell(r.contractNo),
+      escCell(r.invNo ?? ''),
+      escCell(modelText),
+      escCell(r.termMonths),
       escCell(r.shopName),
       escCell(r.nextDue ? thaiDate(r.nextDue) : '-'),
       escCell(r.paidInstallments),
