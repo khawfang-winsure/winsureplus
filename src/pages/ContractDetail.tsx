@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -455,6 +455,20 @@ export default function ContractDetail() {
   // เลขงวดค้างเก่าสุด = งวดเดียวที่ยังตามเก็บตามกฎคืนเครื่อง
   const oldestUnpaidNo = returnedOutstanding?.details?.installmentNo ?? null
 
+  // ===== ปิดก่อนกำหนดแบบ "คงตารางงวด" (early-close-preserve) — ต่างจาก settle_contract_early เดิม
+  // ที่ mark ทุกงวด paid หมด: เคสนี้ตารางงวดยังเหลืองวด pending อยู่ ≥ 1 งวด จึงต้องแยกแสดงผล
+  const isEarlyClosePreserve =
+    contract.status === 'closed' && contract.settledAt != null && installments.some((i) => !i.paidAt)
+  const settlementPaidAmt = contract.settlementPaid ?? 0
+  const settlementDiscountAmt = contract.settlementDiscount ?? 0
+  const settlementRemainingAmt = contract.settlementRemaining ?? 0
+  // แยกค่าตัวเครื่อง (เงินต้น) ออกจากค่าเช่างวดแรกที่รวมอยู่ในยอดปิดจริง — กันเคส edge case ที่ตัวเลขเพี้ยน
+  const firstRentAmt = settlementPaidAmt - contract.financeAmount
+  const canSplitSettlePaid = firstRentAmt >= 0 && firstRentAmt <= contract.monthlyPayment * 2
+  const settleOtherIncome = otherIncomeItems.filter((oi) => oi.feeKind === 'settle')
+  const settleOtherIncomeTotal = settleOtherIncome.reduce((s, oi) => s + oi.amount, 0)
+  const settleTotalReceived = settlementPaidAmt + settleOtherIncomeTotal
+
   // จัดกลุ่มประวัติการชำระตามงวด + แยก 3 ทาง:
   // - logByIns: ผูกกับงวดปัจจุบัน
   // - orphanLogs: งวดถูกลบตอนขยายเวลา (installmentId != null แต่ไม่อยู่ใน live)
@@ -601,7 +615,16 @@ export default function ContractDetail() {
     <div>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-ink">{contract.customerName}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-xl font-bold text-ink">{contract.customerName}</h2>
+            {isEarlyClosePreserve && (
+              <Badge tone="green">
+                <span className="inline-flex items-center gap-1">
+                  <CircleCheck size={12} /> ปิดก่อนกำหนด
+                </span>
+              </Badge>
+            )}
+          </div>
           <p className="text-sm text-ink-soft">
             สัญญา {contract.contractNo} · {contract.model} {contract.storage} · {conditionLabel(contract.condition)}
           </p>
@@ -693,6 +716,56 @@ export default function ContractDetail() {
           )}
         </div>
       </div>
+
+      {/* ===== กล่องสรุปยอดปิดสัญญา — เฉพาะปิดก่อนกำหนดแบบคงตารางงวด (early-close-preserve) ===== */}
+      {isEarlyClosePreserve && (
+        <Card className="mb-4 border-green-200 bg-green-50 py-4">
+          <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-green-800">
+            <Receipt size={15} /> สรุปยอดปิดสัญญา
+          </h3>
+          <div className="flex flex-col gap-1.5 text-sm">
+            {canSplitSettlePaid ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-soft">ค่าตัวเครื่อง (เงินต้นคงเหลือ)</span>
+                  <span className="font-medium text-ink whitespace-nowrap">{baht(contract.financeAmount)} ฿</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-soft">ค่าเช่างวดแรก</span>
+                  <span className="font-medium text-ink whitespace-nowrap">{baht(firstRentAmt)} ฿</span>
+                </div>
+                <div className="flex items-center justify-between border-t border-green-200 pt-1.5">
+                  <span className="text-ink-soft">รวมเป็นรายได้ค่างวด</span>
+                  <span className="font-bold text-green-700 whitespace-nowrap">{baht(settlementPaidAmt)} ฿</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-between">
+                <span className="text-ink-soft">รายได้ค่างวด (รวมค่าตัวเครื่อง)</span>
+                <span className="font-bold text-green-700 whitespace-nowrap">{baht(settlementPaidAmt)} ฿</span>
+              </div>
+            )}
+            {settleOtherIncome.length > 0 && (
+              <>
+                <p className="mt-1.5 text-xs font-medium text-ink-soft">รายได้อื่นๆ</p>
+                {settleOtherIncome.map((oi) => (
+                  <div key={oi.id} className="flex items-center justify-between pl-2">
+                    <span className="text-ink-soft">{oi.category || oi.note}</span>
+                    <span className="font-medium text-ink whitespace-nowrap">{baht(oi.amount)} ฿</span>
+                  </div>
+                ))}
+              </>
+            )}
+            <div className="flex items-center justify-between border-t border-green-300 pt-1.5">
+              <span className="font-semibold text-ink">รับจริงทั้งหมด</span>
+              <span className="text-lg font-bold text-green-700 whitespace-nowrap">{baht(settleTotalReceived)} ฿</span>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-ink-soft">
+            ยอดเต็มตามตาราง {baht(settlementRemainingAmt)} ฿ · ส่วนลดพิเศษ {baht(settlementDiscountAmt)} ฿
+          </p>
+        </Card>
+      )}
 
       {/* ===== กล่อง "รายการรอดำเนินการ (ค่าธรรมเนียม)" — ผูก action ↔ รายได้ 2 ทิศทาง ===== */}
       {feeReconcile && (() => {
@@ -1401,8 +1474,14 @@ export default function ContractDetail() {
                 const returnNotCollect =
                   (contract.status === 'returned' && !i.paidAt && i.installmentNo !== oldestUnpaidNo) ||
                   returnedClosedUnpaid
+                // ปิดสัญญาแล้ว (เช่น ปิดก่อนกำหนดแบบคงตารางงวด) แต่งวดนี้ยังไม่จ่าย — ไม่ใช่ค้างชำระจริง
+                // แสดง "ปิดแล้ว" แทน "รอชำระ"/"ล่าช้า" เพื่อกันพนักงานเข้าใจผิด (derive client-side เท่านั้น ไม่แก้ status ใน DB)
+                const closedPending = contract.status === 'closed' && !i.paidAt && !partial
                 return (
-                  <tr key={i.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                  <tr
+                    key={i.id}
+                    className={`${idx % 2 ? 'bg-white' : 'bg-peach-light/20'} ${closedPending ? 'opacity-70' : ''}`}
+                  >
                     <td className="px-3 py-2.5">{i.installmentNo}</td>
                     <td className="px-3 py-2.5">{thaiDate(i.dueDate)}</td>
                     <td className="px-3 py-2.5">{baht(i.amount)}</td>
@@ -1486,6 +1565,12 @@ export default function ContractDetail() {
                         <Badge tone="amber">ค้างชำระ</Badge>
                       ) : returnNotCollect ? (
                         <Badge tone="neutral">ไม่เก็บแล้ว (คืนเครื่อง)</Badge>
+                      ) : closedPending ? (
+                        <Badge tone="neutral">
+                          <span className="inline-flex items-center gap-1">
+                            <Lock size={11} /> ปิดแล้ว
+                          </span>
+                        </Badge>
                       ) : (
                         <Badge tone={i.status === 'paid' ? 'green' : i.status === 'late' ? 'red' : 'amber'}>
                           {installmentLabel(i.status)}
@@ -1498,7 +1583,7 @@ export default function ContractDetail() {
                         hasLog={logByIns.has(i.id)}
                         logCount={logByIns.get(i.id)?.length ?? 0}
                         canStaff={canStaff}
-                        notCollectible={returnNotCollect}
+                        notCollectible={returnNotCollect || closedPending}
                         onPay={() => setPayTarget({ ins: i, mode: 'pay' })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
                         onCancel={() => setCancelTarget(i)}
