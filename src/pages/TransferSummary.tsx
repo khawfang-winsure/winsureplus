@@ -1,17 +1,100 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, ChevronRight, Landmark, Receipt, Store, X } from 'lucide-react'
+import { CalendarDays, ChevronRight, Clipboard, Landmark, Receipt, Store, X } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
+import CopyBox from '../components/CopyBox'
 import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
 import { baht, thaiDate } from '../lib/format'
-import { getSlipSignedUrl, getTransferSlipsForDay, getTransferSlipSummary } from '../lib/db'
-import type { TransferSlip, TransferSlipSummaryRow } from '../lib/types'
+import { getContractsByIds, getShops, getSlipSignedUrl, getTransferSlipsForDay, getTransferSlipSummary } from '../lib/db'
+import { buildBulkSummary } from '../lib/messages'
+import type { Contract, Shop, TransferSlip, TransferSlipSummaryRow } from '../lib/types'
 
 const STORAGE_KEY = 'transferSummary.dateRange'
+
+/** เกินกี่วันแล้วเตือนก่อนสร้างข้อความทั้งช่วง (กันยิง query รัวเมื่อเลือกช่วงยาว/ทั้งหมด) */
+const RANGE_CONFIRM_THRESHOLD_DAYS = 60
 
 /** วันนี้ตามเขตเวลากรุงเทพ (UTC+7) รูปแบบ YYYY-MM-DD */
 function todayBangkok(): string {
   return new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
 }
+
+// ===== สร้างข้อความสรุปสำหรับคัดลอก แบบ "ส่งบัญชีเต็ม" (ใช้ buildBulkSummary จาก messages.ts) =====
+
+/**
+ * ข้อความสรุปยอดโอนของ 1 วัน รูปแบบส่งบัญชี — ดึงสัญญาจริงมาประกอบ (ราคา/ดาวน์/คอม/เอกสาร/สุทธิ)
+ * ดึงร้านสดทุกครั้งที่เรียก (ไม่พึ่ง state ที่โหลด async คู่ขนาน) กันจังหวะโหลดร้านไม่ทันทำเงินหาย
+ */
+async function buildDayAccountingText(date: string): Promise<string> {
+  const [slips, shops] = await Promise.all([getTransferSlipsForDay(date), getShops()])
+  const shopsById = new Map(shops.map((s) => [s.id, s]))
+
+  const allIds = new Set<string>()
+  for (const s of slips) for (const it of s.items) allIds.add(it.contractId)
+  const contracts = await getContractsByIds([...allIds])
+  const contractsById = new Map(contracts.map((c) => [c.id, c]))
+
+  const slipsByShop = new Map<string, TransferSlip[]>()
+  for (const s of slips) {
+    const arr = slipsByShop.get(s.shopId)
+    if (arr) arr.push(s)
+    else slipsByShop.set(s.shopId, [s])
+  }
+
+  const shopIds = [...slipsByShop.keys()].sort((a, b) =>
+    (shopsById.get(a)?.name ?? a).localeCompare(shopsById.get(b)?.name ?? b, 'th')
+  )
+
+  const groups: { shop: Shop; items: Contract[] }[] = []
+  const fallbackLines: string[] = []
+
+  for (const shopId of shopIds) {
+    const shopSlips = slipsByShop.get(shopId) ?? []
+    const shop = shopsById.get(shopId)
+    const shopName = shop?.name ?? shopId
+
+    const seenIds = new Set<string>()
+    const resolvedContracts: Contract[] = []
+    let unresolvedAmount = 0
+    let noItemAmount = 0
+
+    for (const s of shopSlips) {
+      if (s.items.length === 0) {
+        noItemAmount += s.amount
+        continue
+      }
+      for (const it of s.items) {
+        if (seenIds.has(it.contractId)) continue
+        seenIds.add(it.contractId)
+        const c = contractsById.get(it.contractId)
+        if (c) resolvedContracts.push(c)
+        else unresolvedAmount += it.amount
+      }
+    }
+
+    if (shop) {
+      if (resolvedContracts.length > 0) groups.push({ shop, items: resolvedContracts })
+    } else if (resolvedContracts.length > 0) {
+      const shopTotalAmount = shopSlips.reduce((s, sl) => s + sl.amount, 0)
+      fallbackLines.push(
+        `ร้าน (ไม่พบข้อมูลร้าน id: ${shopId}) — ยอดโอน ${baht(shopTotalAmount)} บาท (${resolvedContracts.length} เคส)`,
+      )
+    }
+    if (noItemAmount > 0) {
+      fallbackLines.push(`ร้าน ${shopName} — โอนทั้งร้าน (ข้อมูลเดิม ไม่มีรายการเครื่อง) ยอด ${baht(noItemAmount)} บาท`)
+    }
+    if (unresolvedAmount > 0) {
+      fallbackLines.push(`ร้าน ${shopName} — พบรายการที่หาข้อมูลสัญญาไม่เจอ ยอด ${baht(unresolvedAmount)} บาท`)
+    }
+  }
+
+  let text =
+    groups.length > 0 ? buildBulkSummary(groups, date) : `วันที่: ${thaiDate(date)}\nไม่มีรายการเครื่องที่บันทึกไว้ในวันนี้`
+  if (fallbackLines.length > 0) text += '\n\n' + fallbackLines.join('\n')
+  return text
+}
+
+/** สถานะการ "สร้างข้อความ" (การคัดลอกจริงย้ายไปอยู่ใน CopyBox แล้ว) */
+type GenState = 'idle' | 'loading' | 'error'
 
 // ===== ป็อปอัพดูสลิป =====
 function SlipModal({ shopName, url, onClose }: { shopName: string; url: string; onClose: () => void }) {
@@ -147,6 +230,23 @@ function DayGroup({
 }) {
   const dayTotal = rows.reduce((s, r) => s + r.totalAmount, 0)
   const daySlipCount = rows.reduce((s, r) => s + r.slipCount, 0)
+  const [genState, setGenState] = useState<GenState>('idle')
+  const [genError, setGenError] = useState<string | null>(null)
+  const [modalText, setModalText] = useState<string | null>(null)
+
+  async function handleGenerate() {
+    setGenState('loading')
+    setGenError(null)
+    try {
+      const text = await buildDayAccountingText(date)
+      setModalText(text)
+      setGenState('idle')
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : 'สร้างข้อความไม่สำเร็จ')
+      setGenState('error')
+    }
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -154,11 +254,23 @@ function DayGroup({
           <CalendarDays size={15} className="text-salmon-deep" />
           {thaiDate(date)}
         </div>
-        <div className="text-xs text-ink-soft">
-          {rows.length} ร้าน · {daySlipCount} สลิป ·{' '}
-          <span className="font-semibold text-ink">{baht(dayTotal)}</span> บาท
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="text-xs text-ink-soft">
+            {rows.length} ร้าน · {daySlipCount} สลิป ·{' '}
+            <span className="font-semibold text-ink">{baht(dayTotal)}</span> บาท
+          </div>
+          <Button variant="ghost" onClick={handleGenerate} disabled={genState === 'loading'}>
+            <Clipboard size={14} />
+            {genState === 'loading' ? 'กำลังเตรียม...' : 'สร้างข้อความส่งบัญชี'}
+          </Button>
         </div>
       </div>
+      {genError && <p className="px-1 text-xs text-red-700">สร้างข้อความไม่สำเร็จ: {genError}</p>}
+      {modalText !== null && (
+        <Modal title={`ข้อความส่งบัญชี — ${thaiDate(date)}`} onClose={() => setModalText(null)}>
+          <CopyBox title={`ข้อความส่งบัญชี — ${thaiDate(date)}`} text={modalText} />
+        </Modal>
+      )}
       <div className="flex flex-col gap-2">
         {rows.map((row) => (
           <ShopSummaryRow key={`${row.date}|${row.shopId}`} row={row} onViewSlip={onViewSlip} />
@@ -176,6 +288,9 @@ export default function TransferSummary() {
   const [slipModal, setSlipModal] = useState<{ shopName: string; url: string } | null>(null)
   const [slipLoading, setSlipLoading] = useState(false)
   const [slipError, setSlipError] = useState<string | null>(null)
+  const [rangeGenState, setRangeGenState] = useState<GenState>('idle')
+  const [rangeGenError, setRangeGenError] = useState<string | null>(null)
+  const [rangeModalText, setRangeModalText] = useState<string | null>(null)
 
   const startISO = range?.start ?? '2000-01-01'
   const endISO = range?.end ?? todayBangkok()
@@ -219,6 +334,30 @@ export default function TransferSummary() {
     }))
   }, [rows])
 
+  async function handleGenerateRange() {
+    if (byDay.length === 0) return
+    if (byDay.length > RANGE_CONFIRM_THRESHOLD_DAYS) {
+      const ok = window.confirm(
+        `ช่วงที่เลือกมี ${byDay.length} วัน จะสร้างข้อความยาวมากและใช้เวลาโหลด ต้องการทำต่อไหม?`,
+      )
+      if (!ok) return
+    }
+    setRangeGenState('loading')
+    setRangeGenError(null)
+    try {
+      const daySections = await Promise.all(byDay.map((g) => buildDayAccountingText(g.date)))
+      const text = [
+        `สรุปการโอนเงินให้ร้านค้า ช่วง ${thaiDate(startISO)} - ${thaiDate(endISO)}`,
+        ...daySections,
+      ].join('\n\n━━━━━━━━━━━━━━━\n\n')
+      setRangeModalText(text)
+      setRangeGenState('idle')
+    } catch (e) {
+      setRangeGenError(e instanceof Error ? e.message : 'สร้างข้อความไม่สำเร็จ')
+      setRangeGenState('error')
+    }
+  }
+
   async function handleViewSlip(slipPath: string, shopName: string) {
     setSlipError(null)
     setSlipLoading(true)
@@ -242,6 +381,29 @@ export default function TransferSummary() {
       </PageTitle>
 
       <DateRangePicker value={range} onChange={setRange} storageKey={STORAGE_KEY} defaultPreset="7d" />
+
+      <div className="flex flex-col items-end gap-1">
+        <Button
+          variant="ghost"
+          onClick={handleGenerateRange}
+          disabled={rangeGenState === 'loading' || loading || byDay.length === 0}
+        >
+          <Clipboard size={14} />
+          {rangeGenState === 'loading' ? 'กำลังเตรียม...' : 'สร้างข้อความทั้งช่วง'}
+        </Button>
+        {rangeGenError && <p className="text-xs text-red-700">สร้างข้อความไม่สำเร็จ: {rangeGenError}</p>}
+        {rangeModalText !== null && (
+          <Modal
+            title={`ข้อความส่งบัญชี — ${thaiDate(startISO)} ถึง ${thaiDate(endISO)}`}
+            onClose={() => setRangeModalText(null)}
+          >
+            <CopyBox
+              title={`ข้อความส่งบัญชี — ${thaiDate(startISO)} ถึง ${thaiDate(endISO)}`}
+              text={rangeModalText}
+            />
+          </Modal>
+        )}
+      </div>
 
       {/* การ์ดสรุป */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

@@ -1189,6 +1189,15 @@ export async function getContract(id: string): Promise<Contract | null> {
   return contract
 }
 
+/** ดึงหลายสัญญาทีเดียวจาก id list — ใช้สร้างข้อความสรุปยอดโอน (TransferSummary) โดยไม่ต้องดึงทั้งฐาน */
+export async function getContractsByIds(ids: string[]): Promise<Contract[]> {
+  if (ids.length === 0) return []
+  if (!supabase) return mock.contracts.filter((c) => ids.includes(c.id))
+  const { data, error } = await supabase.from('contracts').select('*').in('id', ids).range(0, PAGE_CAP)
+  if (error) throw error
+  return (data ?? []).map((r) => mapContract(r as ContractRow))
+}
+
 /** ดึงเลขที่สัญญาทั้งหมดของร้านหนึ่ง — ใช้รันเลขถัดไปอัตโนมัติ */
 export async function getShopContractNos(shopId: string): Promise<string[]> {
   if (!supabase) return mock.contracts.filter((c) => c.shopId === shopId).map((c) => c.contractNo)
