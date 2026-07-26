@@ -54,7 +54,7 @@ async function buildDayAccountingText(date: string): Promise<string> {
   }
 
   let text =
-    groups.length > 0 ? buildBulkSummary(groups, date) : `วันที่: ${thaiDate(date)}\nไม่มีรายการส่งบัญชีในวันนี้`
+    groups.length > 0 ? buildBulkSummary(groups, date) : `วันที่: ${thaiDate(date)}\nไม่มีรายการในวันนี้`
   if (fallbackLines.length > 0) text += '\n\n' + fallbackLines.join('\n')
   return text
 }
@@ -227,14 +227,14 @@ function DayGroup({
           </div>
           <Button variant="ghost" onClick={handleGenerate} disabled={genState === 'loading'}>
             <Clipboard size={14} />
-            {genState === 'loading' ? 'กำลังเตรียม...' : 'สร้างข้อความส่งบัญชี'}
+            {genState === 'loading' ? 'กำลังเตรียม...' : 'สร้างข้อความส่งอีเมลให้ผู้บริหาร'}
           </Button>
         </div>
       </div>
       {genError && <p className="px-1 text-xs text-red-700">สร้างข้อความไม่สำเร็จ: {genError}</p>}
       {modalText !== null && (
-        <Modal title={`ข้อความส่งบัญชี — ${thaiDate(date)}`} onClose={() => setModalText(null)}>
-          <CopyBox title={`ข้อความส่งบัญชี — ${thaiDate(date)}`} text={modalText} />
+        <Modal title={`ข้อความส่งอีเมลให้ผู้บริหาร — ${thaiDate(date)}`} onClose={() => setModalText(null)}>
+          <CopyBox title={`ข้อความส่งอีเมลให้ผู้บริหาร — ${thaiDate(date)}`} text={modalText} />
         </Modal>
       )}
       <div className="flex flex-col gap-2">
@@ -360,11 +360,11 @@ export default function TransferSummary() {
         {rangeGenError && <p className="text-xs text-red-700">สร้างข้อความไม่สำเร็จ: {rangeGenError}</p>}
         {rangeModalText !== null && (
           <Modal
-            title={`ข้อความส่งบัญชี — ${thaiDate(startISO)} ถึง ${thaiDate(endISO)}`}
+            title={`ข้อความส่งอีเมลให้ผู้บริหาร — ${thaiDate(startISO)} ถึง ${thaiDate(endISO)}`}
             onClose={() => setRangeModalText(null)}
           >
             <CopyBox
-              title={`ข้อความส่งบัญชี — ${thaiDate(startISO)} ถึง ${thaiDate(endISO)}`}
+              title={`ข้อความส่งอีเมลให้ผู้บริหาร — ${thaiDate(startISO)} ถึง ${thaiDate(endISO)}`}
               text={rangeModalText}
             />
           </Modal>
