@@ -2089,6 +2089,7 @@ interface StatusRow {
   model: string | null // รุ่นเครื่อง — เพิ่มใน 0128
   storage: string | null // ความจุ — เพิ่มใน 0128
   term_months: number | string | null // จำนวนเดือนในสัญญา — เพิ่มใน 0128
+  collectible_remaining: number | string | null // ยอดตามเก็บจริงของเคสคืนเครื่อง — เพิ่มใน 0130
 }
 
 function mapStatus(r: StatusRow): ContractStatusRow {
@@ -2114,6 +2115,7 @@ function mapStatus(r: StatusRow): ContractStatusRow {
     model: r.model ?? null,
     storage: r.storage ?? null,
     termMonths: Number(r.term_months ?? 0),
+    collectibleRemaining: r.collectible_remaining == null ? null : Number(r.collectible_remaining),
   }
 }
 

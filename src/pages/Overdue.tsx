@@ -23,6 +23,17 @@ function statusTone(status: string): 'neutral' | 'amber' {
   return status === 'returned' ? 'amber' : 'neutral'
 }
 
+// เคสคืนเครื่อง (ยังไม่ปิด/ปิดแล้ว) — เฉพาะกลุ่มนี้ที่มี "ยอดตามเก็บจริง" (collectibleRemaining) แยกจากยอดเต็มสัญญา
+function isReturnedRow(status: string): boolean {
+  return status === 'returned' || status === 'returned_closed'
+}
+
+// ยอดเด่นที่ควรโชว์ต่อแถว: เคสคืนเครื่อง = ยอดตามเก็บจริง (ถ้ามีค่า), แถวอื่น = ค้างชำระ+ค่าปรับเหมือนเดิม
+function headlineDue(r: ContractStatusRow, dueTotal: number): number {
+  if (isReturnedRow(r.status) && r.collectibleRemaining != null) return r.collectibleRemaining
+  return dueTotal
+}
+
 type StatusFilterValue = 'all' | 'active' | 'returned'
 const STATUS_FILTERS: { key: StatusFilterValue; label: string }[] = [
   { key: 'all', label: 'ทั้งหมด' },
@@ -35,7 +46,7 @@ function overdueCSV(rows: ContractStatusRow[]): string {
   const headers = [
     'ลูกค้า', 'สถานะ', 'เลขที่สัญญา', 'เลข INV', 'รุ่น', 'จำนวนเดือนในสัญญา', 'ร้าน', 'ครบกำหนด',
     'ชำระแล้ว (งวด)', 'ชำระแล้ว (บาท)', 'ค้างชำระ (งวด)', 'เลยกำหนด (เดือน)',
-    'ล่าช้า (วัน)', 'รวมคงเหลือ', 'เกินกำหนด', 'ยังไม่ถึงกำหนด', 'ค้างชำระ+ค่าปรับ',
+    'ล่าช้า (วัน)', 'รวมคงเหลือ', 'เกินกำหนด', 'ยังไม่ถึงกำหนด', 'ค้างชำระ+ค่าปรับ', 'ยอดตามเก็บ(คืนเครื่อง)',
   ]
   const out: string[] = [headers.map(escCell).join(',')]
   for (const r of rows) {
@@ -60,6 +71,7 @@ function overdueCSV(rows: ContractStatusRow[]): string {
       escCell(r.overdueAmount),
       escCell(notYetDue),
       escCell(dueTotal),
+      escCell(isReturnedRow(r.status) ? r.collectibleRemaining : null),
     ].join(','))
   }
   return '﻿' + out.join('\r\n')
@@ -232,13 +244,15 @@ export default function Overdue() {
                   <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">รวมคงเหลือ</th>
                   <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">เกินกำหนด</th>
                   <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ยังไม่ถึงกำหนด</th>
-                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ค้างชำระ+ค่าปรับ</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-right font-semibold">ค้างชำระ+ค่าปรับ / ยอดตามเก็บ</th>
                 </tr>
               </thead>
               <tbody>
                 {pagedRows.map((r, i) => {
                   const notYetDue = Math.max(0, r.estOutstanding - r.overdueAmount)
                   const dueTotal = r.overdueAmount + r.penaltyDue
+                  const showCollectibleSplit = isReturnedRow(r.status) && r.collectibleRemaining != null
+                  const headline = headlineDue(r, dueTotal)
                   const zebra = i % 2 ? 'bg-white' : 'bg-peach-light/20'
                   return (
                     <tr
@@ -266,8 +280,11 @@ export default function Overdue() {
                       <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(r.estOutstanding)}</td>
                       <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(r.overdueAmount)}</td>
                       <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(notYetDue)}</td>
-                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top font-semibold text-salmon-deep">
-                        {baht(dueTotal)}
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">
+                        <p className="font-semibold text-salmon-deep">{baht(headline)}</p>
+                        {showCollectibleSplit && (
+                          <p className="text-xs text-ink-soft/70">มูลค่าความเสี่ยง (เต็มสัญญา) {baht(dueTotal)}</p>
+                        )}
                       </td>
                     </tr>
                   )
@@ -281,6 +298,8 @@ export default function Overdue() {
             {pagedRows.map((r) => {
               const notYetDue = Math.max(0, r.estOutstanding - r.overdueAmount)
               const dueTotal = r.overdueAmount + r.penaltyDue
+              const showCollectibleSplit = isReturnedRow(r.status) && r.collectibleRemaining != null
+              const headline = headlineDue(r, dueTotal)
               return (
                 <div
                   key={r.contractId}
@@ -306,8 +325,13 @@ export default function Overdue() {
                     <span>ยังไม่ถึงกำหนด {baht(notYetDue)}</span>
                   </div>
                   <p className="mt-2 text-sm font-semibold text-salmon-deep">
-                    ค้างชำระ+ค่าปรับ {baht(dueTotal)} ฿
+                    {showCollectibleSplit ? 'ยอดตามเก็บ' : 'ค้างชำระ+ค่าปรับ'} {baht(headline)} ฿
                   </p>
+                  {showCollectibleSplit && (
+                    <p className="text-xs text-ink-soft/70">
+                      มูลค่าความเสี่ยง (เต็มสัญญา) {baht(dueTotal)} ฿
+                    </p>
+                  )}
                 </div>
               )
             })}

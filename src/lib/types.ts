@@ -89,6 +89,7 @@ export interface ContractStatusRow {
   model: string | null // รุ่นเครื่อง — เพิ่มใน 0128
   storage: string | null // ความจุ — เพิ่มใน 0128
   termMonths: number // จำนวนเดือนในสัญญา — เพิ่มใน 0128
+  collectibleRemaining: number | null // ยอดตามเก็บจริงของเคสคืนเครื่อง (งวดค้างเก่าสุด+ค่าปรับ+ค่าซ่อม) — null ถ้าไม่ใช่ returned/returned_closed — เพิ่มใน 0130
 }
 
 export interface DeviceReturnRow {
