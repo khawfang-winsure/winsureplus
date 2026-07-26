@@ -236,7 +236,7 @@ export default function ContractDetail() {
   const [deleteSuccessNo, setDeleteSuccessNo] = useState<string | null>(null) // ไม่ null = ลบสำเร็จ กำลังพาออกจากหน้า
   const [flagsOpen, setFlagsOpen] = useState(false)
   // โมดัลชำระเงิน: เก็บงวดที่กำลังทำ + โหมด ('pay' รับชำระ / 'edit' แก้ไขยอด)
-  const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit' } | null>(null)
+  const [payTarget, setPayTarget] = useState<{ ins: Installment; mode: 'pay' | 'edit'; alreadyPaidPenalty?: number } | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Installment | null>(null)
   const [histTarget, setHistTarget] = useState<Installment | null>(null) // โมดัลประวัติของงวดหนึ่ง
   const [penaltyOverrideTarget, setPenaltyOverrideTarget] = useState<Installment | null>(null)
@@ -1482,6 +1482,8 @@ export default function ContractDetail() {
                 // ปิดสัญญาแล้ว (เช่น ปิดก่อนกำหนดแบบคงตารางงวด) แต่งวดนี้ยังไม่จ่าย — ไม่ใช่ค้างชำระจริง
                 // แสดง "ปิดแล้ว" แทน "รอชำระ"/"ล่าช้า" เพื่อกันพนักงานเข้าใจผิด (derive client-side เท่านั้น ไม่แก้ status ใน DB)
                 const closedPending = contract.status === 'closed' && !i.paidAt && !partial
+                // ค่าปรับที่เก็บแล้วจริงของงวดนี้ (ใช้ทั้งคอลัมน์ค่าปรับ + ป้ายเตือนกันลงซ้ำใน PaymentModal)
+                const rowPenaltyPaid = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
                 return (
                   <tr
                     key={i.id}
@@ -1508,7 +1510,7 @@ export default function ContractDetail() {
                       {(() => {
                         const charged = i.penaltyAmount
                         const days = i.penaltyDays
-                        const paid = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
+                        const paid = rowPenaltyPaid
                         const canEditPenalty =
                           isAdmin || (canStaff && !returnNotCollect && !returnedClosedUnpaid)
                         const editBtn = canEditPenalty ? (
@@ -1589,7 +1591,7 @@ export default function ContractDetail() {
                         logCount={logByIns.get(i.id)?.length ?? 0}
                         canStaff={canStaff}
                         notCollectible={returnNotCollect || closedPending}
-                        onPay={() => setPayTarget({ ins: i, mode: 'pay' })}
+                        onPay={() => setPayTarget({ ins: i, mode: 'pay', alreadyPaidPenalty: rowPenaltyPaid })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
                         onCancel={() => setCancelTarget(i)}
                         onHistory={() => setHistTarget(i)}
@@ -1920,6 +1922,7 @@ export default function ContractDetail() {
         <PaymentModal
           ins={payTarget.ins}
           mode={payTarget.mode}
+          alreadyPaidPenalty={payTarget.alreadyPaidPenalty}
           userName={userName ?? ''}
           onClose={() => setPayTarget(null)}
           onDone={async () => {
@@ -2586,12 +2589,14 @@ function PaymentHistoryModal({
 function PaymentModal({
   ins,
   mode,
+  alreadyPaidPenalty,
   userName,
   onClose,
   onDone,
 }: {
   ins: Installment
   mode: 'pay' | 'edit'
+  alreadyPaidPenalty?: number
   userName: string
   onClose: () => void
   onDone: () => void
@@ -2605,7 +2610,24 @@ function PaymentModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // ป้ายเตือนกันลงค่าปรับซ้ำ (PJ Auto-Sync ดูดค่าปรับจาก PJ เข้าให้อัตโนมัติทุก 15 นาทีอยู่แล้ว)
+  // เคส 1: งวดนี้ไม่มีค่าปรับค้างเลย (penalty_amount = 0) แต่พนักงานกำลังจะกรอกค่าปรับ > 0
+  const penaltyZeroWarn = mode === 'pay' && ins.penaltyAmount === 0 && penaltyPaid > 0
+  // เคส 2 (nice-to-have): งวดนี้เก็บค่าปรับครบแล้ว แต่พนักงานจะลงเพิ่มอีก
+  const penaltyFullyPaidWarn =
+    mode === 'pay' &&
+    ins.penaltyAmount > 0 &&
+    (alreadyPaidPenalty ?? 0) >= ins.penaltyAmount &&
+    penaltyPaid > 0
+
+  const penaltyZeroWarnMsg =
+    '⚠️ งวดนี้ระบบไม่มีค่าปรับค้าง (0 บาท) — ระบบดูดค่าปรับจาก PJ อัตโนมัติอยู่แล้ว การลงเองอาจทำให้ค่าปรับซ้ำ แน่ใจว่าต้องการลงหรือไม่?'
+  const penaltyFullyPaidWarnMsg = `⚠️ งวดนี้เก็บค่าปรับครบแล้ว (${baht(alreadyPaidPenalty ?? 0)} ฿) การลงเพิ่มอีกอาจทำให้ค่าปรับซ้ำ แน่ใจว่าต้องการลงหรือไม่?`
+
   async function save() {
+    // soft-warn: ไม่บล็อก แค่ให้ยืนยันซ้ำก่อนบันทึกจริง
+    if (penaltyZeroWarn && !window.confirm(penaltyZeroWarnMsg)) return
+    if (penaltyFullyPaidWarn && !window.confirm(penaltyFullyPaidWarnMsg)) return
     setBusy(true)
     setErr(null)
     try {
@@ -2702,6 +2724,20 @@ function PaymentModal({
               onChange={(e) => setPenaltyPaid(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
             />
           </Field>
+        )}
+
+        {/* ป้ายเตือนกันลงค่าปรับซ้ำ (soft-warn ไม่บล็อก — ยืนยันซ้ำตอนกดบันทึกอีกชั้น) */}
+        {penaltyZeroWarn && (
+          <p className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            {penaltyZeroWarnMsg}
+          </p>
+        )}
+        {!penaltyZeroWarn && penaltyFullyPaidWarn && (
+          <p className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            {penaltyFullyPaidWarnMsg}
+          </p>
         )}
 
         {/* Breakdown: ค่างวด + ค่าปรับ → รวม */}
@@ -2818,11 +2854,19 @@ function PenaltyOverrideModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // ป้ายเตือนกันลงค่าปรับซ้ำ: งวดนี้ระบบไม่มีค่าปรับค้างเลย แต่กำลังจะตั้งค่าใหม่ให้ > 0
+  // (PJ Auto-Sync ดูดค่าปรับจาก PJ เข้าให้อัตโนมัติทุก 15 นาทีอยู่แล้ว การตั้งเองอาจซ้ำ)
+  const penaltyZeroWarn = ins.penaltyAmount === 0 && newAmount > 0
+  const penaltyZeroWarnMsg =
+    '⚠️ งวดนี้ระบบไม่มีค่าปรับค้าง (0 บาท) — ระบบดูดค่าปรับจาก PJ อัตโนมัติอยู่แล้ว การลงเองอาจทำให้ค่าปรับซ้ำ แน่ใจว่าต้องการลงหรือไม่?'
+
   async function save(amount: number) {
     if (!reason.trim()) {
       setErr('กรุณาระบุเหตุผลในการแก้ค่าปรับ')
       return
     }
+    // soft-warn: ไม่บล็อก แค่ให้ยืนยันซ้ำก่อนบันทึกจริง
+    if (penaltyZeroWarn && !window.confirm(penaltyZeroWarnMsg)) return
     setBusy(true)
     setErr(null)
     try {
@@ -2844,6 +2888,12 @@ function PenaltyOverrideModal({
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
           การแก้ไขค่าปรับจะล็อกค่านี้ไว้ — ระบบอัตโนมัติจะไม่คำนวณค่าปรับซ้ำสำหรับงวดนี้อีก
         </p>
+        {penaltyZeroWarn && (
+          <p className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            {penaltyZeroWarnMsg}
+          </p>
+        )}
         <Field label="ค่าปรับใหม่ (บาท)">
           <Input
             type="number"
