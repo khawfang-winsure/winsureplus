@@ -1198,6 +1198,26 @@ export async function getContractsByIds(ids: string[]): Promise<Contract[]> {
   return (data ?? []).map((r) => mapContract(r as ContractRow))
 }
 
+/** ดึงสัญญาทั้งหมดที่ "วันส่งบัญชี" (summary_accounting_sent_at) ตรงกับ dateISO (เวลากรุงเทพ)
+ *  — ใช้สร้างข้อความส่งบัญชีในหน้า TransferSummary (คืน Contract เต็มเพื่อป้อน buildBulkSummary)
+ *  pattern แปลงวัน Bangkok → UTC เดียวกับ getDailyTransferByShop เป๊ะ เพื่อให้ขอบเขตวันตรงกัน */
+export async function getContractsByAccountingDate(dateISO: string): Promise<Contract[]> {
+  if (!supabase) return []
+
+  const [y, m, d] = dateISO.split('-').map(Number)
+  const since = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - 7 * 3600 * 1000).toISOString()
+  const until = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0) - 7 * 3600 * 1000).toISOString()
+
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('*')
+    .gte('summary_accounting_sent_at', since)
+    .lt('summary_accounting_sent_at', until)
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return (data ?? []).map((r) => mapContract(r as ContractRow))
+}
+
 /** ดึงเลขที่สัญญาทั้งหมดของร้านหนึ่ง — ใช้รันเลขถัดไปอัตโนมัติ */
 export async function getShopContractNos(shopId: string): Promise<string[]> {
   if (!supabase) return mock.contracts.filter((c) => c.shopId === shopId).map((c) => c.contractNo)

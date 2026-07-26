@@ -4,7 +4,7 @@ import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../c
 import CopyBox from '../components/CopyBox'
 import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
 import { baht, thaiDate } from '../lib/format'
-import { getContractsByIds, getShops, getSlipSignedUrl, getTransferSlipsForDay, getTransferSlipSummary } from '../lib/db'
+import { getContractsByAccountingDate, getShops, getSlipSignedUrl, getTransferSlipsForDay, getTransferSlipSummary } from '../lib/db'
 import { buildBulkSummary } from '../lib/messages'
 import type { Contract, Shop, TransferSlip, TransferSlipSummaryRow } from '../lib/types'
 
@@ -21,26 +21,22 @@ function todayBangkok(): string {
 // ===== สร้างข้อความสรุปสำหรับคัดลอก แบบ "ส่งบัญชีเต็ม" (ใช้ buildBulkSummary จาก messages.ts) =====
 
 /**
- * ข้อความสรุปยอดโอนของ 1 วัน รูปแบบส่งบัญชี — ดึงสัญญาจริงมาประกอบ (ราคา/ดาวน์/คอม/เอกสาร/สุทธิ)
+ * ข้อความสรุปยอดโอนของ 1 วัน รูปแบบส่งบัญชี — ดึงจาก "สัญญา" ตามวันส่งบัญชี (summary_accounting_sent_at)
+ * แหล่งเดียวกับข้อความส่งบัญชีจริงในหน้า WaitingSummary (สลิปโอนแทบไม่ผูกเคสรายเครื่อง เลยเลิกอ่านจากสลิป)
  * ดึงร้านสดทุกครั้งที่เรียก (ไม่พึ่ง state ที่โหลด async คู่ขนาน) กันจังหวะโหลดร้านไม่ทันทำเงินหาย
  */
 async function buildDayAccountingText(date: string): Promise<string> {
-  const [slips, shops] = await Promise.all([getTransferSlipsForDay(date), getShops()])
+  const [contracts, shops] = await Promise.all([getContractsByAccountingDate(date), getShops()])
   const shopsById = new Map(shops.map((s) => [s.id, s]))
 
-  const allIds = new Set<string>()
-  for (const s of slips) for (const it of s.items) allIds.add(it.contractId)
-  const contracts = await getContractsByIds([...allIds])
-  const contractsById = new Map(contracts.map((c) => [c.id, c]))
-
-  const slipsByShop = new Map<string, TransferSlip[]>()
-  for (const s of slips) {
-    const arr = slipsByShop.get(s.shopId)
-    if (arr) arr.push(s)
-    else slipsByShop.set(s.shopId, [s])
+  const byShop = new Map<string, Contract[]>()
+  for (const c of contracts) {
+    const arr = byShop.get(c.shopId)
+    if (arr) arr.push(c)
+    else byShop.set(c.shopId, [c])
   }
 
-  const shopIds = [...slipsByShop.keys()].sort((a, b) =>
+  const shopIds = [...byShop.keys()].sort((a, b) =>
     (shopsById.get(a)?.name ?? a).localeCompare(shopsById.get(b)?.name ?? b, 'th')
   )
 
@@ -48,47 +44,17 @@ async function buildDayAccountingText(date: string): Promise<string> {
   const fallbackLines: string[] = []
 
   for (const shopId of shopIds) {
-    const shopSlips = slipsByShop.get(shopId) ?? []
+    const items = byShop.get(shopId) ?? []
     const shop = shopsById.get(shopId)
-    const shopName = shop?.name ?? shopId
-
-    const seenIds = new Set<string>()
-    const resolvedContracts: Contract[] = []
-    let unresolvedAmount = 0
-    let noItemAmount = 0
-
-    for (const s of shopSlips) {
-      if (s.items.length === 0) {
-        noItemAmount += s.amount
-        continue
-      }
-      for (const it of s.items) {
-        if (seenIds.has(it.contractId)) continue
-        seenIds.add(it.contractId)
-        const c = contractsById.get(it.contractId)
-        if (c) resolvedContracts.push(c)
-        else unresolvedAmount += it.amount
-      }
-    }
-
     if (shop) {
-      if (resolvedContracts.length > 0) groups.push({ shop, items: resolvedContracts })
-    } else if (resolvedContracts.length > 0) {
-      const shopTotalAmount = shopSlips.reduce((s, sl) => s + sl.amount, 0)
-      fallbackLines.push(
-        `ร้าน (ไม่พบข้อมูลร้าน id: ${shopId}) — ยอดโอน ${baht(shopTotalAmount)} บาท (${resolvedContracts.length} เคส)`,
-      )
-    }
-    if (noItemAmount > 0) {
-      fallbackLines.push(`ร้าน ${shopName} — โอนทั้งร้าน (ข้อมูลเดิม ไม่มีรายการเครื่อง) ยอด ${baht(noItemAmount)} บาท`)
-    }
-    if (unresolvedAmount > 0) {
-      fallbackLines.push(`ร้าน ${shopName} — พบรายการที่หาข้อมูลสัญญาไม่เจอ ยอด ${baht(unresolvedAmount)} บาท`)
+      groups.push({ shop, items })
+    } else {
+      fallbackLines.push(`ร้าน (ไม่พบข้อมูลร้าน id: ${shopId}) — ${items.length} เคส`)
     }
   }
 
   let text =
-    groups.length > 0 ? buildBulkSummary(groups, date) : `วันที่: ${thaiDate(date)}\nไม่มีรายการเครื่องที่บันทึกไว้ในวันนี้`
+    groups.length > 0 ? buildBulkSummary(groups, date) : `วันที่: ${thaiDate(date)}\nไม่มีรายการส่งบัญชีในวันนี้`
   if (fallbackLines.length > 0) text += '\n\n' + fallbackLines.join('\n')
   return text
 }
