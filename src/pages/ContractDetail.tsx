@@ -441,6 +441,11 @@ export default function ContractDetail() {
   const extraChargesSum = sumExtraCharges(extraCharges)
   const principalRemaining = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
   const totalOutstandingAmt = calcTotalOutstanding(penaltyDue, extraChargesSum, principalRemaining)
+  // การ์ดสรุปด้านบน: สัญญาปิดแล้ว (closed) = ไม่มียอดค้างจริง แม้ตารางงวดยังโชว์ pending
+  // (เคสปิดก่อนกำหนดแบบคงตารางงวด) — โชว์ 0 แทนผลรวมงวดที่ยังไม่จ่าย กันขัดกับป้าย "ปิดก่อนกำหนด"
+  // (derive สำหรับแสดงผลเท่านั้น ไม่แก้ตัวแปรเดิม/ไม่แตะ DB)
+  const displayPenaltyDue = contract.status === 'closed' ? 0 : penaltyDue
+  const displayTotalOutstandingAmt = contract.status === 'closed' ? 0 : totalOutstandingAmt
   // เงินดาวน์ (ชำระ ณ วันเริ่มสัญญา — ไม่ดันเข้า installments state)
   // หมายเหตุ: ค่าเอกสารแยกไปแสดงใน section "รายได้อื่นๆ" แทนแล้ว ไม่รวมในแถวนี้
   const _summary = contract.devicePrice
@@ -864,10 +869,10 @@ export default function ContractDetail() {
           { l: 'ค่าเช่า/เดือน', v: `${baht(contract.monthlyPayment)} ฿` },
           { l: 'งวดที่ชำระแล้ว', v: `${paidCount}/${contract.termMonths}` },
           { l: 'ชำระทุกวันที่', v: String(contract.dueDay) },
-          { l: 'ค่าปรับค้าง', v: `${baht(penaltyDue)} ฿` },
+          { l: 'ค่าปรับค้าง', v: `${baht(displayPenaltyDue)} ฿` },
           // ซ่อน "ยอดค้างรวม" เมื่อ returned — breakdown ที่ถูกต้องอยู่ด้านล่าง
           ...(returnedOutstanding === null
-            ? [{ l: 'ยอดค้างรวม', v: `${baht(totalOutstandingAmt)} ฿` }]
+            ? [{ l: 'ยอดค้างรวม', v: `${baht(displayTotalOutstandingAmt)} ฿` }]
             : []),
         ].map((x) => (
           <Card key={x.l} className="py-3">
