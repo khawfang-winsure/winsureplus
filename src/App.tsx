@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import Layout from './components/Layout'
@@ -47,6 +47,20 @@ const TransferSummary = lazy(() => import('./pages/TransferSummary'))
 const HrReport = lazy(() => import('./pages/HrReport'))
 
 export default function App() {
+  // กันบั๊ก: เลื่อนล้อเมาส์ขณะช่องตัวเลข (input[type=number]) โฟกัสอยู่ ทำให้ค่าเปลี่ยนโดยไม่ตั้งใจ
+  // เมื่อล้อเมาส์อยู่เหนือช่องตัวเลขที่กำลังโฟกัส ให้เอาโฟกัสออกก่อน (blur) เพื่อให้ล้อเมาส์เลื่อนหน้าเว็บแทน
+  // ไม่ใช้ preventDefault เพื่อไม่ให้กระทบการเลื่อนหน้าเว็บปกติ
+  useEffect(() => {
+    function handleWheelOnNumberInput(e: WheelEvent) {
+      const target = e.target
+      if (target instanceof HTMLInputElement && target.type === 'number') {
+        target.blur()
+      }
+    }
+    document.addEventListener('wheel', handleWheelOnNumberInput, { passive: true })
+    return () => document.removeEventListener('wheel', handleWheelOnNumberInput)
+  }, [])
+
   return (
     <AuthProvider>
       <Gate />
