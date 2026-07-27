@@ -35,7 +35,7 @@ Before any `git push`, ครีม assigns you to review. Your job: read the di
 
 ### Data + Migrations
 - [ ] Migration numbered correctly (next in sequence)
-- [ ] Migration is additive — no `drop column`, no `drop table` (unless Pete approved)
+- [ ] Migration is additive — no `drop column`, no `drop table` (unless คุณเตย approved)
 - [ ] If new table in `public` schema → grants inherited from 0017 default privileges (verify: `has_table_privilege('service_role', '<table>', 'SELECT')`)
 - [ ] If new column added → `mapXRow` updated in `db.ts` + new field in `src/lib/types.ts`
 - [ ] If new field is PII (id card, phone, address) → mask helper in `src/lib/format.ts` + list display uses mask, detail page can show full
@@ -46,7 +46,7 @@ Before any `git push`, ครีม assigns you to review. Your job: read the di
 - [ ] Rounding: `Math.round` (not `Math.floor` or `Math.ceil`) for amounts
 - [ ] Due date clamp: month-end handling
 
-### Patterns Pete locked (don't regress)
+### Patterns the owner locked (don't regress)
 - [ ] Settings dual-nav (sidebar submenu + page tabs) — both still work
 - [ ] Finance section toggle (manual / rate) — rate mode keeps 3 fields read-only
 - [ ] National ID masking — list shows masked, detail shows full

@@ -1,13 +1,13 @@
 # CLAUDE.md
 
-ไฟล์นี้บอกแนวทางให้ Claude Code (claude.ai/code) ทำงานในโปรเจกต์นี้ — Pete (เจ้าของ) อ่านได้เพื่อรู้ว่าตอนนี้กฎอะไรล็อกอยู่บ้าง
+ไฟล์นี้บอกแนวทางให้ Claude Code (claude.ai/code) ทำงานในโปรเจกต์นี้ — คุณเตย (เจ้าของ) อ่านได้เพื่อรู้ว่าตอนนี้กฎอะไรล็อกอยู่บ้าง
 
 ## โปรเจกต์
 
 **WIN SURE PLUS** — เว็บติดตามลูกค้าผ่อน iPhone ผ่านร้านพาร์ทเนอร์ มาแทน Google Sheets หลายชีต กรอกครั้งเดียวได้ครบ: ข้อมูลลูกค้า, สรุปยอดโอนให้ร้าน, ข้อความอีเมล, ติดตามค่างวด, จัดกลุ่มลูกค้าล่าช้า, รายงานวัดผลร้าน
 
-- เจ้าของ: **พี่พิธ** (non-coder) — เคยให้แฟน **เตย** ดูแลฝั่ง infra
-- ตอนนี้ Cream มีสิทธิ์ Supabase + Vercel MCP เต็ม — จัดการ deploy / migration / env / Edge Function ตรงผ่าน MCP เลย **ไม่ต้องสอนพี่ทำ manual**
+- เจ้าของ: **คุณเตย** (non-coder) — เจ้าของคนเดียว ตัดสินใจทั้งฝั่งธุรกิจและระบบ (รับช่วงต่อ 2026-07-27; ก่อนหน้านี้เจ้าของคือพี่พิธ — โน้ต/โค้ดเก่าที่อ้าง "Pete" คือประวัติ ไม่ใช่คนตัดสินใจปัจจุบัน)
+- ตอนนี้ Cream มีสิทธิ์ Supabase + Vercel MCP เต็ม — จัดการ deploy / migration / env / Edge Function ตรงผ่าน MCP เลย **ไม่ต้องสอนคุณเตยทำ manual**
 
 ## 🚨 กฎ 0: ครีมห้ามเขียน source code (locked 2026-06-11)
 
@@ -26,9 +26,9 @@
 
 **ทำไม:** context ของครีมแชร์ทั้ง session ถ้าอ่าน/แก้ code มากๆ จะหลอน + ใช้ Chrome MCP / Supabase MCP ผิด. ให้ specialist รับภาระอ่านไฟล์หนักๆ ครีมสงวน context ไว้ orchestrate. รายละเอียดเต็มที่ [[feedback-no-solo-code]]
 
-## ขออนุมัติ Pete ก่อน push ทุกครั้ง
+## ขออนุมัติคุณเตย ก่อน push ทุกครั้ง
 
-ก่อน `git push` ทุกรอบ ครีมต้องสรุปสั้นๆ ว่ากำลังจะ deploy อะไร → รอ ✓ จากพี่ → ค่อย push. **ไม่มีการอนุมัติเหมาๆ ล่วงหน้า** หลัง Vercel = Ready ต้อง smoke test บน prod ตาม checklist ด้านล่าง
+ก่อน `git push` ทุกรอบ ครีมต้องสรุปสั้นๆ ว่ากำลังจะ deploy อะไร → รอ ✓ จากคุณเตย → ค่อย push. **ไม่มีการอนุมัติเหมาๆ ล่วงหน้า** หลัง Vercel = Ready ต้อง smoke test บน prod ตาม checklist ด้านล่าง
 
 ## Checklist ก่อนถือว่า "เสร็จ" (Deploy)
 
@@ -78,7 +78,7 @@ npm run build      # tsc -b && vite build — ต้องผ่านก่อ�
 
 **Auth** — `src/lib/auth.tsx` มี `AuthProvider` ครอบทั้งแอป, `useAuth()` คืน `{ session, role: 'admin' | 'staff', name, configured, signIn, signOut }`. role มาจาก `profiles.role` (มี RLS คุม). route สำหรับ admin ต้อง guard 2 ชั้น: ใน `App.tsx` (`isAdmin ? <Page/> : <Navigate />`) **และ** ใน `src/components/nav.ts` (`adminOnly: true`) — Sidebar กรอง 2 ระดับ
 
-**Routing** — `App.tsx` ใช้ `react-router-dom v6`. Settings เป็น nested route เดียว: `/settings/:cat` (cat ∈ shops/device/job/promo/rates/users). page อ่าน `useParams().cat`. NAV ที่ `nav.ts` กำหนดลำดับ icon admin gate submenu. Settings ใช้ sidebar submenu เป็นทางเดียว (tab bar ในหน้าถูกลบ 2026-06-14 ตาม Pete sign-off — ไม่ต้อง dual nav อีกแล้ว)
+**Routing** — `App.tsx` ใช้ `react-router-dom v6`. Settings เป็น nested route เดียว: `/settings/:cat` (cat ∈ shops/device/job/promo/rates/users). page อ่าน `useParams().cat`. NAV ที่ `nav.ts` กำหนดลำดับ icon admin gate submenu. Settings ใช้ sidebar submenu เป็นทางเดียว (tab bar ในหน้าถูกลบ 2026-06-14 ตาม sign-off เจ้าของ — ไม่ต้อง dual nav อีกแล้ว)
 
 **เรตผ่อน** — สัญญาไม่เก็บตัวคูณ เก็บแค่ผลลัพธ์ (`financeAmount`, `monthlyPayment`, `termMonths`). `app_settings.installment_rate_sets` เก็บชุดเรต/จำนวนงวด. `AddContract.tsx` ให้สลับ manual entry (ข้อมูลเก่าที่ไม่รู้ตัวคูณ) ↔ rate-driven (สัญญาใหม่). ปัดเศษด้วย `Math.round` (0.5 ขึ้นไปขึ้น)
 
@@ -106,13 +106,13 @@ Claude-in-Chrome MCP เป็นเครื่องมือหลัก — 
 
 ## Style / Voice
 
-global `~/.claude/CLAUDE.md` ของพี่กำหนด Cream persona (ไทย, ครีม, ตอบไทย, ลงท้าย ค่ะ/คะ, เรียกพี่ "พี่พิธ"). global ทับ default behavior — **ห้าม override จากไฟล์นี้** ไฟล์นี้คือ technical layer เท่านั้น
+global `~/.claude/CLAUDE.md` ของคุณเตยกำหนด Cream persona (ไทย, ครีม, ตอบไทย, ลงท้าย ค่ะ/คะ, เรียกเจ้าของว่า "คุณเตย"). global ทับ default behavior — **ห้าม override จากไฟล์นี้** ไฟล์นี้คือ technical layer เท่านั้น
 
-## รายงาน Pete = ภาษาคนใช้เว็บ (locked 2026-06-13)
+## รายงานคุณเตย = ภาษาคนใช้เว็บ (locked 2026-06-13)
 
-Pete เป็น non-coder — รายงาน/สรุปต้องเป็นภาษาที่ "คนทั่วไปที่ใช้เว็บเป็น" อ่านแล้วเข้าใจ ห้ามใช้ศัพท์ technical กับ Pete
+คุณเตยเป็น non-coder — รายงาน/สรุปต้องเป็นภาษาที่ "คนทั่วไปที่ใช้เว็บเป็น" อ่านแล้วเข้าใจ ห้ามใช้ศัพท์ technical กับคุณเตย
 
-**ห้ามใช้คำเหล่านี้กับ Pete:** bundle / chunk / code splitting / TypeScript / RLS / PostgREST / cap / migration ชื่อเลข / view / trigger / cron / Edge Function ชื่อ / commit hash / kebab-case / snake_case / camelCase
+**ห้ามใช้คำเหล่านี้กับคุณเตย:** bundle / chunk / code splitting / TypeScript / RLS / PostgREST / cap / migration ชื่อเลข / view / trigger / cron / Edge Function ชื่อ / commit hash / kebab-case / snake_case / camelCase
 
 **ใช้แทน (mapping):**
 - bundle 700 kB → "เว็บโหลดช้า เพราะไฟล์รวมใหญ่"
@@ -123,7 +123,7 @@ Pete เป็น non-coder — รายงาน/สรุปต้องเ�
 - TS strict → "ตรวจโค้ดเข้ม"
 - promise_to_pay_date → "วันสัญญาจะจ่าย"
 
-**Mental model Pete:** อ่านเหมือนพี่อ่าน Sheets — ผลกระทบเชิงธุรกิจ + UX + เวลา + ลูกค้า, ไม่ใช่กลไก infra. ครีม/specialists คุยกันเอง = ใช้ technical ได้ แต่ **report กลับ Pete = แปลทุกครั้ง**
+**Mental model คุณเตย:** อ่านเหมือนอ่าน Sheets — ผลกระทบเชิงธุรกิจ + UX + เวลา + ลูกค้า, ไม่ใช่กลไก infra. ครีม/specialists คุยกันเอง = ใช้ technical ได้ แต่ **report กลับคุณเตย = แปลทุกครั้ง**
 
 รายละเอียดเต็มที่ [[feedback-plain-thai-reports]]
 
@@ -139,4 +139,4 @@ Pete เป็น non-coder — รายงาน/สรุปต้องเ�
 - bundle ~650 kB — code-splitting อยู่ใน backlog ไม่ใช่ priority
 - หลาย page query contracts ทั้งหมดด้วย `select('*')` แล้ว filter ฝั่ง client. `national_id` ส่งถึง browser พนักงานทุกคน แต่ render-time mask ด้วย `maskNationalId` ใน `format.ts`. "secure PII ที่ API layer" รู้แล้วแต่ยังไม่ทำ
 - ข้อมูลทดสอบ/seed อยู่ใน DB production จริง (สัญญาชื่อ `TESTQ-*` ฯลฯ) — ห้ามลบ verify ก่อน mutate
-- `ExtendModal` คิดดอกซ้อน → **Pete locked 2026-06-13: ต้องแก้** ใช้ `principal_remaining` (เงินต้นค้าง ไม่รวมดอก/ค่าปรับสะสม) เป็นต้นคูณเรตใหม่. รายละเอียดที่ [[pete-tactical-fixes-locked]]
+- `ExtendModal` คิดดอกซ้อน → **ล็อกไว้ 2026-06-13: ต้องแก้** ใช้ `principal_remaining` (เงินต้นค้าง ไม่รวมดอก/ค่าปรับสะสม) เป็นต้นคูณเรตใหม่. รายละเอียดที่ [[pete-tactical-fixes-locked]]

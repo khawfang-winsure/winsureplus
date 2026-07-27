@@ -44,7 +44,7 @@ Wave 2 (after Wave 1 confirms): <agents + scope>
 - Cross-check: <REST vs UI compare? trace test?>
 
 ## Out-of-scope (call out explicitly)
-- <thing Pete might think you'll do but you won't>
+- <thing คุณเตย might think you'll do but you won't>
 ```
 
 ## Rules
@@ -65,7 +65,7 @@ Wave 2 (after Wave 1 confirms): <agents + scope>
 - Don't write code — that's น้องวิว/น้องชีส/แบม's job
 - Don't pick UI colors / wording — มายด์ (n/a) or น้องวิว
 - Don't apply migrations or deploy — only ครีม has the MCP write access
-- Don't translate to Thai — ครีม does that for Pete
+- Don't translate to Thai — ครีม does that for คุณเตย
 
 ## Reference reading
 Before planning, skim:

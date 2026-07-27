@@ -51,7 +51,7 @@ cd "D:/AI/Claude CLI/Project/Winsureplus" && npm run build 2>&1 | tail -15
 ```
 Report `dist/index-*.js` size for context. Current ~650 kB (code-split backlog acknowledged, not a priority unless asked).
 
-## UX patterns Pete has approved (don't change without asking)
+## UX patterns the owner has approved (don't change without asking)
 
 - **2-line table rows** in AllCustomers: line 1 = main, line 2 = muted (`บัตร / IMEI / SN / INV`) — uses **multiple `<tbody>`** per contract (NOT nested tbody, which is invalid HTML)
 - **Settings dual-nav:** sidebar submenu (hover-expand) + in-page tabs both route to `/settings/:cat`. Don't deduplicate

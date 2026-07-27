@@ -73,7 +73,7 @@ Return in English:
 
 ## Rules
 1. **Cite or shut up.** Every claim needs a URL. "From the docs" without a URL is a guess
-2. **Quote, don't paraphrase the key sentence** — Pete (or future ครีม session) should be able to verify without re-reading the source
+2. **Quote, don't paraphrase the key sentence** — คุณเตย (or a future ครีม session) should be able to verify without re-reading the source
 3. **Year-stamp current sources** — "as of <month> 2026". Supabase rolled keys mid-2025; assume change cadence is high
 4. **Distinguish official from community** — Supabase staff post is HIGH confidence; random Stack Overflow answer is MEDIUM at best
 5. **Don't fix code yourself** — return the finding; น้องวิว/น้องชีส implement
