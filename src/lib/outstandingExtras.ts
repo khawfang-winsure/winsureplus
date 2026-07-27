@@ -45,9 +45,13 @@ export interface OutstandingAfterReturnResult {
   } | null                   // null = ไม่มีงวดค้าง
 }
 
+// returnDate: วันที่คืนเครื่อง (yyyy-mm-dd) ใช้กัน "งวดในอนาคต" ไม่ให้โดนนับเป็นยอดตามเก็บ
+//   - null = ไม่รู้วันคืน หรือวันคืนไม่น่าเชื่อถือ (ก่อน RETURN_DATE_RELIABLE_FROM) → ไม่ apply filter (พฤติกรรมเดิม)
+//   - ไม่ null และงวดเก่าสุดที่ยังไม่จ่าย ครบกำหนด "หลัง" วันคืน → ลูกค้ายังไม่ค้างจริง (คืนก่อนถึงกำหนด) → งวด+ค่าปรับ = 0 (ค่าซ่อม/extras อื่นยังบวกตามเดิม)
 export function outstandingAfterReturn(
   installments: Installment[],
   extras: ExtraCharge[],
+  returnDate: string | null = null,
 ): OutstandingAfterReturnResult {
   const zeros: OutstandingAfterReturnResult = {
     installmentAmount: 0,
@@ -68,8 +72,17 @@ export function outstandingAfterReturn(
   )
 
   // 3) คำนวณค่างวดที่ยังค้าง (กัน partial-pay)
-  const installmentAmount = Math.max(0, oldest.amount - (oldest.paidAmount || 0))
-  const penaltyAmount = oldest.penaltyAmount || 0
+  //    ถ้ารู้วันคืนแน่นอน (returnDate ไม่ null) และงวดเก่าสุดครบกำหนด "หลัง" วันคืน
+  //    → ลูกค้าคืนเครื่องก่อนถึงกำหนดงวดนี้ ยังไม่ถือว่าค้าง → งวด+ค่าปรับ = 0
+  let installmentAmount: number
+  let penaltyAmount: number
+  if (returnDate != null && oldest.dueDate > returnDate) {
+    installmentAmount = 0
+    penaltyAmount = 0
+  } else {
+    installmentAmount = Math.max(0, oldest.amount - (oldest.paidAmount || 0))
+    penaltyAmount = oldest.penaltyAmount || 0
+  }
 
   // 4) แยก extras ค่าซ่อม vs อื่นๆ
   const repairCost = extras

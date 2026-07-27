@@ -94,6 +94,10 @@ const DEFAULT_SETTINGS: AppSettings = { docFee: 100, penaltyPerDay: 100, penalty
  *  ใช้ .range(0, PAGE_CAP) บน query ที่ return list (ไม่ใช่ .single() / .maybeSingle() / count) */
 const PAGE_CAP = 4999
 
+/** ก่อน 2 ก.ค. 2026 device_returns.created_at = วันนำเข้า/สร้างแถว ไม่ใช่วันคืนจริง (import ครั้งเดียว)
+ *  → เคสที่ returnedAt < ค่านี้ ห้ามใช้เป็น anchor วันคืน (ทั้ง "คืนมากี่วัน" และ collectible-remaining gate) */
+export const RETURN_DATE_RELIABLE_FROM = '2026-07-02'
+
 /**
  * ดึงข้อมูลทั้งตาราง/view แบบวนหน้า (loop .range ทีละ PAGE_CAP+1 แถว จนกว่าจะได้แถวไม่เต็มหน้า)
  * ใช้กับ query ที่ "ไม่มี filter" ช่วยลดจำนวนแถวให้ต่ำกว่า PAGE_CAP แน่นอน — เดี่ยว .range(0, PAGE_CAP)
@@ -1112,6 +1116,24 @@ export async function closeReturnedContract(contractId: string, byName: string):
     p_by: byName,
   })
   if (error) throw error
+}
+
+/** วันที่คืนเครื่องล่าสุดของสัญญา (yyyy-mm-dd Bangkok) — ใช้เป็น returnDate gate ใน outstandingAfterReturn
+ *  ⚠️ ไม่ gate ด้วย RETURN_DATE_RELIABLE_FROM ในนี้ — caller ต้องเช็คเอง (เพราะก่อนวันนั้น created_at = วันนำเข้า ไม่ใช่วันคืนจริง)
+ *  ถ้ามีหลายแถว (เคยยกเลิก/คืนซ้ำ) เอาแถวล่าสุด (order by created_at desc); ไม่มีแถวเลย → null */
+export async function getContractReturnDate(contractId: string): Promise<string | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('device_returns')
+    .select('created_at')
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.created_at) return null
+  // แปลง timestamptz → วันที่ Bangkok (UTC+7) ตัดเวลาออก (mirror pattern เดียวกับ buildFreelancerQueueRows)
+  return new Date(new Date(data.created_at).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10)
 }
 
 /** ข้อมูลเช็คก่อนลบสัญญา — ใช้โชว์คำเตือนหนักๆ ที่ UI ก่อนกดยืนยันลบ (0095)
@@ -3645,27 +3667,41 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
   // โหลด installments + extra_charges เฉพาะสัญญา returned (จำนวนน้อย) แบบ batch in-filter
   // → ไม่ N+1; ถ้าไม่มี returned เลย ข้ามทั้งสอง query
   // ก่อน 2 ก.ค. 2026 device_returns.created_at = วันนำเข้า/สร้างแถว ไม่ใช่วันคืนจริง
-  // → เคสคืนเก่านับจากวันครบงวดค้างแทน; ตั้งแต่ 2 ก.ค. ไปวันคืนจริงเชื่อถือได้
-  const RETURN_DATE_RELIABLE_FROM = '2026-07-02'
+  // → เคสคืนเก่านับจากวันครบงวดค้างแทน; ตั้งแต่ 2 ก.ค. ไปวันคืนจริงเชื่อถือได้ (ดู RETURN_DATE_RELIABLE_FROM module-level)
   const returnedIds = statusRows.filter((r) => r.status === 'returned').map((r) => r.contract_id)
   const returnClosingMap = new Map<string, number>()
   const overdueDueDateMap = new Map<string, string>() // contract_id → due_date งวดค้างเก่าสุด
+  // returnedAtMap ต้องดึงมาก่อน (ไม่ใช่หลัง) เพราะใช้เป็น returnDate gate ใน outstandingAfterReturn ด้านล่าง
+  // (เดิม query นี้อยู่หลังบล็อกนี้ — ย้ายขึ้นมาให้พร้อมใช้ตอนคำนวณ returnClosingAmount)
+  const returnedAtMap = new Map<string, string>() // contract_id → yyyy-mm-dd (Bangkok)
   if (returnedIds.length > 0) {
-    const [{ data: retInstData, error: retInstErr }, { data: retExtraData, error: retExtraErr }] =
-      await Promise.all([
-        supabase
-          .from('installments')
-          .select('contract_id, id, installment_no, due_date, amount, paid_at, paid_amount, paid_by_name, penalty_days, penalty_amount, status')
-          .in('contract_id', returnedIds)
-          .range(0, PAGE_CAP),
-        supabase
-          .from('extra_charges')
-          .select('id, contract_id, amount, reason, created_at, created_by')
-          .in('contract_id', returnedIds)
-          .range(0, PAGE_CAP),
-      ])
+    const [
+      { data: retInstData, error: retInstErr },
+      { data: retExtraData, error: retExtraErr },
+      { data: drData, error: drErr },
+    ] = await Promise.all([
+      supabase
+        .from('installments')
+        .select('contract_id, id, installment_no, due_date, amount, paid_at, paid_amount, paid_by_name, penalty_days, penalty_amount, status')
+        .in('contract_id', returnedIds)
+        .range(0, PAGE_CAP),
+      supabase
+        .from('extra_charges')
+        .select('id, contract_id, amount, reason, created_at, created_by')
+        .in('contract_id', returnedIds)
+        .range(0, PAGE_CAP),
+      // ดึง created_at (วันที่สร้างแถวคืนเครื่อง) — ใช้เป็น "วันที่คืน" ตาม pattern เดียวกับ v_device_return_report (mig 0073)
+      // ถ้า 1 สัญญามีหลายแถว device_returns (เคยยกเลิก/คืนซ้ำ) เอาแถวล่าสุด (order by created_at desc)
+      supabase
+        .from('device_returns')
+        .select('contract_id, created_at')
+        .in('contract_id', returnedIds)
+        .order('created_at', { ascending: false })
+        .range(0, PAGE_CAP),
+    ])
     if (retInstErr) throw retInstErr
     if (retExtraErr) throw retExtraErr
+    if (drErr) throw drErr
 
     // group installments per contract → domain Installment (ผ่าน mapInstallment)
     const instByContract = new Map<string, Installment[]>()
@@ -3683,10 +3719,24 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
       arr.push(mapExtraCharge(row))
       extraByContract.set(row.contract_id, arr)
     }
+    // dedup ใน JS ทำงานถูกต้องเพราะ order created_at desc → แถวแรกที่เจอต่อ contract = คืนล่าสุดเสมอ
+    for (const dr of (drData ?? []) as { contract_id: string; created_at: string }[]) {
+      if (returnedAtMap.has(dr.contract_id)) continue
+      // แปลง timestamptz → วันที่ Bangkok (UTC+7) ตัดเวลาออก
+      const bkkDate = new Date(new Date(dr.created_at).getTime() + 7 * 3600 * 1000)
+        .toISOString()
+        .slice(0, 10)
+      returnedAtMap.set(dr.contract_id, bkkDate)
+    }
     for (const cid of returnedIds) {
+      // returnDate gate: ใช้วันคืนได้ก็ต่อเมื่อ >= RETURN_DATE_RELIABLE_FROM (เคสก่อนหน้านั้น created_at = วันนำเข้า ไม่ใช่วันคืนจริง)
+      // ไม่เชื่อถือได้ → ส่ง null คงพฤติกรรมเดิม (ไม่ apply filter งวดอนาคต)
+      const retAt = returnedAtMap.get(cid) ?? null
+      const reliableReturnDate = retAt !== null && retAt >= RETURN_DATE_RELIABLE_FROM ? retAt : null
       const result = outstandingAfterReturn(
         instByContract.get(cid) ?? [],
         extraByContract.get(cid) ?? [],
+        reliableReturnDate,
       )
       returnClosingMap.set(cid, result.total)
       // ดึง due_date ของงวดค้างเก่าสุดจาก result.details (reuse ผลเดิม ไม่ N+1)
@@ -3861,32 +3911,7 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
     fuMap.set(fu.contract_id, agg)
   }
 
-  // --- วันที่คืนเครื่อง (returnedAt) ---
-  // batch query device_returns เฉพาะ returnedIds — ดึง created_at (วันที่สร้างแถวคืนเครื่อง)
-  // ซึ่งใช้เป็น "วันที่คืน" ตาม pattern เดียวกับ v_device_return_report (mig 0073)
-  // ถ้า 1 สัญญามีหลายแถว device_returns (เคยยกเลิก/คืนซ้ำ) → เอาแถวล่าสุด (order by created_at desc)
-  const returnedAtMap = new Map<string, string>() // contract_id → yyyy-mm-dd (Bangkok)
-  if (returnedIds.length > 0) {
-    // สมมติฐาน cap: เคสคืนเครื่องในคิวจะน้อยกว่า PAGE_CAP (~4999) มาก (ปกติไม่กี่สิบรายต่อครั้ง)
-    // dedup ใน JS ทำงานถูกต้องเพราะ order created_at desc → แถวแรกที่เจอต่อ contract = คืนล่าสุดเสมอ
-    // ถ้า device_returns โตจนใกล้ cap ต้องเปลี่ยนเป็น DISTINCT ON (contract_id) ฝั่ง DB แทน
-    const { data: drData, error: drErr } = await supabase
-      .from('device_returns')
-      .select('contract_id, created_at')
-      .in('contract_id', returnedIds)
-      .order('created_at', { ascending: false })
-      .range(0, PAGE_CAP)
-    if (drErr) throw drErr
-    for (const dr of (drData ?? []) as { contract_id: string; created_at: string }[]) {
-      // เก็บแค่แถวแรก (ล่าสุด) ต่อ contract เพราะ order desc + เราข้ามถ้ามีแล้ว
-      if (returnedAtMap.has(dr.contract_id)) continue
-      // แปลง timestamptz → วันที่ Bangkok (UTC+7) ตัดเวลาออก
-      const bkkDate = new Date(new Date(dr.created_at).getTime() + 7 * 3600 * 1000)
-        .toISOString()
-        .slice(0, 10)
-      returnedAtMap.set(dr.contract_id, bkkDate)
-    }
-  }
+  // returnedAtMap ถูกดึงไปแล้วด้านบน (รวมกับ query returnClosingAmount เพื่อไม่ query ซ้ำ) — ใช้ต่อด้านล่าง
 
   // กรองทิ้งเคส returned ที่ยอดปิด ≤ 0 (ไม่มีอะไรต้องเก็บ = ไม่ต้องเด้งคิว)
   // เคส active คงเดิมทุกแถว

@@ -63,6 +63,8 @@ import {
   type PenaltyOverrideHistoryEntry,
   getContractAddresses,
   type ContractAddresses,
+  getContractReturnDate,
+  RETURN_DATE_RELIABLE_FROM,
 } from '../lib/db'
 import {
   activeRateSets,
@@ -206,6 +208,9 @@ export default function ContractDetail() {
   const [rateSets, setRateSets] = useState<RateSet[]>([])
   const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
   const [otherIncomeItems, setOtherIncomeItems] = useState<OtherIncome[]>([])
+  // วันที่คืนเครื่องล่าสุด (yyyy-mm-dd Bangkok) — null ถ้าไม่ใช่เคสคืน/ไม่มีแถว device_returns
+  // ใช้เป็น returnDate gate ใน outstandingAfterReturn (ดู RETURN_DATE_RELIABLE_FROM reliability check ด้านล่าง)
+  const [returnDate, setReturnDate] = useState<string | null>(null)
   const [addOtherIncomeOpen, setAddOtherIncomeOpen] = useState(false)
   // preset ตอนเปิด modal เพิ่มรายได้จาก banner (ลงค่าธรรมเนียม) — category + fee_kind
   const [addOtherIncomePreset, setAddOtherIncomePreset] = useState<{ category: string; feeKind: FeeKind | null } | null>(null)
@@ -288,7 +293,7 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec, poh, oi, fr] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec, poh, oi, fr, rd] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
@@ -298,6 +303,7 @@ export default function ContractDetail() {
       getPenaltyOverrideHistory(id),
       getOtherIncome(id),
       getContractFeeReconcile(id),
+      getContractReturnDate(id),
     ])
     setContract(c)
     setInstallments(ins)
@@ -308,6 +314,7 @@ export default function ContractDetail() {
     setPenaltyOverrideHistory(poh)
     setOtherIncomeItems(oi)
     setFeeReconcile(fr)
+    setReturnDate(rd)
     setLoading(false)
   }, [id])
 
@@ -455,8 +462,12 @@ export default function ContractDetail() {
   const downRowDate = contract.transactionDate ?? installments[0]?.dueDate
   // ยอดคงค้างหลังคืนเครื่อง (แสดงแทน totalOutstanding เมื่อคืนเครื่อง — ทั้งยังตามเก็บ + ปิดเคสแล้ว)
   const isReturned = contract.status === 'returned' || contract.status === 'returned_closed'
+  // returnDate gate: ใช้วันคืนได้ก็ต่อเมื่อ >= RETURN_DATE_RELIABLE_FROM (เคสก่อนหน้านั้น created_at = วันนำเข้า ไม่ใช่วันคืนจริง)
+  // ไม่เชื่อถือได้/ไม่มีแถว → ส่ง null คงพฤติกรรมเดิม (ไม่ apply filter งวดอนาคต)
+  const reliableReturnDate =
+    returnDate !== null && returnDate >= RETURN_DATE_RELIABLE_FROM ? returnDate : null
   const returnedOutstanding: OutstandingAfterReturnResult | null =
-    isReturned ? outstandingAfterReturn(installments, extraCharges) : null
+    isReturned ? outstandingAfterReturn(installments, extraCharges, reliableReturnDate) : null
   // เลขงวดค้างเก่าสุด = งวดเดียวที่ยังตามเก็บตามกฎคืนเครื่อง
   const oldestUnpaidNo = returnedOutstanding?.details?.installmentNo ?? null
 
