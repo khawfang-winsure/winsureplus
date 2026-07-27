@@ -36,8 +36,8 @@ export function totalOutstanding(
 export interface OutstandingAfterReturnResult {
   installmentAmount: number   // ค่างวดเก่าสุดที่ค้าง (หักส่วนที่จ่ายบางส่วนแล้ว)
   penaltyAmount: number       // ค่าปรับของงวดนั้น
-  repairCost: number          // ค่าซ่อม (extras ที่ reason มี 'ซ่อม')
-  otherExtras: number         // extras อื่นๆ ที่ไม่ใช่ค่าซ่อม
+  repairCost: number          // ค่าซ่อม จาก device_returns.repair_fee ที่ caller ส่งเข้ามา
+  otherExtras: number         // extras อื่นๆ ทั้งหมด (ไม่มี extra_charges reason='ซ่อม' ในระบบ)
   total: number               // รวมทั้งหมด
   details: {
     installmentNo: number     // เลขงวด
@@ -48,50 +48,47 @@ export interface OutstandingAfterReturnResult {
 // returnDate: วันที่คืนเครื่อง (yyyy-mm-dd) ใช้กัน "งวดในอนาคต" ไม่ให้โดนนับเป็นยอดตามเก็บ
 //   - null = ไม่รู้วันคืน หรือวันคืนไม่น่าเชื่อถือ (ก่อน RETURN_DATE_RELIABLE_FROM) → ไม่ apply filter (พฤติกรรมเดิม)
 //   - ไม่ null และงวดเก่าสุดที่ยังไม่จ่าย ครบกำหนด "หลัง" วันคืน → ลูกค้ายังไม่ค้างจริง (คืนก่อนถึงกำหนด) → งวด+ค่าปรับ = 0 (ค่าซ่อม/extras อื่นยังบวกตามเดิม)
+// repairFee: ค่าซ่อมของเคสคืนเครื่องนี้ (device_returns.repair_fee) — caller ต้องดึงมาส่งเข้ามาเอง
 export function outstandingAfterReturn(
   installments: Installment[],
   extras: ExtraCharge[],
+  repairFee: number,
   returnDate: string | null = null,
 ): OutstandingAfterReturnResult {
-  const zeros: OutstandingAfterReturnResult = {
-    installmentAmount: 0,
-    penaltyAmount: 0,
-    repairCost: 0,
-    otherExtras: 0,
-    total: 0,
-    details: null,
-  }
-
   // 1) รวบรวมงวดที่ยังไม่ได้จ่าย (paidAt === null คือ discriminator หลัก)
   const unpaid = installments.filter(i => i.paidAt === null)
-  if (unpaid.length === 0) return zeros
 
-  // 2) หางวดเก่าสุด = min dueDate (ISO YYYY-MM-DD เปรียบ lexical ได้)
-  const oldest = unpaid.reduce((min, i) =>
-    (i.dueDate < min.dueDate ? i : min)
-  )
+  let installmentAmount = 0
+  let penaltyAmount = 0
+  let details: OutstandingAfterReturnResult['details'] = null
 
-  // 3) คำนวณค่างวดที่ยังค้าง (กัน partial-pay)
-  //    ถ้ารู้วันคืนแน่นอน (returnDate ไม่ null) และงวดเก่าสุดครบกำหนด "หลัง" วันคืน
-  //    → ลูกค้าคืนเครื่องก่อนถึงกำหนดงวดนี้ ยังไม่ถือว่าค้าง → งวด+ค่าปรับ = 0
-  let installmentAmount: number
-  let penaltyAmount: number
-  if (returnDate != null && oldest.dueDate > returnDate) {
-    installmentAmount = 0
-    penaltyAmount = 0
-  } else {
-    installmentAmount = Math.max(0, oldest.amount - (oldest.paidAmount || 0))
-    penaltyAmount = oldest.penaltyAmount || 0
+  if (unpaid.length > 0) {
+    // 2) หางวดเก่าสุด = min dueDate (ISO YYYY-MM-DD เปรียบ lexical ได้)
+    const oldest = unpaid.reduce((min, i) =>
+      (i.dueDate < min.dueDate ? i : min)
+    )
+
+    // 3) คำนวณค่างวดที่ยังค้าง (กัน partial-pay)
+    //    ถ้ารู้วันคืนแน่นอน (returnDate ไม่ null) และงวดเก่าสุดครบกำหนด "หลัง" วันคืน
+    //    → ลูกค้าคืนเครื่องก่อนถึงกำหนดงวดนี้ ยังไม่ถือว่าค้าง → งวด+ค่าปรับ = 0
+    if (returnDate != null && oldest.dueDate > returnDate) {
+      installmentAmount = 0
+      penaltyAmount = 0
+    } else {
+      installmentAmount = Math.max(0, oldest.amount - (oldest.paidAmount || 0))
+      penaltyAmount = oldest.penaltyAmount || 0
+    }
+
+    details = {
+      installmentNo: oldest.installmentNo,
+      dueDate: oldest.dueDate,
+    }
   }
 
-  // 4) แยก extras ค่าซ่อม vs อื่นๆ
-  const repairCost = extras
-    .filter(e => e.reason.includes('ซ่อม'))
-    .reduce((s, e) => s + (e.amount || 0), 0)
-
-  const otherExtras = extras
-    .filter(e => !e.reason.includes('ซ่อม'))
-    .reduce((s, e) => s + (e.amount || 0), 0)
+  // 4) ค่าซ่อม = repair_fee (canonical จาก device_returns) + extras อื่นๆ ทั้งหมด
+  //    ไม่มีงวดค้างก็ยังต้องคิดค่าซ่อม/extras ต่อ (เดิม return zeros ทิ้งไปหมด = บั๊ก)
+  const repairCost = Math.max(0, repairFee || 0)
+  const otherExtras = extras.reduce((s, e) => s + (e.amount || 0), 0)
 
   const total = installmentAmount + penaltyAmount + repairCost + otherExtras
 
@@ -101,9 +98,6 @@ export function outstandingAfterReturn(
     repairCost,
     otherExtras,
     total,
-    details: {
-      installmentNo: oldest.installmentNo,
-      dueDate: oldest.dueDate,
-    },
+    details,
   }
 }

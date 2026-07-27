@@ -212,6 +212,8 @@ export default function ContractDetail() {
   // gate ด้วย RETURN_DATE_RELIABLE_FROM ก่อนส่งเข้า outstandingAfterReturn (กันหยิบงวดครบกำหนดหลังวันคืนมาคิดเป็นยอดตามเก็บ)
   const [returnDate, setReturnDate] = useState<string | null>(null)
   const [otherIncomeItems, setOtherIncomeItems] = useState<OtherIncome[]>([])
+  // ค่าซ่อมของเคสคืนล่าสุด (device_returns.repair_cost/repair_fee) — ส่งเข้า outstandingAfterReturn
+  const [repairFee, setRepairFee] = useState<number>(0)
   const [addOtherIncomeOpen, setAddOtherIncomeOpen] = useState(false)
   // preset ตอนเปิด modal เพิ่มรายได้จาก banner (ลงค่าธรรมเนียม) — category + fee_kind
   const [addOtherIncomePreset, setAddOtherIncomePreset] = useState<{ category: string; feeKind: FeeKind | null } | null>(null)
@@ -323,7 +325,8 @@ export default function ContractDetail() {
     setOtherIncomeItems(oi)
     setFeeReconcile(fr)
     setCloseEvent(ce)
-    setReturnDate(rd)
+    setReturnDate(rd.returnDate)
+    setRepairFee(rd.repairFee)
     setLoading(false)
   }, [id])
 
@@ -476,7 +479,7 @@ export default function ContractDetail() {
   const reliableReturnDate =
     returnDate !== null && returnDate >= RETURN_DATE_RELIABLE_FROM ? returnDate : null
   const returnedOutstanding: OutstandingAfterReturnResult | null =
-    isReturned ? outstandingAfterReturn(installments, extraCharges, reliableReturnDate) : null
+    isReturned ? outstandingAfterReturn(installments, extraCharges, repairFee, reliableReturnDate) : null
   // เลขงวดค้างเก่าสุด = งวดเดียวที่ยังตามเก็บตามกฎคืนเครื่อง
   const oldestUnpaidNo = returnedOutstanding?.details?.installmentNo ?? null
 

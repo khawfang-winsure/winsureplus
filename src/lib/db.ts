@@ -1222,22 +1222,29 @@ export async function closeReturnedContract(contractId: string, byName: string):
   if (error) throw error
 }
 
-/** วันที่คืนเครื่องล่าสุดของสัญญา (yyyy-mm-dd Bangkok) — ใช้เป็น returnDate gate ใน outstandingAfterReturn
+export interface ContractReturnInfo {
+  returnDate: string | null  // yyyy-mm-dd Bangkok, null = ไม่มีแถวคืนเครื่อง
+  repairFee: number          // ค่าซ่อมของเคสคืนล่าสุด (repair_cost coalesce repair_fee), 0 ถ้าไม่มี
+}
+
+/** วันที่คืนเครื่องล่าสุด + ค่าซ่อมของสัญญา (yyyy-mm-dd Bangkok) — ใช้เป็น returnDate/repairFee ใน outstandingAfterReturn
  *  ⚠️ ไม่ gate ด้วย RETURN_DATE_RELIABLE_FROM ในนี้ — caller ต้องเช็คเอง (เพราะก่อนวันนั้น created_at = วันนำเข้า ไม่ใช่วันคืนจริง)
- *  ถ้ามีหลายแถว (เคยยกเลิก/คืนซ้ำ) เอาแถวล่าสุด (order by created_at desc); ไม่มีแถวเลย → null */
-export async function getContractReturnDate(contractId: string): Promise<string | null> {
-  if (!supabase) return null
+ *  ถ้ามีหลายแถว (เคยยกเลิก/คืนซ้ำ) เอาแถวล่าสุด (order by created_at desc); ไม่มีแถวเลย → returnDate null, repairFee 0 */
+export async function getContractReturnDate(contractId: string): Promise<ContractReturnInfo> {
+  if (!supabase) return { returnDate: null, repairFee: 0 }
   const { data, error } = await supabase
     .from('device_returns')
-    .select('created_at')
+    .select('created_at, repair_cost, repair_fee')
     .eq('contract_id', contractId)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle()
   if (error) throw error
-  if (!data?.created_at) return null
+  if (!data?.created_at) return { returnDate: null, repairFee: 0 }
   // แปลง timestamptz → วันที่ Bangkok (UTC+7) ตัดเวลาออก (mirror pattern เดียวกับ buildFreelancerQueueRows)
-  return new Date(new Date(data.created_at).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+  const returnDate = new Date(new Date(data.created_at).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+  const repairFee = Number((data as { repair_cost?: number | null; repair_fee?: number | null }).repair_cost ?? (data as { repair_fee?: number | null }).repair_fee ?? 0)
+  return { returnDate, repairFee }
 }
 
 /** ข้อมูลเช็คก่อนลบสัญญา — ใช้โชว์คำเตือนหนักๆ ที่ UI ก่อนกดยืนยันลบ (0095)
@@ -3794,11 +3801,11 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
         .select('id, contract_id, amount, reason, created_at, created_by')
         .in('contract_id', returnedIds)
         .range(0, PAGE_CAP),
-      // ดึง created_at (วันที่สร้างแถวคืนเครื่อง) — ใช้เป็น "วันที่คืน" ตาม pattern เดียวกับ v_device_return_report (mig 0073)
+      // ดึง created_at (วันที่สร้างแถวคืนเครื่อง) + repair_cost/repair_fee — ใช้เป็น "วันที่คืน"/ค่าซ่อม ตาม pattern เดียวกับ v_device_return_report (mig 0073)
       // ถ้า 1 สัญญามีหลายแถว device_returns (เคยยกเลิก/คืนซ้ำ) เอาแถวล่าสุด (order by created_at desc)
       supabase
         .from('device_returns')
-        .select('contract_id, created_at')
+        .select('contract_id, created_at, repair_cost, repair_fee')
         .in('contract_id', returnedIds)
         .order('created_at', { ascending: false })
         .range(0, PAGE_CAP),
@@ -3824,13 +3831,15 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
       extraByContract.set(row.contract_id, arr)
     }
     // dedup ใน JS ทำงานถูกต้องเพราะ order created_at desc → แถวแรกที่เจอต่อ contract = คืนล่าสุดเสมอ
-    for (const dr of (drData ?? []) as { contract_id: string; created_at: string }[]) {
+    const repairFeeMap = new Map<string, number>() // contract_id → ค่าซ่อมของเคสคืนล่าสุด
+    for (const dr of (drData ?? []) as { contract_id: string; created_at: string; repair_cost: number | null; repair_fee: number | null }[]) {
       if (returnedAtMap.has(dr.contract_id)) continue
       // แปลง timestamptz → วันที่ Bangkok (UTC+7) ตัดเวลาออก
       const bkkDate = new Date(new Date(dr.created_at).getTime() + 7 * 3600 * 1000)
         .toISOString()
         .slice(0, 10)
       returnedAtMap.set(dr.contract_id, bkkDate)
+      repairFeeMap.set(dr.contract_id, Number(dr.repair_cost ?? dr.repair_fee ?? 0))
     }
     for (const cid of returnedIds) {
       // returnDate gate: ใช้วันคืนได้ก็ต่อเมื่อ >= RETURN_DATE_RELIABLE_FROM (เคสก่อนหน้านั้น created_at = วันนำเข้า ไม่ใช่วันคืนจริง)
@@ -3840,6 +3849,7 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
       const result = outstandingAfterReturn(
         instByContract.get(cid) ?? [],
         extraByContract.get(cid) ?? [],
+        repairFeeMap.get(cid) ?? 0,
         reliableReturnDate,
       )
       returnClosingMap.set(cid, result.total)
