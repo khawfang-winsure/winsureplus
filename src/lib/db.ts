@@ -695,6 +695,110 @@ export async function getSettlementReport(
   }
 }
 
+// ===== ปิดสัญญาก่อนกำหนด — วิธีมาตรฐาน "คงตารางงวด" (mig 0131, แยกจาก settle_contract_early ด้านบน) =====
+// Pete นิยาม 25 ก.ค. 2026: ไม่ยุบ/ไม่ mark ทุกงวดจ่ายเต็ม (settle_contract_early เดิม=ContractDetail เฟ้อ)
+// แต่คงตารางงวดเดิมไว้ทั้งหมด — insert payment_log 1 แถว + other_income ต่อค่าธรรมเนียม + flip status
+// เท่านั้น งวดที่เหลือหายจากหนี้/NPL เองเพราะ v_contract_status suppress เมื่อ status ไม่ใช่ active/returned
+
+/** ค่าธรรมเนียมปิดสัญญาก่อนกำหนด 1 รายการ — mirror EarlyCloseFee ใน src/lib/earlyClose.ts */
+export interface CloseContractEarlyFee {
+  category: string
+  amount: number
+}
+
+/** ปิดสัญญาก่อนกำหนดแบบคงตารางงวด (RPC close_contract_early_preserve_schedule, mig 0131)
+ *  guard ฝั่ง DB: admin/staff เท่านั้น, ต้องมีงวดค้าง>=1, settlementPaid<=ยอดคงเหลือจริง,
+ *  penaltyReceived ต้องไม่ต่ำกว่าค่าปรับค้างสุทธิ (เก็บเกินได้ ห้ามขาด ไม่มี waive) — ค่าปรับค้างสุทธิ
+ *  = Σ max(0, penalty_amount − penalty_paid_for_installment) ของงวดที่ยังไม่จ่าย (หักส่วนที่เคยเก็บไปแล้ว
+ *  ก่อน กันเรียกซ้ำ) — ตรวจซ้ำจาก computeEarlyClose ฝั่ง client อีกชั้น
+ *  @returns id ของ contract_close_events (เก็บไว้ใช้ยกเลิกทีหลังถ้าจำเป็น) */
+export async function closeContractEarlyPreserve(
+  contractId: string,
+  payload: {
+    settlementPaid: number
+    penaltyReceived: number
+    closedAt: string // 'YYYY-MM-DD'
+    fees: CloseContractEarlyFee[]
+    note?: string
+  },
+): Promise<string> {
+  if (!supabase) return ''
+  const { data, error } = await supabase.rpc('close_contract_early_preserve_schedule', {
+    p_contract_id: contractId,
+    p_settlement_paid: payload.settlementPaid,
+    p_penalty_received: payload.penaltyReceived,
+    p_closed_at: payload.closedAt,
+    p_fees: payload.fees.map((f) => ({ category: f.category, amount: f.amount })),
+    p_note: payload.note ?? null,
+  })
+  if (error) throw error
+  return data as string
+}
+
+/** ยกเลิกการปิดสัญญาก่อนกำหนด (RPC undo_close_contract_early, mig 0131) — admin เท่านั้น (guard ฝั่ง DB)
+ *  ลบ payment_log/other_income ที่ event สร้างไว้ + คืนสัญญาเป็น active; ยกเลิกซ้ำจะโดน DB reject (idempotent) */
+export async function undoCloseContractEarly(eventId: string, reason: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('undo_close_contract_early', {
+    p_event_id: eventId,
+    p_reason: reason,
+  })
+  if (error) throw error
+}
+
+export interface ContractCloseEvent {
+  id: string
+  contractId: string
+  method: string
+  paymentLogId: string | null
+  otherIncomeIds: string[]
+  settlementPaid: number
+  settlementDiscount: number
+  settlementRemaining: number
+  penaltyReceived: number
+  closedAt: string
+  closedBy: string | null
+  createdAt: string
+  undoneAt: string | null
+  undoneBy: string | null
+  undoReason: string | null
+}
+
+/** event ปิดก่อนกำหนดล่าสุดของสัญญา (ยังไม่ถูกยกเลิก) — ใช้โชว์ป้าย/ปุ่มยกเลิกใน ContractDetail
+ *  @returns null ถ้าไม่เคยปิดแบบนี้ หรือถูกยกเลิกไปแล้วทั้งหมด */
+export async function getCloseEvent(contractId: string): Promise<ContractCloseEvent | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('contract_close_events')
+    .select(
+      'id, contract_id, method, payment_log_id, other_income_ids, settlement_paid, settlement_discount, settlement_remaining, penalty_received, closed_at, closed_by, created_at, undone_at, undone_by, undo_reason',
+    )
+    .eq('contract_id', contractId)
+    .is('undone_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return null
+  return {
+    id: data.id as string,
+    contractId: data.contract_id as string,
+    method: data.method as string,
+    paymentLogId: (data.payment_log_id as string) ?? null,
+    otherIncomeIds: (data.other_income_ids as string[]) ?? [],
+    settlementPaid: Number(data.settlement_paid ?? 0),
+    settlementDiscount: Number(data.settlement_discount ?? 0),
+    settlementRemaining: Number(data.settlement_remaining ?? 0),
+    penaltyReceived: Number(data.penalty_received ?? 0),
+    closedAt: data.closed_at as string,
+    closedBy: (data.closed_by as string) ?? null,
+    createdAt: data.created_at as string,
+    undoneAt: (data.undone_at as string) ?? null,
+    undoneBy: (data.undone_by as string) ?? null,
+    undoReason: (data.undo_reason as string) ?? null,
+  }
+}
+
 // ---------- ค่าคอมหาร้าน (เก็บใน app_settings เป็น JSON) ----------
 const RECRUIT_TIERS_KEY = 'recruit_shop_tiers'
 const RECRUIT_BONUS_KEY = 'recruit_bonus'

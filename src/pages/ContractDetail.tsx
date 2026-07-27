@@ -27,8 +27,9 @@ import {
   cancelPayment,
   restructureContract,
   closeReturnedContract,
-  getSettlementMatrix,
-  settleContractEarly,
+  getCloseEvent,
+  undoCloseContractEarly,
+  type ContractCloseEvent,
   submitReturn,
   cancelReturn,
   setContractFlags,
@@ -82,7 +83,6 @@ import {
   type ReconcileResult,
 } from '../lib/feeReconcile'
 import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment } from '../lib/calc'
-import { computeSettlement, type SettlementMatrix, type SettlementExtensionInfo } from '../lib/settlement'
 import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
@@ -90,6 +90,7 @@ import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, forma
 import { useAuth } from '../lib/auth'
 import type { Contract, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
+import EarlyCloseModal from '../components/EarlyCloseModal'
 import CopyBox from '../components/CopyBox'
 import { buildPendingDocMessage } from '../lib/messages'
 
@@ -207,10 +208,10 @@ export default function ContractDetail() {
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
   const [rateSets, setRateSets] = useState<RateSet[]>([])
   const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
-  const [otherIncomeItems, setOtherIncomeItems] = useState<OtherIncome[]>([])
-  // วันที่คืนเครื่องล่าสุด (yyyy-mm-dd Bangkok) — null ถ้าไม่ใช่เคสคืน/ไม่มีแถว device_returns
-  // ใช้เป็น returnDate gate ใน outstandingAfterReturn (ดู RETURN_DATE_RELIABLE_FROM reliability check ด้านล่าง)
+  // วันที่คืนเครื่องล่าสุด (yyyy-mm-dd Bangkok) — null = ไม่ใช่เคสคืนเครื่อง/ไม่มีแถว device_returns
+  // gate ด้วย RETURN_DATE_RELIABLE_FROM ก่อนส่งเข้า outstandingAfterReturn (กันหยิบงวดครบกำหนดหลังวันคืนมาคิดเป็นยอดตามเก็บ)
   const [returnDate, setReturnDate] = useState<string | null>(null)
+  const [otherIncomeItems, setOtherIncomeItems] = useState<OtherIncome[]>([])
   const [addOtherIncomeOpen, setAddOtherIncomeOpen] = useState(false)
   // preset ตอนเปิด modal เพิ่มรายได้จาก banner (ลงค่าธรรมเนียม) — category + fee_kind
   const [addOtherIncomePreset, setAddOtherIncomePreset] = useState<{ category: string; feeKind: FeeKind | null } | null>(null)
@@ -223,6 +224,12 @@ export default function ContractDetail() {
   const [returnOpen, setReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
   const [settleOpen, setSettleOpen] = useState(false)
+  // ปิดสัญญาก่อนกำหนด (คงตารางงวด, mig 0131) — event ล่าสุดที่ยังไม่ถูกยกเลิก (null = ไม่เคยปิดแบบนี้)
+  const [closeEvent, setCloseEvent] = useState<ContractCloseEvent | null>(null)
+  const [undoCloseOpen, setUndoCloseOpen] = useState(false)
+  const [undoCloseBusy, setUndoCloseBusy] = useState(false)
+  const [undoCloseErr, setUndoCloseErr] = useState<string | null>(null)
+  const [undoCloseReason, setUndoCloseReason] = useState('')
   // ปิดสัญญา (คืนเครื่อง): modal ยืนยัน + loading guard + error
   const [closeReturnOpen, setCloseReturnOpen] = useState(false)
   const [closeReturnBusy, setCloseReturnBusy] = useState(false)
@@ -293,7 +300,7 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec, poh, oi, fr, rd] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec, poh, oi, fr, ce, rd] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
@@ -303,6 +310,7 @@ export default function ContractDetail() {
       getPenaltyOverrideHistory(id),
       getOtherIncome(id),
       getContractFeeReconcile(id),
+      getCloseEvent(id),
       getContractReturnDate(id),
     ])
     setContract(c)
@@ -314,6 +322,7 @@ export default function ContractDetail() {
     setPenaltyOverrideHistory(poh)
     setOtherIncomeItems(oi)
     setFeeReconcile(fr)
+    setCloseEvent(ce)
     setReturnDate(rd)
     setLoading(false)
   }, [id])
@@ -594,6 +603,27 @@ export default function ContractDetail() {
     }
   }
 
+  // ยกเลิกการปิดสัญญาก่อนกำหนด (คงตารางงวด, admin only) — บังคับกรอกเหตุผล
+  async function handleUndoCloseEarly() {
+    if (!closeEvent) return
+    if (!undoCloseReason.trim()) {
+      setUndoCloseErr('กรุณาระบุเหตุผลในการยกเลิก')
+      return
+    }
+    setUndoCloseBusy(true)
+    setUndoCloseErr(null)
+    try {
+      await undoCloseContractEarly(closeEvent.id, undoCloseReason.trim())
+      setUndoCloseOpen(false)
+      setUndoCloseReason('')
+      await load()
+    } catch (e) {
+      setUndoCloseErr(errMsg(e))
+    } finally {
+      setUndoCloseBusy(false)
+    }
+  }
+
   // เปิดป็อปอัพลบสัญญา — โหลดประวัติ (จ่ายเงิน/คืนเครื่อง/โอนร้าน) มาโชว์คำเตือนก่อนให้กดยืนยัน
   async function handleOpenDelete() {
     if (!contract) return
@@ -719,6 +749,15 @@ export default function ContractDetail() {
                 <PackageOpen size={15} /> คืนเครื่อง
               </Button>
             </>
+          )}
+          {/* ยกเลิกการปิดสัญญาก่อนกำหนด (คงตารางงวด) — admin เท่านั้น, ต้องมี close event ที่ยังไม่ถูกยกเลิก */}
+          {isAdmin && contract.status === 'closed' && closeEvent && (
+            <Button
+              variant="ghost"
+              onClick={() => { setUndoCloseErr(null); setUndoCloseReason(''); setUndoCloseOpen(true) }}
+            >
+              <RotateCcw size={15} /> ยกเลิกการปิดสัญญา
+            </Button>
           )}
           {/* ลบสัญญาถาวร — admin เท่านั้น (Feature: ลบสัญญา + ป็อปอัพยืนยันเตือนหนัก) */}
           {isAdmin && (
@@ -1915,12 +1954,10 @@ export default function ContractDetail() {
       )}
 
       {settleOpen && (
-        <SettleModal
+        <EarlyCloseModal
           contract={contract}
           installments={installments}
-          extensions={extensions}
-          isAdmin={isAdmin}
-          userName={userName ?? 'ไม่ทราบ'}
+          logByIns={logByIns}
           onClose={() => setSettleOpen(false)}
           onDone={async () => {
             setSettleOpen(false)
@@ -2030,6 +2067,44 @@ export default function ContractDetail() {
             <Button disabled={cancelReturnBusy} onClick={() => void handleCancelReturn()}>
               {cancelReturnBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกการคืนเครื่อง'}
             </Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ยกเลิกการปิดสัญญาก่อนกำหนด (คงตารางงวด) — admin only, บังคับกรอกเหตุผล */}
+      {undoCloseOpen && closeEvent && (
+        <Modal title="ยกเลิกการปิดสัญญาก่อนกำหนด" onClose={() => !undoCloseBusy && setUndoCloseOpen(false)}>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink">
+              ยกเลิกการปิดสัญญาของ <span className="font-semibold">{contract.customerName}</span>?
+              ระบบจะลบรายการรับชำระ/รายได้ที่เกิดจากการปิดครั้งนี้ และคืนสัญญาเป็น "ผ่อนปกติ" (active)
+            </p>
+            <div className="rounded-xl bg-peach-light/40 px-3 py-2.5 text-sm text-ink-soft">
+              ปิดเมื่อ {thaiDate(closeEvent.closedAt.slice(0, 10))} · ยอดจ่ายปิด {baht(closeEvent.settlementPaid)} ฿ ·
+              ค่าปรับที่เก็บ {baht(closeEvent.penaltyReceived)} ฿
+            </div>
+            <Field label="เหตุผลที่ยกเลิก" required>
+              <Textarea
+                value={undoCloseReason}
+                onChange={(e) => setUndoCloseReason(e.target.value)}
+                placeholder="เช่น กดปิดผิดสัญญา / ยอดผิด ต้องแก้ใหม่"
+                rows={3}
+              />
+            </Field>
+            {undoCloseErr && <p className="text-sm text-red-600">{undoCloseErr}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" disabled={undoCloseBusy} onClick={() => setUndoCloseOpen(false)}>
+                ยกเลิก
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={undoCloseBusy || !undoCloseReason.trim()}
+                onClick={() => void handleUndoCloseEarly()}
+                className="border-red-200 text-red-600 hover:bg-red-50"
+              >
+                {undoCloseBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกการปิดสัญญา'}
+              </Button>
+            </div>
           </div>
         </Modal>
       )}
@@ -3514,244 +3589,6 @@ function ExtendModal({
         </Field>
 
         {err && <p className="text-sm text-red-600">{err}</p>}
-      </div>
-    </MobileModal>
-  )
-}
-
-/** อธิบายเหตุผลที่ % ส่วนลด = 0 ทั้งที่ matched (มีแถวในตาราง แต่ไม่มีคอลัมน์ตรงกัน) */
-function zeroPercentReason(paidCount: number, remainingCount: number): string {
-  if (paidCount === 0) return 'ลูกค้ายังไม่ได้จ่ายงวดไหนเลย (จ่าย 0 งวด) — ตารางไม่ได้กำหนดส่วนลดไว้ให้กรณีนี้'
-  if (remainingCount === 1) return 'เหลืองวดสุดท้ายงวดเดียว — ตารางไม่ได้กำหนดส่วนลดไว้ให้กรณีนี้'
-  return 'จำนวนงวดที่จ่ายไปแล้วไม่มีส่วนลดกำหนดไว้ในตาราง'
-}
-
-/**
- * SettleModal: ปิดสัญญาก่อนกำหนด + ส่วนลด
- * - โหลดตารางส่วนลด (settlement matrix: ชนิดสัญญา x จำนวนงวดที่จ่ายแล้ว) จาก settings ตอนเปิด
- * - คิดยอดด้วย computeSettlement (pure) จากงวดของสัญญา + ประวัติขยายเวลาล่าสุด (ถ้ามี)
- * - ส่วนลดคิดจากเงินต้นที่เหลือเท่านั้น ค่าปรับค้างไม่ลด
- * - แอดมินกรอก % เองแทนตารางได้ (overridePercent)
- * - ยืนยันแล้วยกเลิกเองไม่ได้ (ยังไม่มี undo) → ต้องผ่านหน้าตรวจสอบยอดสุดท้ายก่อนกดยืนยันจริง
- */
-function SettleModal({
-  contract,
-  installments,
-  extensions,
-  isAdmin,
-  userName,
-  onClose,
-  onDone,
-}: {
-  contract: Contract
-  installments: Installment[]
-  extensions: ExtensionRecord[]
-  isAdmin: boolean
-  userName: string
-  onClose: () => void
-  onDone: () => void
-}) {
-  const [matrix, setMatrix] = useState<SettlementMatrix>({})
-  const [matrixLoading, setMatrixLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const [confirming, setConfirming] = useState(false)
-  const [overrideRaw, setOverrideRaw] = useState('')
-
-  useEffect(() => {
-    setMatrixLoading(true)
-    getSettlementMatrix()
-      .then(setMatrix)
-      .catch(() => setMatrix({}))
-      .finally(() => setMatrixLoading(false))
-  }, [])
-
-  // ประวัติขยายเวลาล่าสุด (extensions เรียง created_at desc มาแล้วจากหน้าแม่) — ตัวแรก = ล่าสุด
-  const extensionInfo: SettlementExtensionInfo | null = useMemo(() => {
-    const latest = extensions[0]
-    if (!latest) return null
-    return { extType: latest.extType, newInstallments: latest.newInstallments }
-  }, [extensions])
-
-  const overrideTrimmed = overrideRaw.trim()
-  const overrideNum = overrideTrimmed === '' ? null : Number(overrideTrimmed)
-  const overrideInvalid =
-    overrideTrimmed !== '' && (overrideNum === null || Number.isNaN(overrideNum) || overrideNum < 0 || overrideNum > 100)
-  const effectiveOverride = isAdmin && overrideTrimmed !== '' && !overrideInvalid ? overrideNum : null
-
-  // คิดยอดปิดจากงวดของสัญญา (map → input ที่ computeSettlement ต้องการ)
-  const result = useMemo(
-    () =>
-      computeSettlement({
-        installments: installments.map((i) => ({
-          amount: i.amount,
-          paidAmount: i.paidAmount,
-          penaltyAmount: i.penaltyAmount,
-          paidAt: i.paidAt,
-          installmentNo: i.installmentNo,
-        })),
-        termMonths: contract.termMonths,
-        matrix,
-        extension: extensionInfo,
-        overridePercent: effectiveOverride,
-      }),
-    [installments, matrix, extensionInfo, contract.termMonths, effectiveOverride],
-  )
-
-  const noRemaining = result.remainingCount === 0
-
-  async function save() {
-    setBusy(true)
-    setErr(null)
-    try {
-      await settleContractEarly(
-        contract.id,
-        {
-          remaining: result.remainingPrincipal,
-          discount: result.discount,
-          paid: result.customerPays,
-          penalty: result.penaltyDue,
-        },
-        userName,
-      )
-      onDone()
-    } catch (e) {
-      setErr(errMsg(e))
-      setConfirming(false)
-      setBusy(false)
-    }
-  }
-
-  const footer = confirming ? (
-    <div className="flex justify-end gap-2">
-      <Button variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>กลับไปแก้ไข</Button>
-      <Button onClick={save} disabled={busy}>
-        {busy ? 'กำลังบันทึก...' : 'ยืนยันบันทึกปิดสัญญา'}
-      </Button>
-    </div>
-  ) : (
-    <div className="flex justify-end gap-2">
-      <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-      <Button
-        onClick={() => setConfirming(true)}
-        disabled={matrixLoading || noRemaining || overrideInvalid}
-      >
-        ตรวจสอบยอดก่อนปิดสัญญา
-      </Button>
-    </div>
-  )
-
-  return (
-    <MobileModal title="ปิดสัญญาก่อนกำหนด" onClose={onClose} footer={footer}>
-      <div className="flex flex-col gap-3">
-        {matrixLoading ? (
-          <Loading />
-        ) : noRemaining ? (
-          <div className="rounded-xl bg-green-50 px-3 py-2.5 text-sm text-green-700">
-            สัญญานี้ไม่มีงวดค้าง — ไม่ต้องปิดก่อนกำหนด
-          </div>
-        ) : confirming ? (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
-            <p className="mb-3 flex items-center gap-1.5 font-semibold text-amber-800">
-              <AlertTriangle size={15} /> ยืนยันปิดสัญญาของ {contract.customerName}?
-            </p>
-            <div className="flex flex-col gap-1.5 rounded-lg bg-white p-3">
-              <div className="flex justify-between text-ink-soft">
-                <span>ส่วนลดที่ใช้</span>
-                <span className="text-ink">
-                  {result.percent}%{result.overridden && <span className="ml-1.5"><Badge tone="amber">กรอกเอง</Badge></span>}
-                </span>
-              </div>
-              <div className="flex justify-between text-ink-soft">
-                <span>ค่างวดที่เหลือ ({result.remainingCount} งวด)</span>
-                <b className="whitespace-nowrap text-ink">{baht(result.remainingPrincipal)} ฿</b>
-              </div>
-              {result.penaltyDue > 0 && (
-                <div className="flex justify-between text-ink-soft">
-                  <span>ค่าปรับค้าง (ไม่ลด)</span>
-                  <span className="whitespace-nowrap text-red-600">{baht(result.penaltyDue)} ฿</span>
-                </div>
-              )}
-              <div className="mt-1 flex items-center justify-between border-t border-peach pt-2">
-                <span className="text-sm font-semibold text-ink">ลูกค้าจ่ายปิด</span>
-                <span className="whitespace-nowrap text-2xl font-bold text-salmon-deep">{baht(result.customerPays)} ฿</span>
-              </div>
-            </div>
-            <p className="mt-3 text-xs text-amber-800">
-              เมื่อกด "ยืนยันบันทึกปิดสัญญา" แล้ว <b>ย้อนกลับเองไม่ได้</b> — ต้องแจ้งแอดมินแก้ไข
-            </p>
-            {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
-          </div>
-        ) : (
-          <>
-            {/* Breakdown ยอดปิด */}
-            <div className="rounded-xl border border-peach bg-white p-3 text-sm">
-              <p className="mb-2 font-semibold text-ink">รายละเอียดยอดปิดสัญญา</p>
-              <p className="mb-2 rounded-lg bg-peach-light/50 px-2.5 py-1.5 text-xs text-ink-soft">
-                สัญญา {result.rowTerm} งวด · จ่ายแล้ว {result.paidCount} งวด → ลด {result.percent}%
-                {result.overridden && <span className="ml-1.5"><Badge tone="amber">กรอกเอง</Badge></span>}
-              </p>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex justify-between text-ink-soft">
-                  <span>ค่างวดที่เหลือ ({result.remainingCount} งวด)</span>
-                  <b className="text-ink whitespace-nowrap">{baht(result.remainingPrincipal)} ฿</b>
-                </div>
-                <div className="flex justify-between text-ink-soft">
-                  <span>ส่วนลด {result.percent}%</span>
-                  <span className="text-green-700 whitespace-nowrap">−{baht(result.discount)} ฿</span>
-                </div>
-                {result.penaltyDue > 0 && (
-                  <div className="flex justify-between text-ink-soft">
-                    <span>ค่าปรับค้าง (ไม่ลด)</span>
-                    <span className="text-red-600 whitespace-nowrap">{baht(result.penaltyDue)} ฿</span>
-                  </div>
-                )}
-                <div className="mt-1 flex items-center justify-between border-t border-peach pt-2">
-                  <span className="text-sm font-semibold text-ink">ลูกค้าจ่ายปิด</span>
-                  <span className="text-2xl font-bold text-salmon-deep whitespace-nowrap">{baht(result.customerPays)} ฿</span>
-                </div>
-              </div>
-
-              {!result.matched && (
-                <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
-                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                  สัญญานี้ไม่มีในตารางส่วนลด (สัญญา {result.rowTerm} งวด) — ต้องคิดพิเศษเอง{isAdmin ? ' ใช้ช่องกรอก % เองด้านล่าง' : ' แจ้งแอดมินให้กรอก % เอง'}
-                </p>
-              )}
-              {result.matched && result.percent === 0 && !result.overridden && (
-                <p className="mt-2 rounded-lg bg-peach-light/60 px-2.5 py-1.5 text-xs text-ink-soft">
-                  {zeroPercentReason(result.paidCount, result.remainingCount)}
-                </p>
-              )}
-            </div>
-
-            {/* ช่องกรอก % เอง — เฉพาะแอดมินแก้ได้ */}
-            <Field label="กรอก % ส่วนลดเอง (เว้นว่าง = ใช้ตามตาราง)">
-              <Input
-                type="number"
-                min={0}
-                max={100}
-                step="0.1"
-                value={overrideRaw}
-                disabled={!isAdmin}
-                placeholder={isAdmin ? 'เช่น 15' : 'เฉพาะแอดมินกรอกได้'}
-                onChange={(e) => setOverrideRaw(e.target.value)}
-              />
-            </Field>
-            {overrideInvalid && (
-              <p className="text-xs text-red-600">กรอก % ระหว่าง 0-100 เท่านั้น</p>
-            )}
-
-            {/* คำเตือน */}
-            <div className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
-              <p className="flex items-center gap-1.5 font-medium">
-                <AlertTriangle size={14} /> ปิดแล้วยกเลิกเองไม่ได้ ต้องแจ้งแอดมินแก้
-              </p>
-            </div>
-
-            {err && <p className="text-sm text-red-600">{err}</p>}
-          </>
-        )}
       </div>
     </MobileModal>
   )
