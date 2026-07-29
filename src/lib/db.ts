@@ -8258,9 +8258,13 @@ export async function applyPjReviewPayment(params: {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามยืนยันลงยอด ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
   }
   // 🚨 กันชั้นสอง เหมือนกัน — สัญญาคืนเครื่องที่ pj-sync ตรวจเจอส่วนต่าง (RETURNED_CONTRACT_PAYMENT/
-  // RETURNED_CONTRACT_OVERAGE, mode "returned_watch") ไม่มี flow ลงเงินอัตโนมัติเช่นกัน (isManualOnlyReason
-  // ฝั่ง UI ซ่อนปุ่มอยู่แล้ว — กันเผื่อบั๊ก UI ในอนาคต/เรียกตรงจาก console)
-  if (reviewRow?.reason === 'RETURNED_CONTRACT_PAYMENT' || reviewRow?.reason === 'RETURNED_CONTRACT_OVERAGE') {
+  // RETURNED_CONTRACT_OVERAGE/RETURNED_CONTRACT_OTHER_FEE, mode "returned_watch") ไม่มี flow ลงเงินอัตโนมัติ
+  // เช่นกัน (isManualOnlyReason ฝั่ง UI ซ่อนปุ่มอยู่แล้ว — กันเผื่อบั๊ก UI ในอนาคต/เรียกตรงจาก console)
+  if (
+    reviewRow?.reason === 'RETURNED_CONTRACT_PAYMENT' ||
+    reviewRow?.reason === 'RETURNED_CONTRACT_OVERAGE' ||
+    reviewRow?.reason === 'RETURNED_CONTRACT_OTHER_FEE'
+  ) {
     throw new Error('เคสนี้ต้องตรวจใน PJ แล้วลงชำระเองที่หน้าสัญญาโดยตรง — ห้ามยืนยันลงยอดจากกล่องรอตรวจนี้')
   }
 
@@ -8402,8 +8406,12 @@ export async function applyPjReviewAsOtherIncome(params: {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามลงเป็นรายได้อื่นๆ ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
   }
   // 🚨 กันชั้นสอง เหมือนกัน — ดู comment เต็มใน applyPjReviewPayment ด้านบน (RETURNED_CONTRACT_PAYMENT/
-  // RETURNED_CONTRACT_OVERAGE ไม่มี flow ลงเงินอัตโนมัติ ต้องตรวจมือเท่านั้น)
-  if (driftGuardRow?.reason === 'RETURNED_CONTRACT_PAYMENT' || driftGuardRow?.reason === 'RETURNED_CONTRACT_OVERAGE') {
+  // RETURNED_CONTRACT_OVERAGE/RETURNED_CONTRACT_OTHER_FEE ไม่มี flow ลงเงินอัตโนมัติ ต้องตรวจมือเท่านั้น)
+  if (
+    driftGuardRow?.reason === 'RETURNED_CONTRACT_PAYMENT' ||
+    driftGuardRow?.reason === 'RETURNED_CONTRACT_OVERAGE' ||
+    driftGuardRow?.reason === 'RETURNED_CONTRACT_OTHER_FEE'
+  ) {
     throw new Error('เคสนี้ต้องตรวจใน PJ แล้วลงชำระเองที่หน้าสัญญาโดยตรง — ห้ามลงเป็นรายได้อื่นๆ จากกล่องรอตรวจนี้')
   }
 

@@ -549,7 +549,12 @@ export interface LetterOutcomeByRound {
  * เทียบยอดแล้วลงเงินเองที่หน้าสัญญา
  * RETURNED_CONTRACT_OVERAGE = mode "returned_watch" เหมือนกัน แต่กลับด้าน — สัญญาคืนเครื่องที่ระบบเรา
  * บันทึกไว้ "มากกว่า" ที่ PJ ได้รับจริง (อาจลงซ้ำฝั่งเรา หรือใบเสร็จถูกลบฝั่ง PJ) — เหมือนกัน คือต้องคน
- * ตรวจมือเท่านั้น ห้ามมี flow ลงเงินอัตโนมัติ (isManualOnlyReason ต้องคุมทั้งคู่) */
+ * ตรวจมือเท่านั้น ห้ามมี flow ลงเงินอัตโนมัติ (isManualOnlyReason ต้องคุมทั้งคู่)
+ * RETURNED_CONTRACT_OTHER_FEE = mode "returned_watch" (29 ก.ค. 2026, mig 0134) — กองที่ 3 แยกต่างหากจาก
+ * PAYMENT/OVERAGE ข้างบน: PJ item ประเภท "อื่นๆ" (ค่าธรรมเนียม/ค่าเปลี่ยนวัน) มากกว่าที่เราบันทึกไว้เป็น
+ * other_income — ยิงทางเดียวเท่านั้น (ฝั่งเรามากกว่า/เท่ากัน = ไม่ยิง เพราะ other_income ของเรามีรายการที่
+ * PJ ไม่มี เช่น ค่าเอกสาร backfill/ค่าธรรมเนียมปิดสัญญา ยิงสองทางจะกลายเป็น noise) เหมือนกัน — manual-only
+ * ห้ามมี flow ลงเงินอัตโนมัติ (isManualOnlyReason ต้องคุมทั้ง 3) */
 export type PjSyncReviewReason =
   | 'MULTI'
   | 'PARTIAL'
@@ -560,6 +565,7 @@ export type PjSyncReviewReason =
   | 'RECEIPT_CHANGED'
   | 'RETURNED_CONTRACT_PAYMENT'
   | 'RETURNED_CONTRACT_OVERAGE'
+  | 'RETURNED_CONTRACT_OTHER_FEE'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'

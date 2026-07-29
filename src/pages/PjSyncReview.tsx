@@ -34,9 +34,15 @@ function isDriftReason(reason: PjSyncReviewReason): boolean {
 
 /** reason ที่ต้องลงเงินด้วยมือเสมอ (เปิด PJ เทียบยอดเอง แล้วลงชำระที่หน้าสัญญาโดยตรง) — ต่างจาก drift ตรงที่
  *  ยังโชว์คำอธิบายปกติ (explainReviewRow) แต่ต้องซ่อนปุ่ม "ลงตาม PJ" / "รายได้อื่นๆ" เพราะ pj-sync ไม่ได้
- *  คำนวณยอดให้ลงอัตโนมัติ (แค่ตรวจพบส่วนต่าง) — คงไว้แค่ "ข้าม" / "ทำเสร็จแล้ว" */
+ *  คำนวณยอดให้ลงอัตโนมัติ (แค่ตรวจพบส่วนต่าง) — คงไว้แค่ "ข้าม" / "ทำเสร็จแล้ว"
+ *  RETURNED_CONTRACT_OTHER_FEE เข้ากลุ่มนี้ด้วย (ค่าธรรมเนียม/รายการอื่นๆ ของสัญญาคืนเครื่องที่ PJ มีมากกว่า
+ *  ที่เราบันทึกเป็นรายได้อื่นๆ — ไม่ใช่ค่างวด ต้องคนเปิด PJ เทียบแล้วบันทึกเป็นรายได้อื่นๆ ที่หน้าสัญญาเอง) */
 function isManualOnlyReason(reason: PjSyncReviewReason): boolean {
-  return reason === 'RETURNED_CONTRACT_PAYMENT' || reason === 'RETURNED_CONTRACT_OVERAGE'
+  return (
+    reason === 'RETURNED_CONTRACT_PAYMENT' ||
+    reason === 'RETURNED_CONTRACT_OVERAGE' ||
+    reason === 'RETURNED_CONTRACT_OTHER_FEE'
+  )
 }
 
 /** ประเภทเงินที่จดไว้ (ทั้งฝั่งเราและฝั่ง PJ ใน snapshot) → ไทย */
@@ -71,6 +77,7 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   RECEIPT_CHANGED: 'ใบเสร็จถูกแก้ใน PJ',
   RETURNED_CONTRACT_PAYMENT: 'คืนเครื่อง — เงินไม่เข้าระบบ',
   RETURNED_CONTRACT_OVERAGE: 'คืนเครื่อง — ยอดเราเกิน PJ',
+  RETURNED_CONTRACT_OTHER_FEE: 'คืนเครื่อง — ค่าธรรมเนียมอื่นๆ ไม่ตรง',
 }
 const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'red'> = {
   MULTI: 'amber',
@@ -86,6 +93,9 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'r
   // เหลือง = ต่างจาก RETURNED_CONTRACT_PAYMENT (เขียว) ตรงที่กลับด้าน — ระบบเราบันทึกเกินยอด PJ จริง
   // ต้องคนตรวจว่าเป็นการลงซ้ำฝั่งเราหรือใบเสร็จถูกลบฝั่ง PJ (เตือนแรงกว่า ไม่ใช่แค่ PJ ซ่อนใบให้ดู)
   RETURNED_CONTRACT_OVERAGE: 'amber',
+  // เขียวเหมือน RETURNED_CONTRACT_PAYMENT — ทิศทางเดียวกัน (PJ มีเงิน/รายการที่เรายังไม่ได้บันทึก ไม่ใช่ error
+  // ของระบบ แค่ต้องคนไปเก็บตกบันทึกเป็นรายได้อื่นๆ เอง)
+  RETURNED_CONTRACT_OTHER_FEE: 'green',
 }
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====

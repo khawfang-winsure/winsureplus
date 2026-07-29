@@ -260,15 +260,23 @@ function parseInvoiceDetailHtml(html: string): {
 // "จำนวนเงิน" vs "จำนวนเงินที่ชำระแล้ว") — เจตนาไม่ fallback ไป field "amount"/"total" (ยอดเต็ม) เด็ดขาด
 // เพราะจะทำให้ overcounting เงียบๆ ถ้า PJ มีแถวจ่ายบางส่วน (ประเด็นเดียวกับที่ครีมเตือนเรื่องตารางงวด
 // ไม่มียอดจ่ายบางส่วน) — ไม่เจอ field ที่ตรงจริงๆ ปล่อยเป็น 0 ดีกว่าเดายอดเต็มมั่วๆ
+//
+// (29 ก.ค. 2026, mig 0134) — เพิ่มกองที่ 3 pjOtherPaidTotal: เดิมทุก type ที่ไม่ใช่ down/penalty (รวมถึง
+// "อื่นๆ" = ค่าธรรมเนียม/ค่าเปลี่ยนวัน) ถูกโยนเข้า pjInstPaidTotal (ค่างวด) หมด แต่ฝั่งเราลงเงินก้อนนี้เป็น
+// other_income ไม่ใช่ค่างวด → diff (pjInst - ourInst) ค้างถาวร flag ซ้ำทุกวันทั้งที่เงินไม่ได้หายจริง (เคส
+// อานนท์/ศิรินันท์/สุกัญญา — ดู mig 0134) ตอนนี้ต้อง "จับคู่กับ installment/ค่างวด ตรงๆ" ก่อนถึงจะเข้ากอง
+// instPaid — ถ้าไม่เข้าเงื่อนไขไหนเลย (ไม่ใช่ down/penalty/installment) ถือเป็น "อื่นๆ" เข้ากอง otherPaid แทน
 function mapInvoiceItemRows(rows: any[]): {
   pjInstPaidTotal: number;
   pjPenaltyPaidTotal: number;
+  pjOtherPaidTotal: number;
   receiptUuids: string[];
   rowCount: number;
 } {
   const receiptUuids = new Set<string>();
   let pjInstPaidTotal = 0;
   let pjPenaltyPaidTotal = 0;
+  let pjOtherPaidTotal = 0;
   let rowCount = 0;
 
   for (const row of rows) {
@@ -288,8 +296,12 @@ function mapInvoiceItemRows(rows: any[]): {
       // เงินดาวน์ — ไม่รวมใน comparison เลยทั้ง 2 ฝั่ง (ตามที่แบมสั่งเดิม เหมือน parseInvoiceDetailHtml)
     } else if (typeRaw.includes("penalty") || typeRaw.includes("ปรับ")) {
       pjPenaltyPaidTotal += paidAmt;
-    } else {
+    } else if (typeRaw.includes("installment") || typeRaw.includes("งวด")) {
       pjInstPaidTotal += paidAmt;
+    } else {
+      // (0134) ไม่ใช่ down/penalty/installment เลย — "อื่นๆ" (ค่าธรรมเนียม/ค่าเปลี่ยนวัน ฯลฯ) ห้ามรวมเข้า
+      // pjInstPaidTotal อีกต่อไป (บั๊กต้นเรื่อง) แยกเข้ากองนี้แทน เทียบกับ other_income ฝั่งเราต่างหาก
+      pjOtherPaidTotal += paidAmt;
     }
 
     const uuidRaw = pick(row, ["receipt_uuid", "receiptUuid", "receipt", "uuid"]);
@@ -299,6 +311,7 @@ function mapInvoiceItemRows(rows: any[]): {
   return {
     pjInstPaidTotal,
     pjPenaltyPaidTotal,
+    pjOtherPaidTotal,
     receiptUuids: Array.from(receiptUuids),
     rowCount,
   };
@@ -318,6 +331,9 @@ export default {
     if (callerKey !== PJ_SYNC_KEY) {
       return json({ ok: false, error: "unauthorized" }, 401);
     }
+
+    // (29 ก.ค. 2026 รอบ 5, mig 0134) mode=returned_watch แยกกอง "อื่นๆ" ออกจาก instPaid — ดู
+    // mapInvoiceItemRows/queueReturnedWatchReview + RETURNED_CONTRACT_OTHER_FEE ด้านล่าง
 
     // body params
     let body: any = {};
@@ -517,8 +533,10 @@ export default {
         //    penalty_paid_for_installment(uuid) (0115, cancel-aware ต่องวด) ต่อทุกงวดของทุกสัญญาให้แล้ว
         //    ในคำสั่งเดียว (set-based query ฝั่ง Postgres) — Edge Function ยิงแค่ 1 RPC call รวมทุกสัญญา
         //    (ไม่ใช่ทีละงวด/ทีละสัญญา กัน N+1 round-trip จากฝั่งนี้)
-        const ourPaidMap = new Map<string, { instPaid: number; penaltyPaid: number }>();
-        for (const id of contractIds) ourPaidMap.set(id, { instPaid: 0, penaltyPaid: 0 });
+        // (0134) เพิ่ม otherPaid = sum(other_income.amount) ต่อสัญญา — RPC returned_watch_our_paid ขยาย
+        // return type แล้ว (มิ.ย. เดิมมีแค่ inst_paid/pen_paid) ใช้เทียบกับ pjOtherPaidTotal แยกกองต่างหาก
+        const ourPaidMap = new Map<string, { instPaid: number; penaltyPaid: number; otherPaid: number }>();
+        for (const id of contractIds) ourPaidMap.set(id, { instPaid: 0, penaltyPaid: 0, otherPaid: 0 });
 
         if (contractIds.length > 0) {
           const { data: paidRows, error: paidErr } = await db.rpc("returned_watch_our_paid", {
@@ -532,6 +550,7 @@ export default {
             if (entry) {
               entry.instPaid = parseAmount(row.inst_paid);
               entry.penaltyPaid = parseAmount(row.pen_paid);
+              entry.otherPaid = parseAmount(row.other_paid);
             }
           }
         }
@@ -842,7 +861,47 @@ export default {
         let fetchErrors = 0;
         let driftQueued = 0;
         let overAppliedQueued = 0;
+        let otherFeeQueued = 0; // (0134) กองที่ 3 — PJ "อื่นๆ" มากกว่า other_income ที่เราบันทึกไว้
         const rwDetails: any[] = [];
+
+        // (0134) helper กันโค้ดซ้ำ — dedup+insert/update เข้า pj_sync_review 1 แถวต่อ (invoice, reason)
+        // คีย์ dedup = pj_invoice_no + reason (ไม่ใช่แค่ invoice) เพราะ 1 invoice อาจมี "ทั้ง" diff เงินต้น/
+        // ค่าปรับ (RETURNED_CONTRACT_PAYMENT/OVERAGE) "และ" diff ค่าธรรมเนียม (RETURNED_CONTRACT_OTHER_FEE)
+        // พร้อมกันได้ — ต้องเป็นคนละแถว ไม่ทับกัน
+        async function queueReturnedWatchReview(
+          reasonToUse: "RETURNED_CONTRACT_PAYMENT" | "RETURNED_CONTRACT_OVERAGE" | "RETURNED_CONTRACT_OTHER_FEE",
+          paymentType: string,
+          invNo: string,
+          contractId: string,
+          amount: number,
+          rawJson: Record<string, unknown>,
+        ): Promise<void> {
+          const { data: existingPending } = await db
+            .from("pj_sync_review")
+            .select("id")
+            .eq("pj_invoice_no", invNo)
+            .eq("reason", reasonToUse)
+            .eq("status", "pending")
+            .limit(1);
+
+          if (existingPending && existingPending.length > 0) {
+            await db.from("pj_sync_review")
+              .update({ pj_amount: amount, raw_json: rawJson })
+              .eq("id", existingPending[0].id);
+          } else {
+            await db.from("pj_sync_review").insert({
+              run_id: runId,
+              pj_invoice_no: invNo,
+              pj_payment_type: paymentType,
+              pj_amount: amount,
+              pj_paid_date: null,
+              matched_contract_id: contractId,
+              reason: reasonToUse,
+              raw_json: rawJson,
+              status: "pending",
+            });
+          }
+        }
 
         for (const cand of candidates) {
           if (Date.now() - rwLoopStartedAt > RW_TIME_BUDGET_MS) {
@@ -871,10 +930,14 @@ export default {
           }
 
           const parsed = mapInvoiceItemRows(items.rows);
-          const ours = ourPaidMap.get(cand.id) ?? { instPaid: 0, penaltyPaid: 0 };
+          const ours = ourPaidMap.get(cand.id) ?? { instPaid: 0, penaltyPaid: 0, otherPaid: 0 };
+          // (0134) เทียบเฉพาะเงินต้น+ค่าปรับ 2 กองนี้เท่านั้น (ตัด "อื่นๆ" ออกจากทั้งสองฝั่งแล้ว — เทียบ
+          // แยกเป็นกองที่ 3 ต่างหากด้านล่าง ไม่ปนกันอีกต่อไป — บั๊กต้นเรื่องที่แก้)
           const ourPaidTotal = ours.instPaid + ours.penaltyPaid;
           const pjPaidTotal = parsed.pjInstPaidTotal + parsed.pjPenaltyPaidTotal;
           const diff = pjPaidTotal - ourPaidTotal;
+          // (0134) กองที่ 3 — "อื่นๆ" ฝั่ง PJ เทียบกับ other_income ฝั่งเรา แยกเทียบต่างหาก ไม่รวมเข้า diff บน
+          const otherDiff = parsed.pjOtherPaidTotal - ours.otherPaid;
 
           rwDetails.push({
             contractId: cand.id,
@@ -884,70 +947,71 @@ export default {
             ourPaidTotal,
             pjPaidTotal,
             diff,
+            otherDiff,
             pjRowCount: parsed.rowCount,
             receiptCount: parsed.receiptUuids.length,
           });
 
-          if (Math.abs(diff) <= 0.01) continue; // ตรงกันอยู่แล้ว ไม่ต้องทำอะไร
-
-          // pjPaidTotal > ourPaidTotal → มีเงินที่เราไม่เห็น (คืนเครื่องแล้ว PJ ซ่อนใบเสร็จ) — reason
-          //   RETURNED_CONTRACT_PAYMENT
-          // pjPaidTotal < ourPaidTotal → เราลงเกิน PJ บนสัญญาคืนเครื่อง — reason ใหม่
-          //   RETURNED_CONTRACT_OVERAGE (0125 review fix — ติ๊ก RED1: ห้าม reuse AMOUNT_MISMATCH เพราะ
-          //   หน้า /pj-sync-review เปิด ApplyPjModal ให้ reason นั้นได้ตรงๆ — สัญญากลุ่มนี้ status='returned'
-          //   มี nextUnpaid เสมอ ทำให้คนกด "ลงตาม PJ"/"รายได้อื่นๆ" ใส่เงินเข้าสัญญาคืนเครื่องจาก diff
-          //   สังเคราะห์ได้ ขัด spec แบมที่ห้าม auto-apply/manual-apply เงินบนสัญญากลุ่มนี้เด็ดขาด — reason
-          //   ใหม่นี้ไม่มี guard ฝั่ง UI ให้กดลงเงิน (น้องวิวเพิ่ม type/label/guard คู่กัน))
-          const reasonToUse = diff > 0 ? "RETURNED_CONTRACT_PAYMENT" : "RETURNED_CONTRACT_OVERAGE";
-
           // shape ล็อกร่วมกับน้องวิว (0125 review fix — YELLOW 5): kind คงที่ 'returned_watch' เสมอ (ไม่
-          // แยกตาม diff อีกต่อไป — ฝั่ง UI เช็ค reason เพื่อแยก 2 เคสแทน) + receiptUuids ต้องอยู่ top-level
+          // แยกตาม diff อีกต่อไป — ฝั่ง UI เช็ค reason เพื่อแยกเคสแทน) + receiptUuids ต้องอยู่ top-level
           // (ไม่ซ้อนใต้ pj) ให้ตรงกับ shape ที่ตกลงกันไว้ {kind, invUuid, receiptUuids, ours, pj, checkedAt}
+          // (0134) เพิ่ม otherPaid ทั้ง 2 ฝั่งเข้า raw_json — ไม่ลบ field เดิม กันของเก่าที่เคย parse raw_json
+          // อยู่แล้ว (น้องวิว/db.ts) พัง — ใช้ raw_json ก้อนเดียวกันทั้ง 2 reason (PAYMENT/OVERAGE + OTHER_FEE)
+          // เพราะเป็นบริบทของ invoice เดียวกัน ให้ครีม/แอดมินเห็นครบทั้ง 3 กองตอนเปิดดูรายละเอียด
           const rawJson = {
             kind: "returned_watch",
             invUuid,
             receiptUuids: parsed.receiptUuids,
-            ours: { instPaid: ours.instPaid, penaltyPaid: ours.penaltyPaid, total: ourPaidTotal },
+            ours: {
+              instPaid: ours.instPaid,
+              penaltyPaid: ours.penaltyPaid,
+              otherPaid: ours.otherPaid,
+              total: ourPaidTotal,
+            },
             pj: {
               instPaid: parsed.pjInstPaidTotal,
               penaltyPaid: parsed.pjPenaltyPaidTotal,
+              otherPaid: parsed.pjOtherPaidTotal,
               total: pjPaidTotal,
               rowCount: parsed.rowCount,
             },
             checkedAt: new Date().toISOString(),
           };
 
-          if (!dryRun) {
-            // dedup: ถ้ามี pending review ของ invoice นี้ + reason เดียวกันอยู่แล้ว → update ยอด/raw_json
-            // แทน insert ซ้ำ (ยอดต่างอาจเปลี่ยนทุกวันที่ PJ ยังไม่บันทึกอะไรเพิ่ม/ลูกค้าจ่ายเพิ่ม)
-            const { data: existingPending } = await db
-              .from("pj_sync_review")
-              .select("id")
-              .eq("pj_invoice_no", cand.invNo)
-              .eq("reason", reasonToUse)
-              .eq("status", "pending")
-              .limit(1);
-
-            if (existingPending && existingPending.length > 0) {
-              await db.from("pj_sync_review")
-                .update({ pj_amount: Math.abs(diff), raw_json: rawJson })
-                .eq("id", existingPending[0].id);
-            } else {
-              await db.from("pj_sync_review").insert({
-                run_id: runId,
-                pj_invoice_no: cand.invNo,
-                pj_payment_type: "installment",
-                pj_amount: Math.abs(diff),
-                pj_paid_date: null,
-                matched_contract_id: cand.id,
-                reason: reasonToUse,
-                raw_json: rawJson,
-                status: "pending",
-              });
+          // ── กองที่ 1+2: เงินต้น+ค่าปรับ ───────────────────────────────────────────────────────────
+          if (Math.abs(diff) > 0.01) {
+            // pjPaidTotal > ourPaidTotal → มีเงินที่เราไม่เห็น (คืนเครื่องแล้ว PJ ซ่อนใบเสร็จ) — reason
+            //   RETURNED_CONTRACT_PAYMENT
+            // pjPaidTotal < ourPaidTotal → เราลงเกิน PJ บนสัญญาคืนเครื่อง — reason ใหม่
+            //   RETURNED_CONTRACT_OVERAGE (0125 review fix — ติ๊ก RED1: ห้าม reuse AMOUNT_MISMATCH เพราะ
+            //   หน้า /pj-sync-review เปิด ApplyPjModal ให้ reason นั้นได้ตรงๆ — สัญญากลุ่มนี้ status='returned'
+            //   มี nextUnpaid เสมอ ทำให้คนกด "ลงตาม PJ"/"รายได้อื่นๆ" ใส่เงินเข้าสัญญาคืนเครื่องจาก diff
+            //   สังเคราะห์ได้ ขัด spec แบมที่ห้าม auto-apply/manual-apply เงินบนสัญญากลุ่มนี้เด็ดขาด — reason
+            //   ใหม่นี้ไม่มี guard ฝั่ง UI ให้กดลงเงิน (น้องวิวเพิ่ม type/label/guard คู่กัน))
+            const reasonToUse = diff > 0 ? "RETURNED_CONTRACT_PAYMENT" : "RETURNED_CONTRACT_OVERAGE";
+            if (!dryRun) {
+              await queueReturnedWatchReview(reasonToUse, "installment", cand.invNo, cand.id, Math.abs(diff), rawJson);
             }
+            if (diff > 0) driftQueued++; else overAppliedQueued++;
           }
 
-          if (diff > 0) driftQueued++; else overAppliedQueued++;
+          // ── กองที่ 3: "อื่นๆ" (ค่าธรรมเนียม/ค่าเปลี่ยนวัน ฯลฯ) ────────────────────────────────────────
+          // (0134) ยิงทางเดียวเท่านั้น — เฉพาะตอน PJ มากกว่าที่เราบันทึกไว้ (otherDiff > 0) เพราะ
+          // other_income ฝั่งเรามีรายการที่ PJ ไม่มีเป็นปกติอยู่แล้ว (เช่น ค่าเอกสาร backfill/ค่าธรรมเนียม
+          // ปิดสัญญา) — ถ้ายิงสองทาง (ourPaid > pjOtherPaid ก็ flag ด้วย) จะกลายเป็น noise ใหม่ทันที
+          if (otherDiff > 0.01) {
+            if (!dryRun) {
+              await queueReturnedWatchReview(
+                "RETURNED_CONTRACT_OTHER_FEE",
+                "other",
+                cand.invNo,
+                cand.id,
+                otherDiff,
+                rawJson,
+              );
+            }
+            otherFeeQueued++;
+          }
         }
 
         if (!dryRun && runId) {
@@ -960,7 +1024,7 @@ export default {
                 receipts_fetched: invoiceRows.length,
                 auto_applied_count: 0,
                 auto_applied_amount: 0,
-                review_count: driftQueued + overAppliedQueued,
+                review_count: driftQueued + overAppliedQueued + otherFeeQueued, // (0134) รวมกองที่ 3 ด้วย
                 // (0125 review fix — YELLOW 7) mode นี้ไม่มี "ช่วงวันที่" จริง (ตรวจทุกสัญญา returned ที่ยัง
                 // มีงวดค้าง ไม่ใช่ scan ตามวันที่รับ) — ใส่ null แทนการยัด syncIsoDate (ปลาย window ของ
                 // param date ที่ไม่ได้ใช้จริงใน mode นี้เลย) กันอ่านผิดว่าเป็นช่วงที่กวาดจริง
@@ -983,6 +1047,7 @@ export default {
           fetch_errors: fetchErrors,
           drift_found: driftQueued,
           over_applied_found: overAppliedQueued,
+          other_fee_found: otherFeeQueued, // (0134)
           truncated: rwTruncated,
           inv_pages_fetched: invPagesFetched,
           inv_list_truncated: invListTruncated,
