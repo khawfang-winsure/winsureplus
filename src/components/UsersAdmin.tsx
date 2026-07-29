@@ -92,6 +92,7 @@ export function UsersAdmin() {
     if (u.role === 'admin') return <Badge tone="amber">แอดมิน</Badge>
     if (u.role === 'executive') return <Badge tone="green">ผู้บริหาร</Badge>
     if (u.role === 'freelancer') return <Badge tone="neutral">ผู้ติดตามหนี้</Badge>
+    if (u.role === 'accounting') return <Badge tone="neutral">บัญชี</Badge>
     return <Badge tone="neutral">พนักงาน</Badge>
   }
 
@@ -307,6 +308,7 @@ function UserEditModal({
             <option value="admin">แอดมิน (admin)</option>
             <option value="executive">ผู้บริหาร (executive)</option>
             <option value="freelancer">ผู้ติดตามหนี้ (freelancer)</option>
+            <option value="accounting">บัญชี (accounting)</option>
           </Select>
         </Field>
 
