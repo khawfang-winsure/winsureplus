@@ -438,13 +438,18 @@ export async function getOptions(kind: OptionKind): Promise<Option[]> {
 
 export async function getContracts(): Promise<Contract[]> {
   if (!supabase) return mock.contracts
-  const { data, error } = await supabase
-    .from('contracts')
-    .select('*')
-    .order('transaction_date', { ascending: false })
-    .range(0, PAGE_CAP)
-  if (error) throw error
-  return ((data ?? []) as ContractRow[]).map(mapContract)
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  // คง order เดิม (transaction_date ล่าสุดก่อน — บาง page เช่น AllCustomers แสดงผลตามลำดับนี้ตรงๆ ไม่ resort)
+  // เติม .order('id') เป็น tiebreaker กัน transaction_date ซ้ำกันข้ามหน้า (unique จริงคือ transaction_date+id คู่กัน)
+  const rows = await fetchAllPaged<ContractRow>((from, to) =>
+    client
+      .from('contracts')
+      .select('*')
+      .order('transaction_date', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  )
+  return rows.map(mapContract)
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -1518,29 +1523,6 @@ export interface InstallmentLite {
   paidAmount: number
 }
 
-/**
- * ดึงงวดทั้งหมด (ทุกสัญญา) — ใช้ตรวจประวัติล่าช้า (ค่าคอม) + มูลค่าชำระ/คงค้าง (dashboard)
- * @deprecated for bulk — ใช้ getContractAggregates() แทนเมื่อต้องการยอดรวมต่อสัญญา
- *             ฟังก์ชันนี้ปลอดภัยเฉพาะ single-contract context หรือกรณีต้องการ raw rows จริงๆ
- *             ที่ 2,400+ สัญญา × 12 งวด = 28,800+ แถว — เกิน PAGE_CAP 4,999 แล้ว
- */
-export async function getAllInstallments(): Promise<InstallmentLite[]> {
-  if (!supabase) return []
-  const { data, error } = await supabase
-    .from('installments')
-    .select('contract_id, installment_no, due_date, paid_at, amount, paid_amount')
-    .range(0, PAGE_CAP)
-  if (error) throw error
-  return (data ?? []).map((r) => ({
-    contractId: r.contract_id as string,
-    installmentNo: r.installment_no as number,
-    dueDate: r.due_date as string,
-    paidAt: (r.paid_at as string | null) ?? null,
-    amount: Number(r.amount ?? 0),
-    paidAmount: Number(r.paid_amount ?? 0),
-  }))
-}
-
 /** งวดแรก (installment_no=1) ทุกสัญญา — ใช้คำนวณอัตราผิดนัดชำระงวดแรก (~2,281 แถว ปลอดภัยใต้ PAGE_CAP) */
 export interface FirstInstallmentRow {
   contractId: string
@@ -1848,29 +1830,6 @@ export async function getPaymentLog(contractId: string): Promise<PaymentLogEntry
     note: r.note ?? null,
     byName: r.by_name ?? null,
     createdAt: r.created_at,
-  }))
-}
-
-/** การรับชำระแบบย่อ (ทุกสัญญา) สำหรับกระแสเงินสด/กราฟเก็บเงินใน dashboard */
-export interface PaymentLite {
-  action: 'pay' | 'edit' | 'cancel'
-  amount: number
-  createdAt: string
-}
-
-/**
- * ดึง payment_log ทั้งหมด (เฉพาะ field ที่ใช้รวมยอดรับชำระรายเดือน)
- * @deprecated for bulk — ใช้ getPaymentSummaries() แทนสำหรับ cashflow/กราฟ dashboard
- *             ที่ 2,400+ สัญญาสะสมหลายหมื่นแถว — เกิน PAGE_CAP 4,999 แล้ว
- */
-export async function getAllPayments(): Promise<PaymentLite[]> {
-  if (!supabase) return []
-  const { data, error } = await supabase.from('payment_log').select('action, amount, created_at').range(0, PAGE_CAP)
-  if (error) throw error
-  return (data ?? []).map((r) => ({
-    action: r.action as 'pay' | 'edit' | 'cancel',
-    amount: Number(r.amount ?? 0),
-    createdAt: r.created_at as string,
   }))
 }
 
@@ -2268,9 +2227,15 @@ export async function getOverdueByBucket(bucket: OverdueBucket): Promise<Contrac
 /** สถานะของทุกสัญญา (สำหรับหน้าภาพรวม) */
 export async function getAllStatuses(): Promise<ContractStatusRow[]> {
   if (!supabase) return []
-  const { data, error } = await supabase.from('v_contract_status').select('*').range(0, PAGE_CAP)
-  if (error) throw error
-  return ((data ?? []) as StatusRow[]).map(mapStatus)
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  // v_contract_status = 1 แถวต่อสัญญา (left join agg/oldest_unpaid/latest_return ทุกอันเป็น 1:1 ต่อ contract_id
+  // — ดู mig 0126/0130) → contract_id unique จริง ใช้ orderBy กันแถวสลับ/ข้ามระหว่างหน้าได้ปลอดภัย
+  // (ของเดิมไม่มี .order() เลย — เพิ่มให้เพราะ pagination ต้องการลำดับนิ่ง ไม่กระทบ caller เพราะทุกหน้า filter/sort เอง)
+  const rows = await fetchAllPaged<StatusRow>((from, to, orderBy) =>
+    client.from('v_contract_status').select('*').order(orderBy).range(from, to),
+    'contract_id',
+  )
+  return rows.map(mapStatus)
 }
 
 // ---------- คืนเครื่อง (Phase 5) ----------
@@ -6430,13 +6395,17 @@ export async function getOtherIncome(contractId: string): Promise<OtherIncome[]>
 /** รายได้อื่นๆ ทั้งหมด (สำหรับ cashflow dashboard) */
 export async function getAllOtherIncome(): Promise<OtherIncome[]> {
   if (!supabase) return []
-  const { data, error } = await supabase
-    .from('other_income')
-    .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at, fee_kind')
-    .order('received_at', { ascending: false })
-    .range(0, PAGE_CAP)
-  if (error) throw error
-  return ((data ?? []) as OtherIncomeRow[]).map(mapOtherIncome)
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  // คง order เดิม (received_at ล่าสุดก่อน) + เติม .order('id') เป็น tiebreaker กัน received_at ซ้ำกันข้ามหน้า
+  const rows = await fetchAllPaged<OtherIncomeRow>((from, to) =>
+    client
+      .from('other_income')
+      .select('id, contract_id, amount, category, note, received_at, recorded_by, created_at, fee_kind')
+      .order('received_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  )
+  return rows.map(mapOtherIncome)
 }
 
 /**
