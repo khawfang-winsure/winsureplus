@@ -1523,7 +1523,9 @@ export interface InstallmentLite {
   paidAmount: number
 }
 
-/** งวดแรก (installment_no=1) ทุกสัญญา — ใช้คำนวณอัตราผิดนัดชำระงวดแรก (~2,281 แถว ปลอดภัยใต้ PAGE_CAP) */
+/** งวดแรก (installment_no=1) ทุกสัญญา — ใช้คำนวณอัตราผิดนัดชำระงวดแรก
+ *  1 แถว/สัญญา = เกาะจำนวนสัญญา (2,464 ที่ 29 ก.ค. 2569 = 49% ของ PAGE_CAP แล้ว) — ใช้ fetchAllPaged
+ *  กันเงียบๆ ตัดทิ้งเมื่อสัญญาทะลุ 5,000 (audit 29 ก.ค. 2569, ดู comment ของ fetchAllPaged) */
 export interface FirstInstallmentRow {
   contractId: string
   dueDate: string        // 'YYYY-MM-DD'
@@ -1532,16 +1534,22 @@ export interface FirstInstallmentRow {
 
 export async function getFirstInstallments(): Promise<FirstInstallmentRow[]> {
   if (!supabase) return []
-  const { data, error } = await supabase
-    .from('installments')
-    .select('contract_id, due_date, paid_at')
-    .eq('installment_no', 1)
-    .range(0, PAGE_CAP)
-  if (error) throw error
-  return (data ?? []).map((r) => ({
-    contractId: r.contract_id as string,
-    dueDate: (r.due_date as string).slice(0, 10),
-    paidAt: r.paid_at ? (r.paid_at as string).slice(0, 10) : null,
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  // filter installment_no=1 ให้ 1 แถวต่อสัญญาอยู่แล้ว (contract_id unique) — ใช้เป็น orderBy tiebreaker ได้ตรงๆ
+  const rows = await fetchAllPaged<{ contract_id: string; due_date: string; paid_at: string | null }>(
+    (from, to, orderBy) =>
+      client
+        .from('installments')
+        .select('contract_id, due_date, paid_at')
+        .eq('installment_no', 1)
+        .order(orderBy)
+        .range(from, to),
+    'contract_id',
+  )
+  return rows.map((r) => ({
+    contractId: r.contract_id,
+    dueDate: r.due_date.slice(0, 10),
+    paidAt: r.paid_at ? r.paid_at.slice(0, 10) : null,
   }))
 }
 
@@ -1557,36 +1565,38 @@ export interface OverdueAsOfRow {
 /**
  * ดึงงวดที่ยังค้างชำระ ณ วันที่กำหนด (asOfDate): due_date <= asOfDate
  * AND (paid_at is null OR paid_at > asOfDate) — กรองที่ฝั่ง SQL ทั้งหมด
- * ตาราง installments มี 28,000+ แถวรวม (เกิน PAGE_CAP 4,999 แน่นอน) จึงต้อง page วน
- * ทีละ PAGE_CAP+1 แถว จนกว่าจะได้แถวน้อยกว่าขนาดหน้า (แปลว่าหมดแล้ว)
+ * ตาราง installments มี 30,000+ แถวรวม (เกิน PAGE_CAP 4,999 แน่นอน) จึงใช้ fetchAllPaged วนหน้า
+ * (audit 29 ก.ค. 2569: เดิม page มือไม่มี .order() เลย — ORDER BY ไม่นิ่งข้ามหลาย .range() ถ้ามีคน
+ * insert/update แถวพอดีจังหวะที่กำลัง paginate อาจข้าม/ได้ซ้ำแถวได้ — เพิ่ม order('id') ให้เหมือน
+ * fetchAllPaged ที่อื่นในไฟล์นี้ทั้งหมด ไม่เปลี่ยนพฤติกรรม/ผลลัพธ์ตอนไม่มีเขียนพร้อมกัน)
  */
 export async function getOverdueInstallmentsAsOf(asOfDate: string): Promise<OverdueAsOfRow[]> {
   if (!supabase) return []
-  const pageSize = PAGE_CAP + 1 // 5000 แถวต่อหน้า
-  const rows: OverdueAsOfRow[] = []
-  let from = 0
-  for (;;) {
-    const { data, error } = await supabase
-      .from('installments')
-      .select('contract_id, due_date, amount, paid_amount, penalty_amount')
-      .lte('due_date', asOfDate)
-      .or(`paid_at.is.null,paid_at.gt.${asOfDate}`)
-      .range(from, from + pageSize - 1)
-    if (error) throw error
-    const batch = data ?? []
-    for (const r of batch) {
-      rows.push({
-        contractId: r.contract_id as string,
-        dueDate: r.due_date as string,
-        amount: Number(r.amount ?? 0),
-        paidAmount: Number(r.paid_amount ?? 0),
-        penaltyDue: Number(r.penalty_amount ?? 0),
-      })
-    }
-    if (batch.length < pageSize) break
-    from += pageSize
-  }
-  return rows
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  const rows = await fetchAllPaged<{
+    contract_id: string
+    due_date: string
+    amount: number
+    paid_amount: number | null
+    penalty_amount: number
+  }>(
+    (from, to, orderBy) =>
+      client
+        .from('installments')
+        .select('contract_id, due_date, amount, paid_amount, penalty_amount')
+        .lte('due_date', asOfDate)
+        .or(`paid_at.is.null,paid_at.gt.${asOfDate}`)
+        .order(orderBy)
+        .range(from, to),
+    'id',
+  )
+  return rows.map((r) => ({
+    contractId: r.contract_id,
+    dueDate: r.due_date,
+    amount: Number(r.amount ?? 0),
+    paidAmount: Number(r.paid_amount ?? 0),
+    penaltyDue: Number(r.penalty_amount ?? 0),
+  }))
 }
 
 // ---------- aggregate views (Fix B — รองรับ 2,400+ สัญญา) ----------
@@ -1679,17 +1689,18 @@ function mapPaymentSummary(r: PaymentSummaryRow): PaymentSummary {
 /**
  * ดึงยอดรับชำระต่อสัญญาจาก v_payment_summary (1 query แทน scan payment_log ทั้งหมด)
  * คืน Map<contractId, PaymentSummary> สำหรับ cashflow forecast / กราฟเก็บเงิน
- * รองรับ payment_log หลายหมื่นแถวโดยไม่ติด PAGE_CAP
+ * รองรับ payment_log หลายหมื่นแถวโดยไม่ติด PAGE_CAP — แต่ view เองคืน 1 แถว/สัญญา (2,464 ที่ 29 ก.ค. 2569
+ * = 49% ของ PAGE_CAP แล้ว) ใช้ fetchAllPaged กันเงียบๆ ตัดทิ้งเมื่อสัญญาทะลุ 5,000 (audit 29 ก.ค. 2569)
  */
 export async function getPaymentSummaries(): Promise<Map<string, PaymentSummary>> {
   if (!supabase) return new Map()
-  const { data, error } = await supabase
-    .from('v_payment_summary')
-    .select('*')
-    .range(0, PAGE_CAP)
-  if (error) throw error
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  const rows = await fetchAllPaged<PaymentSummaryRow>(
+    (from, to, orderBy) => client.from('v_payment_summary').select('*').order(orderBy).range(from, to),
+    'contract_id',
+  )
   const map = new Map<string, PaymentSummary>()
-  for (const r of (data ?? []) as PaymentSummaryRow[]) {
+  for (const r of rows) {
     map.set(r.contract_id, mapPaymentSummary(r))
   }
   return map
@@ -1738,16 +1749,18 @@ function mapCurrentAddress(r: CurrentAddressRow): CurrentAddress {
  * ดึงที่อยู่ปัจจุบันของทุกสัญญาจาก v_contract_current_address (1 query ไม่ซ้ำ)
  * คืน Map<contractId, CurrentAddress> สำหรับหน้าส่งจดหมาย
  * แทน getAllAddresses() ที่ดึง kind ทั้งหมดแล้ว filter ฝั่ง client
+ * view คืน 1 แถว/สัญญา (2,464 ที่ 29 ก.ค. 2569 = 49% ของ PAGE_CAP แล้ว) — ใช้ fetchAllPaged กันเงียบๆ
+ * ตัดทิ้งเมื่อสัญญาทะลุ 5,000 (audit 29 ก.ค. 2569 — เคสเดียวกับที่ getAllAddresses เคยพลาดมาแล้ว)
  */
 export async function getCurrentAddresses(): Promise<Map<string, CurrentAddress>> {
   if (!supabase) return new Map()
-  const { data, error } = await supabase
-    .from('v_contract_current_address')
-    .select('*')
-    .range(0, PAGE_CAP)
-  if (error) throw error
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  const rows = await fetchAllPaged<CurrentAddressRow>(
+    (from, to, orderBy) => client.from('v_contract_current_address').select('*').order(orderBy).range(from, to),
+    'contract_id',
+  )
   const map = new Map<string, CurrentAddress>()
-  for (const r of (data ?? []) as CurrentAddressRow[]) {
+  for (const r of rows) {
     map.set(r.contract_id, mapCurrentAddress(r))
   }
   return map
@@ -7636,13 +7649,17 @@ export async function getLetterOutcomeByRound(): Promise<LetterOutcomeByRound[]>
   }))
 }
 
-/** ผลลัพธ์รายจดหมาย สำหรับ drill-down (v_letter_outcomes — เรียง printed_at ล่าสุดก่อน) */
+/** ผลลัพธ์รายจดหมาย สำหรับ drill-down (v_letter_outcomes — เรียง printed_at ล่าสุดก่อน)
+ *  audit 29 ก.ค. 2569: เดิมไม่มี .range() เลย (ต่างจาก view อื่นในหมวดนี้ที่ใส่ .range(0,999) กันไว้)
+ *  → พึ่ง PostgREST default cap (1000 แถว) เงียบๆ โดยไม่มีใครตั้งใจ — ใส่ .range(0, PAGE_CAP) ให้ชัดเจน
+ *  แทน (view นี้ = 1 แถว/จดหมาย ไม่ใช่ aggregate เหมือน view พี่น้อง จึงโตเร็วกว่า ต้องกันเผื่อจริงจัง) */
 export async function getLetterOutcomes(): Promise<LetterOutcome[]> {
   if (!supabase) return []
   const { data, error } = await supabase
     .from('v_letter_outcomes')
     .select('letter_id, contract_id, contract_no, customer_name, round, printed_at, outcome, responded_at, days_to_outcome')
     .order('printed_at', { ascending: false })
+    .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as LetterOutcomeRow[]).map(r => ({
     letterId: r.letter_id,
