@@ -42,6 +42,7 @@ export interface LetterRecord {
   printedAt: string
   trackingNo?: string | null
   reply: LetterReply
+  repliedAt?: string | null // yyyy-mm-dd — วันที่ตอบกลับ (มีค่าเฉพาะ reply === 'replied')
 }
 
 /** สิ่งที่ต้องทำต่อไปของสัญญาหนึ่ง (ใน episode ปัจจุบัน) */

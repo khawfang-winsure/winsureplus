@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock, Copy, Check } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
 import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
@@ -66,7 +66,9 @@ import {
   type ContractAddresses,
   getContractReturnDate,
   RETURN_DATE_RELIABLE_FROM,
+  getContractLetters,
 } from '../lib/db'
+import type { LetterRecord, LetterReply } from '../lib/letters'
 import {
   activeRateSets,
   multiplierFor,
@@ -257,6 +259,8 @@ export default function ContractDetail() {
   const [addExtraOpen, setAddExtraOpen] = useState(false)
   const [followHistory, setFollowHistory] = useState<FollowUpEntry[]>([])
   const [followHistoryLoading, setFollowHistoryLoading] = useState(true)
+  const [letterHistory, setLetterHistory] = useState<LetterRecord[]>([])
+  const [letterHistoryLoading, setLetterHistoryLoading] = useState(true)
   const [penaltyOverrideHistory, setPenaltyOverrideHistory] = useState<PenaltyOverrideHistoryEntry[]>([])
 
   // ===== Private Notes =====
@@ -391,6 +395,21 @@ export default function ContractDetail() {
       .then(setFollowHistory)
       .finally(() => setFollowHistoryLoading(false))
   }, [id])
+
+  // โหลดประวัติจดหมายติดตามหนี้ (recipient_snapshot = ที่อยู่บ้านเต็มของลูกค้า)
+  // ต้อง gate ตั้งแต่ fetch ไม่ใช่แค่ตอน render — ฟรีแลนซ์ห้ามให้ response ที่อยู่ลูกค้าเข้า browser เลย (RLS เปิดให้ authenticated ทุก role select ได้)
+  useEffect(() => {
+    if (!id) return
+    if (!canStaff) {
+      setLetterHistory([])
+      setLetterHistoryLoading(false)
+      return
+    }
+    setLetterHistoryLoading(true)
+    getContractLetters(id)
+      .then(setLetterHistory)
+      .finally(() => setLetterHistoryLoading(false))
+  }, [id, canStaff])
 
   // โหลดสถานะ pin ของสัญญานี้
   useEffect(() => {
@@ -1397,6 +1416,11 @@ export default function ContractDetail() {
       {/* ===== ประวัติการติดตาม (admin + staff เห็น) ===== */}
       {canStaff && (
         <FollowHistory entries={followHistory} loading={followHistoryLoading} />
+      )}
+
+      {/* ===== ประวัติจดหมาย (admin + staff เท่านั้น — recipientSnapshot คือที่อยู่บ้านเต็ม ฟรีแลนซ์ห้ามเห็น) ===== */}
+      {canStaff && (
+        <LetterHistory entries={letterHistory} loading={letterHistoryLoading} />
       )}
 
       {/* ===== โน้ตส่วนตัว (ทุก role เห็น) ===== */}
@@ -2422,6 +2446,122 @@ function FollowHistory({
             </button>
           )}
         </>
+      )}
+    </Card>
+  )
+}
+
+// ===== ประวัติจดหมายติดตามหนี้ของสัญญานี้ =====
+// ป้ายที่อยู่/ผลตอบกลับ กำหนดเองแยกจาก ADDRESS_KIND_LABEL/REPLY_LABEL ใน lib/letters.ts
+// (ข้อความสั้นกว่าตาม spec หน้านี้ — ไม่แชร์กับหน้า Letters.tsx รอบนี้)
+const LETTER_ADDRESS_LABEL: Record<'current' | 'id_card' | 'registry', string> = {
+  current: 'ที่อยู่ปัจจุบัน',
+  id_card: 'ที่อยู่ตามบัตร',
+  registry: 'ที่อยู่ทะเบียนราษฎร์',
+}
+
+const LETTER_REPLY_LABEL: Record<LetterReply, string> = {
+  replied: 'ตอบรับแล้ว',
+  no_reply: 'ไม่ตอบรับ',
+  pending: 'รอผล',
+}
+
+const LETTER_REPLY_TONE: Record<LetterReply, 'green' | 'red' | 'amber'> = {
+  replied: 'green',
+  no_reply: 'red',
+  pending: 'amber',
+}
+
+/** ปุ่มก็อปเลขพัสดุ — inline ในตาราง (pattern เดียวกับ CopyAccountNoButton ใน AccountingTransfers.tsx) */
+function CopyTrackingButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title="คัดลอกเลขพัสดุ"
+      className="inline-flex items-center gap-1 rounded-lg border border-peach bg-white px-1.5 py-0.5 text-xs text-ink-soft transition hover:bg-peach-light/50"
+    >
+      {copied ? <Check size={11} className="text-green-600" /> : <Copy size={11} />}
+      {copied ? 'คัดลอกแล้ว' : value}
+    </button>
+  )
+}
+
+function LetterHistory({
+  entries,
+  loading,
+}: {
+  entries: LetterRecord[]
+  loading: boolean
+}) {
+  const total = entries.length
+
+  return (
+    <Card className="mb-4 py-3">
+      <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink">
+        <Mail size={15} /> ประวัติจดหมาย
+        {!loading && (
+          <span className="ml-1 font-normal text-ink-soft">({total} รายการ)</span>
+        )}
+      </p>
+
+      {loading ? (
+        <p className="text-sm text-ink-soft">กำลังโหลด...</p>
+      ) : entries.length === 0 ? (
+        <p className="text-sm text-ink-soft">ยังไม่เคยส่งจดหมายถึงลูกค้ารายนี้</p>
+      ) : (
+        <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+          <table className="w-full min-w-[720px] text-sm">
+            <thead>
+              <tr className="bg-peach-light text-left text-ink">
+                {['วันที่ส่ง', 'ครั้งที่', 'ที่อยู่ที่ส่ง', 'เลขพัสดุ', 'ผลตอบกลับ', 'วันที่ตอบรับ'].map((h) => (
+                  <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e, idx) => (
+                <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
+                  <td className="px-3 py-2.5 whitespace-nowrap">{thaiDate(e.printedAt.slice(0, 10))}</td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">ครั้งที่ {e.round}</td>
+                  <td className="px-3 py-2.5">
+                    <span className="font-medium text-ink">{LETTER_ADDRESS_LABEL[e.addressKind]}</span>
+                    {e.recipientSnapshot && (
+                      <span className="text-ink-soft"> — {e.recipientSnapshot}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    {e.trackingNo ? <CopyTrackingButton value={e.trackingNo} /> : '—'}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <Badge tone={LETTER_REPLY_TONE[e.reply]}>{LETTER_REPLY_LABEL[e.reply]}</Badge>
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    {e.repliedAt ? (
+                      thaiDate(e.repliedAt)
+                    ) : e.reply === 'replied' ? (
+                      <span className="text-ink-soft">ไม่ระบุ</span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   )

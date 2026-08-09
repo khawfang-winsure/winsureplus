@@ -13,7 +13,7 @@ import {
   Search,
   Underline,
 } from 'lucide-react'
-import { Badge, Button, Card, Loading, Modal, PageTitle } from '../components/ui'
+import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle } from '../components/ui'
 import { AddressFields } from '../components/AddressFields'
 import Pagination from '../components/Pagination'
 import { useAuth } from '../lib/auth'
@@ -41,8 +41,10 @@ import {
   type AddressKind,
   type CustomerAddress,
   type LetterRecord,
+  type LetterReply,
   type LetterStage,
 } from '../lib/letters'
+import { thaiDate } from '../lib/format'
 import type { FieldItem } from './FieldVisitPrint'
 import type {
   Contract,
@@ -57,7 +59,8 @@ function thaiDateFull(): string {
   return `${d.getDate()} ${['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'][d.getMonth()]} ${d.getFullYear() + 543}`
 }
 
-type TabKey = 'send' | 'wait' | 'registry' | 'field'
+type TabKey = 'send' | 'wait' | 'registry' | 'field' | 'history'
+type StageTabKey = Exclude<TabKey, 'history'>
 type SendStage = { kind: 'send'; round: 1 | 2 | 3; addressKind: 'current' | 'id_card' | 'registry' }
 
 interface Row {
@@ -68,6 +71,21 @@ interface Row {
   lettersThisEpisode: LetterRecord[]
   stage: LetterStage
   amount: number
+}
+
+// แถวประวัติดิบ — ต่างจาก Row (ที่คำนวณจาก state machine 4 สเตจ) ตรงที่นี่คือ log จริงทุกฉบับที่เคยส่ง ไม่ผ่าน nextLetterAction
+interface HistoryRow {
+  letter: LetterRecord
+  customerName: string
+  contractNo: string
+  shopId: string
+  shopName: string
+}
+
+const REPLY_TONE: Record<LetterReply, 'amber' | 'green' | 'red'> = {
+  pending: 'amber',
+  replied: 'green',
+  no_reply: 'red',
 }
 
 export default function Letters() {
@@ -136,26 +154,49 @@ export default function Letters() {
     return out.sort((a, b) => b.status.daysLate - a.status.daysLate)
   }, [statuses, contracts, letters, addresses])
 
-  const allByTab: Record<TabKey, Row[]> = {
+  const allByTab: Record<StageTabKey, Row[]> = {
     send: rows.filter((r) => r.stage.kind === 'send'),
     wait: rows.filter((r) => r.stage.kind === 'waiting-reply'),
     registry: rows.filter((r) => r.stage.kind === 'registry-search'),
     field: rows.filter((r) => r.stage.kind === 'field-visit'),
   }
 
+  function tabCount(key: TabKey): number {
+    if (key === 'history') return historyRows.length
+    return allByTab[key].length
+  }
+
+  // ---------- ประวัติทั้งหมด (แท็บ history) — log ดิบทุกฉบับ ไม่ผ่าน state machine ----------
+  const historyRows = useMemo<HistoryRow[]>(() => {
+    const sById = new Map(statuses.map((s) => [s.contractId, s]))
+    return letters
+      .map((l) => {
+        const s = sById.get(l.contractId)
+        return {
+          letter: l,
+          customerName: s?.customerName ?? '(ไม่พบชื่อลูกค้า)',
+          contractNo: s?.contractNo ?? '-',
+          shopId: s?.shopId ?? '',
+          shopName: s?.shopName ?? '-',
+        }
+      })
+      .sort((a, b) => b.letter.printedAt.localeCompare(a.letter.printedAt))
+  }, [letters, statuses])
+
   const shopOptions = useMemo(() => {
     const m = new Map<string, string>()
     rows.forEach((r) => m.set(r.status.shopId, r.status.shopName))
+    historyRows.forEach((r) => { if (r.shopId) m.set(r.shopId, r.shopName) })
     return [...m.entries()]
-  }, [rows])
+  }, [rows, historyRows])
 
   const addrFor = (r: Row, kind: 'current' | 'id_card' | 'registry') => r.addresses[kind]
   const hasAddr = (r: Row) =>
     r.stage.kind === 'send' && !isAddressEmpty(addrFor(r, (r.stage as SendStage).addressKind))
 
-  // กรองตามแท็บ + ค้นหา + ร้าน
+  // กรองตามแท็บ + ค้นหา + ร้าน (แท็บ history ใช้ visibleHistoryRows แยกต่างหาก ไม่ผ่านทางนี้)
   const visibleRows = useMemo(() => {
-    let base = allByTab[tab]
+    let base: Row[] = tab === 'history' ? [] : allByTab[tab]
     const q = search.trim().toLowerCase()
     if (q) base = base.filter((r) => (r.status.customerName + ' ' + r.status.contractNo).toLowerCase().includes(q))
     if (shopFilter !== 'all') base = base.filter((r) => r.status.shopId === shopFilter)
@@ -163,6 +204,20 @@ export default function Letters() {
     return base
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, tab, search, shopFilter, onlyWithAddr])
+
+  // ประวัติทั้งหมด: ค้นหาชื่อ / เลขสัญญา / เลขพัสดุ + กรองร้าน (ใช้ toolbar เดียวกับสเตจอื่น)
+  const visibleHistoryRows = useMemo(() => {
+    let base = historyRows
+    const q = search.trim().toLowerCase()
+    if (q) {
+      base = base.filter((r) =>
+        (r.customerName + ' ' + r.contractNo + ' ' + (r.letter.trackingNo ?? '')).toLowerCase().includes(q),
+      )
+    }
+    if (shopFilter !== 'all') base = base.filter((r) => r.shopId === shopFilter)
+    return base
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyRows, search, shopFilter])
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -172,6 +227,10 @@ export default function Letters() {
   const pagedRows = useMemo(
     () => visibleRows.slice((page - 1) * pageSize, page * pageSize),
     [visibleRows, page, pageSize],
+  )
+  const pagedHistoryRows = useMemo(
+    () => visibleHistoryRows.slice((page - 1) * pageSize, page * pageSize),
+    [visibleHistoryRows, page, pageSize],
   )
 
   // ส่ง = เลือกได้เฉพาะที่มีที่อยู่; ลงพื้นที่ = เลือกได้ทุกราย
@@ -306,11 +365,30 @@ export default function Letters() {
     await load()
   }
 
-  async function setReply(r: Row, reply: 'replied' | 'no_reply') {
+  // "ไม่ตอบ" บันทึกทันที ไม่ต้องเลือกวัน — "ตอบกลับแล้ว" ต้องเลือกวันที่ก่อน (เปิด modal)
+  const [replyPromptId, setReplyPromptId] = useState<string | null>(null)
+
+  async function markNoReply(letterId: string) {
+    await updateLetterReply(letterId, 'no_reply')
+    await load()
+  }
+
+  async function confirmReplied(date: string) {
+    if (!replyPromptId) return
+    await updateLetterReply(replyPromptId, 'replied', date)
+    setReplyPromptId(null)
+    await load()
+  }
+
+  function handleReply(letterId: string, reply: 'replied' | 'no_reply') {
+    if (reply === 'no_reply') void markNoReply(letterId)
+    else setReplyPromptId(letterId)
+  }
+
+  function setReply(r: Row, reply: 'replied' | 'no_reply') {
     const pending = r.lettersThisEpisode.find((l) => l.reply === 'pending')
     if (!pending) return
-    await updateLetterReply(pending.id, reply)
-    await load()
+    handleReply(pending.id, reply)
   }
 
   if (loading) return <Loading />
@@ -320,11 +398,23 @@ export default function Letters() {
     { key: 'wait', label: 'รอผลตอบกลับ' },
     { key: 'registry', label: 'ค้นทะเบียนราษฎร์' },
     { key: 'field', label: 'เตรียมลงพื้นที่' },
+    { key: 'history', label: 'ประวัติทั้งหมด' },
   ]
 
   return (
     <div className="space-y-4 pb-20">
-      <PageTitle sub="ส่งจดหมายตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)" count={loading ? undefined : { shown: visibleRows.length, total: rows.length }}>ส่งจดหมาย</PageTitle>
+      <PageTitle
+        sub="ส่งจดหมายตามรอบ — ล่าช้า 10 วัน (ครั้งที่ 1) / 20 วัน (ครั้งที่ 2)"
+        count={
+          loading
+            ? undefined
+            : tab === 'history'
+              ? { shown: visibleHistoryRows.length, total: historyRows.length }
+              : { shown: visibleRows.length, total: rows.length }
+        }
+      >
+        ส่งจดหมาย
+      </PageTitle>
 
       {/* วัดผลจดหมาย (ผู้บริหารเท่านั้น) */}
       {isAdmin && <LetterOutcomeSection summary={outcomeSummary} byRound={outcomeByRound} />}
@@ -332,7 +422,7 @@ export default function Letters() {
       {/* แท็บสเตจ + ตัวนับ */}
       <div className="flex flex-wrap gap-2">
         {TABS.map((t) => {
-          const n = allByTab[t.key].length
+          const n = tabCount(t.key)
           const active = tab === t.key
           return (
             <button
@@ -359,7 +449,7 @@ export default function Letters() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="ค้นหาชื่อ / เลขสัญญา"
+              placeholder={tab === 'history' ? 'ค้นหาชื่อ / เลขสัญญา / เลขพัสดุ' : 'ค้นหาชื่อ / เลขสัญญา'}
               className="w-full rounded-xl border border-peach bg-white py-2 pl-9 pr-3 text-sm text-ink"
             />
           </div>
@@ -381,7 +471,45 @@ export default function Letters() {
           )}
         </div>
 
-        {visibleRows.length === 0 ? (
+        {tab === 'history' ? (
+          // ประวัติทั้งหมด — log ดิบทุกฉบับ คนละชนิดข้อมูลกับ 4 สเตจ (Row) จึงแยก branch ทั้งตาราง ไม่ยัดผ่าน allByTab
+          visibleHistoryRows.length === 0 ? (
+            <p className="rounded-xl bg-peach-light/40 px-4 py-6 text-center text-sm text-ink-soft">
+              ไม่มีประวัติจดหมาย
+            </p>
+          ) : (
+            <>
+              <div className="scrollbar-thin overflow-x-auto rounded-2xl border border-peach">
+                <table className="w-full min-w-[900px] text-sm">
+                  <thead>
+                    <tr className="bg-peach-light text-left text-ink">
+                      <th className="px-3 py-2.5 font-semibold">วันที่ส่ง</th>
+                      <th className="px-3 py-2.5 font-semibold">ลูกค้า / สัญญา</th>
+                      <th className="px-3 py-2.5 font-semibold">ครั้งที่</th>
+                      <th className="px-3 py-2.5 font-semibold">ที่อยู่ที่ส่ง</th>
+                      <th className="px-3 py-2.5 font-semibold">เลขพัสดุ</th>
+                      <th className="px-3 py-2.5 font-semibold">ผลตอบกลับ</th>
+                      <th className="px-3 py-2.5 font-semibold">วันที่ตอบรับ</th>
+                      <th className="px-3 py-2.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedHistoryRows.map((r) => (
+                      <HistoryRowView key={r.letter.id} r={r} onReply={handleReply} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                total={visibleHistoryRows.length}
+                page={page}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={(s) => { setPageSize(s); setPage(1) }}
+              />
+            </>
+          )
+        ) : visibleRows.length === 0 ? (
           <p className="rounded-xl bg-peach-light/40 px-4 py-6 text-center text-sm text-ink-soft">
             ไม่มีรายการในสเตจนี้
           </p>
@@ -470,6 +598,11 @@ export default function Letters() {
             await load()
           }}
         />
+      )}
+
+      {/* เลือกวันที่ตอบกลับ — ครอบทั้งแท็บ "รอบันทึกผล" และ "ประวัติทั้งหมด" */}
+      {replyPromptId && (
+        <ReplyDateModal onCancel={() => setReplyPromptId(null)} onConfirm={confirmReplied} />
       )}
     </div>
   )
@@ -674,6 +807,77 @@ function RowView({
         )}
       </td>
     </tr>
+  )
+}
+
+// แถวประวัติทั้งหมด — 1 แถว = 1 ฉบับที่เคยส่งจริง (log ดิบ) ต่างจาก RowView ที่เป็น 1 แถว = 1 สัญญาในสเตจปัจจุบัน
+function HistoryRowView({
+  r,
+  onReply,
+}: {
+  r: HistoryRow
+  onReply: (letterId: string, v: 'replied' | 'no_reply') => void
+}) {
+  const l = r.letter
+  const repliedAtText = l.repliedAt ? thaiDate(l.repliedAt) : l.reply === 'replied' ? 'ไม่ระบุ' : '—'
+  return (
+    <tr className="border-t border-peach/60 align-top">
+      <td className="px-3 py-2.5 whitespace-nowrap text-ink-soft">{thaiDate(l.printedAt.slice(0, 10))}</td>
+      <td className="px-3 py-2.5">
+        <p className="font-medium text-ink">{r.customerName}</p>
+        <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+      </td>
+      <td className="px-3 py-2.5">ครั้งที่ {l.round}</td>
+      <td className="px-3 py-2.5">{ADDRESS_KIND_LABEL[l.addressKind]}</td>
+      <td className="px-3 py-2.5">{l.trackingNo || '—'}</td>
+      <td className="px-3 py-2.5">
+        <Badge tone={REPLY_TONE[l.reply]}>{REPLY_LABEL[l.reply]}</Badge>
+      </td>
+      <td className="px-3 py-2.5 text-ink-soft">{repliedAtText}</td>
+      <td className="px-3 py-2.5 text-right">
+        {l.reply === 'pending' && (
+          <div className="flex justify-end gap-1.5">
+            <button onClick={() => onReply(l.id, 'replied')} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">ตอบกลับ</button>
+            <button onClick={() => onReply(l.id, 'no_reply')} className="rounded-lg bg-red-50 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-100">ไม่ตอบ</button>
+          </div>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+// เลือกวันที่ตอบกลับก่อนบันทึก "ตอบกลับแล้ว" — ค่าเริ่มต้น = วันนี้ (ทีมมักบันทึกย้อนหลังจึงแก้ได้)
+function ReplyDateModal({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void
+  onConfirm: (date: string) => Promise<void>
+}) {
+  // เวลาไทย (UTC+7) — ห้ามใช้ toISOString() เฉยๆ เพราะเป็น UTC (00:00–06:59 น. ไทยจะได้ "เมื่อวาน")
+  const today = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10)
+  const [date, setDate] = useState(today)
+  const [busy, setBusy] = useState(false)
+
+  async function confirm() {
+    setBusy(true)
+    try {
+      await onConfirm(date)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="บันทึกวันที่ตอบกลับ" onClose={onCancel}>
+      <Field label="วันที่ลูกค้าตอบกลับ" required>
+        <Input type="date" value={date} max={today} onChange={(e) => setDate(e.target.value)} />
+      </Field>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onCancel} disabled={busy}>ยกเลิก</Button>
+        <Button onClick={confirm} disabled={busy}>{busy ? 'กำลังบันทึก...' : 'ยืนยัน'}</Button>
+      </div>
+    </Modal>
   )
 }
 

@@ -3245,6 +3245,7 @@ interface LetterRow {
   printed_at: string
   tracking_no: string | null
   reply: LetterReply
+  replied_at: string | null // mig 0135
 }
 
 function mapLetter(r: LetterRow): LetterRecord {
@@ -3258,27 +3259,38 @@ function mapLetter(r: LetterRow): LetterRecord {
     printedAt: r.printed_at,
     trackingNo: r.tracking_no,
     reply: r.reply,
+    repliedAt: r.replied_at,
   }
 }
 
-/** จดหมายทั้งหมด (ทุกสัญญา) — สำหรับหน้าส่งจดหมาย */
+/** จดหมายทั้งหมด (ทุกสัญญา) — สำหรับหน้าส่งจดหมาย
+ * ใช้ fetchAllPaged วนดึงทุกแถว กันตัดข้อมูลเงียบๆ เมื่อจดหมายโตเกิน PAGE_CAP
+ * (74 แถว ณ 9 ส.ค. 2569 — ยังไม่ชน แต่ตั้งไว้ก่อนกันลืมแบบเคสอื่นในไฟล์นี้)
+ * order ด้วย printed_at,id เพื่อคง sort เดิม (printed_at) และกันแถวข้าม/ซ้ำข้ามหน้า (printed_at ไม่ unique) */
 export async function getAllLetters(): Promise<LetterRecord[]> {
   if (!supabase) return []
-  const { data, error } = await supabase.from('collection_letters').select('*').order('printed_at').range(0, PAGE_CAP)
-  if (error) throw error
-  return ((data ?? []) as LetterRow[]).map(mapLetter)
+  const client = supabase
+  const rows = await fetchAllPaged<LetterRow>(
+    (from, to) => client.from('collection_letters').select('*').order('printed_at').order('id').range(from, to),
+  )
+  return rows.map(mapLetter)
 }
 
+/** ใช้ fetchAllPaged เช่นกัน (ดู getAllLetters) — filter ด้วย contract_id แต่คงรูปแบบเดียวกันกันพลาดตอนจดหมายโต */
 export async function getContractLetters(contractId: string): Promise<LetterRecord[]> {
   if (!supabase) return []
-  const { data, error } = await supabase
-    .from('collection_letters')
-    .select('*')
-    .eq('contract_id', contractId)
-    .order('printed_at')
-    .range(0, PAGE_CAP)
-  if (error) throw error
-  return ((data ?? []) as LetterRow[]).map(mapLetter)
+  const client = supabase
+  const rows = await fetchAllPaged<LetterRow>(
+    (from, to) =>
+      client
+        .from('collection_letters')
+        .select('*')
+        .eq('contract_id', contractId)
+        .order('printed_at')
+        .order('id')
+        .range(from, to),
+  )
+  return rows.map(mapLetter)
 }
 
 export interface LetterInput {
@@ -3305,10 +3317,19 @@ export async function insertLetter(input: LetterInput): Promise<void> {
   if (error) throw error
 }
 
-/** บันทึกผลตอบกลับของจดหมาย */
-export async function updateLetterReply(id: string, reply: LetterReply): Promise<void> {
+/** บันทึกผลตอบกลับของจดหมาย
+ * repliedAt (yyyy-mm-dd) มีผลเฉพาะ reply === 'replied' — ไม่ส่งมา (undefined) หรือไม่ระบุ = เขียน null (ไม่เดาวัน)
+ * reply !== 'replied' → บังคับ replied_at = null เสมอ กันวันเก่าค้างตอนพนักงานเปลี่ยนใจเป็น "ไม่ตอบ" */
+export async function updateLetterReply(
+  id: string,
+  reply: LetterReply,
+  repliedAt?: string | null,
+): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase.from('collection_letters').update({ reply }).eq('id', id)
+  const { error } = await supabase
+    .from('collection_letters')
+    .update({ reply, replied_at: reply === 'replied' ? (repliedAt ?? null) : null })
+    .eq('id', id)
   if (error) throw error
 }
 
