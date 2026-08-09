@@ -480,8 +480,13 @@ export default function ContractDetail() {
     returnDate !== null && returnDate >= RETURN_DATE_RELIABLE_FROM ? returnDate : null
   const returnedOutstanding: OutstandingAfterReturnResult | null =
     isReturned ? outstandingAfterReturn(installments, extraCharges, repairFee, reliableReturnDate) : null
-  // เลขงวดค้างเก่าสุด = งวดเดียวที่ยังตามเก็บตามกฎคืนเครื่อง
-  const oldestUnpaidNo = returnedOutstanding?.details?.installmentNo ?? null
+  // เลขงวดค้างเก่าสุด = งวดเดียวที่ยัง "ตามเก็บจริง" ตามกฎคืนเครื่อง
+  // ถ้ายอด (ค่างวด+ค่าปรับ) ถูก gate เป็น 0 เพราะคืนเครื่องก่อนงวดครบกำหนด → ไม่ใช่งวดค้าง → null
+  // (ตกไปเป็น returnNotCollect = ป้าย "ไม่เก็บแล้ว (คืนเครื่อง)" แทน "ค้างชำระ")
+  const oldestUnpaidNo =
+    returnedOutstanding && (returnedOutstanding.installmentAmount > 0 || returnedOutstanding.penaltyAmount > 0)
+      ? returnedOutstanding.details?.installmentNo ?? null
+      : null
 
   // ===== ปิดก่อนกำหนดแบบ "คงตารางงวด" (early-close-preserve) — ต่างจาก settle_contract_early เดิม
   // ที่ mark ทุกงวด paid หมด: เคสนี้ตารางงวดยังเหลืองวด pending อยู่ ≥ 1 งวด จึงต้องแยกแสดงผล
