@@ -50,6 +50,19 @@ export function maskNationalId(id: string | undefined): string {
   return 'x'.repeat(digits.length - 4) + digits.slice(-4)
 }
 
+/**
+ * ตัดข้อความขยะออกจากเลขใบแจ้งหนี้ (inv_no) ที่ก๊อปมาจากหน้าจอ PJ
+ * เช่น "INV-17852281569780 Finish" -> "INV-17852281569780"
+ * กติกา: ตัดช่องว่างหน้า-หลัง, ตัดทุกอย่างตั้งแต่ช่องว่างแรกเป็นต้นไป (เลข PJ ไม่มีช่องว่างในตัวเอง),
+ * แล้วเก็บเฉพาะตัวอักษร/ตัวเลข/ขีดกลาง (กันภาษาไทย/สัญลักษณ์ปนมา)
+ */
+export function sanitizeInvNo(raw: string): { value: string; changed: boolean } {
+  const trimmed = raw.trim()
+  const firstToken = trimmed.split(/\s+/)[0] ?? ''
+  const cleaned = firstToken.replace(/[^A-Za-z0-9-]/g, '')
+  return { value: cleaned, changed: cleaned !== raw }
+}
+
 export const conditionLabel = (c: string) => CONDITION_LABEL[c] ?? c
 export const originLabel = (o: string) => ORIGIN_LABEL[o] ?? o
 export const statusLabel = (s: string) => STATUS_LABEL[s] ?? s

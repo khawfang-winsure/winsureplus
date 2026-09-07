@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
 import { Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { calcSummary } from '../lib/calc'
-import { ageRange, baht } from '../lib/format'
+import { ageRange, baht, sanitizeInvNo } from '../lib/format'
 import { derivePrefix, nextContractNo } from '../lib/contractNo'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
 import {
@@ -226,6 +226,7 @@ export default function AddContract() {
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
   const [confirmed, setConfirmed] = useState(false) // ยืนยันแล้ว (emailSentAt && summarySentAt)
   const [dupWarning, setDupWarning] = useState(false) // เลขสัญญาซ้ำ (ตรวจสดจาก DB)
+  const [invNoCleaned, setInvNoCleaned] = useState(false) // true = ระบบตัดข้อความส่วนเกินออกจากเลข INV ให้แล้ว
   const [dupCustomers, setDupCustomers] = useState<{ contractNo: string }[]>([]) // ลูกค้าบัตรนี้มีสัญญาแล้ว (เตือนนุ่ม)
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
   const shopChangedRef = useRef(false) // true = เปลี่ยนร้านระหว่างแก้ไข (ต้องบังคับ prefix ใหม่)
@@ -803,7 +804,18 @@ export default function AddContract() {
                 {errors.contractNo && <p className="mt-1 text-xs text-red-600">{errors.contractNo}</p>}
               </Field>
               <Field label="เลข INV" required>
-                <Input value={f.invNo} onChange={(e) => set('invNo', e.target.value)} placeholder="INV-..." />
+                <Input
+                  value={f.invNo}
+                  onChange={(e) => {
+                    const { value, changed } = sanitizeInvNo(e.target.value)
+                    setInvNoCleaned(changed)
+                    set('invNo', value)
+                  }}
+                  placeholder="INV-..."
+                />
+                {invNoCleaned && (
+                  <p className="mt-1 text-xs text-ink-soft">ตัดข้อความส่วนเกินออกให้แล้ว</p>
+                )}
                 {errors.invNo && <p className="mt-1 text-xs text-red-600">{errors.invNo}</p>}
               </Field>
             </div>
