@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Save } from 'lucide-react'
 import { Button, Card, Field, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
 import { calcSummary } from '../lib/calc'
-import { ageRange, baht, sanitizeInvNo } from '../lib/format'
+import { ageRange, baht, isValidInvNo, sanitizeInvNo } from '../lib/format'
 import { derivePrefix, nextContractNo } from '../lib/contractNo'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
 import {
@@ -227,6 +227,8 @@ export default function AddContract() {
   const [confirmed, setConfirmed] = useState(false) // ยืนยันแล้ว (emailSentAt && summarySentAt)
   const [dupWarning, setDupWarning] = useState(false) // เลขสัญญาซ้ำ (ตรวจสดจาก DB)
   const [invNoCleaned, setInvNoCleaned] = useState(false) // true = ระบบตัดข้อความส่วนเกินออกจากเลข INV ให้แล้ว
+  const [invNoFormatWarning, setInvNoFormatWarning] = useState(false) // true = เลข INV ไม่ตรงรูปแบบ INV-ตัวเลข (เตือนตอน blur)
+  const invNoTouchedRef = useRef(false) // true = พนักงานแก้ช่องเลข INV เอง (โหมดแก้ไข — ห้ามบล็อกสัญญาเก่าที่เปิดมาดูเฉยๆ)
   const [dupCustomers, setDupCustomers] = useState<{ contractNo: string }[]>([]) // ลูกค้าบัตรนี้มีสัญญาแล้ว (เตือนนุ่ม)
   const manualNoRef = useRef(false) // true = พนักงานพิมพ์เลขสัญญาเอง (ห้ามระบบทับ)
   const shopChangedRef = useRef(false) // true = เปลี่ยนร้านระหว่างแก้ไข (ต้องบังคับ prefix ใหม่)
@@ -520,6 +522,9 @@ export default function AddContract() {
       if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
       if (!f.contractNo) newErrors.contractNo = 'กรุณากรอกเลขที่สัญญา'
       if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
+      else if (!isValidInvNo(f.invNo)) {
+        newErrors.invNo = 'เลข INV ต้องเป็นรูปแบบ INV- ตามด้วยตัวเลขเท่านั้น (ตรวจสอบว่ามีข้อความอื่นติดมาหรือไม่)'
+      }
 
       // ===== ส่วน 2: ข้อมูลลูกค้า =====
       if (!f.customerName) newErrors.customerName = 'กรุณากรอกชื่อลูกค้า'
@@ -570,6 +575,9 @@ export default function AddContract() {
       if (!f.customerName) newErrors.customerName = 'กรุณากรอกชื่อลูกค้า'
       if (!f.shopId) newErrors.shopId = 'กรุณาเลือกร้านค้า'
       if (!f.invNo) newErrors.invNo = 'กรุณากรอกเลข INV'
+      else if (invNoTouchedRef.current && !isValidInvNo(f.invNo)) {
+        newErrors.invNo = 'เลข INV ต้องเป็นรูปแบบ INV- ตามด้วยตัวเลขเท่านั้น (ตรวจสอบว่ามีข้อความอื่นติดมาหรือไม่)'
+      }
       if (!f.devicePrice || num(f.devicePrice) <= 0) newErrors.devicePrice = 'กรุณากรอกราคาตัวเครื่อง'
     }
 
@@ -809,12 +817,24 @@ export default function AddContract() {
                   onChange={(e) => {
                     const { value, changed } = sanitizeInvNo(e.target.value)
                     setInvNoCleaned(changed)
+                    if (invNoFormatWarning) setInvNoFormatWarning(false)
+                    invNoTouchedRef.current = true
                     set('invNo', value)
+                  }}
+                  onBlur={() => {
+                    // เตือนทันทีถ้ารูปแบบผิด — เฉพาะตอนสร้างใหม่ หรือแก้ไขแล้วพนักงานเพิ่งแตะช่องนี้เอง (สัญญาเก่าเปิดมาดูเฉยๆ ไม่โดนเตือน)
+                    const shouldCheck = !isEdit || invNoTouchedRef.current
+                    setInvNoFormatWarning(shouldCheck && f.invNo.length > 0 && !isValidInvNo(f.invNo))
                   }}
                   placeholder="INV-..."
                 />
                 {invNoCleaned && (
                   <p className="mt-1 text-xs text-ink-soft">ตัดข้อความส่วนเกินออกให้แล้ว</p>
+                )}
+                {invNoFormatWarning && (
+                  <p className="mt-1 text-xs font-semibold text-red-600">
+                    ⚠️ เลข INV ต้องเป็นรูปแบบ INV- ตามด้วยตัวเลขเท่านั้น (ตรวจสอบว่ามีข้อความอื่นติดมาหรือไม่)
+                  </p>
                 )}
                 {errors.invNo && <p className="mt-1 text-xs text-red-600">{errors.invNo}</p>}
               </Field>

@@ -60,7 +60,18 @@ export function sanitizeInvNo(raw: string): { value: string; changed: boolean } 
   const trimmed = raw.trim()
   const firstToken = trimmed.split(/\s+/)[0] ?? ''
   const cleaned = firstToken.replace(/[^A-Za-z0-9-]/g, '')
-  return { value: cleaned, changed: cleaned !== raw }
+  // changed อ้างอิงจาก cleaned (ก่อนแปลงตัวพิมพ์ใหญ่) — กันไม่ให้ hint "ตัดข้อความส่วนเกินออกให้แล้ว"
+  // เด้งขึ้นมาผิดจังหวะแค่เพราะพิมพ์ตัวพิมพ์เล็ก (เช่น inv-123 → INV-123 ไม่ถือว่า "ตัดข้อความ")
+  return { value: cleaned.toUpperCase(), changed: cleaned !== raw }
+}
+
+/**
+ * ตรวจรูปแบบเลข INV ที่ถูกต้อง: ขึ้นต้นด้วย "INV-" ตามด้วยตัวเลขล้วนเท่านั้น
+ * (ข้อมูลจริงใน production ทุกสัญญาตรงรูปแบบนี้ — ใช้กันข้อความขยะติดมาที่ sanitizeInvNo ตัดไม่หมด
+ * เช่นตอนพิมพ์ทีละตัวอักษรแล้วมีคำต่อท้ายหลังช่องว่าง)
+ */
+export function isValidInvNo(value: string): boolean {
+  return /^INV-[0-9]+$/.test(value)
 }
 
 export const conditionLabel = (c: string) => CONDITION_LABEL[c] ?? c
