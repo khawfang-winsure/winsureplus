@@ -1,12 +1,27 @@
 // EarlyCloseModal — ปิดสัญญาก่อนกำหนดแบบ "คงตารางงวด" (mig 0131)
 // แทนที่ SettleModal เดิม (ContractDetail.tsx) ที่บังคับกรอก % ส่วนลด — โมดัลนี้กรอกยอดเงินบาทล้วน
 // pure calc มาจาก src/lib/earlyClose.ts (แบมเขียน) — ไฟล์นี้แค่ผูก UI + เรียก db.ts (น้องชีสเขียน)
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
-import { Button, Field, Input, Modal, Select } from './ui'
+import { Badge, Button, Field, Input, Modal, Select } from './ui'
+import CopyBox from './CopyBox'
 import { baht, statusLabel } from '../lib/format'
-import { closeContractEarlyPreserve, type CloseContractEarlyFee, type PaymentLogEntry } from '../lib/db'
+import {
+  closeContractEarlyPreserve,
+  getContractExtensions,
+  getSettlementMatrix,
+  type CloseContractEarlyFee,
+  type ExtensionRecord,
+  type PaymentLogEntry,
+} from '../lib/db'
 import { computeEarlyClose, EARLY_CLOSE_FEE_CATEGORIES } from '../lib/earlyClose'
+import {
+  computeSettlement,
+  type SettlementExtensionInfo,
+  type SettlementInstallmentInput,
+  type SettlementMatrix,
+  type SettlementResult,
+} from '../lib/settlement'
 import { penaltyPaidForInstallment } from '../lib/calc'
 import type { Contract, Installment } from '../lib/types'
 
@@ -46,6 +61,82 @@ function buildPenaltyPaidMap(
 
 function resolveCategory(row: FeeRowState): string {
   return row.categoryChoice === CUSTOM_FEE_OPTION ? row.customName.trim() : row.categoryChoice
+}
+
+/** ข้อความสรุปยอดปิดสัญญาก่อนกำหนด สำหรับคัดลอกส่งลูกค้า — รูปแบบเดียวกับที่ทีมส่งลูกค้าจริง
+ *  (ตัวอย่าง: "ยอดรวม 30,780 (2565x12 เดือน)" / "ส่วนลด 12% = 3,694 บาท" / "ยอดหลังลด 27,086 บาท" /
+ *  "ปิดด่วน 200 บาท" / "รวมชำระ 27,286 บาท" / "สำหรับชำระเพื่อปิดสัญญาภายในวันนี้เท่านั้น ขอบคุณครับ")
+ *
+ *  แก้ 08 ก.ย. 2026 (feedback คุณเตยจากการทดสอบจริง — ก่อนหน้านี้ข้อความดึงส่วนลด/ยอดจากตารางเสมอ แม้พนักงาน
+ *  พิมพ์ยอดปิดเองในช่องจริง (badge "กรอกเอง") ทำให้ข้อความไม่ตรงกับยอดที่กรอก เสี่ยงส่งเลขผิดลูกค้า):
+ *  - settlementPaid (ยอดในช่องจริง ณ ขณะนั้น) เป็นฐานของทุกยอดเสมอ ไม่ใช่ preview.remainingPrincipal/discount
+ *  - settlementDiscount / totalReceived รับมาจาก computeEarlyClose(result) ตรงๆ — ให้ตรงกับ "รับจริงทั้งหมด"
+ *    ที่หน้ายืนยันโชว์ทุกกรณี (ตามตาราง/กรอกเอง)
+ *  - isFromTable: true เฉพาะตอน settlementPaid ตรงกับยอดที่ตารางแนะนำ (suggestedSettlementPaid) เป๊ะ — โชว์ %
+ *    เฉพาะตอนนั้น ถ้ากรอกเอง (ไม่ตรงตาราง) ไม่ใส่ % ที่ไม่จริง
+ *  - ตัดคำว่า "เมื่อวันที่ ..." ออกทั้งหมด แทนด้วยบรรทัดปิดท้ายคงที่
+ *  - settlementPaid ว่าง/≤0/ไม่ใช่ตัวเลข → คืน null (caller โชว่ข้อความ "กรอกยอดจ่ายปิดก่อน" แทนกล่องคัดลอก) */
+function buildEarlyCloseMessage(params: {
+  installments: Installment[]
+  preview: SettlementResult
+  settlementPaid: number
+  settlementDiscount: number
+  isFromTable: boolean
+  penaltyReceived: number
+  fees: { category: string; amount: number }[]
+  totalReceived: number
+}): string | null {
+  const { installments, preview, settlementPaid, settlementDiscount, isFromTable, penaltyReceived, fees, totalReceived } =
+    params
+
+  if (!settlementPaid || !Number.isFinite(settlementPaid) || settlementPaid <= 0) return null
+  // defense in depth — ชั้นที่ 2 กันโชว์ "ส่วนลดติดลบ" ในข้อความส่งลูกค้า (เช่น ยอดปิดเกินยอดคงเหลือ)
+  // ชั้นแรกคือ caller ซ่อน CopyBox ทั้งกล่องเมื่อ result.errors.length > 0 อยู่แล้ว
+  if (!Number.isFinite(settlementDiscount) || settlementDiscount < 0) return null
+
+  const unpaid = installments.filter((i) => i.paidAt === null)
+  const noPartialPayment = unpaid.every((i) => (i.paidAmount || 0) === 0)
+  const perInstallmentAmount = unpaid.length > 0 ? unpaid[0].amount : 0
+  const uniformAmount = unpaid.every((i) => i.amount === perInstallmentAmount)
+  const canShowMultiply =
+    noPartialPayment &&
+    uniformAmount &&
+    perInstallmentAmount > 0 &&
+    perInstallmentAmount * preview.remainingCount === preview.remainingPrincipal
+
+  const lines: string[] = []
+
+  lines.push(
+    canShowMultiply
+      ? `ยอดรวม ${baht(preview.remainingPrincipal)} (${baht(perInstallmentAmount)}x${preview.remainingCount} เดือน)`
+      : `ยอดรวม ${baht(preview.remainingPrincipal)} (เหลือ ${preview.remainingCount} งวด)`,
+  )
+
+  lines.push(
+    isFromTable
+      ? `ส่วนลด ${preview.percent}% = ${baht(settlementDiscount)} บาท`
+      : `ส่วนลด ${baht(settlementDiscount)} บาท`,
+  )
+
+  // ยอดหลังลด = settlementRemaining − settlementDiscount = settlementPaid เป๊ะเสมอ (นิยาม settlementDiscount
+  // มาจาก settlementRemaining − settlementPaid) — ใส่บรรทัดนี้ให้ลูกค้าเห็นที่มาก่อนเจอค่าปรับ/ค่าธรรมเนียม
+  lines.push(`ยอดหลังลด ${baht(settlementPaid)} บาท`)
+
+  if (penaltyReceived > 0) {
+    lines.push(`ค่าปรับ ${baht(penaltyReceived)} บาท`)
+  }
+
+  const validFees = fees.filter((f) => f.amount > 0 && f.category.trim() !== '')
+  for (const f of validFees) {
+    // ตัดคำนำหน้า "ค่า" ออกให้ตรงข้อความที่ทีมส่งลูกค้าจริง (เช่น "ค่าปิดด่วน" -> "ปิดด่วน")
+    // เฉพาะข้อความคัดลอกนี้เท่านั้น — ชื่อเต็มยังใช้แสดงในฟอร์ม/สรุปยืนยันตามเดิม
+    lines.push(`${f.category.replace(/^ค่า/, '')} ${baht(f.amount)} บาท`)
+  }
+
+  lines.push(`รวมชำระ ${baht(totalReceived)} บาท`)
+  lines.push('สำหรับชำระเพื่อปิดสัญญาภายในวันนี้เท่านั้น ขอบคุณครับ')
+
+  return lines.join('\n')
 }
 
 let feeRowSeq = 0
@@ -99,6 +190,79 @@ export default function EarlyCloseModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // ===== ตารางส่วนลดปิดสัญญา (settlement matrix, mig 0112) — โหลดเงียบๆ ตอนเปิดโมดัล =====
+  // matrix=null แปลว่า "ยังไม่โหลดเสร็จ" หรือ "โหลดไม่สำเร็จ" — ทั้ง 2 กรณี ซ่อนกล่องคำนวณจากตาราง
+  // ไปเลย (ข้อบังคับข้อ 4) ไม่บล็อกการปิดสัญญาแบบกรอกยอดเอง
+  const [matrix, setMatrix] = useState<SettlementMatrix | null>(null)
+  const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const m = await getSettlementMatrix()
+        if (alive) setMatrix(m)
+      } catch {
+        if (alive) setMatrix(null)
+      }
+    })()
+    void (async () => {
+      try {
+        const ext = await getContractExtensions(contract.id)
+        if (alive) setExtensions(ext)
+      } catch {
+        if (alive) setExtensions([])
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [contract.id])
+
+  // เคสขยายเวลาแบบเพิ่มจำนวนงวด (ext_type != 'due_day') — เอาอันล่าสุดที่เข้าเงื่อนไข (list เรียงใหม่→เก่า)
+  // ตาม logic ที่ settlement.ts กำหนด (isExtendedInstallmentsCase) — ไฟล์นี้แค่ map ข้อมูล ไม่คิดสูตรเอง
+  const extensionInfo = useMemo<SettlementExtensionInfo | null>(() => {
+    const match = extensions.find((e) => e.extType !== 'due_day' && e.newInstallments != null)
+    return match ? { extType: match.extType, newInstallments: match.newInstallments } : null
+  }, [extensions])
+
+  const settlementInstallments = useMemo<SettlementInstallmentInput[]>(
+    () =>
+      installments.map((i) => ({
+        amount: i.amount,
+        paidAmount: i.paidAmount,
+        penaltyAmount: i.penaltyAmount,
+        paidAt: i.paidAt,
+        installmentNo: i.installmentNo,
+      })),
+    [installments],
+  )
+
+  // preview จากตารางส่วนลด — reuse computeSettlement (src/lib/settlement.ts) ตรงๆ ห้ามคิดสูตรเอง
+  const settlementPreview = useMemo(() => {
+    if (matrix == null) return null
+    return computeSettlement({
+      installments: settlementInstallments,
+      termMonths: contract.termMonths,
+      matrix,
+      extension: extensionInfo,
+    })
+  }, [matrix, settlementInstallments, contract.termMonths, extensionInfo])
+
+  // ยอดจ่ายปิด (เฉพาะค่างวด ไม่รวมค่าปรับ — ค่าปรับกรอกแยกในช่องถัดไป) ที่ตารางแนะนำ
+  const suggestedSettlementPaid = settlementPreview
+    ? Math.max(0, settlementPreview.remainingPrincipal - settlementPreview.discount)
+    : null
+
+  // จำยอดล่าสุดที่กด "ใช้ยอดนี้" ไว้ — ถ้าผู้ใช้แก้ช่องทีหลังจนไม่ตรงกับยอดนี้แล้ว ป้ายจะเปลี่ยนเป็น "กรอกเอง"
+  const [appliedTableValue, setAppliedTableValue] = useState<number | null>(null)
+  const isFromTable = appliedTableValue != null && settlementPaid === appliedTableValue
+
+  function applyTableSuggestion() {
+    if (suggestedSettlementPaid == null) return
+    setSettlementPaid(suggestedSettlementPaid)
+    setAppliedTableValue(suggestedSettlementPaid)
+  }
+
   function addFeeRow() {
     setFeeRows((prev) => [
       ...prev,
@@ -131,6 +295,35 @@ export default function EarlyCloseModal({
       }),
     [installments, settlementPaid, penaltyReceived, fees, closedAt, todayStr, penaltyPaidByInstallmentId],
   )
+
+  // ตรงกับยอดที่ตารางแนะนำเป๊ะไหม (ไม่ใช่แค่ "เคยกดใช้ยอดนี้" — เผื่อเคสพิมพ์เลขตรงกับตารางเองโดยไม่กดปุ่ม)
+  // ใช้ตัดสินว่าข้อความส่งลูกค้าควรโชว์ % ส่วนลดหรือไม่ (ข้อ 1 — กันโชว์ % ที่ไม่จริงตอนกรอกยอดเอง)
+  const matchesTableAmount = suggestedSettlementPaid != null && settlementPaid === suggestedSettlementPaid
+
+  // ข้อความคัดลอกส่งลูกค้า — คำนวณจาก settlementPaid ที่กรอกจริง + ผล computeEarlyClose (result) เสมอ
+  // ไม่ใช่จากตารางตรงๆ (แก้ 08 ก.ย. 2026, ดูรายละเอียดที่ comment ของ buildEarlyCloseMessage ด้านบน)
+  const earlyCloseMessage = useMemo(() => {
+    if (!settlementPreview) return null
+    return buildEarlyCloseMessage({
+      installments,
+      preview: settlementPreview,
+      settlementPaid,
+      settlementDiscount: result.settlementDiscount,
+      isFromTable: matchesTableAmount,
+      penaltyReceived,
+      fees,
+      totalReceived: result.totalReceived,
+    })
+  }, [
+    settlementPreview,
+    installments,
+    settlementPaid,
+    result.settlementDiscount,
+    result.totalReceived,
+    matchesTableAmount,
+    penaltyReceived,
+    fees,
+  ])
 
   // guard ฝั่งหน้าเว็บ mirror guard ฝั่ง SQL (status='active' เท่านั้น) — เข้าโมดัลได้จาก 2 ทางที่ไม่ได้ gate
   // มาก่อน (deep-link ?feeAction=settle + ปุ่มในกล่อง "รายการรอดำเนินการ") กันโดน error ดิบจาก RPC
@@ -188,12 +381,14 @@ export default function EarlyCloseModal({
                 <span>ค่าปรับที่เก็บ</span>
                 <b className="whitespace-nowrap text-ink">{baht(penaltyReceived)} ฿</b>
               </div>
-              {result.feeTotal > 0 && (
-                <div className="flex justify-between text-ink-soft">
-                  <span>ค่าธรรมเนียมปิด</span>
-                  <b className="whitespace-nowrap text-ink">{baht(result.feeTotal)} ฿</b>
-                </div>
-              )}
+              {feeRows
+                .filter((row) => row.amount > 0 && resolveCategory(row).trim() !== '')
+                .map((row) => (
+                  <div key={row.key} className="flex justify-between text-ink-soft">
+                    <span>{resolveCategory(row)}</span>
+                    <b className="whitespace-nowrap text-ink">{baht(row.amount)} ฿</b>
+                  </div>
+                ))}
               <div className="flex justify-between text-ink-soft">
                 <span>ส่วนลดที่ยกให้</span>
                 <span className="whitespace-nowrap text-green-700">−{baht(result.settlementDiscount)} ฿</span>
@@ -234,6 +429,52 @@ export default function EarlyCloseModal({
               </p>
             </Field>
 
+            {settlementPreview && (
+              <div className="rounded-xl border border-peach bg-peach-light/40 p-3 text-sm">
+                {!settlementPreview.matched ? (
+                  <p className="flex items-start gap-1.5 text-amber-800">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    ไม่มีตารางส่วนลดสำหรับสัญญางวด {settlementPreview.rowTerm} เดือน
+                  </p>
+                ) : settlementPreview.paidCount === 0 ? (
+                  <p className="flex items-start gap-1.5 text-amber-800">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    ยังไม่จ่ายงวดไหนเลย (ปิดเดือนแรก) — ตารางไม่มีส่วนลด ให้คิดเป็นค่าดำเนินการแทน
+                  </p>
+                ) : settlementPreview.remainingCount === 1 ? (
+                  <p className="flex items-start gap-1.5 text-amber-800">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    เหลืองวดสุดท้ายงวดเดียว — ตามตารางไม่มีส่วนลด (0%)
+                  </p>
+                ) : result.errors.length > 0 ? (
+                  <p className="flex items-start gap-1.5 text-red-600">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    แก้ยอดให้ถูกต้องก่อน จึงจะสร้างข้อความส่งลูกค้าได้
+                  </p>
+                ) : earlyCloseMessage ? (
+                  <CopyBox title="ข้อความส่งลูกค้า" text={earlyCloseMessage} />
+                ) : (
+                  <p className="flex items-start gap-1.5 text-ink-soft">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    กรอกยอดจ่ายปิดก่อน ระบบจะสร้างข้อความให้คัดลอกส่งลูกค้า
+                  </p>
+                )}
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={applyTableSuggestion}
+                    disabled={suggestedSettlementPaid == null}
+                  >
+                    ใช้ยอดนี้
+                  </Button>
+                  {appliedTableValue != null && (
+                    <Badge tone={isFromTable ? 'green' : 'neutral'}>{isFromTable ? 'ตามตาราง' : 'กรอกเอง'}</Badge>
+                  )}
+                </div>
+              </div>
+            )}
+
             <Field label="ค่าปรับที่เก็บ" required>
               <Input
                 type="number"
@@ -268,9 +509,14 @@ export default function EarlyCloseModal({
                     const isCustom = row.categoryChoice === CUSTOM_FEE_OPTION
                     return (
                       <div key={row.key} className="rounded-xl border border-peach p-2.5">
-                        <div className="flex items-start gap-2">
+                        {/* ข้อ 3 (feedback คุณเตย): เดิม select ถูก flex-1 บีบเหลือแค่ลูกศรตอนโมดัลแคบ/มือถือ
+                            (min-content ของ <select> ในเบราว์เซอร์เล็กมาก ไม่คิดตามความยาวชื่อตัวเลือก) —
+                            แก้ด้วยการวางแนวตั้งบนมือถือ (select เต็มบรรทัดแรก เห็นชื่อยาวสุดครบ ไม่ถูกตัด)
+                            แล้วค่อยจัดแถวเดียวจาก sm ขึ้นไป (จอกว้างพอ) โดยให้ select ยังยืดหยุ่น (flex-1 min-w-0)
+                            ส่วนช่องจำนวนเงินคงความกว้างตายตัว (w-28) ไม่แย่งพื้นที่ select */}
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
                           <Select
-                            className="flex-1"
+                            className="w-full sm:min-w-0 sm:flex-1"
                             value={row.categoryChoice}
                             onChange={(e) => updateFeeRow(row.key, { categoryChoice: e.target.value })}
                           >
@@ -279,22 +525,24 @@ export default function EarlyCloseModal({
                             ))}
                             <option value={CUSTOM_FEE_OPTION}>{CUSTOM_FEE_OPTION}</option>
                           </Select>
-                          <Input
-                            type="number"
-                            min={0}
-                            className="w-28 shrink-0"
-                            placeholder="บาท"
-                            value={row.amount || ''}
-                            onChange={(e) => updateFeeRow(row.key, { amount: Number(e.target.value) || 0 })}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => removeFeeRow(row.key)}
-                            aria-label="ลบรายการ"
-                            className="shrink-0 rounded-lg p-2 text-ink-soft hover:bg-red-50 hover:text-red-600"
-                          >
-                            <Trash2 size={15} />
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              className="w-28 shrink-0"
+                              placeholder="บาท"
+                              value={row.amount || ''}
+                              onChange={(e) => updateFeeRow(row.key, { amount: Number(e.target.value) || 0 })}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeFeeRow(row.key)}
+                              aria-label="ลบรายการ"
+                              className="shrink-0 rounded-lg p-2 text-ink-soft hover:bg-red-50 hover:text-red-600"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
                         </div>
                         {isCustom && (
                           <Input
