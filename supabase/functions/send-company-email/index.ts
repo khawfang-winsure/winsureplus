@@ -45,6 +45,7 @@ const SLOT_SLUG: Record<string, string> = {
   occupation_photo: "02-occupation",
   device_around: "03-device",
   box_back: "04-box-back",
+  warranty_check: "04-1-warranty",
   settings_about: "05-settings-about",
   imei_photo: "06-imei",
   battery_health: "07-battery",

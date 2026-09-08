@@ -55,7 +55,7 @@ export interface ImageCheckResult {
 }
 
 // ---------------------------------------------------------------------------
-// Default 14 slots (seed → app_settings.media_slots, admin-editable ภายหลัง)
+// Default 15 slots (seed → app_settings.media_slots, admin-editable ภายหลัง)
 // Video ตัดออกโดยตั้งใจ (เจ้าของ: ไม่เก็บวิดีโอในเว็บ)
 // ---------------------------------------------------------------------------
 
@@ -64,6 +64,7 @@ export const DEFAULT_MEDIA_SLOTS: MediaSlot[] = [
   { key: 'occupation_photo', label: 'รูปอาชีพ', sortOrder: 2, min: 1, max: null, required: 'always', hint: 'ใส่ได้หลายรูป' },
   { key: 'device_around', label: 'รูปรอบตัวเครื่อง', sortOrder: 3, min: 5, max: null, required: 'always', hint: 'ถ่าย บน ล่าง ซ้าย ขวา หน้า หลัง อย่างน้อย 5 มุม' },
   { key: 'box_back', label: 'รูปหลังกล่อง', sortOrder: 4, min: 1, max: 1, required: { when: 'condition', equals: 'new' } },
+  { key: 'warranty_check', label: 'รูปเช็คประกันตัวเครื่อง', sortOrder: 4.1, min: 1, max: 1, required: { when: 'condition', equals: 'new' }, hint: 'เช็คประกันจากเลขเครื่อง แล้วแคปหน้าผลตรวจ' },
   { key: 'settings_about', label: 'หน้าตั้งค่า > เกี่ยวกับ', sortOrder: 5, min: 1, max: 1, required: 'always' },
   { key: 'imei_photo', label: 'รูปเลข IMEI', sortOrder: 6, min: 0, max: 1, required: 'never' },
   { key: 'battery_health', label: 'รูปสุขภาพแบตเตอรี่', sortOrder: 7, min: 1, max: 1, required: 'always' },
@@ -290,6 +291,7 @@ const SLOT_SLUG: Record<string, string> = {
   occupation_photo: '02-occupation',
   device_around: '03-device',
   box_back: '04-box-back',
+  warranty_check: '04-1-warranty',
   settings_about: '05-settings-about',
   imei_photo: '06-imei',
   battery_health: '07-battery',
@@ -330,7 +332,7 @@ export function maskName(name: string): string {
 // Trace tests (verify ด้วย node -e ผ่าน tsc transpile — repo ไม่มี vitest)
 // ===========================================================================
 //
-// ต่อไปนี้อ้างอิง DEFAULT_MEDIA_SLOTS ทั้ง 14 ช่อง เว้นแต่ระบุเป็นอย่างอื่น
+// ต่อไปนี้อ้างอิง DEFAULT_MEDIA_SLOTS ทั้ง 15 ช่อง เว้นแต่ระบุเป็นอย่างอื่น
 //
 // evaluateSlots:
 // (1) condition:'new', origin:'th', flags:{credit_history_found:false}
@@ -341,8 +343,9 @@ export function maskName(name: string): string {
 //
 // (2) เหมือน (1) แต่ device_around 6 ไฟล์ -> status='ok', complete=true, missing=[]
 //
-// (3) condition:'used' -> box_back required=false (condition rule equals 'new')
-//     count=0 -> status='optional_empty' ไม่อยู่ใน missing
+// (3) condition:'used' -> box_back required=false, warranty_check required=false
+//     (ทั้งสองช่องใช้กฎ condition equals 'new' เหมือนกัน) count=0 ทั้งคู่
+//     -> status='optional_empty' ไม่อยู่ใน missing
 //
 // (4) origin:'inter' -> garuda_emblem label ยังคง 'รูปตราครุฑ' เหมือนทุก origin (คุณเตยล็อก 2026-09-08: ห้าม relabel ช่องนี้)
 //     required=true ไม่เปลี่ยน (relabel mechanism ยังใช้ได้ถ้าตั้งค่าใน app_settings ในอนาคต แต่ default ไม่ตั้ง)
@@ -352,8 +355,12 @@ export function maskName(name: string): string {
 //     flags.credit_history_found:false, count=0 -> status='optional_empty' ไม่อยู่ใน missing
 //
 // (6) ทุกช่องครบตาม min (รวม device_around>=5, contract_docs>=4)
-//     condition:'used' (box_back ไม่ต้องมี), flags false (credit_history_evidence ไม่ต้องมี)
+//     condition:'used' (box_back, warranty_check ไม่ต้องมี), flags false (credit_history_evidence ไม่ต้องมี)
 //     -> complete=true, missing=[]
+//
+// (6b) condition:'new', ทุกช่องครบตาม min ยกเว้น warranty_check count=0
+//     -> warranty_check: required=true (condition='new'), count=0 -> status='missing'
+//     -> complete=false, missing=['รูปเช็คประกันตัวเครื่อง']
 //
 // isGated:
 // (7) gateFrom=null -> false เสมอ ไม่ว่า createdAt จะเป็นอะไร
