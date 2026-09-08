@@ -24,6 +24,7 @@ import { useAuth } from '../lib/auth'
 import { paymentRecoveryStatus, type RecoveryInstallmentInput } from '../lib/calc'
 import { followUpStalenessLevel } from '../lib/priorityQueue'
 import { buildDebtSms } from '../lib/messages'
+import { findCollectibleInstallmentNo, returnedInstallmentDisplay } from '../lib/returnedInstallmentDisplay'
 
 // ===== ป้ายกำกับ enum =====
 const METHOD_LABEL: Record<FollowUpContactMethod, string> = {
@@ -264,6 +265,15 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const firstUnpaidNo = useMemo(
     () => rawInstallments.find((i) => !i.paidAt)?.installmentNo ?? null,
     [rawInstallments],
+  )
+
+  // จุดที่ 2: เคสคืนเครื่อง — งวดที่ "ตามเก็บได้จริง" (mirror ContractDetail.tsx reliableReturnDate + oldestUnpaidNo)
+  // returnAnchorType === 'returned' คือกรณีเดียวที่ contract.returnAnchorDate เป็น "วันคืนเครื่อง" ที่เชื่อถือได้จริง
+  // (ถ้าเป็น 'overdue' แปลว่าไม่เชื่อถือวันคืน — anchorDate ตรงนั้นคือวันครบกำหนดงวด ไม่ใช่วันคืน ห้ามใช้ gate)
+  const reliableReturnDate = contract.returnAnchorType === 'returned' ? contract.returnAnchorDate ?? null : null
+  const collectibleInstallmentNo = useMemo(
+    () => (contract.isReturned ? findCollectibleInstallmentNo(rawInstallments, reliableReturnDate) : null),
+    [contract.isReturned, rawInstallments, reliableReturnDate],
   )
 
   // ตารางการชำระ: วันนี้ (yyyy-mm-dd) ใช้แยกงวด "ยังไม่จ่าย + เลยกำหนดแล้ว" (แดง = ปัญหาจริง) จากงวด
@@ -549,13 +559,25 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
               </span>
             </p>
           )}
-          {contract.principalDue !== undefined && (
+          {/* จุดที่ 3 (feedback รอบ 3): เคสคืนเครื่อง โชว์ "ยอดปิดสัญญา" แทน "เงินต้นคงค้าง"
+              เพราะ principalDue เดิม = ยอดค้างเต็มทุกงวดที่ยังไม่จ่าย ขัดกับป้ายด้านบนที่บอก "ยอดปิด" (เก็บแค่ 1 งวด+ค่าปรับ+ค่าซ่อม)
+              ใช้ contract.returnClosingAmount ตัวเดียวกับป้าย "คืนเครื่องแล้ว · ยอดปิด" ด้านบน ไม่คำนวณใหม่เอง */}
+          {contract.isReturned ? (
             <p className="text-ink-soft">
-              เงินต้นคงค้าง:{' '}
-              <span className={contract.principalDue > 0 ? 'font-semibold text-red-600' : 'text-ink'}>
-                {contract.principalDue.toLocaleString('th-TH')} ฿
+              ยอดปิดสัญญา:{' '}
+              <span className={(contract.returnClosingAmount ?? 0) > 0 ? 'font-semibold text-red-600' : 'text-ink'}>
+                {(contract.returnClosingAmount ?? 0).toLocaleString('th-TH')} ฿
               </span>
             </p>
+          ) : (
+            contract.principalDue !== undefined && (
+              <p className="text-ink-soft">
+                เงินต้นคงค้าง:{' '}
+                <span className={contract.principalDue > 0 ? 'font-semibold text-red-600' : 'text-ink'}>
+                  {contract.principalDue.toLocaleString('th-TH')} ฿
+                </span>
+              </p>
+            )
           )}
           <p className="text-ink-soft">ร้าน: <span className="text-ink">{contract.shopName}</span></p>
           {/* เบอร์โทรทั้งหมด */}
@@ -576,20 +598,9 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           )}
         </div>
 
-        {/* req9: สถานะ "กลับเป็นปกติ" — ซ่อนสำหรับเคสคืนเครื่อง (เหลือจ่ายแค่ยอดปิด ไม่ใช่ค้าง N งวด)
-            progressive: ยังโหลดตารางงวดไม่เสร็จ → โชว์ loader แทน badgeText (คำนวณจาก [] ว่างจะเข้าใจผิดว่า "ปกติ") */}
-        {!contract.isReturned && (
-          <p className="mt-2 text-xs text-ink-soft">
-            {installmentsLoading ? 'กำลังโหลดสถานะงวด...' : recoveryStatus.badgeText}
-          </p>
-        )}
-        {/* req11: จ่ายล่าสุด (เฉพาะเมื่อมี recovered episode) */}
-        {recoveryStatus.recoveredThisEpisode.lastPaidAt && (
-          <p className="mt-1 text-xs text-ink-soft">
-            จ่ายล่าสุด: {thaiDate(recoveryStatus.recoveredThisEpisode.lastPaidAt)} ·{' '}
-            {baht(recoveryStatus.recoveredThisEpisode.lastPaidAmount)}฿
-          </p>
-        )}
+        {/* จุดที่ 1 (feedback รอบ 3): เอาบรรทัด "ค้าง N งวด...เหลือตามอีก N งวด" + "จ่ายล่าสุด" ออก
+            เพราะซ้ำกับตารางการชำระด้านล่างที่บอกครบกว่า (เห็นทุกงวด+วันที่จ่ายจริงอยู่แล้ว)
+            ⚠️ ไม่ลบการคำนวณ recoveryStatus — ยังใช้เป็น gate ปุ่มส่ง SMS (overdueCount) ด้านล่าง */}
       </div>
 
       {/* ตารางการชำระ — พนักงานติดตามหนี้เห็นว่างวดไหนจ่ายแล้ว/ค้าง + วันที่จ่ายจริง (ต่างจากตารางใน ContractDetail ที่ไม่มีคอลัมน์นี้) */}
@@ -604,7 +615,13 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
             ตารางการชำระ
             {!installmentsLoading && rawInstallments.length > 0 && (
               <span className="ml-1 font-normal text-ink-soft">
-                (จ่ายแล้ว {rawInstallments.filter((i) => i.paidAt).length}/{rawInstallments.length} งวด)
+                {/* จุดที่ 2: เคสคืนเครื่อง — "จ่ายแล้ว X/Y งวด" เดิมสื่อผิด (ทำให้ดูเหมือนต้องตามอีกหลายงวด)
+                    เปลี่ยนเป็นบอกตรงๆ ว่าคืนเครื่องแล้ว เหลือตามเก็บกี่งวด (0 หรือ 1 เท่านั้นตามกติกาคืนเครื่อง) */}
+                {contract.isReturned
+                  ? collectibleInstallmentNo != null
+                    ? '(คืนเครื่องแล้ว · เหลือตามเก็บ 1 งวด)'
+                    : '(คืนเครื่องแล้ว · ไม่มีงวดต้องตามเก็บ)'
+                  : `(จ่ายแล้ว ${rawInstallments.filter((i) => i.paidAt).length}/${rawInstallments.length} งวด)`}
               </span>
             )}
           </span>
@@ -641,11 +658,21 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
                       // จุดที่ 1: เดิม "ยังไม่จ่าย = แดง" เหมารวมงวดอนาคตด้วย ทำให้ 14/15 แถวขึ้นแดงหมด (สัญญาณเตือนหายไป)
                       // แดงเฉพาะยังไม่จ่าย + เลยกำหนดแล้วจริง (dueDate < วันนี้); ตรงวันนี้พอดียังไม่ถือว่าเลยกำหนด
                       const isOverdueUnpaid = !i.paidAt && i.dueDate < todayStr
+                      // จุดที่ 2: เคสคืนเครื่อง — ป้าย/สี ต้องตรงกับ ContractDetail เป๊ะ (ดู src/lib/returnedInstallmentDisplay.ts)
+                      // null = งวดจ่ายแล้ว หรือสัญญาไม่ใช่เคสคืนเครื่อง → ใช้ logic ปกติต่อ (isOverdueUnpaid ด้านบน)
+                      const returnedDisplay = returnedInstallmentDisplay(i, {
+                        isReturned: contract.isReturned ?? false,
+                        collectibleInstallmentNo,
+                      })
+                      // แดงเฉพาะงวดที่ยัง "ตามเก็บได้จริง" (ไม่ใช่แค่เลยกำหนด) — งวด "ไม่เก็บแล้ว" ต้องไม่แดงแม้เลยกำหนดผ่านมานานแค่ไหน
+                      const rowIsRed = returnedDisplay ? returnedDisplay.collectible && isOverdueUnpaid : isOverdueUnpaid
                       const rowClass = i.paidAt
                         ? 'bg-white text-ink-soft'
-                        : isOverdueUnpaid
-                          ? 'bg-red-50 text-ink'
-                          : 'bg-white text-ink'
+                        : returnedDisplay && !returnedDisplay.collectible
+                          ? 'bg-peach-light/20 text-ink-soft'
+                          : rowIsRed
+                            ? 'bg-red-50 text-ink'
+                            : 'bg-white text-ink'
                       return (
                         <tr
                           key={i.id}
@@ -672,9 +699,13 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
                           </td>
                           <td className="px-2.5 py-2 whitespace-nowrap">{i.penaltyAmount > 0 ? `${baht(i.penaltyAmount)} ฿` : '—'}</td>
                           <td className="px-2.5 py-2">
-                            <Badge tone={i.status === 'paid' ? 'green' : i.status === 'late' ? 'red' : 'amber'}>
-                              {installmentLabel(i.status)}
-                            </Badge>
+                            {returnedDisplay ? (
+                              <Badge tone={returnedDisplay.tone}>{returnedDisplay.label}</Badge>
+                            ) : (
+                              <Badge tone={i.status === 'paid' ? 'green' : i.status === 'late' ? 'red' : 'amber'}>
+                                {installmentLabel(i.status)}
+                              </Badge>
+                            )}
                           </td>
                         </tr>
                       )
