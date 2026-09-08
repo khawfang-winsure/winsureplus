@@ -67,6 +67,7 @@ import {
   getContractReturnDate,
   RETURN_DATE_RELIABLE_FROM,
   getContractLetters,
+  getEmailSendLog,
 } from '../lib/db'
 import type { LetterRecord, LetterReply } from '../lib/letters'
 import {
@@ -90,10 +91,11 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
-import type { Contract, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
+import type { Contract, EmailSendLog, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 import EarlyCloseModal from '../components/EarlyCloseModal'
 import CopyBox from '../components/CopyBox'
+import ContractMediaCard from '../components/ContractMediaCard'
 import { buildPendingDocMessage } from '../lib/messages'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
@@ -262,6 +264,8 @@ export default function ContractDetail() {
   const [letterHistory, setLetterHistory] = useState<LetterRecord[]>([])
   const [letterHistoryLoading, setLetterHistoryLoading] = useState(true)
   const [penaltyOverrideHistory, setPenaltyOverrideHistory] = useState<PenaltyOverrideHistoryEntry[]>([])
+  // ===== ประวัติส่งอีเมลเอกสารสัญญาให้บริษัท (0138, รูปแนบ 2026-09-08) =====
+  const [emailSendLog, setEmailSendLog] = useState<EmailSendLog[]>([])
 
   // ===== Private Notes =====
   const [myNote, setMyNote] = useState<PrivateNote | null>(null)
@@ -410,6 +414,12 @@ export default function ContractDetail() {
       .then(setLetterHistory)
       .finally(() => setLetterHistoryLoading(false))
   }, [id, canStaff])
+
+  // โหลดประวัติส่งอีเมลเอกสารสัญญาให้บริษัท (แสดงหลักฐานส่งใต้ชื่อลูกค้า)
+  useEffect(() => {
+    if (!id) return
+    getEmailSendLog(id).then(setEmailSendLog)
+  }, [id])
 
   // โหลดสถานะ pin ของสัญญานี้
   useEffect(() => {
@@ -716,6 +726,13 @@ export default function ContractDetail() {
                 </span>
               )}
             </div>
+          )}
+          {/* ===== หลักฐานส่งเมลเอกสาร (รูปแนบ) ให้บริษัท — email_send_log ล่าสุดที่ status='sent' ===== */}
+          {emailSendLog.length > 0 && emailSendLog[0].status === 'sent' && (
+            <p className="mt-1 flex items-center gap-1 text-xs text-ink-soft">
+              <Mail className="h-3 w-3" />
+              {formatEmailSentLine(emailSendLog[0], contract.emailSentBy ?? 'ไม่ทราบ')}
+            </p>
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1521,6 +1538,9 @@ export default function ContractDetail() {
           </div>
         )}
       </Card>
+
+      {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin+staff, delete: admin เท่านั้น ===== */}
+      <ContractMediaCard contract={contract} canUpload={canStaff} canDelete={isAdmin} />
 
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>
@@ -2572,6 +2592,14 @@ function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message
   if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
   return String(e)
+}
+
+/** ข้อความหลักฐานส่งเมลเอกสารให้บริษัท (email_send_log) — "ส่งเมลแล้ว {วันที่} {เวลา} น. โดย {ใคร} ถึง {อีเมล} · แนบรูป {N} ใบ" */
+function formatEmailSentLine(log: EmailSendLog, senderName: string): string {
+  const d = new Date(log.sentAt)
+  const date = isNaN(d.getTime()) ? '' : thaiDate(log.sentAt.slice(0, 10))
+  const time = isNaN(d.getTime()) ? '' : d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return `ส่งเมลแล้ว ${date} ${time} น. โดย ${senderName} ถึง ${log.toAddr} · แนบรูป ${log.attachmentCount} ใบ`
 }
 
 /** เวลาไทยแบบสั้น (วัน/เดือน/ปี เวลา) สำหรับ audit log — แปลงจาก ISO timestamp เต็ม */

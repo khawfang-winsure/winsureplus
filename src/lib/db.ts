@@ -13,15 +13,19 @@ import type {
   CollectorOwnershipRow,
   CollectorRecoveryRow,
   Contract,
+  ContractMediaFile,
+  ContractMediaStatus,
   ContractStatus,
   ContractStatusRow,
   DeviceReturnRow,
   DeviceReturnReportRow,
   ShopContractTotal,
+  EmailSendLog,
   ExtraCharge,
   GradeChangeType,
   GradeMonthlyChange,
   Installment,
+  MediaDuplicateMatch,
   NotificationItem,
   Option,
   OtherIncome,
@@ -41,6 +45,7 @@ import type {
   PjSyncReviewRow,
   PjSyncRunRow,
   PrivateNote,
+  SendCompanyEmailResult,
   Shop,
   TransferSlip,
   TransferSlipItem,
@@ -218,6 +223,7 @@ interface ContractRow {
   summary_note: string | null
   summary_note_by: string | null
   summary_note_at: string | null
+  credit_history_found: boolean | null
   created_at: string
 }
 
@@ -308,6 +314,7 @@ function mapContract(r: ContractRow): Contract {
     summaryNote: r.summary_note ?? null,
     summaryNoteBy: r.summary_note_by ?? null,
     summaryNoteAt: r.summary_note_at ?? null,
+    creditHistoryFound: r.credit_history_found ?? false,
     createdAt: r.created_at,
   }
 }
@@ -8622,4 +8629,470 @@ export async function getFreelancerHrDailyLog(
     countsAsDemand: r.counts_as_demand,
     noteText: r.note_text ?? '',
   }))
+}
+
+// ===================================================================================
+// ---------- รูปเอกสารแนบต่อสัญญา + ส่งอีเมลบริษัท (migration 0136-0138, 2026-09-08) ----------
+// MediaSlot/MediaFile (pure logic, evaluateSlots ฯลฯ) อยู่ที่ src/lib/media.ts (แบม)
+// ที่นี่มีแค่ DB-facing shape + I/O (Supabase Storage / Edge Functions)
+// ===================================================================================
+
+const MEDIA_SLOTS_KEY = 'media_slots'
+const MEDIA_PROVIDER_KEY = 'media_provider'
+const MEDIA_GATE_FROM_KEY = 'media_gate_from'
+const MEDIA_STORAGE_GUARD_MB_KEY = 'media_storage_guard_mb'
+const MEDIA_EMAIL_NOTE_VIDEO_KEY = 'media_email_note_video'
+const COMPANY_EMAIL_TO_KEY = 'company_email_to'
+const COMPANY_EMAIL_CC_KEY = 'company_email_cc'
+const MEDIA_EMAIL_REPLY_TO_SENDER_KEY = 'media_email_reply_to_sender'
+const MEDIA_EMAIL_ATTACH_SUMMARY_KEY = 'media_email_attach_summary'
+
+interface ContractMediaRow {
+  id: string
+  contract_id: string
+  slot_key: string
+  storage_provider: string
+  path: string
+  bytes: number
+  sha256: string
+  width: number | null
+  height: number | null
+  mime: string | null
+  uploaded_by: string | null
+  uploaded_at: string
+  deleted_at: string | null
+  deleted_by: string | null
+  dup_confirmed: boolean
+}
+
+function mapContractMedia(r: ContractMediaRow): ContractMediaFile {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    slotKey: r.slot_key,
+    storageProvider: r.storage_provider === 'r2' ? 'r2' : 'supabase',
+    path: r.path,
+    bytes: r.bytes,
+    sha256: r.sha256,
+    width: r.width,
+    height: r.height,
+    mime: r.mime,
+    uploadedBy: r.uploaded_by,
+    uploadedAt: r.uploaded_at,
+    dupConfirmed: r.dup_confirmed,
+  }
+}
+
+/** อ่าน media_slots ดิบจาก app_settings (JSON เป็น text) — UI/media.ts (แบม) แคสต์เป็น MediaSlot[] เอง
+ *  คืน [] เสมอถ้าไม่ได้เชื่อม Supabase หรือ parse ไม่ได้ (ห้าม throw กัน UI ล่ม) */
+export async function getMediaSlots(): Promise<unknown[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('app_settings').select('value').eq('key', MEDIA_SLOTS_KEY).maybeSingle()
+  if (error) throw error
+  if (!data?.value) return []
+  try {
+    const parsed = JSON.parse(data.value as string)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+/** ที่เก็บไฟล์รูปปัจจุบัน: 'supabase' (ค่าเริ่มต้น) | 'r2' (ย้ายทีหลัง — wave 6) */
+export async function getMediaProvider(): Promise<'supabase' | 'r2'> {
+  if (!supabase) return 'supabase'
+  const { data, error } = await supabase.from('app_settings').select('value').eq('key', MEDIA_PROVIDER_KEY).maybeSingle()
+  if (error) throw error
+  return data?.value === 'r2' ? 'r2' : 'supabase'
+}
+
+/** วันที่เริ่มบังคับแนบรูปครบก่อนส่งอีเมล (สัญญาที่สร้างก่อนวันนี้ = ungated) — 'YYYY-MM-DD' */
+export async function getMediaGateFrom(): Promise<string> {
+  if (!supabase) return '2026-09-09'
+  const { data, error } = await supabase.from('app_settings').select('value').eq('key', MEDIA_GATE_FROM_KEY).maybeSingle()
+  if (error) throw error
+  return data?.value || '2026-09-09'
+}
+
+/** เพดานพื้นที่เก็บรูป (MB) กันเต็มฟรีโควต้า Supabase Storage */
+export async function getMediaStorageGuardMb(): Promise<number> {
+  if (!supabase) return 800
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', MEDIA_STORAGE_GUARD_MB_KEY)
+    .maybeSingle()
+  if (error) throw error
+  const n = Number(data?.value)
+  return Number.isFinite(n) && n > 0 ? n : 800
+}
+
+/** true = ต่อท้ายอีเมลด้วยข้อความแจ้งว่าวิดีโอส่งแยกทาง Gmail (ค่าเริ่มต้น true ถ้ายังไม่ได้ตั้ง) */
+export async function getMediaEmailNoteVideo(): Promise<boolean> {
+  if (!supabase) return true
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', MEDIA_EMAIL_NOTE_VIDEO_KEY)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.value) return true
+  return data.value === 'true'
+}
+
+/** อีเมลปลายทางที่ส่งเอกสารสัญญาให้บริษัท — ว่าง = ยังตั้งไม่เสร็จ (send-company-email จะปฏิเสธ) */
+export async function getCompanyEmailTo(): Promise<string> {
+  if (!supabase) return ''
+  const { data, error } = await supabase.from('app_settings').select('value').eq('key', COMPANY_EMAIL_TO_KEY).maybeSingle()
+  if (error) throw error
+  return data?.value ?? ''
+}
+
+/** อีเมลสำเนา (CC) ตอนส่งเอกสารสัญญาให้บริษัท — คั่นด้วยจุลภาค, ว่าง = ไม่ส่งสำเนา */
+export async function getCompanyEmailCc(): Promise<string> {
+  if (!supabase) return ''
+  const { data, error } = await supabase.from('app_settings').select('value').eq('key', COMPANY_EMAIL_CC_KEY).maybeSingle()
+  if (error) throw error
+  return data?.value ?? ''
+}
+
+/** true = ตั้ง Reply-To เป็นอีเมลล็อกอินของพนักงานที่กดส่ง (ค่าเริ่มต้น false ถ้ายังไม่ได้ตั้ง) */
+export async function getMediaEmailReplyToSender(): Promise<boolean> {
+  if (!supabase) return false
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', MEDIA_EMAIL_REPLY_TO_SENDER_KEY)
+    .maybeSingle()
+  if (error) throw error
+  return data?.value === 'true'
+}
+
+/** รูปแบบบรรทัดสรุปไฟล์แนบในอีเมลบริษัท (ตั้งค่าที่ /settings — ยังไม่มีหน้า UI ผูก ณ จุดนี้ เป็น accessor
+ *  เตรียมไว้ล่วงหน้าให้ settings screen ในอนาคต, ไม่ใช่ dead code) — 'short' (ค่าเริ่มต้น) | 'full' | 'off' */
+export async function getMediaEmailAttachSummary(): Promise<'short' | 'full' | 'off'> {
+  if (!supabase) return 'short'
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', MEDIA_EMAIL_ATTACH_SUMMARY_KEY)
+    .maybeSingle()
+  if (error) throw error
+  return data?.value === 'full' || data?.value === 'off' ? data.value : 'short'
+}
+
+/** ไฟล์แนบทั้งหมด (ไม่รวมที่ลบ) ของสัญญาเดียว เรียงตามเวลาอัปโหลด */
+export async function getContractMedia(contractId: string): Promise<ContractMediaFile[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_media')
+    .select('*')
+    .eq('contract_id', contractId)
+    .is('deleted_at', null)
+    .order('uploaded_at', { ascending: true })
+  if (error) throw error
+  return ((data ?? []) as ContractMediaRow[]).map(mapContractMedia)
+}
+
+interface ContractMediaStatusRow {
+  contract_id: string
+  counts: Record<string, number> | null
+  total_files: number | null
+  condition: 'new' | 'used'
+  origin: 'th' | 'inter'
+  credit_history_found: boolean | null
+  created_at: string | null
+}
+
+function mapMediaStatus(r: ContractMediaStatusRow): ContractMediaStatus {
+  return {
+    contractId: r.contract_id,
+    counts: r.counts ?? {},
+    totalFiles: Number(r.total_files ?? 0),
+    condition: r.condition,
+    origin: r.origin,
+    creditHistoryFound: r.credit_history_found ?? false,
+    createdAt: r.created_at,
+  }
+}
+
+/** สรุปสถานะไฟล์แนบต่อสัญญา จาก v_contract_media_status (0137)
+ *  ไม่ส่ง contractIds = ดึงทุกสัญญา (ใช้ fetchAllPaged กัน PAGE_CAP ตัดเงียบเหมือนตารางอื่นในไฟล์นี้)
+ *  ส่ง contractIds = กรองด้วย .in() ตรงๆ (ใช้ตอนดูสัญญาเดียว/กลุ่มเล็กจากหน้า ContractDetail) */
+export async function getMediaStatuses(contractIds?: string[]): Promise<ContractMediaStatus[]> {
+  if (!supabase) return []
+  if (contractIds && contractIds.length > 0) {
+    // .in() มีเพดานความยาว query ฝั่ง PostgREST — แบ่งเป็นก้อนละ 200 id กันสัญญากลุ่มใหญ่ (เช่นทั้งพอร์ต) หลุดเงียบๆ
+    const CHUNK_SIZE = 200
+    const rows: ContractMediaStatusRow[] = []
+    for (let i = 0; i < contractIds.length; i += CHUNK_SIZE) {
+      const chunk = contractIds.slice(i, i + CHUNK_SIZE)
+      const { data, error } = await supabase
+        .from('v_contract_media_status')
+        .select('*')
+        .in('contract_id', chunk)
+      if (error) throw error
+      rows.push(...((data ?? []) as ContractMediaStatusRow[]))
+    }
+    return rows.map(mapMediaStatus)
+  }
+  const rows = await fetchAllPaged<ContractMediaStatusRow>(
+    (from, to, orderBy) =>
+      supabase!.from('v_contract_media_status').select('*').order(orderBy, { ascending: true }).range(from, to),
+    'contract_id',
+  )
+  return rows.map(mapMediaStatus)
+}
+
+/** อ่าน error message ที่ Edge Function ส่งกลับจริงๆ จาก FunctionsHttpError (context.body มักไม่ผ่าน error.message ตรงๆ)
+ *  pattern เดียวกับ callAdminUsers ในไฟล์นี้ — ใช้ซ้ำกับ media-sign / send-company-email */
+async function extractFunctionErrorMessage(error: { message: string; context?: unknown }): Promise<string> {
+  const ctx = error.context as { body?: unknown; json?: () => Promise<unknown>; clone?: () => { json: () => Promise<unknown> } } | undefined
+  try {
+    if (ctx?.body) {
+      const text = typeof ctx.body === 'string' ? ctx.body : await new Response(ctx.body as BodyInit).text()
+      try {
+        const parsed = JSON.parse(text) as { error?: string }
+        return parsed.error ?? text
+      } catch {
+        return text
+      }
+    }
+    if (ctx?.clone) {
+      const body = (await ctx.clone().json()) as { error?: string }
+      if (body?.error) return body.error
+    }
+  } catch {
+    /* เก็บ error.message เดิม ถ้าอ่าน context ไม่ได้ */
+  }
+  return error.message
+}
+
+/** เรียก RPC media_storage_usage_bytes ตรงๆ — single code path ให้ uploadMedia guard + getMediaStorageUsageMb ใช้ร่วมกัน */
+async function fetchMediaStorageUsageBytes(): Promise<number> {
+  if (!supabase) return 0
+  const { data, error } = await supabase.rpc('media_storage_usage_bytes')
+  if (error) throw error
+  return Number(data ?? 0)
+}
+
+/** พื้นที่เก็บรูปที่ใช้ไปแล้ว หน่วย MB (ทศนิยม 1 ตำแหน่ง) — ใช้โชว์ในหน้าตั้งค่า */
+export async function getMediaStorageUsageMb(): Promise<number> {
+  const bytes = await fetchMediaStorageUsageBytes()
+  return Math.round((bytes / 1024 / 1024) * 10) / 10
+}
+
+export interface UploadMediaInput {
+  contractId: string
+  slotKey: string
+  blob: Blob
+  sha256: string
+  width: number | null
+  height: number | null
+  mime: string
+}
+
+/** อัปโหลดไฟล์รูป 1 ช่อง — เลือก provider ตาม app_settings.media_provider เอง
+ *  provider='supabase': เช็ค guard พื้นที่เก็บก่อน (media_storage_usage_bytes RPC) → upload ตรงเข้า bucket
+ *    contract-media → insert แถว contract_media
+ *  provider='r2': ขอ presigned PUT จาก Edge Function media-sign → fetch PUT ตรงไป R2 → insert แถว contract_media
+ *    (storage_provider='r2') — ยังไม่ทำงานจริงจนกว่าจะตั้ง R2_* secrets (ดู media-sign/index.ts) */
+export async function uploadMedia(input: UploadMediaInput): Promise<ContractMediaFile> {
+  if (!supabase) throw new Error('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
+  const { contractId, slotKey, blob, sha256, width, height, mime } = input
+  const provider = await getMediaProvider()
+
+  let storagePath: string
+  let storageProvider: 'supabase' | 'r2'
+
+  if (provider === 'supabase') {
+    const guardMb = await getMediaStorageGuardMb()
+    const usageBytes = await fetchMediaStorageUsageBytes()
+    const usedMb = usageBytes / (1024 * 1024)
+    if (usedMb >= guardMb) throw new Error('ที่เก็บรูปเต็ม แจ้งแอดมิน')
+
+    const path = `${contractId}/${slotKey}/${crypto.randomUUID()}.jpg`
+    const { error: upErr } = await supabase.storage
+      .from('contract-media')
+      .upload(path, blob, { contentType: mime, upsert: false })
+    if (upErr) throw upErr
+    storagePath = path
+    storageProvider = 'supabase'
+  } else {
+    const { data: signed, error: signErr } = await supabase.functions.invoke('media-sign', {
+      body: { action: 'put', contractId, slotKey, mime, bytes: blob.size },
+    })
+    if (signErr) throw new Error(await extractFunctionErrorMessage(signErr))
+    const url = (signed as { url?: string; path?: string } | null)?.url
+    const path = (signed as { url?: string; path?: string } | null)?.path
+    if (!url || !path) throw new Error('ขอสิทธิ์อัปโหลดไม่สำเร็จ')
+    const putRes = await fetch(url, { method: 'PUT', headers: { 'Content-Type': mime }, body: blob })
+    if (!putRes.ok) throw new Error('อัปโหลดไฟล์ไม่สำเร็จ')
+    storagePath = path
+    storageProvider = 'r2'
+  }
+
+  const { data: inserted, error: insErr } = await supabase
+    .from('contract_media')
+    .insert({
+      contract_id: contractId,
+      slot_key: slotKey,
+      storage_provider: storageProvider,
+      path: storagePath,
+      bytes: blob.size,
+      sha256,
+      width,
+      height,
+      mime,
+    })
+    .select('*')
+    .single()
+  if (insErr) {
+    // 23505 = ชน unique index contract_media_unique_live (0140) — ไฟล์นี้ (สัญญา/ช่อง/เนื้อไฟล์เดียวกัน)
+    // เคยอัปสำเร็จไปแล้ว (ปกติเกิดตอนกดซ้ำเร็วๆ/เน็ตช้าแล้วกดซ้ำ) — เก็บไฟล์ที่เพิ่งอัปออก (best effort) แล้วแจ้ง toast เดียวกับที่เว็บเช็คไว้ก่อนหน้า
+    if ((insErr as PostgrestError).code === '23505') {
+      if (storageProvider === 'supabase') {
+        try {
+          await supabase.storage.from('contract-media').remove([storagePath])
+        } catch {
+          /* best effort — ไม่ throw ซ้อน ปล่อยให้ error หลักด้านล่างขึ้นแทน */
+        }
+      }
+      // storageProvider === 'r2': media-sign ยังไม่มี action='delete' (wave 6 ยังไม่ตั้ง secret จริง) — ข้ามการล้างไฟล์ฝั่ง R2 ไปก่อน
+      throw new Error('รูปนี้อัปไว้แล้ว ระบบนับให้ 1 ครั้ง')
+    }
+    throw insErr
+  }
+  return mapContractMedia(inserted as ContractMediaRow)
+}
+
+/** URL ชั่วคราวเปิดดูไฟล์ (300 วิ) — supabase: signed URL ปกติ, r2: ขอผ่าน media-sign action='get' */
+export async function getMediaUrl(file: ContractMediaFile): Promise<string | null> {
+  if (!supabase) return null
+  if (file.storageProvider === 'r2') {
+    const { data, error } = await supabase.functions.invoke('media-sign', {
+      body: { action: 'get', path: file.path },
+    })
+    if (error) throw new Error(await extractFunctionErrorMessage(error))
+    return (data as { url?: string } | null)?.url ?? null
+  }
+  const { data, error } = await supabase.storage.from('contract-media').createSignedUrl(file.path, 300)
+  if (error) throw error
+  return data?.signedUrl ?? null
+}
+
+/** soft-delete ไฟล์แนบ 1 รูป — บันทึกคนลบด้วย (admin เท่านั้น ตาม RLS contract_media_update) */
+export async function softDeleteMedia(id: string): Promise<void> {
+  if (!supabase) return
+  const { data: userData } = await supabase.auth.getUser()
+  const { error } = await supabase
+    .from('contract_media')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: userData?.user?.id ?? null })
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** ยืนยันว่ารูปที่เคยอัปข้ามสัญญา (sha256 ซ้ำ) ถูกต้อง ไม่ใช่คีย์ผิดสัญญา */
+export async function confirmMediaDuplicate(id: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('contract_media').update({ dup_confirmed: true }).eq('id', id)
+  if (error) throw error
+}
+
+/** หาไฟล์ที่เคยอัปที่สัญญาอื่นด้วย sha256 เดียวกัน — ผ่าน RPC find_media_duplicate (SECURITY DEFINER)
+ *  excludeContractId กันจับคู่กับไฟล์ในสัญญาตัวเอง (ให้ media.ts แยก dup_same_contract เอง) */
+export async function findMediaDuplicate(sha256: string, excludeContractId?: string): Promise<MediaDuplicateMatch | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase.rpc('find_media_duplicate', {
+    p_sha256: sha256,
+    p_exclude_contract_id: excludeContractId ?? null,
+  })
+  if (error) throw error
+  const rows = (data ?? []) as Array<{
+    contract_id: string
+    contract_no: string
+    customer_name_masked: string
+    slot_key: string
+    uploaded_at: string
+  }>
+  const r = rows[0]
+  if (!r) return null
+  return {
+    contractId: r.contract_id,
+    contractNo: r.contract_no,
+    customerNameMasked: r.customer_name_masked,
+    slotKey: r.slot_key,
+    uploadedAt: r.uploaded_at,
+  }
+}
+
+/** ติ๊ก/ปลดธง "พบประวัติเครดิตเสีย" — เปิด/ปิดช่องแนบ "ใบแจ้งความ/หลักฐานเคลียร์ยอด" (slot 13.1) */
+export async function setCreditHistoryFound(contractId: string, value: boolean): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('contracts').update({ credit_history_found: value }).eq('id', contractId)
+  if (error) throw error
+}
+
+/** บันทึกเหตุผลตอนแอดมินกด "ข้ามการตรวจ (แอดมินเท่านั้น)" — ผ่าน RPC log_media_gate_bypass
+ *  (เช็ค is_admin() ในฟังก์ชันเองอีกชั้น กัน staff เรียกตรงแล้วเลี่ยงปุ่ม) */
+export async function logMediaGateBypass(contractId: string, reason: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('log_media_gate_bypass', { p_contract_id: contractId, p_reason: reason })
+  if (error) throw error
+}
+
+/** ส่งอีเมลเอกสารสัญญาให้บริษัท ผ่าน Edge Function send-company-email
+ *  Edge Function เช็ค gate (ไฟล์ครบ/bypass) เองอีกชั้น server-side กันแข่งกันกดผ่านช่องโหว่ฝั่ง client */
+export async function sendCompanyEmail(contractId: string): Promise<SendCompanyEmailResult> {
+  if (!supabase) return { ok: false, error: 'ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล' }
+  const { data, error } = await supabase.functions.invoke('send-company-email', { body: { contractId } })
+  if (error) {
+    return { ok: false, error: await extractFunctionErrorMessage(error) }
+  }
+  if ((data as { error?: string } | null)?.error) {
+    return { ok: false, error: (data as { error?: string }).error }
+  }
+  return data as SendCompanyEmailResult
+}
+
+interface EmailSendLogRow {
+  id: string
+  contract_id: string
+  to_addr: string
+  subject: string
+  attachment_count: number | null
+  total_bytes: number | null
+  provider_message_id: string | null
+  status: 'sent' | 'failed'
+  error: string | null
+  sent_by: string | null
+  sent_at: string
+}
+
+function mapEmailSendLog(r: EmailSendLogRow): EmailSendLog {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    toAddr: r.to_addr,
+    subject: r.subject,
+    attachmentCount: Number(r.attachment_count ?? 0),
+    totalBytes: Number(r.total_bytes ?? 0),
+    providerMessageId: r.provider_message_id,
+    status: r.status,
+    error: r.error,
+    sentBy: r.sent_by,
+    sentAt: r.sent_at,
+  }
+}
+
+/** ประวัติส่งอีเมลของสัญญาเดียว เรียงล่าสุดก่อน (แสดงในการ์ดสถานะ "ส่งเมลแล้ว {วันที่} โดย {ใคร}") */
+export async function getEmailSendLog(contractId: string): Promise<EmailSendLog[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('email_send_log')
+    .select('*')
+    .eq('contract_id', contractId)
+    .order('sent_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as EmailSendLogRow[]).map(mapEmailSendLog)
 }

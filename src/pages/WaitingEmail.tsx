@@ -1,14 +1,25 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Mail, X } from 'lucide-react'
-import { Badge, Button, EmptyState, Input, Loading, Modal, PageTitle, Select } from '../components/ui'
+import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import CopyBox from '../components/CopyBox'
+import { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractMediaCard'
 import { thaiDate } from '../lib/format'
 import { buildEmailText } from '../lib/messages'
-import { getContracts, getShops, markEmailSent } from '../lib/db'
+import {
+  getContracts,
+  getMediaGateFrom,
+  getMediaSlots,
+  getMediaStatuses,
+  getShops,
+  logMediaGateBypass,
+  markEmailSent,
+  sendCompanyEmail,
+} from '../lib/db'
+import { DEFAULT_MEDIA_SLOTS, isGated, missingSummary, type MediaSlot } from '../lib/media'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
-import type { Contract, Shop } from '../lib/types'
+import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
 
 type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
 type SortDir = 'asc' | 'desc'
@@ -39,8 +50,18 @@ function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[]
   })
 }
 
+/** วันที่+เวลาไทยสั้นๆ จาก ISO timestamp เต็ม เช่น "08/09/2569 14:05 น." ใช้กับผลส่งเมลสำเร็จ */
+function formatSentAt(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const date = thaiDate(iso.slice(0, 10))
+  const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return `${date} ${time} น.`
+}
+
 export default function WaitingEmail() {
-  const { name } = useAuth()
+  const { name, role } = useAuth()
+  const isAdmin = role === 'admin'
   const { data, loading } = useAsync(
     async () => {
       const [contracts, shops] = await Promise.all([getContracts(), getShops()])
@@ -56,6 +77,22 @@ export default function WaitingEmail() {
   const [toDate, setToDate] = useState('')
   const [shopFilter, setShopFilter] = useState('')
 
+  // ===== รูปเอกสารแนบ — เกทส่งเมลถึงบริษัท (0136-0138, 2026-09-08) =====
+  const [mediaSlots, setMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
+  const [gateFrom, setGateFrom] = useState<string>('')
+  const [mediaStatuses, setMediaStatuses] = useState<Map<string, ContractMediaStatus>>(new Map())
+  const [mediaStatusesLoaded, setMediaStatusesLoaded] = useState(false)
+  const [bypassedIds, setBypassedIds] = useState<Set<string>>(new Set())
+
+  // ส่งเมลถึงบริษัท (Edge Function) — สถานะต่อ modal ที่เปิดอยู่
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [sendSuccess, setSendSuccess] = useState<{ sentAt: string; to: string; attachmentCount: number } | null>(null)
+  const [bypassOpen, setBypassOpen] = useState(false)
+  const [bypassReason, setBypassReason] = useState('')
+  const [bypassBusy, setBypassBusy] = useState(false)
+  const [bypassError, setBypassError] = useState<string | null>(null)
+
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
 
   // เคสที่ยังไม่ส่ง (ก่อนกรอง) — ใช้แยก empty-state
@@ -63,6 +100,53 @@ export default function WaitingEmail() {
     () => data.contracts.filter((c) => !c.emailSentAt && !sentIds.has(c.id)),
     [data.contracts, sentIds],
   )
+
+  useEffect(() => {
+    Promise.all([getMediaSlots(), getMediaGateFrom()]).then(([raw, gate]) => {
+      setMediaSlots(normalizeMediaSlots(raw))
+      setGateFrom(gate)
+    })
+  }, [])
+
+  // โหลดสถานะรูปของเคสที่ค้างส่งทั้งหมดครั้งเดียว (ไม่ใช่ทีละแถว)
+  useEffect(() => {
+    const ids = base.map((c) => c.id)
+    if (ids.length === 0) {
+      setMediaStatuses(new Map())
+      setMediaStatusesLoaded(true)
+      return
+    }
+    let cancelled = false
+    getMediaStatuses(ids)
+      .then((rows) => {
+        if (cancelled) return
+        setMediaStatuses(new Map(rows.map((r) => [r.contractId, r])))
+        setMediaStatusesLoaded(true)
+      })
+      .catch(() => {
+        if (!cancelled) setMediaStatusesLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base])
+
+  function evaluationFor(c: Contract) {
+    const status = mediaStatuses.get(c.id)
+    if (!status) return null
+    return evaluateFromStatus(mediaSlots, status)
+  }
+
+  function renderMediaPill(c: Contract) {
+    const status = mediaStatuses.get(c.id)
+    const hasFiles = !!status && Object.values(status.counts).some((n) => n > 0)
+    if (!hasFiles) return <Badge tone="neutral">ไม่มีข้อมูล</Badge>
+    const ev = evaluationFor(c)
+    if (!ev) return <Badge tone="neutral">ไม่มีข้อมูล</Badge>
+    if (ev.complete) return <Badge tone="green">รูป ครบ</Badge>
+    return <Badge tone={isGated(c, gateFrom) ? 'red' : 'amber'}>{`รูป ขาด ${ev.missing.length}`}</Badge>
+  }
 
   // ร้านที่เลือกได้ (เฉพาะร้านที่มีเคสค้างในลิสต์ หลังกรองวันที่)
   const shopOptions = useMemo(() => {
@@ -99,6 +183,65 @@ export default function WaitingEmail() {
     await markEmailSent(c.id, name ?? undefined)
     setSentIds((prev) => new Set([...prev, c.id]))
     setView(null)
+  }
+
+  function openView(c: Contract) {
+    setView(c)
+    setSending(false)
+    setSendError(null)
+    setSendSuccess(null)
+    setBypassOpen(false)
+    setBypassReason('')
+    setBypassBusy(false)
+    setBypassError(null)
+  }
+
+  const viewGated = view ? isGated(view, gateFrom) : false
+  const viewEvaluation = view ? evaluationFor(view) : null
+  const viewBypassed = view ? bypassedIds.has(view.id) : false
+  const viewBlocked = viewGated && !!viewEvaluation && !viewEvaluation.complete && !viewBypassed
+  const viewChecking = viewGated && !mediaStatusesLoaded
+
+  async function handleSendCompanyEmail() {
+    if (!view) return
+    setSending(true)
+    setSendError(null)
+    try {
+      const result = await sendCompanyEmail(view.id)
+      if (!result.ok) {
+        setSendError(result.error ?? 'ส่งอีเมลไม่สำเร็จ')
+        return
+      }
+      setSendSuccess({
+        sentAt: result.sentAt ?? new Date().toISOString(),
+        to: result.to ?? '',
+        attachmentCount: result.attachmentCount ?? 0,
+      })
+      setSentIds((prev) => new Set([...prev, view.id]))
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : 'ส่งอีเมลไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function handleBypassSubmit() {
+    if (!view) return
+    if (!bypassReason.trim()) {
+      setBypassError('กรุณาระบุเหตุผล')
+      return
+    }
+    setBypassBusy(true)
+    setBypassError(null)
+    try {
+      await logMediaGateBypass(view.id, bypassReason.trim())
+      setBypassedIds((prev) => new Set(prev).add(view.id))
+      setBypassOpen(false)
+    } catch (e) {
+      setBypassError(e instanceof Error ? e.message : 'บันทึกเหตุผลไม่สำเร็จ')
+    } finally {
+      setBypassBusy(false)
+    }
   }
 
   return (
@@ -166,8 +309,9 @@ export default function WaitingEmail() {
               </div>
               <div className="flex items-center gap-2">
                 {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+                {renderMediaPill(c)}
                 <Badge tone="amber">ยังไม่ส่ง</Badge>
-                <Button variant="ghost" onClick={() => setView(c)}>
+                <Button variant="ghost" onClick={() => openView(c)}>
                   <Mail size={15} /> ดูอีเมล
                 </Button>
               </div>
@@ -181,10 +325,68 @@ export default function WaitingEmail() {
       {view && (
         <Modal title={`อีเมล — ${view.customerName}`} onClose={() => setView(null)}>
           <div className="flex flex-col gap-3">
-            <CopyBox title="ข้อความอีเมล" text={shopOf(view.shopId) ? buildEmailText(view, shopOf(view.shopId)!) : ''} />
-            <div className="flex justify-end gap-2">
+            {viewChecking && <p className="text-sm text-ink-soft">กำลังตรวจสอบรูปเอกสาร...</p>}
+
+            {viewBlocked && viewEvaluation && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <p>{missingSummary(viewEvaluation)}</p>
+                <Link to={`/contract/${view.id}`} className="mt-1 inline-block font-semibold underline">
+                  ไปแนบรูป
+                </Link>
+                {isAdmin && !bypassOpen && (
+                  <div className="mt-2">
+                    <Button variant="ghost" onClick={() => setBypassOpen(true)} className="text-xs">
+                      ข้ามการตรวจ (แอดมินเท่านั้น)
+                    </Button>
+                  </div>
+                )}
+                {isAdmin && bypassOpen && (
+                  <div className="mt-2 flex flex-col gap-2">
+                    <Field label="เหตุผลที่ข้าม" required>
+                      <Textarea
+                        value={bypassReason}
+                        onChange={(e) => setBypassReason(e.target.value)}
+                        placeholder="เช่น ลูกค้าเร่งด่วน จะตามรูปเพิ่มทีหลัง"
+                        rows={2}
+                      />
+                    </Field>
+                    {bypassError && <p className="text-xs text-red-700">{bypassError}</p>}
+                    <div className="flex justify-end gap-2">
+                      <Button variant="ghost" onClick={() => setBypassOpen(false)} disabled={bypassBusy}>
+                        ยกเลิก
+                      </Button>
+                      <Button onClick={() => void handleBypassSubmit()} disabled={bypassBusy}>
+                        {bypassBusy ? 'กำลังบันทึก...' : 'ยืนยันข้ามการตรวจ'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <CopyBox
+              title="ข้อความอีเมล"
+              text={shopOf(view.shopId) ? buildEmailText(view, shopOf(view.shopId)!) : ''}
+              disabled={viewBlocked}
+            />
+
+            {sendError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{sendError}</div>
+            )}
+            {sendSuccess && (
+              <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                {`ส่งเมลแล้ว ${formatSentAt(sendSuccess.sentAt)} โดย ${name ?? '-'} ถึง ${sendSuccess.to} · แนบรูป ${sendSuccess.attachmentCount} ใบ`}
+              </div>
+            )}
+
+            <div className="flex flex-wrap justify-end gap-2">
               <Button variant="ghost" onClick={() => setView(null)}>ปิด</Button>
-              <Button onClick={() => doMarkSent(view)}>✓ ทำเครื่องหมายว่าส่งแล้ว</Button>
+              <Button variant="ghost" onClick={() => void doMarkSent(view)} disabled={viewBlocked || viewChecking}>
+                บันทึกว่าส่งเอง (สำรอง)
+              </Button>
+              <Button onClick={() => void handleSendCompanyEmail()} disabled={viewBlocked || viewChecking || sending || !!sendSuccess}>
+                {sending ? 'กำลังส่ง...' : 'ส่งเมลถึงบริษัท'}
+              </Button>
             </div>
           </div>
         </Modal>

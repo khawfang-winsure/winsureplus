@@ -309,6 +309,8 @@ export interface Contract {
   summaryNote?: string | null          // ข้อความโน้ตอิสระ — null = ไม่มีโน้ตค้าง
   summaryNoteBy?: string | null        // ชื่อคนเขียนโน้ตล่าสุด
   summaryNoteAt?: string | null        // เวลาที่เขียน/แก้โน้ตล่าสุด
+  // --- รูปเอกสารแนบ + ส่งอีเมลบริษัท (0136-0138, 2026-09-08) ---
+  creditHistoryFound?: boolean         // ติ๊กที่ผลเช็คเครดิตว่าพบประวัติเสีย — เปิดช่องแนบ "ใบแจ้งความ/หลักฐานเคลียร์ยอด"
 }
 
 // ---------- Extra Charges (migration 0032) ----------
@@ -777,4 +779,71 @@ export interface TransferSlipSummaryRow {
   shopName: string
   slipCount: number
   totalAmount: number
+}
+
+// ---------- รูปเอกสารแนบต่อสัญญา (migration 0136-0138, 2026-09-08) ----------
+// หมายเหตุ: MediaSlot / MediaFile (นิยาม pure-logic ของ 14 ช่อง + evaluateSlots) อยู่ที่ src/lib/media.ts
+// (แบม) — ที่นี่เก็บเฉพาะ shape ที่ map ตรงจากแถว/view ใน DB ให้ db.ts ใช้
+
+/** 1 แถวไฟล์แนบต่อสัญญา (จาก ตาราง contract_media) */
+export interface ContractMediaFile {
+  id: string
+  contractId: string
+  slotKey: string                          // key ตาม app_settings.media_slots เช่น 'id_card_front'
+  storageProvider: 'supabase' | 'r2'
+  path: string                             // path ใน bucket contract-media หรือ R2 key
+  bytes: number
+  sha256: string                           // เช็คไฟล์ซ้ำ (ในสัญญาเดียวกัน/ข้ามสัญญา)
+  width: number | null
+  height: number | null
+  mime: string | null
+  uploadedBy: string | null                // uuid ของ auth.users
+  uploadedAt: string                       // ISO timestamptz
+  dupConfirmed: boolean                    // true = admin/staff ยืนยันแล้วว่ารูปซ้ำข้ามสัญญาถูกต้อง
+}
+
+/** สรุปสถานะไฟล์แนบต่อสัญญา — จาก view v_contract_media_status (0137) */
+export interface ContractMediaStatus {
+  contractId: string
+  counts: Record<string, number>           // slot_key -> จำนวนไฟล์ (dedupe ด้วย sha256 แล้ว)
+  totalFiles: number
+  condition: DeviceCondition
+  origin: DeviceOrigin
+  creditHistoryFound: boolean
+  createdAt: string | null                 // contracts.created_at — null เท่ากับสัญญาที่ไม่มี timestamp เก่ามาก (ungated)
+}
+
+/** ผลจับไฟล์ซ้ำข้ามสัญญา — จาก RPC find_media_duplicate (0137) */
+export interface MediaDuplicateMatch {
+  contractId: string
+  contractNo: string
+  customerNameMasked: string               // 2 ตัวแรกของชื่อลูกค้า + '***'
+  slotKey: string
+  uploadedAt: string
+}
+
+/** ประวัติส่งอีเมลเอกสารสัญญาให้บริษัท — จากตาราง email_send_log (0138) */
+export interface EmailSendLog {
+  id: string
+  contractId: string
+  toAddr: string
+  subject: string
+  attachmentCount: number
+  totalBytes: number
+  providerMessageId: string | null
+  status: 'sent' | 'failed'
+  error: string | null
+  sentBy: string | null                    // uuid ของ auth.users ที่กดส่ง
+  sentAt: string                           // ISO timestamptz
+}
+
+/** ผลลัพธ์จาก sendCompanyEmail() (db.ts) — เรียก Edge Function send-company-email */
+export interface SendCompanyEmailResult {
+  ok: boolean
+  messageId?: string
+  to?: string
+  sentAt?: string
+  attachmentCount?: number
+  totalBytes?: number
+  error?: string
 }

@@ -2,7 +2,15 @@ import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 
 // กล่องแสดงข้อความที่สร้าง พร้อมปุ่ม "คัดลอก" (ตามที่พี่พิธเลือก: ก๊อปไปวางเอง)
-export default function CopyBox({ title, text }: { title: string; text: string }) {
+export default function CopyBox({
+  title,
+  text,
+  disabled,
+}: {
+  title: string
+  text: string
+  disabled?: boolean
+}) {
   const [copied, setCopied] = useState(false)
 
   async function copy() {
@@ -21,7 +29,9 @@ export default function CopyBox({ title, text }: { title: string; text: string }
         <span className="text-sm font-semibold text-ink">{title}</span>
         <button
           onClick={copy}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-salmon-deep px-3 py-1.5 text-xs font-semibold text-white transition hover:brightness-105"
+          disabled={disabled}
+          aria-disabled={disabled}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-salmon-deep px-3 py-1.5 text-xs font-semibold text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100"
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
           {copied ? 'คัดลอกแล้ว' : 'คัดลอก'}
