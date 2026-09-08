@@ -144,6 +144,13 @@ function localToday(): string {
   return localDatePlusDays(0)
 }
 
+/** ย่อวันที่ yyyy-mm-dd -> dd/mm/yy (ปี ค.ศ. 2 หลักท้าย) — เฉพาะตารางการชำระที่กรอบแคบ ที่อื่นในโมดัลยังใช้ thaiDate เต็มรูปแบบตามเดิม */
+function shortDate(iso: string): string {
+  const [y, m, d] = iso.split('-')
+  if (!y || !m || !d) return iso
+  return `${d}/${m}/${y.slice(2)}`
+}
+
 // phoneDialed ไม่รวมใน INITIAL_FORM (ต้องใช้ contract.phone ซึ่งรู้ตอน render)
 // ใช้ makeInitialForm(phone) แทนตอน useState init
 const BASE_FORM = {
@@ -258,6 +265,12 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
     () => rawInstallments.find((i) => !i.paidAt)?.installmentNo ?? null,
     [rawInstallments],
   )
+
+  // ตารางการชำระ: วันนี้ (yyyy-mm-dd) ใช้แยกงวด "ยังไม่จ่าย + เลยกำหนดแล้ว" (แดง = ปัญหาจริง) จากงวด
+  // "ยังไม่จ่าย + ยังไม่ถึงกำหนด" (งวดอนาคต — ขาวปกติ) ก่อนหน้านี้ทุกงวดที่ยังไม่จ่ายขึ้นแดงหมด ทำให้สัญญาณเตือนหายไป
+  // string compare ตรง (dueDate เป็น yyyy-mm-dd ล้วนจาก DB อยู่แล้ว ไม่ต้อง slice) — pattern เดียวกับ calc.ts paymentRecoveryStatus
+  // dueDate === todayStr พอดี → ยังไม่ถือว่าเลยกำหนด (< เท่านั้น ไม่ใช่ <=)
+  const todayStr = localToday()
 
   // req8: ป้าย "ไม่ได้ติดตามมานาน" — ซ่อนถ้าสัญญาไม่ active (default true ถ้าไม่ได้ส่งมา — เพื่อ backward compat)
   const staleness = useMemo(
@@ -440,7 +453,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   }
 
   return (
-    <Modal title={`บันทึกติดตาม — ${contract.customerName}`} onClose={onClose}>
+    <Modal title={`บันทึกติดตาม — ${contract.customerName}`} onClose={onClose} size="lg">
       {/* สรุปสัญญา */}
       <div className="mb-4 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
         {/* หัวเรื่อง: เลขสัญญา + ป้ายวันค้าง/ไม่ได้ติดตามมานาน */}
@@ -499,7 +512,9 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
         )}
 
         {/* ข้อ 3: รายละเอียดสัญญา/ลูกค้า — จัด 2 คอลัมน์ label-value กันกองซ้าย */}
-        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
+        {/* size="lg" ทำให้โมดัลกว้างขึ้น — เพิ่มเป็น 3 คอลัมน์บนจอกว้าง (sm ขึ้นไป) กันดูโล่งเว้าเวลาเนื้อหาสั้น
+            มือถือ (viewport < sm) ยังคง 2 คอลัมน์เท่าเดิม เพราะโมดัลแคบเท่าจอ */}
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
           {contract.deviceModel && (
             <p className="text-ink-soft">รุ่น: <span className="text-ink">{contract.deviceModel}</span></p>
           )}
@@ -508,7 +523,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           )}
           {/* progressive: ยังโหลดที่อยู่ไม่เสร็จ → โชว์ loader เล็กๆ แทนที่จะรอทั้ง modal */}
           {addressesLoading ? (
-            <p className="col-span-2 text-xs text-ink-soft">📍 กำลังโหลดที่อยู่...</p>
+            <p className="col-span-2 text-xs text-ink-soft sm:col-span-3">📍 กำลังโหลดที่อยู่...</p>
           ) : (
             <>
               {addresses.id_card?.district && (
@@ -555,7 +570,7 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
           )}
           {/* req11: ทำรายการ + ครบกำหนดทุกวันที่ — ข้อความยาว กว้างเต็มแถว */}
           {contract.transactionDate && contract.dueDay && (
-            <p className="col-span-2 text-ink-soft">
+            <p className="col-span-2 text-ink-soft sm:col-span-3">
               ทำรายการ {thaiDate(contract.transactionDate)} · ครบกำหนดทุกวันที่ {contract.dueDay}
             </p>
           )}
@@ -607,7 +622,10 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
                 ref={paymentTableScrollRef}
                 className="max-h-[16rem] overflow-y-auto overflow-x-auto rounded-lg border border-peach"
               >
-                <table className="w-full min-w-[560px] text-xs">
+                {/* โมดัลกว้างขึ้น (size="lg") พอสำหรับ 7 คอลัมน์โดยไม่ต้องเลื่อน — ตัด min-w-[560px] เดิมออก
+                    (เคยบังคับกว้างเกินกรอบโมดัลแคบเสมอ) วันที่ย่อ dd/mm/yy ยังคงไว้ (อ่านง่ายอยู่แล้ว)
+                    คง overflow-x-auto ไว้เป็น fallback (จอมือถือแคบยังเลื่อนได้ในกรอบตาราง ไม่ดันหน้าเว็บ) */}
+                <table className="w-full text-xs">
                   <caption className="sr-only">ตารางการชำระของสัญญา {contract.contractNo}</caption>
                   <thead className="sticky top-0 z-10 bg-peach-light">
                     <tr className="text-left text-ink">
@@ -620,29 +638,39 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
                     {rawInstallments.map((i) => {
                       const isFirstUnpaid = i.installmentNo === firstUnpaidNo
                       const remaining = Math.max(0, i.amount - i.paidAmount)
+                      // จุดที่ 1: เดิม "ยังไม่จ่าย = แดง" เหมารวมงวดอนาคตด้วย ทำให้ 14/15 แถวขึ้นแดงหมด (สัญญาณเตือนหายไป)
+                      // แดงเฉพาะยังไม่จ่าย + เลยกำหนดแล้วจริง (dueDate < วันนี้); ตรงวันนี้พอดียังไม่ถือว่าเลยกำหนด
+                      const isOverdueUnpaid = !i.paidAt && i.dueDate < todayStr
+                      const rowClass = i.paidAt
+                        ? 'bg-white text-ink-soft'
+                        : isOverdueUnpaid
+                          ? 'bg-red-50 text-ink'
+                          : 'bg-white text-ink'
                       return (
                         <tr
                           key={i.id}
                           ref={isFirstUnpaid ? firstUnpaidRowRef : undefined}
-                          className={i.paidAt ? 'bg-white text-ink-soft' : 'bg-red-50 text-ink'}
+                          className={rowClass}
                         >
                           <td className="px-2.5 py-2">{i.installmentNo}</td>
-                          <td className="px-2.5 py-2 whitespace-nowrap">{thaiDate(i.dueDate)}</td>
-                          <td className="px-2.5 py-2">{baht(i.amount)}</td>
-                          <td className="px-2.5 py-2">
+                          <td className="px-2.5 py-2 whitespace-nowrap">{shortDate(i.dueDate)}</td>
+                          <td className="px-2.5 py-2 whitespace-nowrap">{baht(i.amount)}</td>
+                          <td className="px-2.5 py-2 whitespace-nowrap">
                             {i.paidAmount > 0 ? (
-                              <span>
+                              <>
                                 {baht(i.paidAmount)}
-                                {remaining > 0 && <span className="text-red-600"> (ค้าง {baht(remaining)})</span>}
-                              </span>
+                                {remaining > 0 && (
+                                  <span className="block text-red-600">ค้าง {baht(remaining)}</span>
+                                )}
+                              </>
                             ) : (
                               '-'
                             )}
                           </td>
                           <td className="px-2.5 py-2 whitespace-nowrap">
-                            {i.paidAt ? thaiDate(i.paidAt.slice(0, 10)) : '—'}
+                            {i.paidAt ? shortDate(i.paidAt.slice(0, 10)) : '—'}
                           </td>
-                          <td className="px-2.5 py-2">{i.penaltyAmount > 0 ? `${baht(i.penaltyAmount)} ฿` : '—'}</td>
+                          <td className="px-2.5 py-2 whitespace-nowrap">{i.penaltyAmount > 0 ? `${baht(i.penaltyAmount)} ฿` : '—'}</td>
                           <td className="px-2.5 py-2">
                             <Badge tone={i.status === 'paid' ? 'green' : i.status === 'late' ? 'red' : 'amber'}>
                               {installmentLabel(i.status)}

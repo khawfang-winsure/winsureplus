@@ -113,14 +113,22 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
   )
 }
 
+// ความกว้างของ Modal — 'md' (เดิม, ค่า default) ใช้กับฟอร์มสั้นๆ ทั่วไป, 'lg' สำหรับโมดัลที่มีตาราง/เนื้อหาซับซ้อนต้องการที่กว้างขึ้น
+const MODAL_SIZE_CLASS: Record<'md' | 'lg', string> = {
+  md: 'max-w-md',
+  lg: 'max-w-3xl',
+}
+
 export function Modal({
   title,
   onClose,
   children,
+  size = 'md',
 }: {
   title: string
   onClose: () => void
   children: ReactNode
+  size?: 'md' | 'lg'
 }) {
   return (
     <div
@@ -128,7 +136,7 @@ export function Modal({
       onClick={onClose}
     >
       <div
-        className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl"
+        className={`max-h-[90vh] w-full ${MODAL_SIZE_CLASS[size]} overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-start justify-between gap-3">
