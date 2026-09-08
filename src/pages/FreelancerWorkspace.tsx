@@ -19,9 +19,10 @@ import {
   type FollowUpResult,
   type FreelancerQueueRow,
 } from '../lib/db'
-import type { OverduePromiseContract } from '../lib/types'
+import type { OverdueBucket, OverduePromiseContract } from '../lib/types'
 import { useAuth } from '../lib/auth'
 import { isContactWindowOpen } from '../lib/contactHours'
+import { overdueBucket } from '../lib/calc'
 import {
   computePriorityScore,
   followUpStalenessLevel,
@@ -41,6 +42,18 @@ const GRADE_TONE: Record<ContractGrade, 'red' | 'amber' | 'neutral'> = {
   C: 'amber',
   D: 'amber',
   E: 'red',
+}
+
+// ===== ตัวกรองช่วงวันล่าช้า (แท็บ "งานที่ต้องดูแล") — ลำดับ/นิยามต้องตรงกับ v_contract_status.bucket เป๊ะ (มี mig 0133) =====
+const LATE_BUCKET_ORDER: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90', '91-120', '120+']
+const LATE_BUCKET_LABEL: Record<OverdueBucket, string> = {
+  normal: 'ไม่ค้าง',
+  '1-10': '1-10 วัน',
+  '11-30': '11-30 วัน',
+  '31-60': '31-60 วัน',
+  '61-90': '61-90 วัน',
+  '91-120': '91-120 วัน',
+  '120+': '120+ วัน',
 }
 
 // ===== emoji + label ต่อ tier =====
@@ -599,6 +612,9 @@ export default function FreelancerWorkspace() {
   const [overdue, setOverdue] = useState<OverduePromiseContract[]>([])
   const [overdueFilter, setOverdueFilter] = useState(false)
 
+  // ตัวกรองช่วงวันล่าช้า — เฉพาะแท็บ "งานที่ต้องดูแล" (mine); จำค่าข้ามการรีเฟรชเหมือน queue.shop/queue.tab
+  const [lateBucketFilter, setLateBucketFilter] = useFilter<OverdueBucket[]>('queue.mine.lateBucket', [])
+
   // pagination state (default 50 — เหมือนหน้าฝั่งพนักงาน)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -675,6 +691,13 @@ export default function FreelancerWorkspace() {
     if (role !== 'admin') return
     getCaseOwnershipSummary().then(setOwnershipSummary).catch(() => setOwnershipSummary([]))
   }, [role])
+
+  // สลับช่วงวันล่าช้าที่เลือก (แท็บ "งานที่ต้องดูแล")
+  function toggleLateBucket(bucket: OverdueBucket) {
+    setLateBucketFilter((prev) =>
+      prev.includes(bucket) ? prev.filter((b) => b !== bucket) : [...prev, bucket],
+    )
+  }
 
   // สลับเกรดที่เลือก
   function toggleGrade(grade: ContractGrade) {
@@ -778,6 +801,26 @@ export default function FreelancerWorkspace() {
         stripPhone(r.phoneAlt2 ?? '').includes(qPhone),
     )
   }, [myCases, searchTerm])
+
+  // ตัวกรองช่วงวันล่าช้า (แท็บ "งานที่ต้องดูแล") — chip แต่ละอันนับจาก filteredMyCases (หลังผ่านตัวกรองอื่นแล้ว) ซ่อน chip ที่นับได้ 0
+  const lateBucketChips = useMemo(() => {
+    const counts = new Map<OverdueBucket, number>()
+    for (const r of filteredMyCases) {
+      const b = overdueBucket(r.daysLate)
+      counts.set(b, (counts.get(b) ?? 0) + 1)
+    }
+    return LATE_BUCKET_ORDER.map((bucket) => ({
+      bucket,
+      label: LATE_BUCKET_LABEL[bucket],
+      count: counts.get(bucket) ?? 0,
+    })).filter((c) => c.count > 0)
+  }, [filteredMyCases])
+
+  // เคสในแท็บ "งานที่ต้องดูแล" หลังกรองด้วยช่วงวันล่าช้าที่เลือก (OR กัน; ไม่เลือกเลย = ทั้งหมด)
+  const myCasesFiltered = useMemo(() => {
+    if (lateBucketFilter.length === 0) return filteredMyCases
+    return filteredMyCases.filter((r) => lateBucketFilter.includes(overdueBucket(r.daysLate)))
+  }, [filteredMyCases, lateBucketFilter])
 
   // ดึงรายการร้านไม่ซ้ำ
   const shopOptions = useMemo(() => {
@@ -889,10 +932,10 @@ export default function FreelancerWorkspace() {
     [scoredRows],
   )
 
-  // แท็บ "งานที่ต้องดูแล" (mine): แปลง filteredMyCases → ScoredRow เพื่อ reuse QueueRow/QueueCardMobile
+  // แท็บ "งานที่ต้องดูแล" (mine): แปลง myCasesFiltered (filteredMyCases + ตัวกรองช่วงวันล่าช้า) → ScoredRow เพื่อ reuse QueueRow/QueueCardMobile
   // ใช้ computePriorityScore ชุดเดียวกับ scoredRows — score/tier ยังคำนวณไว้ (ถึงแม้จะไม่ได้โชว์เคส returned)
   const myScoredRows = useMemo((): ScoredRow[] => {
-    return filteredMyCases.map((r) => {
+    return myCasesFiltered.map((r) => {
       const result = computePriorityScore(
         {
           grade: r.grade,
@@ -919,7 +962,7 @@ export default function FreelancerWorkspace() {
         promiseToPayDate: r.promiseToPayDate,
       }
     })
-  }, [filteredMyCases, today])
+  }, [myCasesFiltered, today])
 
   // today string (Bangkok UTC+7) สำหรับ sortQueue + promise badge
   const todayStr = useMemo(
@@ -976,7 +1019,7 @@ export default function FreelancerWorkspace() {
   // reset หน้า=1 เมื่อเปลี่ยนแท็บ / ตัวกรอง / ค้นหา
   useEffect(() => {
     setPage(1)
-  }, [activeTab, shopFilter, searchTerm, overdueFilter, selectedGrades, sortMode])
+  }, [activeTab, shopFilter, searchTerm, overdueFilter, selectedGrades, sortMode, lateBucketFilter])
 
   function handlePageSizeChange(s: number) {
     setPageSize(s)
@@ -1167,7 +1210,7 @@ export default function FreelancerWorkspace() {
             >
               <span className="inline-flex items-center gap-1.5">
                 <UserCheck size={15} />
-                งานที่ต้องดูแล ({filteredMyCases.length})
+                งานที่ต้องดูแล ({myCasesFiltered.length})
               </span>
             </button>
             <button
@@ -1289,11 +1332,52 @@ export default function FreelancerWorkspace() {
           {/* === Tab "งานที่ต้องดูแล" (req7) — เคสที่ตัวเอง claim ไว้ === */}
           {activeTab === 'mine' && (
             <>
-              {filteredMyCases.length === 0 ? (
+              {/* ตัวกรองช่วงวันล่าช้า — เฉพาะแท็บนี้ (แท็บ "ที่ต้องโทร" มีชิป "ผิดนัด" ของตัวเองแล้ว)
+                  แสดงแถวนี้ไว้ด้วยถ้ามี bucket ถูกเลือกค้างอยู่ แม้ chip จะนับได้ 0 ทั้งหมด (เช่นค้นหาแล้วไม่เจอ) —
+                  ไม่งั้นปุ่ม "ล้างตัวกรอง" หายไปด้วย พนักงานติดกับ ปลดตัวกรองไม่ได้ */}
+              {(lateBucketChips.length > 0 || lateBucketFilter.length > 0) && (
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-ink">ช่วงวันล่าช้า:</span>
+                  {lateBucketChips.map(({ bucket, label, count }) => {
+                    const active = lateBucketFilter.includes(bucket)
+                    return (
+                      <button
+                        key={bucket}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => toggleLateBucket(bucket)}
+                        className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
+                          active
+                            ? 'border-salmon-deep bg-salmon-deep text-white shadow-sm'
+                            : 'border-peach bg-white text-ink-soft hover:bg-peach-light'
+                        }`}
+                      >
+                        {label} ({count})
+                      </button>
+                    )
+                  })}
+                  {lateBucketFilter.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setLateBucketFilter([])}
+                      className="rounded-full border border-peach bg-white px-2.5 py-1 text-xs text-ink-soft transition hover:bg-peach-light"
+                    >
+                      ✕ ล้างตัวกรอง
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {myCasesFiltered.length === 0 ? (
                 searchTerm.trim() ? (
                   <EmptyState
                     title="ไม่พบลูกค้าที่ค้นหา"
                     hint="ลองเปลี่ยนคำค้นหา หรือล้างช่องค้นหาเพื่อดูทั้งหมด"
+                  />
+                ) : lateBucketFilter.length > 0 ? (
+                  <EmptyState
+                    title="ไม่มีเคสในช่วงวันล่าช้าที่เลือก"
+                    hint="ลองเลือกช่วงอื่น หรือกด 'ล้างตัวกรอง'"
                   />
                 ) : (
                   <EmptyState

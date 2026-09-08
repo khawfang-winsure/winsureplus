@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { MessageSquare, PackageCheck } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp, MessageSquare, PackageCheck } from 'lucide-react'
 import { Badge, Button, Field, Modal, Select, Textarea } from './ui'
-import { baht, thaiDate } from '../lib/format'
+import { baht, installmentLabel, thaiDate } from '../lib/format'
 import {
   addFollowUp,
   closeCase,
@@ -17,6 +17,7 @@ import {
   type FollowUpEntry,
   type FollowUpResult,
 } from '../lib/db'
+import type { Installment } from '../lib/types'
 import { isContactWindowOpen } from '../lib/contactHours'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { useAuth } from '../lib/auth'
@@ -181,6 +182,11 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   // req9: งวดของสัญญานี้ — ใช้คำนวณ paymentRecoveryStatus
   const [recoveryInstallments, setRecoveryInstallments] = useState<RecoveryInstallmentInput[]>([])
   const [installmentsLoading, setInstallmentsLoading] = useState(true)
+  // ตารางการชำระ (ชิ้นที่ 1): เก็บ Installment[] ดิบไว้แยกต่างหาก — ไม่แตะ logic ของ recoveryInstallments เดิม
+  const [rawInstallments, setRawInstallments] = useState<Installment[]>([])
+  const [paymentTableOpen, setPaymentTableOpen] = useState(true)
+  const paymentTableScrollRef = useRef<HTMLDivElement>(null)
+  const firstUnpaidRowRef = useRef<HTMLTableRowElement>(null)
 
   // req10: ตั้งค่า SMS บริษัท (เบอร์บริษัท + ที่อยู่คืนเครื่อง)
   const [smsSettings, setSmsSettings] = useState({ companyName: '', companyPhone: '', returnAddress: '' })
@@ -214,10 +220,25 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
             paidAt: i.paidAt,
           })),
         )
+        setRawInstallments(list)
       })
-      .catch(() => setRecoveryInstallments([]))
+      .catch(() => {
+        setRecoveryInstallments([])
+        setRawInstallments([])
+      })
       .finally(() => setInstallmentsLoading(false))
   }, [contract.contractId])
+
+  // auto-scroll กล่องตารางการชำระไปงวดค้างตัวแรก (ไม่ดันหน้าจอทั้งโมดัล — เลื่อนแค่ container ภายใน)
+  // useLayoutEffect กันตารางกระตุกให้เห็นก่อนเลื่อน (สัญญางวดเยอะจะเห็นชัด)
+  // paymentTableOpen อยู่ใน deps — container unmount ตอนพับ พอกางกลับมาต้องเลื่อนไปงวดค้างตัวแรกอีกครั้ง
+  useLayoutEffect(() => {
+    if (installmentsLoading || !paymentTableOpen) return
+    const container = paymentTableScrollRef.current
+    const target = firstUnpaidRowRef.current
+    if (!container || !target) return
+    container.scrollTop = target.offsetTop - container.clientHeight / 2 + target.clientHeight / 2
+  }, [installmentsLoading, rawInstallments, paymentTableOpen])
 
   // req10: โหลดตั้งค่าบริษัทสำหรับ SMS (ครั้งเดียวตอนเปิด modal)
   useEffect(() => {
@@ -230,6 +251,12 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
   const recoveryStatus = useMemo(
     () => paymentRecoveryStatus(recoveryInstallments, new Date()),
     [recoveryInstallments],
+  )
+
+  // ตารางการชำระ: งวดค้างตัวแรก (ยังไม่จ่าย) — ใช้ auto-scroll เปิดโมดัลแล้วเห็นทันที
+  const firstUnpaidNo = useMemo(
+    () => rawInstallments.find((i) => !i.paidAt)?.installmentNo ?? null,
+    [rawInstallments],
   )
 
   // req8: ป้าย "ไม่ได้ติดตามมานาน" — ซ่อนถ้าสัญญาไม่ active (default true ถ้าไม่ได้ส่งมา — เพื่อ backward compat)
@@ -547,6 +574,88 @@ export default function FollowUpModal({ contract, onClose, onSaved, onCaseClosed
             จ่ายล่าสุด: {thaiDate(recoveryStatus.recoveredThisEpisode.lastPaidAt)} ·{' '}
             {baht(recoveryStatus.recoveredThisEpisode.lastPaidAmount)}฿
           </p>
+        )}
+      </div>
+
+      {/* ตารางการชำระ — พนักงานติดตามหนี้เห็นว่างวดไหนจ่ายแล้ว/ค้าง + วันที่จ่ายจริง (ต่างจากตารางใน ContractDetail ที่ไม่มีคอลัมน์นี้) */}
+      <div className="mb-4 rounded-xl border border-peach bg-white px-4 py-3">
+        <button
+          type="button"
+          aria-expanded={paymentTableOpen}
+          onClick={() => setPaymentTableOpen((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 text-left text-sm font-semibold text-ink"
+        >
+          <span>
+            ตารางการชำระ
+            {!installmentsLoading && rawInstallments.length > 0 && (
+              <span className="ml-1 font-normal text-ink-soft">
+                (จ่ายแล้ว {rawInstallments.filter((i) => i.paidAt).length}/{rawInstallments.length} งวด)
+              </span>
+            )}
+          </span>
+          {paymentTableOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+
+        {paymentTableOpen && (
+          <div className="mt-3">
+            {installmentsLoading ? (
+              <p className="text-sm text-ink-soft">กำลังโหลด…</p>
+            ) : rawInstallments.length === 0 ? (
+              <p className="text-sm text-ink-soft">ยังไม่มีตารางงวด</p>
+            ) : (
+              <div
+                ref={paymentTableScrollRef}
+                className="max-h-[16rem] overflow-y-auto overflow-x-auto rounded-lg border border-peach"
+              >
+                <table className="w-full min-w-[560px] text-xs">
+                  <caption className="sr-only">ตารางการชำระของสัญญา {contract.contractNo}</caption>
+                  <thead className="sticky top-0 z-10 bg-peach-light">
+                    <tr className="text-left text-ink">
+                      {['งวด', 'ครบกำหนด', 'ค่างวด', 'จ่ายแล้ว', 'วันที่จ่ายจริง', 'ค่าปรับ', 'สถานะ'].map((h) => (
+                        <th key={h} className="px-2.5 py-2 font-semibold">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rawInstallments.map((i) => {
+                      const isFirstUnpaid = i.installmentNo === firstUnpaidNo
+                      const remaining = Math.max(0, i.amount - i.paidAmount)
+                      return (
+                        <tr
+                          key={i.id}
+                          ref={isFirstUnpaid ? firstUnpaidRowRef : undefined}
+                          className={i.paidAt ? 'bg-white text-ink-soft' : 'bg-red-50 text-ink'}
+                        >
+                          <td className="px-2.5 py-2">{i.installmentNo}</td>
+                          <td className="px-2.5 py-2 whitespace-nowrap">{thaiDate(i.dueDate)}</td>
+                          <td className="px-2.5 py-2">{baht(i.amount)}</td>
+                          <td className="px-2.5 py-2">
+                            {i.paidAmount > 0 ? (
+                              <span>
+                                {baht(i.paidAmount)}
+                                {remaining > 0 && <span className="text-red-600"> (ค้าง {baht(remaining)})</span>}
+                              </span>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                          <td className="px-2.5 py-2 whitespace-nowrap">
+                            {i.paidAt ? thaiDate(i.paidAt.slice(0, 10)) : '—'}
+                          </td>
+                          <td className="px-2.5 py-2">{i.penaltyAmount > 0 ? `${baht(i.penaltyAmount)} ฿` : '—'}</td>
+                          <td className="px-2.5 py-2">
+                            <Badge tone={i.status === 'paid' ? 'green' : i.status === 'late' ? 'red' : 'amber'}>
+                              {installmentLabel(i.status)}
+                            </Badge>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
