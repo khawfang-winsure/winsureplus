@@ -45,6 +45,7 @@ const PjSyncReview = lazy(() => import('./pages/PjSyncReview'))
 const AccountingTransfers = lazy(() => import('./pages/AccountingTransfers'))
 const TransferSummary = lazy(() => import('./pages/TransferSummary'))
 const HrReport = lazy(() => import('./pages/HrReport'))
+const ReviewQueue = lazy(() => import('./pages/ReviewQueue'))
 
 export default function App() {
   // กันบั๊ก: เลื่อนล้อเมาส์ขณะช่องตัวเลข (input[type=number]) โฟกัสอยู่ ทำให้ค่าเปลี่ยนโดยไม่ตั้งใจ
@@ -115,6 +116,7 @@ function Gate() {
           <Route path="/add" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/edit/:id" element={isAdminOrStaff ? <AddContract /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/sale-history" element={isAdmin ? <SaleHistory /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/review-queue" element={isAdminOrStaff ? <ReviewQueue /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/waiting-email" element={isAdminOrStaff ? <WaitingEmail /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/waiting-summary" element={isAdminOrStaff ? <WaitingSummary /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/doc-tracking" element={isAdminOrStaff ? <DocTracking /> : <Navigate to={fallbackTo} replace />} />

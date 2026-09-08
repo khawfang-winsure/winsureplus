@@ -3,7 +3,9 @@
 // 3 กลุ่มใหญ่ พับได้ — ไม่มี gate ระดับกลุ่ม. สิทธิ์การมองเห็นย้ายลงไปที่ child ทุกอัน
 // (adminOnly / freelancerOnly / executiveVisible / accountingOnly). กลุ่มโชว์ก็ต่อเมื่อมี child
 // ที่ role นั้นเห็นอย่างน้อย 1 อัน (Sidebar คำนวณให้). ห้ามแตะ route/path ใน App.tsx — path เดิมทุกอัน
+import { useEffect, useState } from 'react'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
+import { getReviewQueue } from '../lib/db'
 
 export interface NavChild {
   to: string
@@ -15,6 +17,12 @@ export interface NavChild {
   /** หัวข้อย่อย (เส้นคั่น) ที่จะโชว์เหนือลิงก์นี้ — ใช้แบ่ง subsection ภายใน submenu เดียวกัน
    *  Sidebar จะยกหัวข้อนี้ไปไว้เหนือ child แรกที่ role นั้นยังเห็น (กันหัวข้อลอยโล่ง) */
   sectionLabel?: string
+  /** ป้ายเมนูที่จะโชว์แทน `label` ตอน role='staff' (spec-review-flow.md §5 — เพจเดียวกัน 2 หน้าตา
+   *  admin เห็น "ตรวจเคสก่อนส่งบริษัท" / staff เห็น "งานที่ต้องแก้") — ไม่ตั้ง = ใช้ label เดิมทุก role */
+  staffLabel?: string
+  /** คีย์ badge แดงบนเมนู (ตัวเลขนับสด) — Sidebar ใช้ useReviewQueueBadgeCount() แม็พคีย์นี้เป็นจำนวนจริง
+   *  ตอนนี้มีแค่ 'reviewQueue' (spec-review-flow.md §2 "ป้ายแจ้งเตือนเมนู") — เพิ่มคีย์ใหม่ได้ถ้ามี badge อื่นในอนาคต */
+  badgeKey?: 'reviewQueue'
 }
 
 export interface NavItem {
@@ -50,6 +58,7 @@ export const NAV: NavItem[] = [
       { to: '/letters', label: 'ส่งจดหมาย' },
 
       { to: '/waiting-summary', label: 'รอสรุปยอด', sectionLabel: 'เงินโอนร้าน' },
+      { to: '/review-queue', label: 'ตรวจเคสก่อนส่งบริษัท', staffLabel: 'งานที่ต้องแก้', badgeKey: 'reviewQueue' },
       { to: '/waiting-email', label: 'รอส่งอีเมล' },
       { to: '/other-income', label: 'รายได้อื่นๆ' },
 
@@ -104,3 +113,44 @@ export const NAV: NavItem[] = [
     ],
   },
 ]
+
+/** ตัวเลข badge สีแดงของเมนู "ตรวจเคสก่อนส่งบริษัท" / "งานที่ต้องแก้" (spec-review-flow.md §2/§5)
+ *  หน้าเดียวกัน แยกความหมายตาม role:
+ *  - admin: REVIEW_MENU_BADGE_ADMIN — จำนวนเคส "รอตรวจ" (pending_review) ทั้งหมด (needs_fix อยู่ในมือ
+ *    พนักงานแล้ว ไม่ใช่งานค้างของแอดมินอีกต่อไป)
+ *  - staff (role='staff' เท่านั้น ไม่รวม freelancer/executive/accounting): REVIEW_MENU_BADGE_STAFF —
+ *    จำนวนเคส "ต้องแก้ไข" (needs_fix) ของตัวเอง (operator === myName เหมือนหน้า /review-queue) */
+export function useReviewQueueBadgeCount(isAdmin: boolean, isStaff: boolean, myName: string | null): number {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    if (!isAdmin && !isStaff) {
+      setCount(0)
+      return
+    }
+    let cancelled = false
+    getReviewQueue()
+      .then((rows) => {
+        if (cancelled) return
+        const n = isAdmin
+          ? rows.filter((r) => r.reviewStatus === 'pending_review').length
+          : rows.filter((r) => r.reviewStatus === 'needs_fix' && sameOperator(r.operator, myName)).length
+        setCount(n)
+      })
+      .catch(() => {
+        if (!cancelled) setCount(0)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isAdmin, isStaff, myName])
+  return count
+}
+
+/** เทียบชื่อ operator ของเคส (field กรอกมือ ไม่ผูก user id) กับชื่อผู้ใช้ล็อกอิน — trim+lowercase
+ *  กัน noise ปกติ (เว้นวรรคเกิน/ตัวพิมพ์ไม่ตรง) ไม่ให้งานของพนักงานหลุดหายจากคิวของตัวเอง
+ *  ⚠️ ข้อจำกัดที่รู้: ถ้าแอดมินเปลี่ยนชื่อผู้ใช้ใน /settings/users เคสเก่าที่ยังเก็บชื่อเดิมจะไม่ match
+ *  อีกต่อไป — fallback คือแอดมินเห็นทุกเคสอยู่แล้วในคิวเดียวกัน (ไม่มีงานตกหาย แค่ staff มองไม่เห็นชั่วคราว) */
+export function sameOperator(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
+}

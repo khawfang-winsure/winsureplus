@@ -68,6 +68,15 @@ import {
   RETURN_DATE_RELIABLE_FROM,
   getContractLetters,
   getEmailSendLog,
+  sendCompanyEmail,
+  submitForReview,
+  approveReview,
+  rejectReview,
+  getReviewLog,
+  getMediaStatuses,
+  getMediaSlots,
+  getMediaGateFrom,
+  getEmployees,
 } from '../lib/db'
 import type { LetterRecord, LetterReply } from '../lib/letters'
 import {
@@ -91,12 +100,45 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
-import type { Contract, EmailSendLog, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
+import type { Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 import EarlyCloseModal from '../components/EarlyCloseModal'
 import CopyBox from '../components/CopyBox'
-import ContractMediaCard from '../components/ContractMediaCard'
+import ContractMediaCard, { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractMediaCard'
 import { buildPendingDocMessage } from '../lib/messages'
+import { DEFAULT_MEDIA_SLOTS, isGated, type MediaSlot } from '../lib/media'
+import {
+  canStaffEdit,
+  canSubmitForReview,
+  reviewAgeDays,
+  reviewAgeLabel,
+  reviewStatusLabel,
+  reviewStatusTone,
+  type ReviewStatus,
+  type ReviewTone,
+  REVIEW_BTN_SUBMIT,
+  REVIEW_TOOLTIP_SUBMIT_DISABLED,
+  REVIEW_BTN_APPROVE_AND_SEND,
+  REVIEW_BTN_APPROVE_ONLY,
+  REVIEW_BTN_REJECT,
+  REVIEW_LABEL_REJECT_REASON,
+  REVIEW_PLACEHOLDER_REJECT_REASON,
+  REVIEW_LOCKED_MESSAGE,
+  REVIEW_BTN_UNAPPROVE,
+  REVIEW_CONFIRM_UNAPPROVE,
+  REVIEW_LABEL_UNAPPROVE_REASON,
+  REVIEW_WARNING_EMAIL_ALREADY_SENT,
+  REVIEW_BADGE_DRAFT,
+  REVIEW_BADGE_LEGACY,
+  REVIEW_BADGE_APPROVED_SENT,
+  REVIEW_TOAST_SUBMIT,
+  REVIEW_TOAST_APPROVE_ONLY,
+  REVIEW_TOAST_APPROVE_SEND_OK,
+  REVIEW_TOAST_APPROVE_SEND_FAIL,
+  REVIEW_TOAST_REJECT,
+  REVIEW_TOAST_UNAPPROVE,
+  REVIEW_TOAST_RESUBMIT,
+} from '../lib/review'
 
 export const EXT_TYPE_LABEL: Record<ExtensionType, string> = {
   due_day: 'เปลี่ยนวันที่ชำระ',
@@ -198,6 +240,21 @@ const FU_RESULT_TONE: Record<FollowUpResult, BadgeTone> = {
   other: 'neutral',
 }
 
+/** ReviewTone (wait/fix/ok/mute จาก src/lib/review.ts) → Badge tone ที่มีจริงใน ui.tsx (ห้าม salmon) */
+function reviewBadgeTone(t: ReviewTone): BadgeTone {
+  if (t === 'wait') return 'amber'
+  if (t === 'fix') return 'red'
+  if (t === 'ok') return 'green'
+  return 'neutral'
+}
+
+const REVIEW_ACTION_LABEL: Record<ContractReviewLogEntry['action'], string> = {
+  submit: 'ส่งตรวจ',
+  approve: 'ตรวจผ่าน',
+  reject: 'ตีกลับ',
+  cancel_approval: 'ยกเลิกการตรวจ',
+}
+
 export default function ContractDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -266,6 +323,21 @@ export default function ContractDetail() {
   const [penaltyOverrideHistory, setPenaltyOverrideHistory] = useState<PenaltyOverrideHistoryEntry[]>([])
   // ===== ประวัติส่งอีเมลเอกสารสัญญาให้บริษัท (0138, รูปแนบ 2026-09-08) =====
   const [emailSendLog, setEmailSendLog] = useState<EmailSendLog[]>([])
+
+  // ===== ระบบตรวจเคสก่อนส่งอีเมลบริษัท (spec-review-flow.md, 2026-09-08) =====
+  const [reviewGateFrom, setReviewGateFrom] = useState<string>('')
+  const [reviewMediaSlots, setReviewMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
+  const [reviewMediaStatus, setReviewMediaStatus] = useState<ContractMediaStatus | null>(null)
+  const [reviewLog, setReviewLog] = useState<ContractReviewLogEntry[]>([])
+  const [reviewLogLoading, setReviewLogLoading] = useState(true)
+  const [employeeNameById, setEmployeeNameById] = useState<Map<string, string>>(new Map())
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [reviewErr, setReviewErr] = useState<string | null>(null)
+  const [reviewToast, setReviewToast] = useState<string | null>(null)
+  const [rejectOpen, setRejectOpen] = useState(false)
+  const [rejectReasonText, setRejectReasonText] = useState('')
+  const [unapproveOpen, setUnapproveOpen] = useState(false)
+  const [unapproveReasonText, setUnapproveReasonText] = useState('')
 
   // ===== Private Notes =====
   const [myNote, setMyNote] = useState<PrivateNote | null>(null)
@@ -421,6 +493,41 @@ export default function ContractDetail() {
     getEmailSendLog(id).then(setEmailSendLog)
   }, [id])
 
+  // ===== ระบบตรวจเคสก่อนส่งอีเมลบริษัท: โหลดช่องรูป+วันคัตออฟ (ครั้งเดียว), สถานะรูปของเคสนี้, ประวัติตรวจ, ชื่อผู้ทำ =====
+  useEffect(() => {
+    Promise.all([getMediaSlots(), getMediaGateFrom()]).then(([raw, gate]) => {
+      setReviewMediaSlots(normalizeMediaSlots(raw))
+      setReviewGateFrom(gate)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!id) return
+    getMediaStatuses([id])
+      .then((rows) => setReviewMediaStatus(rows[0] ?? null))
+      .catch(() => setReviewMediaStatus(null))
+  }, [id])
+
+  const reloadReviewLog = useCallback(() => {
+    if (!id) return
+    setReviewLogLoading(true)
+    getReviewLog(id)
+      .then(setReviewLog)
+      .catch(() => setReviewLog([]))
+      .finally(() => setReviewLogLoading(false))
+  }, [id])
+
+  useEffect(() => {
+    reloadReviewLog()
+  }, [reloadReviewLog])
+
+  // ชื่อผู้ทำในประวัติตรวจ — เผื่อ RLS ไม่ให้พนักงานอ่านชื่อคนอื่นครบ ก็ fallback เป็นป้าย role เฉยๆ ตอน render
+  useEffect(() => {
+    getEmployees()
+      .then((rows) => setEmployeeNameById(new Map(rows.map((r) => [r.id, r.fullName]))))
+      .catch(() => setEmployeeNameById(new Map()))
+  }, [])
+
   // โหลดสถานะ pin ของสัญญานี้
   useEffect(() => {
     if (!id) return
@@ -482,6 +589,111 @@ export default function ContractDetail() {
         <p className="text-ink-soft">ไม่พบสัญญานี้</p>
       </div>
     )
+  }
+
+  // ===== ระบบตรวจเคสก่อนส่งอีเมลบริษัท (spec-review-flow.md §1) =====
+  // reviewStatus null ในฐานข้อมูลครอบทั้ง "สัญญาเก่า" (ก่อน cutoff) และ "draft ยังไม่ส่งตรวจ" (หลัง cutoff)
+  // ใช้ isGated ตัวเดียวกับเกทรูปแนบ (media_gate_from) แยก 2 เคสนี้ออกจากกัน ตามที่ spec ขอ (cutoff เดียว ไม่ทำ 2 อัน)
+  const reviewPostCutoff = isGated(contract, reviewGateFrom)
+  const reviewStatusRaw: ReviewStatus | null = contract.reviewStatus ?? null
+  const reviewStatusForMachine: ReviewStatus = reviewStatusRaw ?? 'draft'
+  const reviewMediaEvaluation = reviewMediaStatus ? evaluateFromStatus(reviewMediaSlots, reviewMediaStatus) : null
+  const reviewCanSubmit =
+    reviewPostCutoff &&
+    !!reviewMediaEvaluation &&
+    canSubmitForReview(reviewMediaEvaluation, reviewStatusForMachine)
+  // false เฉพาะตอน approved (canStaffEdit(null) เป็น true เสมอ ครอบทั้งสัญญาเก่า/draft ถูกอยู่แล้ว ไม่ต้องแยก postCutoff)
+  const reviewEditAllowed = canStaffEdit(reviewStatusRaw)
+  const reviewBadge: { label: string; tone: BadgeTone } = !reviewPostCutoff
+    ? { label: REVIEW_BADGE_LEGACY, tone: 'neutral' }
+    : reviewStatusRaw === null
+      ? { label: REVIEW_BADGE_DRAFT, tone: 'neutral' }
+      : reviewStatusRaw === 'approved' && contract.emailSentAt
+        ? { label: REVIEW_BADGE_APPROVED_SENT, tone: 'green' }
+        : { label: reviewStatusLabel(reviewStatusRaw), tone: reviewBadgeTone(reviewStatusTone(reviewStatusRaw)) }
+  const reviewAgeText = contract.reviewUpdatedAt
+    ? reviewAgeLabel(reviewAgeDays(contract.reviewUpdatedAt, new Date().toISOString()))
+    : null
+
+  async function handleReviewSubmit() {
+    if (!id) return
+    setReviewBusy(true)
+    setReviewErr(null)
+    try {
+      await submitForReview(id)
+      await load()
+      reloadReviewLog()
+      setReviewToast(reviewStatusRaw === 'needs_fix' ? REVIEW_TOAST_RESUBMIT : REVIEW_TOAST_SUBMIT)
+    } catch (e) {
+      setReviewErr(errMsg(e))
+    } finally {
+      setReviewBusy(false)
+    }
+  }
+
+  async function handleApprove(withSend: boolean) {
+    if (!id) return
+    setReviewBusy(true)
+    setReviewErr(null)
+    try {
+      await approveReview(id)
+      if (!withSend) {
+        await load()
+        reloadReviewLog()
+        setReviewToast(REVIEW_TOAST_APPROVE_ONLY)
+        return
+      }
+      try {
+        const result = await sendCompanyEmail(id)
+        await load()
+        reloadReviewLog()
+        setReviewToast(result.ok ? REVIEW_TOAST_APPROVE_SEND_OK : REVIEW_TOAST_APPROVE_SEND_FAIL)
+      } catch {
+        await load()
+        reloadReviewLog()
+        setReviewToast(REVIEW_TOAST_APPROVE_SEND_FAIL)
+      }
+    } catch (e) {
+      setReviewErr(errMsg(e))
+    } finally {
+      setReviewBusy(false)
+    }
+  }
+
+  async function handleRejectSubmit() {
+    if (!id || !rejectReasonText.trim()) return
+    setReviewBusy(true)
+    setReviewErr(null)
+    try {
+      await rejectReview(id, rejectReasonText.trim(), false)
+      await load()
+      reloadReviewLog()
+      setRejectOpen(false)
+      setRejectReasonText('')
+      setReviewToast(REVIEW_TOAST_REJECT)
+    } catch (e) {
+      setReviewErr(errMsg(e))
+    } finally {
+      setReviewBusy(false)
+    }
+  }
+
+  async function handleUnapproveSubmit() {
+    if (!id || !unapproveReasonText.trim()) return
+    setReviewBusy(true)
+    setReviewErr(null)
+    try {
+      await rejectReview(id, unapproveReasonText.trim(), true)
+      await load()
+      reloadReviewLog()
+      setUnapproveOpen(false)
+      setUnapproveReasonText('')
+      setReviewToast(REVIEW_TOAST_UNAPPROVE)
+    } catch (e) {
+      setReviewErr(errMsg(e))
+    } finally {
+      setReviewBusy(false)
+    }
   }
 
   const paidCount = installments.filter((i) => i.paidAt).length
@@ -738,6 +950,7 @@ export default function ContractDetail() {
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={contract.status === 'active' ? 'green' : 'neutral'}>{statusLabel(contract.status)}</Badge>
           {contract.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+          <Badge tone={reviewBadge.tone}>{reviewBadge.label}</Badge>
           {/* บันทึกการคุย — admin และ staff */}
           {canStaff && (
             <Button variant="ghost" onClick={() => setFollowUpOpen(true)}>
@@ -758,16 +971,16 @@ export default function ContractDetail() {
               )}
             </Button>
           )}
-          {/* แก้ไขสัญญา — admin เสมอ, staff ได้เมื่อยังไม่ยืนยัน */}
+          {/* แก้ไขสัญญา — admin เสมอ, staff ได้เมื่อยังไม่ยืนยัน และเคสยังไม่ตรวจผ่าน (spec-review-flow.md §4.1) */}
           {canStaff && (
-            isAdmin || !(contract.emailSentAt && contract.summarySentAt)
+            isAdmin || (!(contract.emailSentAt && contract.summarySentAt) && reviewEditAllowed)
               ? (
                 <Button variant="ghost" onClick={() => navigate(`/edit/${contract.id}`)}>
                   <Pencil size={15} /> แก้ไข
                 </Button>
               ) : (
                 <span className="rounded-xl px-3 py-1.5 text-xs text-ink-soft">
-                  ยืนยันแล้ว — แก้ไม่ได้ (ติดต่อแอดมิน)
+                  {!reviewEditAllowed ? REVIEW_LOCKED_MESSAGE : 'ยืนยันแล้ว — แก้ไม่ได้ (ติดต่อแอดมิน)'}
                 </span>
               )
           )}
@@ -815,6 +1028,171 @@ export default function ContractDetail() {
           )}
         </div>
       </div>
+
+      {/* ===== กล่องตรวจเคสก่อนส่งอีเมลบริษัท — สัญญาเก่าก่อน cutoff ไม่ต้องแสดง (spec-review-flow.md) ===== */}
+      {reviewPostCutoff && (
+        <Card className="mb-4 py-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+              <History size={15} /> ตรวจเคสก่อนส่งอีเมล
+            </h3>
+            {reviewAgeText && (reviewStatusRaw === 'pending_review' || reviewStatusRaw === 'needs_fix') && (
+              <span className="text-xs text-ink-soft">{reviewAgeText}</span>
+            )}
+          </div>
+
+          {reviewErr && (
+            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{reviewErr}</div>
+          )}
+          {reviewToast && (
+            <div className="mb-3 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{reviewToast}</div>
+          )}
+
+          {/* staff/admin ส่งตรวจ — จาก draft (null) หรือ needs_fix เท่านั้น */}
+          {canStaff && (reviewStatusRaw === null || reviewStatusRaw === 'needs_fix') && (
+            <div className="flex flex-col gap-2">
+              {reviewStatusRaw === 'needs_fix' && (
+                <p className="text-sm text-ink">คุณเตยแจ้งว่าต้องแก้ไข ดูรายละเอียดที่ประวัติด้านล่าง แก้แล้วกดส่งตรวจอีกครั้ง</p>
+              )}
+              <div>
+                <Button
+                  onClick={() => void handleReviewSubmit()}
+                  disabled={!reviewCanSubmit || reviewBusy}
+                  title={!reviewCanSubmit ? REVIEW_TOOLTIP_SUBMIT_DISABLED : undefined}
+                >
+                  {REVIEW_BTN_SUBMIT}
+                </Button>
+                {!reviewCanSubmit && <p className="mt-1 text-xs text-ink-soft">{REVIEW_TOOLTIP_SUBMIT_DISABLED}</p>}
+              </div>
+            </div>
+          )}
+
+          {/* staff รอคุณเตยตรวจ — ไม่มีอะไรให้กด */}
+          {canStaff && !isAdmin && reviewStatusRaw === 'pending_review' && (
+            <p className="text-sm text-ink-soft">รอคุณเตยตรวจอยู่ ยังไม่มีอะไรต้องทำเพิ่ม</p>
+          )}
+
+          {/* admin — 3 ปุ่มตรวจ (pending_review) */}
+          {isAdmin && reviewStatusRaw === 'pending_review' && (
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={() => void handleApprove(true)} disabled={reviewBusy}>
+                  {REVIEW_BTN_APPROVE_AND_SEND}
+                </Button>
+                <Button variant="ghost" onClick={() => void handleApprove(false)} disabled={reviewBusy}>
+                  {REVIEW_BTN_APPROVE_ONLY}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="border-red-200 text-red-600 hover:bg-red-50"
+                  onClick={() => { setReviewErr(null); setRejectOpen((v) => !v) }}
+                  disabled={reviewBusy}
+                >
+                  {REVIEW_BTN_REJECT}
+                </Button>
+              </div>
+              {rejectOpen && (
+                <div className="flex flex-col gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-3">
+                  <Field label={REVIEW_LABEL_REJECT_REASON} required>
+                    <Textarea
+                      value={rejectReasonText}
+                      onChange={(e) => setRejectReasonText(e.target.value)}
+                      placeholder={REVIEW_PLACEHOLDER_REJECT_REASON}
+                      rows={2}
+                    />
+                  </Field>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      onClick={() => { setRejectOpen(false); setRejectReasonText('') }}
+                      disabled={reviewBusy}
+                    >
+                      ยกเลิก
+                    </Button>
+                    <Button onClick={() => void handleRejectSubmit()} disabled={reviewBusy || !rejectReasonText.trim()}>
+                      ยืนยันตีกลับ
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* admin — ยกเลิกการตรวจ (approved) */}
+          {isAdmin && reviewStatusRaw === 'approved' && (
+            <div className="flex flex-col gap-2">
+              {!unapproveOpen && (
+                <div>
+                  <Button
+                    variant="ghost"
+                    className="border-red-200 text-red-600 hover:bg-red-50"
+                    onClick={() => setUnapproveOpen(true)}
+                    disabled={reviewBusy}
+                  >
+                    <RotateCcw size={15} /> {REVIEW_BTN_UNAPPROVE}
+                  </Button>
+                </div>
+              )}
+              {unapproveOpen && (
+                <div className="flex flex-col gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-3">
+                  {contract.emailSentAt && (
+                    <p className="text-sm font-semibold text-red-700">{REVIEW_WARNING_EMAIL_ALREADY_SENT}</p>
+                  )}
+                  <p className="text-sm text-ink">{REVIEW_CONFIRM_UNAPPROVE}</p>
+                  <Field label={REVIEW_LABEL_UNAPPROVE_REASON} required>
+                    <Textarea value={unapproveReasonText} onChange={(e) => setUnapproveReasonText(e.target.value)} rows={2} />
+                  </Field>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      onClick={() => { setUnapproveOpen(false); setUnapproveReasonText('') }}
+                      disabled={reviewBusy}
+                    >
+                      ยกเลิก
+                    </Button>
+                    <Button
+                      onClick={() => void handleUnapproveSubmit()}
+                      disabled={reviewBusy || !unapproveReasonText.trim()}
+                    >
+                      ยืนยันยกเลิกการตรวจ
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* staff — ล็อกตอนตรวจผ่านแล้ว */}
+          {canStaff && !isAdmin && reviewStatusRaw === 'approved' && (
+            <p className="text-sm text-ink-soft">{REVIEW_LOCKED_MESSAGE}</p>
+          )}
+
+          {/* ===== ประวัติการตรวจ ===== */}
+          {(reviewLogLoading || reviewLog.length > 0) && (
+            <div className="mt-3 border-t border-peach pt-3">
+              <p className="mb-2 text-xs font-semibold text-ink-soft">ประวัติการตรวจ</p>
+              {reviewLogLoading ? (
+                <Loading />
+              ) : (
+                <ol className="flex flex-col gap-1.5">
+                  {reviewLog.map((e) => (
+                    <li key={e.id} className="rounded-lg bg-peach-light/40 px-3 py-2 text-xs text-ink">
+                      <span className="font-semibold">{REVIEW_ACTION_LABEL[e.action]}</span>
+                      {' โดย '}
+                      {e.actorId
+                        ? employeeNameById.get(e.actorId) ?? (e.actorRole === 'admin' ? 'แอดมิน' : 'พนักงาน')
+                        : '-'}
+                      {' · '}
+                      {thaiDate(e.createdAt.slice(0, 10))}
+                      {e.reason && <span className="block text-ink-soft">เหตุผล: {e.reason}</span>}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* ===== กล่องสรุปยอดปิดสัญญา — เฉพาะปิดก่อนกำหนดแบบคงตารางงวด (early-close-preserve) ===== */}
       {isEarlyClosePreserve && (
@@ -1540,7 +1918,7 @@ export default function ContractDetail() {
       </Card>
 
       {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin+staff, delete: admin เท่านั้น ===== */}
-      <ContractMediaCard contract={contract} canUpload={canStaff} canDelete={isAdmin} />
+      <ContractMediaCard contract={contract} canUpload={canStaff && reviewEditAllowed} canDelete={isAdmin} />
 
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>

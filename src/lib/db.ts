@@ -15,6 +15,7 @@ import type {
   Contract,
   ContractMediaFile,
   ContractMediaStatus,
+  ContractReviewLogEntry,
   ContractStatus,
   ContractStatusRow,
   DeviceReturnRow,
@@ -45,6 +46,7 @@ import type {
   PjSyncReviewRow,
   PjSyncRunRow,
   PrivateNote,
+  ReviewQueueItem,
   SendCompanyEmailResult,
   Shop,
   TransferSlip,
@@ -224,6 +226,9 @@ interface ContractRow {
   summary_note_by: string | null
   summary_note_at: string | null
   credit_history_found: boolean | null
+  review_status: 'pending_review' | 'needs_fix' | 'approved' | null
+  review_updated_at: string | null
+  review_updated_by: string | null
   created_at: string
 }
 
@@ -315,6 +320,9 @@ function mapContract(r: ContractRow): Contract {
     summaryNoteBy: r.summary_note_by ?? null,
     summaryNoteAt: r.summary_note_at ?? null,
     creditHistoryFound: r.credit_history_found ?? false,
+    reviewStatus: r.review_status ?? null,
+    reviewUpdatedAt: r.review_updated_at ?? null,
+    reviewUpdatedBy: r.review_updated_by ?? null,
     createdAt: r.created_at,
   }
 }
@@ -9095,4 +9103,139 @@ export async function getEmailSendLog(contractId: string): Promise<EmailSendLog[
     .order('sent_at', { ascending: false })
   if (error) throw error
   return ((data ?? []) as EmailSendLogRow[]).map(mapEmailSendLog)
+}
+
+// ===================================================================================
+// ---------- ระบบตรวจเคสก่อนส่งอีเมลบริษัท (migration 0142, 2026-09-08) ----------
+// state machine + Thai error copy อยู่ที่ src/lib/review.ts (แบม) — ที่นี่มีแค่ DB-facing shape + I/O
+// เปลี่ยนสถานะได้ทาง RPC 3 ตัวนี้เท่านั้น (ตรง 1:1 กับ nextStatus action: submit/approve/reject-unapprove)
+// ===================================================================================
+
+/** staff/admin กด "ส่งให้คุณเตยตรวจ" — RPC submit_for_review (0142) เช็ค role + สถานะปัจจุบัน +
+ *  media_gate_complete ซ้ำฝั่ง server เสมอ (ไม่เชื่อว่า UI เช็คมาแล้ว) */
+export async function submitForReview(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('submit_for_review', { p_contract_id: contractId })
+  if (error) throw error
+}
+
+/** admin กด "✓ ตรวจแล้ว" (ทั้ง "ส่งเมลเลย"/"ยังไม่ส่ง") — RPC approve_review (0142)
+ *  แค่เปลี่ยนสถานะ+ล็อก staff; ถ้าจะส่งเมลด้วย ผู้เรียก (น้องวิว) ต้องเรียก sendCompanyEmail ต่อเองอีกขั้น */
+export async function approveReview(contractId: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('approve_review', { p_contract_id: contractId })
+  if (error) throw error
+}
+
+/** admin ตีกลับ (จาก pending_review) หรือกด "ยกเลิกการตรวจ" (จาก approved) — RPC reject_review (0142)
+ *  ปลายทางทั้งคู่คือ needs_fix, reason บังคับไม่ว่างเสมอ — RPC ตัดสิน action (reject/cancel_approval)
+ *  เองจาก review_status ปัจจุบันฝั่ง DB, ไม่ได้อ่าน isCancelApproval พารามิเตอร์ตรงๆ
+ *  isCancelApproval เผื่อไว้ให้ผู้เรียกเลือก toast/ข้อความยืนยันฝั่ง UI ให้ตรงบริบท
+ *  ("ตีกลับให้แก้ไขแล้ว" vs "ยกเลิกการตรวจแล้ว") โดยไม่ต้องคำนวณจาก reviewStatus ซ้ำเอง */
+export async function rejectReview(contractId: string, reason: string, isCancelApproval?: boolean): Promise<void> {
+  if (!supabase) return
+  void isCancelApproval
+  const { error } = await supabase.rpc('reject_review', { p_contract_id: contractId, p_reason: reason })
+  if (error) throw error
+}
+
+interface ContractReviewLogRow {
+  id: string
+  contract_id: string
+  from_status: string | null
+  to_status: string
+  action: string
+  reason: string | null
+  actor: string | null
+  actor_role: string | null
+  created_at: string
+}
+
+function mapReviewLog(r: ContractReviewLogRow): ContractReviewLogEntry {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    fromStatus: (r.from_status as ContractReviewLogEntry['fromStatus']) ?? null,
+    toStatus: r.to_status as ContractReviewLogEntry['toStatus'],
+    action: r.action as ContractReviewLogEntry['action'],
+    reason: r.reason,
+    actorId: r.actor,
+    actorRole: r.actor_role,
+    createdAt: r.created_at,
+  }
+}
+
+/** ประวัติการตรวจของสัญญาเดียว เรียงล่าสุดก่อน (submit/approve/reject/cancel_approval ทุกครั้ง) */
+export async function getReviewLog(contractId: string): Promise<ContractReviewLogEntry[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_review_log')
+    .select('*')
+    .eq('contract_id', contractId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as ContractReviewLogRow[]).map(mapReviewLog)
+}
+
+interface ReviewQueueContractRow {
+  id: string
+  contract_no: string
+  customer_name: string
+  shop_id: string
+  operator: string | null
+  assigned_to: string | null
+  condition: 'new' | 'used'
+  origin: 'th' | 'inter'
+  review_status: 'pending_review' | 'needs_fix' | 'approved' | null
+  review_updated_at: string | null
+}
+
+/** คิว "ตรวจเคสก่อนส่งบริษัท" (admin) / "งานที่ต้องแก้" (staff กรอง operator/assignedTo ฝั่ง UI เอง)
+ *  ตาม spec-review-flow.md §5 — เฉพาะ pending_review/needs_fix (ไม่รวม draft/approved/legacy null)
+ *  เรียง waiting-since เก่าสุดก่อน (ascending) กัน "เคสค้างเงียบ" หลุดหาย — waiting-since ใช้
+ *  review_updated_at ตรงๆ เพราะ submit_for_review/reject_review ทั้งคู่ set ค่านี้ทุกครั้งที่เปลี่ยนสถานะ
+ *  (แทน submitted_at ของ pending_review / rejected_at ของ needs_fix ที่ spec พูดถึง — ค่าเดียวพอ
+ *  ไม่ต้องเพิ่มคอลัมน์แยก เพราะ 2 สถานะนี้ mutually exclusive อยู่แล้ว) */
+export async function getReviewQueue(): Promise<ReviewQueueItem[]> {
+  if (!supabase) return []
+  const client = supabase
+  const rows = await fetchAllPaged<ReviewQueueContractRow>(
+    (from, to, orderBy) =>
+      client
+        .from('contracts')
+        .select(
+          'id, contract_no, customer_name, shop_id, operator, assigned_to, condition, origin, review_status, review_updated_at',
+        )
+        .in('review_status', ['pending_review', 'needs_fix'])
+        .order(orderBy, { ascending: true })
+        .range(from, to),
+    'id',
+  )
+  if (rows.length === 0) return []
+
+  const contractIds = rows.map((r) => r.id)
+  const [shops, mediaStatuses] = await Promise.all([getAllShops(), getMediaStatuses(contractIds)])
+  const shopCodeById = new Map(shops.map((s) => [s.id, s.code]))
+  const mediaByContract = new Map(mediaStatuses.map((m) => [m.contractId, m]))
+
+  const items: ReviewQueueItem[] = rows.map((r) => {
+    const media = mediaByContract.get(r.id)
+    return {
+      contractId: r.id,
+      contractNo: r.contract_no,
+      customerName: r.customer_name,
+      shopId: r.shop_id,
+      shopCode: shopCodeById.get(r.shop_id) ?? '',
+      operator: r.operator ?? '',
+      assignedTo: r.assigned_to ?? null,
+      condition: r.condition,
+      origin: r.origin,
+      reviewStatus: r.review_status as ReviewQueueItem['reviewStatus'],
+      reviewUpdatedAt: r.review_updated_at ?? null,
+      mediaTotalFiles: media?.totalFiles ?? 0,
+      mediaCounts: media?.counts ?? {},
+    }
+  })
+
+  return items.sort((a, b) => (a.reviewUpdatedAt ?? '').localeCompare(b.reviewUpdatedAt ?? ''))
 }

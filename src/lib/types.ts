@@ -3,6 +3,7 @@
 // ภายหลังจะ map ตรงกับตารางใน Supabase
 
 import type { LateBucket } from './collectorPeriod'
+import type { ReviewStatus } from './review'
 
 /** สถานะหลัก (lifecycle) ของสัญญา — กลุ่มล่าช้าเป็นค่าที่ "คำนวณ" จากวันครบกำหนด ไม่ได้เก็บตรงนี้ */
 export type ContractStatus =
@@ -311,6 +312,44 @@ export interface Contract {
   summaryNoteAt?: string | null        // เวลาที่เขียน/แก้โน้ตล่าสุด
   // --- รูปเอกสารแนบ + ส่งอีเมลบริษัท (0136-0138, 2026-09-08) ---
   creditHistoryFound?: boolean         // ติ๊กที่ผลเช็คเครดิตว่าพบประวัติเสีย — เปิดช่องแนบ "ใบแจ้งความ/หลักฐานเคลียร์ยอด"
+  // --- ระบบตรวจเคสก่อนส่งอีเมลบริษัท (0142, 2026-09-08) ---
+  // reviewStatus ตรง DB ตรงๆ (ไม่ใช่ 'draft' — DB ไม่เก็บค่านั้น, null ครอบทั้งสัญญาเก่า/draft ดู 0142 comment)
+  // แยกป้าย "ไม่มีข้อมูล" (เก่า) vs "ยังไม่ส่งตรวจ" (draft) เอง ฝั่ง UI จาก createdAt เทียบ media_gate_from
+  reviewStatus?: ReviewStatus | null
+  reviewUpdatedAt?: string | null      // เวลาที่ review_status เปลี่ยนล่าสุด (ใช้คำนวณป้ายอายุเคสด้วย reviewAgeDays)
+  reviewUpdatedBy?: string | null      // uuid ของผู้ทำให้เปลี่ยนล่าสุด (auth.users.id — ไม่ใช่ profiles.id join)
+}
+
+// ---------- ประวัติการตรวจเคสก่อนส่งอีเมล (contract_review_log, migration 0142) ----------
+
+export interface ContractReviewLogEntry {
+  id: string
+  contractId: string
+  fromStatus: ReviewStatus | null
+  toStatus: ReviewStatus
+  action: 'submit' | 'approve' | 'reject' | 'cancel_approval'
+  reason: string | null
+  actorId: string | null   // uuid ของ auth.users — resolve ชื่อเองผ่าน getStaffProfiles ถ้าต้องโชว์
+  actorRole: string | null
+  createdAt: string
+}
+
+// ---------- แถวในหน้า "ตรวจเคสก่อนส่งบริษัท" / "งานที่ต้องแก้" (spec-review-flow.md §5) ----------
+
+export interface ReviewQueueItem {
+  contractId: string
+  contractNo: string
+  customerName: string
+  shopId: string
+  shopCode: string
+  operator: string          // ผู้ดำเนินการ — ใช้ filter "เคสของตัวเอง" ฝั่ง staff (งานที่ต้องแก้)
+  assignedTo: string | null // uuid ผู้ถือเคส (ถ้ามี ใช้แทน/ร่วมกับ operator สำหรับ "ของฉัน")
+  condition: DeviceCondition
+  origin: DeviceOrigin
+  reviewStatus: 'pending_review' | 'needs_fix' // คิวนี้มีแค่ 2 สถานะ (ดู spec §5 — ไม่รวม draft/approved/legacy)
+  reviewUpdatedAt: string | null // ใช้เป็น "waiting since" ด้วย — submit/reject ทั้งคู่ set ค่านี้ทุกครั้ง
+  mediaTotalFiles: number
+  mediaCounts: Record<string, number>
 }
 
 // ---------- Extra Charges (migration 0032) ----------

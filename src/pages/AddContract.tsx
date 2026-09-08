@@ -6,6 +6,7 @@ import { calcSummary } from '../lib/calc'
 import { ageRange, baht, isValidInvNo, sanitizeInvNo } from '../lib/format'
 import { derivePrefix, nextContractNo } from '../lib/contractNo'
 import type { Contract, DeviceCondition, DeviceOrigin } from '../lib/types'
+import { canStaffEdit, REVIEW_LOCKED_MESSAGE, type ReviewStatus } from '../lib/review'
 import {
   contractNoExists,
   findContractByInvNo,
@@ -225,6 +226,7 @@ export default function AddContract() {
   const [loadingContract, setLoadingContract] = useState(isEdit)
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
   const [confirmed, setConfirmed] = useState(false) // ยืนยันแล้ว (emailSentAt && summarySentAt)
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus | null>(null) // ตรวจก่อนส่งอีเมล (spec-review-flow.md) — approved ล็อก staff
   const [dupWarning, setDupWarning] = useState(false) // เลขสัญญาซ้ำ (ตรวจสดจาก DB)
   const [invNoCleaned, setInvNoCleaned] = useState(false) // true = ระบบตัดข้อความส่วนเกินออกจากเลข INV ให้แล้ว
   const [invNoFormatWarning, setInvNoFormatWarning] = useState(false) // true = เลข INV ไม่ตรงรูปแบบ INV-ตัวเลข (เตือนตอน blur)
@@ -278,6 +280,7 @@ export default function AddContract() {
         if (c) {
           setF(fromContract(c))
           setConfirmed(Boolean(c.emailSentAt && c.summarySentAt))
+          setReviewStatus(c.reviewStatus ?? null)
           origDocsRef.current = {
             pendingDocuments: c.pendingDocuments ?? false,
             pendingDocItems: Array.isArray(c.pendingDocItems) ? c.pendingDocItems : [],
@@ -705,13 +708,17 @@ export default function AddContract() {
     )
   }
 
-  // staff แก้ไม่ได้เมื่อยืนยันแล้ว (emailSentAt && summarySentAt) — admin ผ่านได้เสมอ
-  if (isEdit && isStaff && confirmed) {
+  // staff แก้ไม่ได้เมื่อยืนยันแล้ว (emailSentAt && summarySentAt) หรือเคสตรวจผ่านแล้ว (reviewStatus approved) — admin ผ่านได้เสมอ
+  // เช็คตรงนี้กันพนักงานเข้า /edit/:id ตรงๆ ทาง URL ด้วย (spec-review-flow.md §4.2)
+  const reviewLocked = isStaff && !canStaffEdit(reviewStatus)
+  if (isEdit && isStaff && (confirmed || reviewLocked)) {
     return (
       <div>
         <PageTitle>{isEdit ? 'แก้ไขสัญญา' : 'เพิ่มข้อมูลสัญญา'}</PageTitle>
         <Card>
-          <p className="text-sm text-ink">สัญญานี้ยืนยันแล้ว — แก้ไม่ได้ (ติดต่อแอดมิน)</p>
+          <p className="text-sm text-ink">
+            {reviewLocked ? REVIEW_LOCKED_MESSAGE : 'สัญญานี้ยืนยันแล้ว — แก้ไม่ได้ (ติดต่อแอดมิน)'}
+          </p>
         </Card>
       </div>
     )

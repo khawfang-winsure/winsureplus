@@ -232,6 +232,18 @@ Deno.serve(async (req) => {
     }
   }
 
+  // ---- 2.1) เช็ค review gate (0142, server-side, ไม่เชื่อฝั่ง client) ----
+  // review_status: null = สัญญาเก่า/ยังไม่เข้า flow ตรวจ (unrestricted, พฤติกรรมเดิม) — mirror canSendEmail
+  // ใน src/lib/review.ts (แบม): canSendEmail = status === null || status === 'approved'
+  // นี่คือจุดเดียวที่ REST/curl ตรงสามารถแหกทุกปุ่ม UI ได้ — ต้องเช็คซ้ำเสมอ ห้ามเชื่อว่า UI เช็คมาแล้ว
+  const reviewStatus: string | null = contract.review_status ?? null;
+  if (reviewStatus !== null && reviewStatus !== "approved") {
+    return json(
+      { error: "ยังส่งไม่ได้ เคสนี้ยังไม่ผ่านการตรวจจากแอดมิน ต้องได้สถานะ \"ตรวจแล้ว\" ก่อนถึงส่งอีเมลได้" },
+      409,
+    );
+  }
+
   // ---- 3) เพดานไฟล์แนบ (เช็คก่อนโหลดไฟล์จริงเลย กัน CPU/mem บานบน free plan) ----
   const totalBytes = files.reduce((sum: number, f: any) => sum + (f.bytes ?? 0), 0);
   if (files.length > MAX_FILES || totalBytes > MAX_TOTAL_BYTES) {

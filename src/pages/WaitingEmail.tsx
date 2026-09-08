@@ -17,6 +17,7 @@ import {
   sendCompanyEmail,
 } from '../lib/db'
 import { DEFAULT_MEDIA_SLOTS, isGated, missingSummary, type MediaSlot } from '../lib/media'
+import { canSendEmail, reviewStatusLabel } from '../lib/review'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
@@ -201,6 +202,8 @@ export default function WaitingEmail() {
   const viewBypassed = view ? bypassedIds.has(view.id) : false
   const viewBlocked = viewGated && !!viewEvaluation && !viewEvaluation.complete && !viewBypassed
   const viewChecking = viewGated && !mediaStatusesLoaded
+  // เกทตรวจเคสก่อนส่งอีเมล (spec-review-flow.md §4.5) — สัญญาเก่า (reviewStatus null) ไม่ถูกกระทบ
+  const viewReviewBlocked = view ? !canSendEmail(view.reviewStatus ?? null) : false
 
   async function handleSendCompanyEmail() {
     if (!view) return
@@ -364,10 +367,19 @@ export default function WaitingEmail() {
               </div>
             )}
 
+            {viewReviewBlocked && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                <p>{`สถานะ: ${reviewStatusLabel(view.reviewStatus ?? null)} — ต้องตรวจผ่านก่อน จึงส่งเมลได้ที่นี่`}</p>
+                <Link to={`/contract/${view.id}`} className="mt-1 inline-block font-semibold underline">
+                  ไปที่หน้าสัญญาเพื่อส่งตรวจ/ดูผลตรวจ
+                </Link>
+              </div>
+            )}
+
             <CopyBox
               title="ข้อความอีเมล"
               text={shopOf(view.shopId) ? buildEmailText(view, shopOf(view.shopId)!) : ''}
-              disabled={viewBlocked}
+              disabled={viewBlocked || viewReviewBlocked}
             />
 
             {sendError && (
@@ -381,10 +393,10 @@ export default function WaitingEmail() {
 
             <div className="flex flex-wrap justify-end gap-2">
               <Button variant="ghost" onClick={() => setView(null)}>ปิด</Button>
-              <Button variant="ghost" onClick={() => void doMarkSent(view)} disabled={viewBlocked || viewChecking}>
+              <Button variant="ghost" onClick={() => void doMarkSent(view)} disabled={viewBlocked || viewReviewBlocked || viewChecking}>
                 บันทึกว่าส่งเอง (สำรอง)
               </Button>
-              <Button onClick={() => void handleSendCompanyEmail()} disabled={viewBlocked || viewChecking || sending || !!sendSuccess}>
+              <Button onClick={() => void handleSendCompanyEmail()} disabled={viewBlocked || viewReviewBlocked || viewChecking || sending || !!sendSuccess}>
                 {sending ? 'กำลังส่ง...' : 'ส่งเมลถึงบริษัท'}
               </Button>
             </div>

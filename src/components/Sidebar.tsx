@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { NAV, type NavChild, type NavItem } from './nav'
+import { NAV, useReviewQueueBadgeCount, type NavChild, type NavItem } from './nav'
 import { useAuth } from '../lib/auth'
 
 // สิทธิ์การมองเห็นของแต่ละ role (คำนวณครั้งเดียวใน Sidebar แล้วส่งลงไป)
 interface Roles {
   isAdmin: boolean
+  isStaff: boolean
   isFreelancer: boolean
   isExecutive: boolean
   isAccounting: boolean
@@ -43,6 +44,9 @@ interface NavContentProps {
   isMobile: boolean
   /** true = อุปกรณ์ touch (hover: none) — desktop sidebar กางถาวร + เปิด submenu ด้วยการแตะ ไม่พึ่ง hover */
   isTouch: boolean
+  /** จำนวน badge คิวตรวจเคส — คำนวณครั้งเดียวที่ Sidebar (ไม่ใช่ในนี้) กัน NavContent ที่ถูก render
+   *  2 รอบ (mobile+desktop) ยิง getReviewQueue() ซ้ำ 2 ครั้งต่อโหลดหน้าเดียว */
+  reviewQueueBadgeCount: number
 }
 
 // label/chevron: โชว์เต็มใน mobile; desktop ซ่อนตอน rail → โผล่ตอน group-hover
@@ -57,9 +61,14 @@ function NavContent({
   pathname,
   isMobile,
   isTouch,
+  reviewQueueBadgeCount,
 }: NavContentProps) {
   const itemBase =
     'flex items-center rounded-xl px-3 py-3 text-sm font-medium transition-colors'
+
+  // badge แดงสด — ตอนนี้มีแค่คีย์ 'reviewQueue' รับมาจาก Sidebar (คำนวณครั้งเดียว ดู nav.ts useReviewQueueBadgeCount)
+  const badgeCountFor = (key: NavChild['badgeKey']) => (key === 'reviewQueue' ? reviewQueueBadgeCount : 0)
+  const badgeAriaSuffix = roles.isStaff ? 'เคสต้องแก้' : 'เคสรอตรวจ'
 
   return (
     <>
@@ -103,7 +112,17 @@ function NavContent({
                 }
               >
                 <ChevronRight size={14} className="shrink-0" />
-                <span className="whitespace-nowrap">{child.label}</span>
+                <span className="whitespace-nowrap">
+                  {roles.isStaff && child.staffLabel ? child.staffLabel : child.label}
+                </span>
+                {badgeCountFor(child.badgeKey) > 0 && (
+                  <span
+                    aria-label={`${badgeCountFor(child.badgeKey)} ${badgeAriaSuffix}`}
+                    className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold text-white"
+                  >
+                    {badgeCountFor(child.badgeKey)}
+                  </span>
+                )}
               </NavLink>
             </div>
             )
@@ -208,11 +227,16 @@ function NavContent({
 
 export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const { pathname } = useLocation()
-  const { role, configured } = useAuth()
+  const { role, configured, name: myName } = useAuth()
   const isAdmin = !configured || role === 'admin'
+  const isStaff = configured && role === 'staff'
   const isFreelancer = configured && role === 'freelancer'
   const isExecutive = configured && role === 'executive'
   const isAccounting = configured && role === 'accounting'
+
+  // badge คิวตรวจเคส — คำนวณครั้งเดียวที่นี่ (ไม่ใช่ใน NavContent ที่ถูก render 2 รอบ mobile+desktop
+  // ด้านล่าง) กัน getReviewQueue() ยิงซ้ำ 2 ครั้งทุกโหลดหน้าสำหรับ admin/staff ทุก session
+  const reviewQueueBadgeCount = useReviewQueueBadgeCount(isAdmin, isStaff, myName)
 
   // state สำหรับ expand/collapse ของแต่ละ group บนมือถือ (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -233,7 +257,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
     setExpanded((prev) => ({ ...prev, [label]: !prev[label] }))
   }
 
-  const roles: Roles = { isAdmin, isFreelancer, isExecutive, isAccounting }
+  const roles: Roles = { isAdmin, isStaff, isFreelancer, isExecutive, isAccounting }
 
   // กลุ่มใหญ่ (มี children) โชว์ก็ต่อเมื่อมี child ที่ role นั้นเห็น ≥1 อัน — ไม่มี gate ระดับกลุ่ม
   // item เดี่ยว (ถ้ามี) ใช้เกณฑ์ entryVisible เดียวกับ child. โครงปัจจุบันเป็นกลุ่มล้วน 3 กลุ่ม
@@ -247,6 +271,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
     items,
     roles,
     pathname,
+    reviewQueueBadgeCount,
   }
 
   return (
