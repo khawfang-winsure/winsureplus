@@ -9008,6 +9008,8 @@ export async function uploadMedia(input: UploadMediaInput): Promise<ContractMedi
       width,
       height,
       mime,
+      // uploaded_by: ไม่ต้องส่ง — mig 0146 ตั้ง default auth.uid() ให้ที่ DB แล้ว
+      // (เลี่ยง getUser() ที่ยิง network ตรวจ JWT ทุกครั้ง — แนบรูปหลายใบจะช้าบนเน็ตมือถือ)
     })
     .select('*')
     .single()
@@ -9045,14 +9047,13 @@ export async function getMediaUrl(file: ContractMediaFile): Promise<string | nul
   return data?.signedUrl ?? null
 }
 
-/** soft-delete ไฟล์แนบ 1 รูป — บันทึกคนลบด้วย (admin เท่านั้น ตาม RLS contract_media_update) */
+/** soft-delete ไฟล์แนบ 1 รูป — เรียก RPC media_soft_delete (0146) เท่านั้น ไม่ update ตรง
+ *  policy contract_media_update (0136) ยังเป็น admin-only เหมือนเดิม — RPC ตรวจสิทธิ์เอง (SECURITY DEFINER):
+ *  admin ลบได้ทุกกรณี, staff ลบได้เฉพาะ contracts.review_status เป็น null/needs_fix (ยังไม่ส่งตรวจ/ถูกตีกลับ)
+ *  error จาก RPC (เช่น "เคสนี้ส่งให้ตรวจแล้ว ลบรูปไม่ได้ ถ้าต้องแก้ แจ้งแอดมิน") ส่งต่อให้ผู้เรียกเห็นเสมอ */
 export async function softDeleteMedia(id: string): Promise<void> {
   if (!supabase) return
-  const { data: userData } = await supabase.auth.getUser()
-  const { error } = await supabase
-    .from('contract_media')
-    .update({ deleted_at: new Date().toISOString(), deleted_by: userData?.user?.id ?? null })
-    .eq('id', id)
+  const { error } = await supabase.rpc('media_soft_delete', { p_media_id: id })
   if (error) throw error
 }
 

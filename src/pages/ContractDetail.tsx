@@ -608,6 +608,10 @@ export default function ContractDetail() {
     canSubmitForReview(reviewMediaEvaluation, reviewStatusForMachine)
   // false เฉพาะตอน approved (canStaffEdit(null) เป็น true เสมอ ครอบทั้งสัญญาเก่า/draft ถูกอยู่แล้ว ไม่ต้องแยก postCutoff)
   const reviewEditAllowed = canStaffEdit(reviewStatusRaw)
+  // staff ลบรูปได้เฉพาะตอนเคสยังไม่ส่งตรวจ (reviewStatusRaw===null คือสัญญาเก่า/draft) หรือถูกตีกลับให้แก้ไข (needs_fix)
+  // ส่งตรวจแล้ว (pending_review) หรือตรวจผ่าน (approved) → เหลือแอดมินอย่างเดียว (เจ้าของเคาะกฎ 2026-09-09)
+  // admin ลบได้ทุกกรณีเหมือนเดิม; ฐานข้อมูล (media_soft_delete) บังคับกฎเดียวกันอยู่แล้ว ที่นี่แค่ซ่อน/แสดงปุ่มให้ตรงกัน
+  const canDeleteMedia = isAdmin || (canStaff && (reviewStatusRaw === null || reviewStatusRaw === 'needs_fix'))
   const reviewBadge: { label: string; tone: BadgeTone } = !reviewPostCutoff
     ? { label: REVIEW_BADGE_LEGACY, tone: 'neutral' }
     : reviewStatusRaw === null
@@ -1921,11 +1925,11 @@ export default function ContractDetail() {
         )}
       </Card>
 
-      {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin+staff, delete: admin เท่านั้น ===== */}
+      {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin+staff, delete: admin เสมอ / staff เฉพาะยังไม่ส่งตรวจหรือถูกตีกลับ (2026-09-09) ===== */}
       <ContractMediaCard
         contract={contract}
         canUpload={canStaff && reviewEditAllowed}
-        canDelete={isAdmin}
+        canDelete={canDeleteMedia}
         isAdmin={isAdmin}
         shop={contractShop}
       />

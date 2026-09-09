@@ -894,6 +894,7 @@ export default function ContractMediaCard({
             const prog = progress[e.key]
             const allowMultiple = def?.max !== 1
             const isDragOver = dragOverKey === e.key
+            const isOverMax = def?.max != null && e.count > def.max
             return (
               <div
                 key={e.key}
@@ -914,6 +915,12 @@ export default function ContractMediaCard({
                   </div>
                   <SlotStatusPill status={e.status} count={e.count} min={e.min} />
                 </div>
+
+                {isOverMax && (
+                  <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">
+                    {`เกิน — ช่องนี้ใส่ได้ ${def?.max} ใบ มี ${e.count} ใบ`}
+                  </p>
+                )}
 
                 {e.key === 'credit_check' && (
                   <label className="mb-2 flex items-center gap-2 text-xs text-ink">
