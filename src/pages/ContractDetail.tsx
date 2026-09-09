@@ -100,7 +100,7 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
-import type { Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PrivateNote } from '../lib/types'
+import type { Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PrivateNote, Shop } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 import EarlyCloseModal from '../components/EarlyCloseModal'
 import CopyBox from '../components/CopyBox'
@@ -359,6 +359,7 @@ export default function ContractDetail() {
   const [isPinned, setIsPinned] = useState(false)
   const [pinBusy, setPinBusy] = useState(false)
   const [contractShopName, setContractShopName] = useState('')
+  const [contractShop, setContractShop] = useState<Shop | null>(null)
 
   // ===== มอบหมายเคสให้คนโทร (freelancer) เจาะจง — admin+staff เท่านั้น =====
   const [assignCaseOpen, setAssignCaseOpen] = useState(false)
@@ -552,7 +553,10 @@ export default function ContractDetail() {
     getShops()
       .then((shops) => {
         const shop = shops.find((s) => s.id === contract.shopId)
-        if (shop) setContractShopName(shop.name)
+        if (shop) {
+          setContractShopName(shop.name)
+          setContractShop(shop)
+        }
       })
       .catch(() => {/* ข้ามในโหมด mock */})
   }, [contract?.shopId])
@@ -1918,7 +1922,13 @@ export default function ContractDetail() {
       </Card>
 
       {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin+staff, delete: admin เท่านั้น ===== */}
-      <ContractMediaCard contract={contract} canUpload={canStaff && reviewEditAllowed} canDelete={isAdmin} />
+      <ContractMediaCard
+        contract={contract}
+        canUpload={canStaff && reviewEditAllowed}
+        canDelete={isAdmin}
+        isAdmin={isAdmin}
+        shop={contractShop}
+      />
 
       {/* ตารางงวดผ่อน */}
       <h3 className="mb-2 font-semibold text-ink">ตารางงวดผ่อน</h3>

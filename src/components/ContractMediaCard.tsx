@@ -1,14 +1,28 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from 'react'
 import {
   AlertTriangle,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Copy,
   Image as ImageIcon,
   Trash2,
   Upload,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
 import { Badge, Button, Card, Loading } from './ui'
 import {
@@ -41,7 +55,9 @@ import {
   type MediaSlot,
   type SlotEvaluation,
 } from '../lib/media'
-import type { Contract, ContractMediaFile, ContractMediaStatus, MediaDuplicateMatch } from '../lib/types'
+import type { Contract, ContractMediaFile, ContractMediaStatus, MediaDuplicateMatch, Shop } from '../lib/types'
+import { buildReviewFields, type ReviewField, type ReviewFieldGroup } from '../lib/reviewFields'
+import { reviewAgeDays, reviewAgeLabel, REVIEW_BADGE_PENDING } from '../lib/review'
 
 // ===== ยูทิลิตี้ใช้ร่วมกับ WaitingEmail.tsx (แคสต์/ประเมินสถานะรูปจาก view สรุป ไม่ต้องดึงไฟล์จริงทีละสัญญา) =====
 
@@ -174,6 +190,319 @@ function readIsCoarsePointer(): boolean {
   }
 }
 
+// ===== cache signed URL ระดับโมดูล (spec §3, 2026-09-09) =====
+// signed URL อายุจริง 300 วิ (db.ts getMediaUrl createSignedUrl(..., 300)) — ถือว่าหมดอายุก่อนเวลาจริง 30 วิ กันพลาด
+// แล้วขอใหม่อัตโนมัติในครั้งถัดไปที่มีการเรียกใช้ (thumb เข้าจอ/เปิด lightbox/preload) กันรูปพังเงียบตอนเปิดหน้าค้างไว้นาน
+// แอดมินเปิดแท็บทิ้งไว้ทั้งวันไล่ตรวจหลายสิบเคส — ตั้งเพดานจำนวน entry + ล้างของหมดอายุตอนเขียนเข้า กันแคชโตไม่มีที่สิ้นสุด
+const MEDIA_URL_TTL_MS = 300_000
+const MEDIA_URL_SAFETY_MARGIN_MS = 30_000
+const MEDIA_URL_CACHE_MAX_ENTRIES = 300
+const mediaUrlCache = new Map<string, { url: string; expiresAt: number }>()
+// request ที่กำลังวิ่งอยู่ (ยังไม่ settle) ต่อ fileId — กัน thumb (เลื่อนถึง) กับ lightbox (preload) ยิง media-sign ซ้ำพร้อมกัน
+const mediaUrlPending = new Map<string, Promise<string | null>>()
+
+/** ล้าง entry ที่หมดอายุแล้วทั้งหมด แล้วถ้ายังเกินเพดานให้ทิ้งตัวเก่าสุดจนกว่าจะพอ (insertion order ของ Map) */
+function pruneMediaUrlCache(now: number): void {
+  for (const [id, entry] of mediaUrlCache) {
+    if (entry.expiresAt <= now) mediaUrlCache.delete(id)
+  }
+  while (mediaUrlCache.size > MEDIA_URL_CACHE_MAX_ENTRIES) {
+    const oldestId = mediaUrlCache.keys().next().value
+    if (oldestId === undefined) break
+    mediaUrlCache.delete(oldestId)
+  }
+}
+
+async function getCachedMediaUrl(file: ContractMediaFile): Promise<string | null> {
+  const now = Date.now()
+  pruneMediaUrlCache(now)
+
+  const cached = mediaUrlCache.get(file.id)
+  if (cached && cached.expiresAt - MEDIA_URL_SAFETY_MARGIN_MS > now) return cached.url
+
+  const pending = mediaUrlPending.get(file.id)
+  if (pending) return pending
+
+  const request = getMediaUrl(file)
+    .then((url) => {
+      if (url) {
+        mediaUrlCache.delete(file.id) // ลบก่อน set เพื่อขยับไปท้าย insertion order — ทำให้ prune ทิ้ง LRU จริง ไม่ใช่ทิ้งตัวที่ถูก refresh บ่อยที่สุด
+        mediaUrlCache.set(file.id, { url, expiresAt: Date.now() + MEDIA_URL_TTL_MS })
+        pruneMediaUrlCache(Date.now())
+      } else {
+        mediaUrlCache.delete(file.id)
+      }
+      return url
+    })
+    .finally(() => {
+      mediaUrlPending.delete(file.id)
+    })
+
+  mediaUrlPending.set(file.id, request)
+  return request
+}
+
+/** ขอ signed URL + วอร์มแคชรูปในเบราว์เซอร์ล่วงหน้า (fire-and-forget) — ใช้ตอนเปิด lightbox เพื่อให้กดลูกศรแล้วลื่น */
+function preloadMediaUrl(file: ContractMediaFile | undefined): void {
+  if (!file) return
+  void getCachedMediaUrl(file)
+    .then((url) => {
+      if (!url) return
+      const img = new Image()
+      img.src = url
+    })
+    .catch(() => undefined) // preload ล้มเหลวเงียบๆ ได้ — ไม่กระทบ UI เพราะตอนกดดูจริงจะขอ signed URL ใหม่อยู่แล้ว
+}
+
+// เผื่อเคส IntersectionObserver ไม่ยิง callback เลย (เช่นแท็บพื้นหลัง — เบราว์เซอร์หยุด rendering lifecycle)
+// ผ่านไปเท่านี้แล้วยังไม่มีการยิงสักครั้ง แต่ tile ยังอยู่ในระยะ viewport ตามที่วัดเอง → ปลดล็อกให้โหลด กันรูปค้าง "…" ทั้งการ์ด
+const IN_VIEW_STUCK_OBSERVER_FALLBACK_MS = 2000
+
+/** true ถ้า rect (จาก getBoundingClientRect) อยู่ในจอหรือใกล้จอตาม margin เดียวกับ rootMargin ของ observer */
+function isRectNearViewport(rect: DOMRect, marginPx: number): boolean {
+  const vh = window.innerHeight || document.documentElement.clientHeight
+  const vw = window.innerWidth || document.documentElement.clientWidth
+  return rect.bottom >= -marginPx && rect.top <= vh + marginPx && rect.right >= -marginPx && rect.left <= vw + marginPx
+}
+
+/** แปลง rootMargin แบบ '200px' ให้เป็นตัวเลข px ใช้กับการวัด rect เอง (ไม่รองรับหน่วยอื่น — พอสำหรับ default ที่ใช้อยู่) */
+function parseMarginPx(rootMargin: string): number {
+  const n = parseFloat(rootMargin)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** true เมื่อ element เข้ามาในจอ (หรือใกล้จอตาม rootMargin) ครั้งแรก — ใช้ lazy-load thumb ไม่ยิง request ทั้งหมดตอนเปิดหน้า
+ *  ไม่พึ่ง callback ของ IntersectionObserver เพียงอย่างเดียว (พิสูจน์แล้วว่าแท็บพื้นหลังทำ observer ไม่ยิงเลย):
+ *  1) เช็คตำแหน่งเองตอน mount ก่อน — ถ้าอยู่ในระยะแล้วปลดล็อกทันทีไม่ต้องรอ observer
+ *  2) ยังคง observer ไว้สำหรับ tile ที่อยู่นอกจอตอนแรกแล้วผู้ใช้เลื่อนมาทีหลัง (ยัง lazy จริง)
+ *  3) ไม่มี IntersectionObserver ในเบราว์เซอร์ → ปลดล็อกไปเลย ดีกว่ารูปไม่ขึ้น
+ *  4) กันค้างถาวร: ผ่านไป ~2 วิ observer ยังไม่ยิงสักครั้ง แต่ยังอยู่ในระยะตามที่วัดเอง → ปลดล็อก */
+function useInView<T extends Element>(rootMargin = '200px'): [(el: T | null) => void, boolean] {
+  const [inView, setInView] = useState(false)
+  const elRef = useRef<T | null>(null)
+  const setRef = (el: T | null) => {
+    elRef.current = el
+  }
+
+  useEffect(() => {
+    if (inView) return
+    const el = elRef.current
+    if (!el) return
+
+    if (typeof IntersectionObserver === 'undefined') {
+      setInView(true) // เบราว์เซอร์เก่าไม่รองรับ — โหลดปกติ ไม่บล็อกผู้ใช้
+      return
+    }
+
+    const marginPx = parseMarginPx(rootMargin)
+
+    // เช็คตำแหน่งเองก่อนตั้ง observer — ถ้าอยู่ในระยะแล้วไม่ต้องรอ callback เลย
+    if (isRectNearViewport(el.getBoundingClientRect(), marginPx)) {
+      setInView(true)
+      return
+    }
+
+    let fired = false
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          fired = true
+          setInView(true)
+        }
+      },
+      { rootMargin },
+    )
+    obs.observe(el)
+
+    const stuckTimer = setTimeout(() => {
+      if (fired) return
+      const current = elRef.current
+      if (current && isRectNearViewport(current.getBoundingClientRect(), marginPx)) {
+        setInView(true)
+      }
+    }, IN_VIEW_STUCK_OBSERVER_FALLBACK_MS)
+
+    return () => {
+      obs.disconnect()
+      clearTimeout(stuckTimer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inView, rootMargin])
+
+  return [setRef, inView]
+}
+
+// ===== แผงข้อมูลสำหรับตรวจก่อนส่งอีเมลบริษัท (อ่านอย่างเดียว) — spec §2, 2026-09-09 =====
+
+const REVIEW_PANEL_OPEN_PREFIX = 'review-panel-open:'
+
+function readReviewPanelOpen(contractId: string): boolean {
+  try {
+    const raw = localStorage.getItem(`${REVIEW_PANEL_OPEN_PREFIX}${contractId}`)
+    if (raw === 'true') return true
+    if (raw === 'false') return false
+  } catch {
+    // localStorage ใช้ไม่ได้ (private mode ฯลฯ) — ใช้ค่าเริ่มต้น
+  }
+  return true // default เปิด
+}
+
+function writeReviewPanelOpen(contractId: string, open: boolean): void {
+  try {
+    localStorage.setItem(`${REVIEW_PANEL_OPEN_PREFIX}${contractId}`, String(open))
+  } catch {
+    // ไม่ต้องบล็อกถ้าจำสถานะไม่ได้
+  }
+}
+
+function fieldCopyLine(f: ReviewField): string {
+  const altText = f.alt ? ` (${f.alt})` : ''
+  return `${f.label}: ${f.value || '-'}${altText}`
+}
+
+function groupCopyText(g: ReviewFieldGroup): string {
+  return `${g.name}\n${g.fields.map(fieldCopyLine).join('\n')}`
+}
+
+function ReviewPanel({ contract, shop }: { contract: Contract; shop?: Shop | null }) {
+  const groups = useMemo(() => buildReviewFields(contract, shop ?? null, new Date().getFullYear()), [contract, shop])
+  const [open, setOpen] = useState<boolean>(() => readReviewPanelOpen(contract.id))
+  const [copyToast, setCopyToast] = useState<string | null>(null)
+
+  useEffect(() => {
+    setOpen(readReviewPanelOpen(contract.id))
+  }, [contract.id])
+
+  useEffect(() => {
+    if (!copyToast) return
+    const t = setTimeout(() => setCopyToast(null), 2000)
+    return () => clearTimeout(t)
+  }, [copyToast])
+
+  function toggle() {
+    setOpen((prev) => {
+      const next = !prev
+      writeReviewPanelOpen(contract.id, next)
+      return next
+    })
+  }
+
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyToast(`คัดลอก${label}แล้ว`)
+    } catch {
+      setCopyToast('คัดลอกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    }
+  }
+
+  const ageText = contract.reviewUpdatedAt
+    ? reviewAgeLabel(reviewAgeDays(contract.reviewUpdatedAt, new Date().toISOString()))
+    : null
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-2xl border border-peach bg-surface">
+      <div className="flex flex-wrap items-center gap-2 border-b border-peach bg-peach-soft px-4 py-3">
+        <p className="mr-1 flex-1 text-sm font-bold text-ink">ข้อมูลสำหรับตรวจ</p>
+        <Badge tone="amber">{ageText ? `${REVIEW_BADGE_PENDING} · ${ageText}` : REVIEW_BADGE_PENDING}</Badge>
+        <button
+          type="button"
+          onClick={() => void copy(groups.map(groupCopyText).join('\n\n'), 'ทั้งแผง')}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-peach bg-surface px-2.5 py-1.5 text-xs font-semibold text-ink transition hover:bg-peach-light/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
+        >
+          <Copy size={13} /> คัดลอกทั้งแผง
+        </button>
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-label={open ? 'ยุบแผงข้อมูลสำหรับตรวจ' : 'ขยายแผงข้อมูลสำหรับตรวจ'}
+          className="inline-flex items-center rounded-lg border border-peach bg-surface p-1.5 text-ink transition hover:bg-peach-light/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
+        >
+          {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+        </button>
+      </div>
+
+      {open && (
+        <>
+          <div className="flex flex-wrap gap-4 border-b border-peach bg-surface px-4 py-2 text-xs text-ink-soft">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="text-salmon-deep" aria-hidden="true">✉</span> อยู่ในอีเมลที่ส่งบริษัท
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="rounded bg-peach-light px-1.5 py-0.5 font-semibold text-ink">คำนวณ</span>
+              ระบบคิดให้เอง พนักงานไม่ได้พิมพ์
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden="true" className="inline-grid h-4 w-4 place-items-center rounded-full bg-red-600 text-[10px] font-bold text-white">
+                !
+              </span>
+              ว่างทั้งที่ควรมีค่า
+            </span>
+          </div>
+
+          {groups.map((g) => (
+            <div key={g.name} className="border-b border-peach last:border-b-0">
+              <div className="flex items-center gap-2 bg-cream-deep px-4 py-2">
+                <h4 className="flex-1 text-xs font-bold uppercase tracking-wide text-ink">{g.name}</h4>
+                <button
+                  type="button"
+                  onClick={() => void copy(groupCopyText(g), g.name)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-peach bg-surface px-2 py-1 text-[11px] font-semibold text-ink-soft transition hover:bg-peach-light/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
+                >
+                  <Copy size={11} /> คัดลอกกลุ่มนี้
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr]">
+                {g.fields.map((f) => (
+                  <Fragment key={f.key}>
+                    <div className={`border-t border-peach px-4 py-1.5 text-sm text-ink-soft ${f.missing ? 'bg-red-50' : ''}`}>{f.label}</div>
+                    <div
+                      className={`flex flex-wrap items-center gap-1.5 border-t border-peach px-4 py-1.5 text-sm ${
+                        f.missing ? 'bg-red-50 font-semibold text-red-700' : 'text-ink'
+                      } ${f.mono ? 'tabular-nums' : ''}`}
+                    >
+                      {f.inEmail && (
+                        <span className="text-salmon-deep" title="อยู่ในอีเมลที่ส่งบริษัท" aria-hidden="true">
+                          ✉
+                        </span>
+                      )}
+                      {f.missing ? (
+                        <>
+                          <span aria-hidden="true" className="inline-grid h-4 w-4 place-items-center rounded-full bg-red-600 text-[10px] font-bold text-white">
+                            !
+                          </span>
+                          <span>ยังไม่ได้กรอก</span>
+                        </>
+                      ) : f.value ? (
+                        <span>{f.value}</span>
+                      ) : (
+                        <span className="text-ink-soft">—</span>
+                      )}
+                      {f.derived && (
+                        <span className="rounded bg-peach-light px-1.5 py-0.5 text-[11px] font-semibold text-ink">คำนวณ</span>
+                      )}
+                      {f.alt && (
+                        <span className="text-xs text-ink-soft" title="ต่างกันเพราะปัดเศษคนละสูตร ไม่ใช่คีย์ผิด">{`(${f.alt})`}</span>
+                      )}
+                    </div>
+                  </Fragment>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {copyToast && (
+        <div role="status" className="border-t border-peach bg-peach-light/60 px-4 py-2 text-center text-xs font-semibold text-ink">
+          {copyToast}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ===== การ์ดรูปเอกสารต่อสัญญา =====
 
 export default function ContractMediaCard({
@@ -181,11 +510,15 @@ export default function ContractMediaCard({
   canUpload,
   canDelete,
   onStatusChange,
+  isAdmin,
+  shop,
 }: {
   contract: Contract
   canUpload: boolean
   canDelete: boolean
   onStatusChange?: (evaluation: ReturnType<typeof evaluateSlots>) => void
+  isAdmin: boolean
+  shop?: Shop | null
 }) {
   const [slots, setSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
   const [files, setFiles] = useState<ContractMediaFile[]>([])
@@ -498,9 +831,13 @@ export default function ContractMediaCard({
   const lightboxFiles = lightbox ? (filesBySlot.get(lightbox.slotKey) ?? []) : []
   const lightboxIndex = lightbox ? lightboxFiles.findIndex((f) => f.id === lightbox.fileId) : -1
   const lightboxFile = lightboxIndex >= 0 ? lightboxFiles[lightboxIndex] : null
+  const lightboxPrevFile = lightboxIndex > 0 ? lightboxFiles[lightboxIndex - 1] : undefined
+  const lightboxNextFile = lightboxIndex >= 0 && lightboxIndex < lightboxFiles.length - 1 ? lightboxFiles[lightboxIndex + 1] : undefined
 
   return (
     <Card className="mb-4 py-4">
+      {isAdmin && contract.reviewStatus === 'pending_review' && <ReviewPanel contract={contract} shop={shop} />}
+
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
@@ -513,7 +850,7 @@ export default function ContractMediaCard({
           ) : (
             <Badge tone={gated ? 'red' : 'amber'}>{`ขาด ${evaluation.missing.length} ช่อง`}</Badge>
           )}
-          {!expanded && <span className="text-xs text-ink-soft">{`${files.length} ใบ`}</span>}
+          {!expanded && <span className="text-xs text-ink">{`${files.length} ใบ`}</span>}
         </div>
         <button
           type="button"
@@ -527,7 +864,7 @@ export default function ContractMediaCard({
       </div>
 
       {expanded && canUpload && !isCoarsePointer && (
-        <p className="mb-3 text-xs text-ink-soft">ลากรูปจากคอมมาวางในช่องได้เลย หรือกดที่ช่องแล้ววาง (Ctrl+V)</p>
+        <p className="mb-3 text-xs text-ink">ลากรูปจากคอมมาวางในช่องได้เลย หรือกดที่ช่องแล้ววาง (Ctrl+V)</p>
       )}
 
       {expanded && (
@@ -704,6 +1041,8 @@ export default function ContractMediaCard({
           onPrev={() => setLightbox({ slotKey: lightboxFile.slotKey, fileId: lightboxFiles[lightboxIndex - 1].id })}
           onNext={() => setLightbox({ slotKey: lightboxFile.slotKey, fileId: lightboxFiles[lightboxIndex + 1].id })}
           onClose={() => setLightbox(null)}
+          preloadPrev={lightboxPrevFile}
+          preloadNext={lightboxNextFile}
         />
       )}
     </Card>
@@ -730,16 +1069,21 @@ function MediaThumb({
   onOpen: () => void
   onDeleteRequest: () => void
 }) {
+  const [setInViewRef, inView] = useInView<HTMLDivElement>()
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
   useEffect(() => {
+    if (!inView) return
     let cancelled = false
-    setUrl(null)
     setFailed(false)
-    getMediaUrl(file)
+    setUrl(null)
+    getCachedMediaUrl(file)
       .then((u) => {
-        if (!cancelled) setUrl(u)
+        if (cancelled) return
+        if (u) setUrl(u)
+        else setFailed(true) // resolve ว่างแบบไม่ throw ก็ถือว่าล้มเหลว — กันค้าง "…" ตลอดกาล
       })
       .catch(() => {
         if (!cancelled) setFailed(true)
@@ -748,19 +1092,38 @@ function MediaThumb({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.id])
+  }, [file.id, inView, retryCount])
+
+  function handleRetry(ev: MouseEvent<HTMLButtonElement>) {
+    ev.stopPropagation()
+    setFailed(false)
+    setRetryCount((n) => n + 1)
+  }
 
   return (
-    <div className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-peach bg-peach-light/30">
-      <button type="button" onClick={onOpen} className="block h-full w-full" aria-label="ดูรูปขยาย">
+    <div
+      ref={setInViewRef}
+      className="group relative h-28 w-28 shrink-0 overflow-hidden rounded-lg border border-peach bg-peach-light/30 sm:h-40 sm:w-40"
+    >
+      <button type="button" onClick={onOpen} disabled={failed} className="block h-full w-full disabled:cursor-default" aria-label="ดูรูปขยาย">
         {url ? (
-          <img src={url} alt="" className="h-full w-full object-cover" />
+          <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
         ) : failed ? (
-          <span className="flex h-full items-center justify-center text-center text-[10px] text-ink-soft">โหลดไม่ได้</span>
+          <span className="flex h-full items-center justify-center text-center text-[10px] text-ink">โหลดไม่ได้</span>
         ) : (
-          <span className="flex h-full items-center justify-center text-xs text-ink-soft">…</span>
+          <span className="flex h-full items-center justify-center text-xs text-ink">…</span>
         )}
       </button>
+      {failed && (
+        <button
+          type="button"
+          onClick={handleRetry}
+          aria-label="ลองโหลดรูปนี้ใหม่"
+          className="absolute inset-x-1 bottom-1 rounded bg-black/60 px-1 py-0.5 text-[10px] font-semibold text-white transition hover:bg-black/75"
+        >
+          ลองใหม่
+        </button>
+      )}
       {tooSmall && (
         <span
           title="ความชัดต่ำ อาจอ่านตัวเลขไม่ได้ ลองถ่ายใหม่"
@@ -783,6 +1146,19 @@ function MediaThumb({
   )
 }
 
+// ===== ซูม/แพนในหน้าขยาย (spec §3, 2026-09-09) =====
+const ZOOM_MIN = 0.4
+const ZOOM_MAX = 6
+const ZOOM_WHEEL_STEP = 1.16
+const ZOOM_BUTTON_STEP = 1.35
+const ZOOM_DOUBLE_CLICK = 2.6
+// ลากแพนเกินกี่ px ถึงนับว่าเป็นการลาก ไม่ใช่คลิกฉากหลังเพื่อปิด (กันปล่อยเมาส์ท้ายการลากแล้วโมดัลปิดโดยไม่ตั้งใจ)
+const BACKDROP_CLICK_DRAG_THRESHOLD_PX = 4
+
+function clampScale(v: number): number {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v))
+}
+
 function MediaLightbox({
   file,
   hasPrev,
@@ -790,6 +1166,8 @@ function MediaLightbox({
   onPrev,
   onNext,
   onClose,
+  preloadPrev,
+  preloadNext,
 }: {
   file: ContractMediaFile
   hasPrev: boolean
@@ -797,15 +1175,50 @@ function MediaLightbox({
   onPrev: () => void
   onNext: () => void
   onClose: () => void
+  preloadPrev?: ContractMediaFile
+  preloadNext?: ContractMediaFile
 }) {
   const [url, setUrl] = useState<string | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const imgWrapRef = useRef<HTMLDivElement>(null)
+  const imgElRef = useRef<HTMLImageElement>(null)
+
+  const scaleRef = useRef(1)
+  const txRef = useRef(0)
+  const tyRef = useRef(0)
+  const [zoomPercent, setZoomPercent] = useState(100)
+  const [dragging, setDragging] = useState(false)
+  const dragStartRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  const draggedPastThresholdRef = useRef(false) // true ถ้า pointerdown→ตอนนี้ลากเกิน threshold แล้ว — กันคลิกฉากหลังปิดโมดัลตอนปล่อยเมาส์ท้ายการลาก
+  const baseSizeRef = useRef<{ w: number; h: number } | null>(null)
+  const naturalSizeRef = useRef<{ w: number; h: number } | null>(null)
+
+  function applyTransform() {
+    if (imgWrapRef.current) {
+      imgWrapRef.current.style.transform = `translate(${txRef.current}px, ${tyRef.current}px) scale(${scaleRef.current})`
+    }
+    setZoomPercent(Math.round(scaleRef.current * 100))
+  }
+
+  function setScale(next: number, cx?: number, cy?: number) {
+    const clamped = clampScale(next)
+    if (cx != null && cy != null && stageRef.current && clamped !== scaleRef.current) {
+      const r = stageRef.current.getBoundingClientRect()
+      const ox = cx - r.left - r.width / 2
+      const oy = cy - r.top - r.height / 2
+      txRef.current = ox - (ox - txRef.current) * (clamped / scaleRef.current)
+      tyRef.current = oy - (oy - tyRef.current) * (clamped / scaleRef.current)
+    }
+    scaleRef.current = clamped
+    applyTransform()
+  }
 
   useEffect(() => {
     let cancelled = false
     setUrl(null)
-    getMediaUrl(file)
+    getCachedMediaUrl(file)
       .then((u) => {
         if (!cancelled) setUrl(u)
       })
@@ -815,9 +1228,102 @@ function MediaLightbox({
     }
   }, [file])
 
+  // preload รูปข้างเคียงล่วงหน้า — กดลูกศรแล้วลื่นไม่ต้องรอโหลดใหม่ (spec §3)
+  useEffect(() => {
+    preloadMediaUrl(preloadPrev)
+    preloadMediaUrl(preloadNext)
+  }, [preloadPrev, preloadNext])
+
   useEffect(() => {
     closeRef.current?.focus()
   }, [file.id])
+
+  // รีเซ็ตซูม/ตำแหน่งทุกครั้งที่เปลี่ยนรูป
+  useEffect(() => {
+    scaleRef.current = 1
+    txRef.current = 0
+    tyRef.current = 0
+    baseSizeRef.current = null
+    naturalSizeRef.current = null
+    setZoomPercent(100)
+    applyTransform()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.id])
+
+  function handleImgLoad() {
+    const img = imgElRef.current
+    if (!img) return
+    naturalSizeRef.current = { w: img.naturalWidth, h: img.naturalHeight }
+    const rect = img.getBoundingClientRect()
+    baseSizeRef.current = { w: rect.width, h: rect.height }
+  }
+
+  function handleZoomIn() {
+    setScale(scaleRef.current * ZOOM_BUTTON_STEP)
+  }
+  function handleZoomOut() {
+    setScale(scaleRef.current / ZOOM_BUTTON_STEP)
+  }
+  function handleFit() {
+    scaleRef.current = 1
+    txRef.current = 0
+    tyRef.current = 0
+    applyTransform()
+  }
+  function handleOneToOne() {
+    const base = baseSizeRef.current
+    const nat = naturalSizeRef.current
+    if (!base || !nat || base.w === 0) return
+    setScale(nat.w / base.w)
+  }
+  function handleDoubleClick(ev: MouseEvent<HTMLDivElement>) {
+    if ((ev.target as HTMLElement).closest('button')) return // ดับเบิลคลิกปุ่มลูกศร/ซูมเร็วๆ ต้องไม่สลับซูมมั่ว (เหมือน guard ใน handlePointerDown)
+    const next = Math.abs(scaleRef.current - 1) < 0.02 ? ZOOM_DOUBLE_CLICK : 1
+    setScale(next, ev.clientX, ev.clientY)
+  }
+
+  // ล้อเมาส์ซูมที่ตำแหน่งเคอร์เซอร์ — ต้อง addEventListener แบบ passive:false ถึง preventDefault ได้จริง (React onWheel เป็น passive)
+  useEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    function onWheel(ev: WheelEvent) {
+      ev.preventDefault()
+      setScale(scaleRef.current * (ev.deltaY < 0 ? ZOOM_WHEEL_STEP : 1 / ZOOM_WHEEL_STEP), ev.clientX, ev.clientY)
+    }
+    stage.addEventListener('wheel', onWheel, { passive: false })
+    return () => stage.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function handlePointerDown(ev: PointerEvent<HTMLDivElement>) {
+    if ((ev.target as HTMLElement).closest('button')) return
+    dragStartRef.current = { x: ev.clientX, y: ev.clientY, tx: txRef.current, ty: tyRef.current }
+    draggedPastThresholdRef.current = false
+    setDragging(true)
+    stageRef.current?.setPointerCapture(ev.pointerId)
+  }
+  function handlePointerMove(ev: PointerEvent<HTMLDivElement>) {
+    if (!dragStartRef.current) return
+    const dx = ev.clientX - dragStartRef.current.x
+    const dy = ev.clientY - dragStartRef.current.y
+    if (Math.abs(dx) > BACKDROP_CLICK_DRAG_THRESHOLD_PX || Math.abs(dy) > BACKDROP_CLICK_DRAG_THRESHOLD_PX) {
+      draggedPastThresholdRef.current = true
+    }
+    txRef.current = dragStartRef.current.tx + dx
+    tyRef.current = dragStartRef.current.ty + dy
+    applyTransform()
+  }
+  /** คลิกบนฉากหลัง (ไม่ใช่รูป/ปุ่ม) แล้วไม่ได้เพิ่งลากแพนมา → ปิดโมดัล (convention เดียวกับ Modal ใน ui.tsx) */
+  function handleStageClick(ev: MouseEvent<HTMLDivElement>) {
+    if (draggedPastThresholdRef.current) return
+    const target = ev.target as HTMLElement
+    if (target.closest('button') || target.tagName === 'IMG') return
+    onClose()
+  }
+  function endDrag() {
+    dragStartRef.current = null
+    setDragging(false)
+  }
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -831,6 +1337,14 @@ function MediaLightbox({
       }
       if (e.key === 'ArrowRight' && hasNext) {
         onNext()
+        return
+      }
+      if (e.key === '+' || e.key === '=') {
+        setScale(scaleRef.current * ZOOM_BUTTON_STEP)
+        return
+      }
+      if (e.key === '-') {
+        setScale(scaleRef.current / ZOOM_BUTTON_STEP)
         return
       }
       if (e.key === 'Tab') {
@@ -852,57 +1366,99 @@ function MediaLightbox({
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose, onPrev, onNext, hasPrev, hasNext])
 
+  const zoomButtonCls =
+    'rounded-lg border border-white/25 bg-white/10 text-white transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70'
+
   return (
     <div
       ref={containerRef}
       role="dialog"
       aria-modal="true"
       aria-label="ดูรูปขยาย"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-      onClick={onClose}
+      className="fixed inset-0 z-50 flex flex-col bg-black/85"
     >
-      <button
-        ref={closeRef}
-        type="button"
-        onClick={onClose}
-        aria-label="ปิด"
-        className="absolute right-4 top-4 rounded-full bg-white/20 p-2 text-white hover:bg-white/30"
-      >
-        <X size={20} />
-      </button>
-      {hasPrev && (
-        <button
-          type="button"
-          onClick={(ev) => {
-            ev.stopPropagation()
-            onPrev()
-          }}
-          aria-label="รูปก่อนหน้า"
-          className="absolute left-4 rounded-full bg-white/20 p-2 text-white hover:bg-white/30"
-        >
-          <ChevronLeft size={22} />
+      <div className="flex flex-wrap items-center gap-2 bg-black/40 px-3 py-2">
+        <button type="button" onClick={handleZoomOut} aria-label="ซูมออก" className={`${zoomButtonCls} p-1.5`}>
+          <ZoomOut size={16} />
         </button>
-      )}
-      {hasNext && (
-        <button
-          type="button"
-          onClick={(ev) => {
-            ev.stopPropagation()
-            onNext()
-          }}
-          aria-label="รูปถัดไป"
-          className="absolute right-4 rounded-full bg-white/20 p-2 text-white hover:bg-white/30"
-        >
-          <ChevronRight size={22} />
+        <span className="min-w-[48px] text-center text-xs font-semibold tabular-nums text-white">{zoomPercent}%</span>
+        <button type="button" onClick={handleZoomIn} aria-label="ซูมเข้า" className={`${zoomButtonCls} p-1.5`}>
+          <ZoomIn size={16} />
         </button>
-      )}
-      <div onClick={(ev) => ev.stopPropagation()} className="max-h-[85vh] max-w-[90vw]">
-        {url ? (
-          <img src={url} alt="" className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain" />
-        ) : (
-          <p className="text-white">กำลังโหลด...</p>
-        )}
+        <button type="button" onClick={handleFit} className={`${zoomButtonCls} px-2.5 py-1.5 text-xs font-semibold`}>
+          พอดีจอ
+        </button>
+        <button type="button" onClick={handleOneToOne} className={`${zoomButtonCls} px-2.5 py-1.5 text-xs font-semibold`}>
+          1:1
+        </button>
+        <span className="flex-1" />
+        <button
+          ref={closeRef}
+          type="button"
+          onClick={onClose}
+          aria-label="ปิด (Esc)"
+          className="rounded-full bg-white/15 p-2 text-white transition hover:bg-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        >
+          <X size={18} />
+        </button>
       </div>
+
+      <div
+        ref={stageRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onClick={handleStageClick}
+        onDoubleClick={handleDoubleClick}
+        className={`relative flex-1 touch-none select-none overflow-hidden ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+      >
+        {hasPrev && (
+          <button
+            type="button"
+            onClick={(ev) => {
+              ev.stopPropagation()
+              onPrev()
+            }}
+            aria-label="รูปก่อนหน้า"
+            className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/20 p-2 text-white transition hover:bg-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          >
+            <ChevronLeft size={22} />
+          </button>
+        )}
+        {hasNext && (
+          <button
+            type="button"
+            onClick={(ev) => {
+              ev.stopPropagation()
+              onNext()
+            }}
+            aria-label="รูปถัดไป"
+            className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/20 p-2 text-white transition hover:bg-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          >
+            <ChevronRight size={22} />
+          </button>
+        )}
+        <div className="flex h-full w-full items-center justify-center">
+          <div ref={imgWrapRef} style={{ transformOrigin: 'center center' }}>
+            {url ? (
+              <img
+                ref={imgElRef}
+                src={url}
+                alt=""
+                onLoad={handleImgLoad}
+                onDragStart={(ev) => ev.preventDefault()}
+                style={{ maxHeight: '80vh', maxWidth: '92vw', width: 'auto', height: 'auto', display: 'block' }}
+              />
+            ) : (
+              <p className="text-white">กำลังโหลด...</p>
+            )}
+          </div>
+        </div>
+      </div>
+      <p className="bg-black/40 px-3 py-1.5 text-center text-xs text-white/70">
+        หมุนล้อเมาส์เพื่อซูม · ลากเพื่อเลื่อน · ดับเบิลคลิกสลับซูม · ลูกศรซ้ายขวาเปลี่ยนรูป · Esc ปิด
+      </p>
     </div>
   )
 }
