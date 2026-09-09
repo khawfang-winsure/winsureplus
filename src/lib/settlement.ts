@@ -2,7 +2,9 @@
 // กฎ Pete เคาะ Wave 1 (band ตามงวดที่เหลือ) — ยังเก็บไว้เพื่อ backward-compat
 // กฎ Pete เคาะ Wave 2 (15 ก.ค. 2026): เปลี่ยนเป็น matrix keyed by
 //   (ชนิดสัญญา = จำนวนงวดทั้งสัญญา x จำนวนงวดที่จ่ายแล้ว)
-//   - ฐานคิดส่วนลดเหมือนเดิมทุกประการ: Math.ceil(เงินต้นค้าง x %), ค่าปรับคิดเต็มไม่ลด
+//   - ฐานคิดส่วนลด (แก้ 9 ก.ย. 2026 — คุณเตยยืนยันกฎใหม่): คิดเฉพาะเงินต้นค้างของงวดที่ "ยังไม่ถึงกำหนด"
+//     (dueDate >= closedAt) ด้วย Math.round(เงินต้นค้างงวดนั้น x %) — งวดที่เลยกำหนดแล้ว (dueDate < closedAt)
+//     จ่ายเต็ม ไม่ได้ส่วนลด, ค่าปรับคิดเต็มไม่ลดเหมือนเดิม
 //   - รองรับ manual override % (admin กรอกเอง แทนตาราง)
 //   - เคสขยายเวลาแบบ "เพิ่มจำนวนงวด" (ext_type != 'due_day')
 //     นับ row key + paidCount เฉพาะช่วงที่ขยายใหม่
@@ -85,14 +87,19 @@ export interface SettlementInstallmentInput {
   paidAmount: number   // จ่ายสะสมแล้วของงวด (principal)
   penaltyAmount: number // ค่าปรับของงวด
   paidAt: string | null // null = ยังไม่ปิดงวด (รวมจ่ายบางส่วน — paidAmount > 0 แต่ paidAt ยัง null)
+  dueDate: string       // วันครบกำหนดของงวด ('YYYY-MM-DD') — ใช้แยกงวดค้าง (เลยกำหนด) vs ยังไม่ถึงกำหนด
   installmentNo?: number // ลำดับงวด (1-based) — ใช้เฉพาะเคสขยายเวลาแบบเพิ่มจำนวนงวด
 }
 
 export interface SettlementResult {
-  remainingPrincipal: number // เงินต้นที่เหลือ = Σ max(0, amount − paidAmount) ของงวดค้าง
-  remainingCount: number     // จำนวนงวดที่ยังค้าง (paidAt IS NULL)
+  remainingPrincipal: number // เงินต้นที่เหลือ = Σ max(0, amount − paidAmount) ของงวดค้างทั้งหมด (ค้าง+ยังไม่ถึงกำหนด)
+  remainingCount: number     // จำนวนงวดที่ยังค้าง (paidAt IS NULL) ทั้งหมด
+  overdueRemaining: number      // เงินต้นค้างเฉพาะงวดที่เลยกำหนดแล้ว (dueDate < closedAt) — จ่ายเต็ม ไม่ลด
+  overdueCount: number          // จำนวนงวดที่เลยกำหนดแล้ว
+  discountableRemaining: number // เงินต้นค้างเฉพาะงวดที่ยังไม่ถึงกำหนด (dueDate >= closedAt) — ใช้เป็นฐานคิดส่วนลด
+  discountableCount: number     // จำนวนงวดที่ยังไม่ถึงกำหนด
   percent: number            // ส่วนลด % ที่ได้ (matrix/tiers หรือ override)
-  discount: number           // ส่วนลดเป็นบาท = ceil(remainingPrincipal x percent/100)
+  discount: number           // ส่วนลดเป็นบาท = round(discountableRemaining x percent/100)
   penaltyDue: number         // ค่าปรับค้างรวม (ไม่ลด)
   customerPays: number       // ลูกค้าจ่ายปิด = (remainingPrincipal − discount) + penaltyDue
   paidCount: number          // จำนวนงวดที่จ่ายแล้วจริง (นับตรงจาก paidAt !== null) — column key ของ matrix
@@ -120,32 +127,41 @@ function isExtendedInstallmentsCase(
 }
 
 /** คิดยอดปิดสัญญาก่อนกำหนด
- *  สูตร (Pete เคาะ — ฐานคิดส่วนลดไม่เปลี่ยนจาก Wave 1):
- *    remainingPrincipal = Σ max(0, amount − paidAmount) ของงวด paidAt IS NULL
- *    remainingCount     = นับงวด paidAt IS NULL
- *    paidCount          = นับงวด paidAt IS NOT NULL ตรงๆ
- *                         (ไม่คำนวณจาก termMonths − remainingCount)
- *                         ยกเว้นเคสขยายงวด → นับเฉพาะ installmentNo > (termMonths − newInstallments)
- *    rowTerm            = termMonths ปกติ ยกเว้นเคสขยายงวด → newInstallments
- *    percent            = overridePercent ถ้ามีส่งมา
- *                         ไม่งั้น pickDiscountPercentMatrix(rowTerm, paidCount, matrix) ถ้ามี matrix
- *                         ไม่งั้น (fallback wave เก่า) pickDiscountPercent(remainingCount, tiers)
- *    discount           = Math.ceil(remainingPrincipal x percent/100)
- *    penaltyDue         = Σ penaltyAmount ของงวด paidAt IS NULL (ไม่ลด)
- *    customerPays       = (remainingPrincipal − discount) + penaltyDue
+ *  สูตร (Pete เคาะ Wave 1-2, คุณเตยยืนยันกฎใหม่ 9 ก.ย. 2026 — ฐานคิดส่วนลดเปลี่ยนจากเดิม):
+ *    remainingPrincipal     = Σ max(0, amount − paidAmount) ของงวด paidAt IS NULL ทั้งหมด (ค้าง+ยังไม่ถึงกำหนด)
+ *    remainingCount         = นับงวด paidAt IS NULL ทั้งหมด
+ *    overdueRemaining       = ผลรวมเดียวกัน เฉพาะงวดที่ dueDate <  closedAt (เลยกำหนดแล้ว) — จ่ายเต็ม ไม่ลด
+ *    discountableRemaining  = ผลรวมเดียวกัน เฉพาะงวดที่ dueDate >= closedAt (ยังไม่ถึงกำหนด) — ฐานคิดส่วนลด
+ *                             (overdueRemaining + discountableRemaining = remainingPrincipal เสมอ)
+ *    paidCount              = นับงวด paidAt IS NOT NULL ตรงๆ
+ *                             (ไม่คำนวณจาก termMonths − remainingCount)
+ *                             ยกเว้นเคสขยายงวด → นับเฉพาะ installmentNo > (termMonths − newInstallments)
+ *    rowTerm                = termMonths ปกติ ยกเว้นเคสขยายงวด → newInstallments
+ *    percent                = overridePercent ถ้ามีส่งมา
+ *                             ไม่งั้น pickDiscountPercentMatrix(rowTerm, paidCount, matrix) ถ้ามี matrix
+ *                             ไม่งั้น (fallback wave เก่า) pickDiscountPercent(remainingCount, tiers)
+ *    discount               = Math.round(discountableRemaining x percent/100)  ← เปลี่ยนจาก ceil(remainingPrincipal x ...)
+ *    penaltyDue             = Σ penaltyAmount ของงวด paidAt IS NULL (ไม่ลด)
+ *    customerPays           = (remainingPrincipal − discount) + penaltyDue   ← สูตรไม่เปลี่ยน (แค่ discount เปลี่ยนที่มา)
+ *
+ *  ⚠️ ฟังก์ชันนี้ไม่ validate closedAt — ถ้า caller ส่ง '' หรือค่าที่ผิดรูปแบบมา string compare
+ *     ('YYYY-MM-DD' < '' เป็น false เสมอ) จะทำให้ทุกงวดถูกนับเป็น "ยังไม่ถึงกำหนด" (ได้ส่วนลดหมดทั้งก้อน)
+ *     caller ต้องรับผิดชอบส่งวันที่ปิดจริงที่ถูกต้องเสมอ ห้ามส่งค่าว่าง/placeholder
  */
-/** Trace 1 — term12/paid3 → 12% (matrix seed, ไม่ผ่านขยายเวลา):
+/** Trace 1 — term12/paid3 → 12% (matrix seed, ไม่ผ่านขยายเวลา, ทุกงวดยังไม่ถึงกำหนด):
  *    12 งวด งวดละ 1000, จ่ายแล้ว 3 งวด (installmentNo 1-3), เหลือค้าง 9 งวด ไม่มีค่าปรับ
+ *    closedAt เร็วกว่า dueDate ของทั้ง 9 งวดที่เหลือ (ยังไม่ถึงกำหนดทั้งหมด)
  *    paidCount=3, rowTerm=12(=termMonths), matrix[12][3]=12 → percent=12, matched=true
- *    remainingPrincipal=9000, discount=ceil(9000x0.12)=1080, penaltyDue=0, customerPays=7920
+ *    remainingPrincipal=9000, overdueRemaining=0, discountableRemaining=9000
+ *    discount=round(9000x0.12)=1080, penaltyDue=0, customerPays=7920
  *
  *  Trace 2 — term12/paid11 → 0% (เหลืองวดเดียว ไม่มีใน column ของแถว 12):
- *    จ่ายแล้ว 11/12 งวด เหลือค้าง 1 งวด (1000, ไม่มีค่าปรับ)
+ *    จ่ายแล้ว 11/12 งวด เหลือค้าง 1 งวด (1000, ไม่มีค่าปรับ, ยังไม่ถึงกำหนด)
  *    paidCount=11, rowTerm=12, matrix[12][11] ไม่มี → percent=0, matched=true
- *    remainingPrincipal=1000, discount=0, penaltyDue=0, customerPays=1000
+ *    remainingPrincipal=1000, discountableRemaining=1000, discount=0, penaltyDue=0, customerPays=1000
  *
  *  Trace 3 — term6/paid0 → 0% (ยังไม่จ่ายงวดไหนเลย):
- *    6 งวด งวดละ 1000 ยังไม่จ่ายเลย เหลือค้างครบ 6 งวด
+ *    6 งวด งวดละ 1000 ยังไม่จ่ายเลย เหลือค้างครบ 6 งวด (ยังไม่ถึงกำหนดทั้งหมด)
  *    paidCount=0, rowTerm=6, matrix[6][0] ไม่มี (แถว 6 เริ่มที่ 1) → percent=0, matched=true
  *    remainingPrincipal=6000, discount=0, penaltyDue=0, customerPays=6000
  *
@@ -163,16 +179,25 @@ function isExtendedInstallmentsCase(
  *  Trace 6 — override (admin กรอก % เองแทนตาราง):
  *    term12/paid3 (ตารางให้ 12%) แต่ admin ใส่ overridePercent=20
  *    → percent=20, overridden=true, matched ยังคงคำนวณจากตารางไว้ (=true)
- *    remainingPrincipal=9000 (สมมติเหมือน Trace1) → discount=ceil(9000x0.20)=1800
+ *    discountableRemaining=9000 (สมมติเหมือน Trace1, ยังไม่ถึงกำหนดทั้งหมด) → discount=round(9000x0.20)=1800
  *
  *  Trace 7 — เคสขยายเวลา S00017PNQ067 (row key = งวดที่ขยายใหม่ ไม่ใช่ termMonths ปัจจุบัน):
  *    termMonths=16 (หลังขยาย), extension={extType:'months', newInstallments:12}
  *    installments 16 งวด: installmentNo 1-4 จ่ายแล้ว (ก่อนขยาย), 5-16 ยังไม่จ่าย
  *    isExtendedInstallmentsCase → true → rowTerm=12 (=newInstallments)
  *    threshold = 16-12 = 4 → paidCount = งวดที่ paidAt≠null และ installmentNo>4 = 0
- *    matrix[12][0] ไม่มี → percent=0, matched=true (แถว 12 มีจริง แค่ column 0 ไม่มี) */
+ *    matrix[12][0] ไม่มี → percent=0, matched=true (แถว 12 มีจริง แค่ column 0 ไม่มี)
+ *
+ *  Trace 8 — งวดค้างชำระจริง (เลยกำหนด) ต้องจ่ายเต็ม ไม่ได้ส่วนลด (กฎใหม่ 9 ก.ย. 2026):
+ *    term12, closedAt='2026-08-22', เหลือค้าง 9 งวด (งวดละ 1000 ไม่มีค่าปรับ):
+ *      3 งวดแรก dueDate < closedAt (เลยกำหนดแล้ว) → overdueRemaining=3000
+ *      6 งวดหลัง dueDate >= closedAt (ยังไม่ถึงกำหนด) → discountableRemaining=6000
+ *    paidCount=3, rowTerm=12, matrix[12][3]=12 → percent=12
+ *    discount=round(6000x0.12)=720 (ไม่ใช่ round(9000x0.12)=1080 แบบเดิม)
+ *    remainingPrincipal=9000, customerPays=9000-720+0=8280 */
 export function computeSettlement(input: {
   installments: SettlementInstallmentInput[]
+  closedAt: string                // วันที่ปิดจริง ('YYYY-MM-DD') — ใช้แบ่งงวดค้าง (เลยกำหนด) vs ยังไม่ถึงกำหนด
   tiers?: SettlementTier[]        // Wave 1 fallback — ใช้เมื่อไม่มี matrix ส่งเข้ามา
   termMonths?: number             // จำนวนงวดทั้งสัญญาปัจจุบัน
   matrix?: SettlementMatrix       // Wave 2 — ตารางส่วนลดใหม่ (term x paidCount)
@@ -182,10 +207,26 @@ export function computeSettlement(input: {
   // งวดที่ยังค้าง = paidAt เป็น null (รวมงวดจ่ายบางส่วนด้วย)
   const unpaid = input.installments.filter((i) => i.paidAt === null)
 
-  const remainingPrincipal = unpaid.reduce(
-    (s, i) => s + Math.max(0, (i.amount || 0) - (i.paidAmount || 0)),
-    0,
-  )
+  // 1 loop เดียว แยกสะสม overdue (dueDate < closedAt) กับ discountable (dueDate >= closedAt)
+  // เทียบด้วย string ตรงๆ ('YYYY-MM-DD') ห้ามแปลงเป็น Date (กัน timezone bug)
+  // ปิดตรงวันครบกำหนดพอดี (dueDate === closedAt) นับว่า "ยังไม่ถึงกำหนด" (ได้ส่วนลด)
+  let remainingPrincipal = 0
+  let overdueRemaining = 0
+  let overdueCount = 0
+  let discountableRemaining = 0
+  let discountableCount = 0
+  for (const i of unpaid) {
+    const owed = Math.max(0, (i.amount || 0) - (i.paidAmount || 0))
+    remainingPrincipal += owed
+    if (i.dueDate < input.closedAt) {
+      overdueRemaining += owed
+      overdueCount += 1
+    } else {
+      discountableRemaining += owed
+      discountableCount += 1
+    }
+  }
+
   const remainingCount = unpaid.length
   const penaltyDue = unpaid.reduce((s, i) => s + (i.penaltyAmount || 0), 0)
 
@@ -225,12 +266,16 @@ export function computeSettlement(input: {
     percent = pickDiscountPercent(remainingCount, input.tiers ?? [])
   }
 
-  const discount = Math.ceil((remainingPrincipal * percent) / 100)
+  const discount = Math.round((discountableRemaining * percent) / 100)
   const customerPays = remainingPrincipal - discount + penaltyDue
 
   return {
     remainingPrincipal,
     remainingCount,
+    overdueRemaining,
+    overdueCount,
+    discountableRemaining,
+    discountableCount,
     percent,
     discount,
     penaltyDue,

@@ -288,6 +288,7 @@ export default function EarlyCloseModal({
         paidAmount: i.paidAmount,
         penaltyAmount: i.penaltyAmount,
         paidAt: i.paidAt,
+        dueDate: i.dueDate,
         installmentNo: i.installmentNo,
       })),
     [installments],
@@ -298,11 +299,12 @@ export default function EarlyCloseModal({
     if (matrix == null) return null
     return computeSettlement({
       installments: settlementInstallments,
+      closedAt,
       termMonths: contract.termMonths,
       matrix,
       extension: extensionInfo,
     })
-  }, [matrix, settlementInstallments, contract.termMonths, extensionInfo])
+  }, [matrix, settlementInstallments, contract.termMonths, extensionInfo, closedAt])
 
   // ยอดจ่ายปิด (เฉพาะค่างวด ไม่รวมค่าปรับ — ค่าปรับกรอกแยกในช่องถัดไป) ที่ตารางแนะนำ
   const suggestedSettlementPaid = settlementPreview
@@ -522,6 +524,23 @@ export default function EarlyCloseModal({
 
             {settlementPreview && (
               <div className="rounded-xl border border-peach bg-peach-light/40 p-3 text-sm">
+                {/* ข้อ 1 (feedback คุณเตย 9 ก.ย. 2026): งวดเลยกำหนดจ่ายเต็มไม่ได้ส่วนลด (กฎใหม่) ทำให้ส่วนลด
+                    เล็กลงกว่าที่พนักงานคุ้นเคย — ถ้าไม่บอกเหตุผล พนักงานจะคิดว่าระบบพัง แล้วกลับไปกรอกยอดมือเอง
+                    แสดงเฉพาะตอนมีงวดค้างจริง (overdueCount > 0) เคสส่วนใหญ่ไม่มีงวดค้าง เลยคงหน้าตาเดิมไว้ */}
+                {settlementPreview.overdueCount > 0 && (
+                  <div className="mb-2 text-ink">
+                    <p>ยอดคงเหลือ {baht(settlementPreview.remainingPrincipal)} บาท</p>
+                    <p className="mt-0.5 text-ink-soft">
+                      • {settlementPreview.overdueCount} งวดเลยกำหนดแล้ว {baht(settlementPreview.overdueRemaining)}{' '}
+                      บาท — จ่ายเต็ม ไม่ได้ส่วนลด
+                    </p>
+                    <p className="mt-0.5 text-ink-soft">
+                      • {settlementPreview.discountableCount} งวดยังไม่ถึงกำหนด{' '}
+                      {baht(settlementPreview.discountableRemaining)} บาท — ลด {settlementPreview.percent}% ={' '}
+                      {baht(settlementPreview.discount)} บาท
+                    </p>
+                  </div>
+                )}
                 {!settlementPreview.matched ? (
                   <p className="flex items-start gap-1.5 text-amber-800">
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" />
