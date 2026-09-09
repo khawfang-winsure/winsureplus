@@ -113,6 +113,14 @@ export function explainReviewRow(row: PjSyncReviewRow, ctx: PjReviewContext | nu
       return `ระบบเราบันทึกไว้มากกว่ายอดที่ PJ ได้รับจริง ${th(row.amount)} ฿ — เปิดใบใน PJ เทียบรายการ อาจมีการลงซ้ำฝั่งเราหรือใบเสร็จถูกลบฝั่ง PJ ต้องให้คนตรวจสอบและแก้ไขด้วยมือที่หน้าสัญญาโดยตรง (ไม่ใช่จากปุ่มในกล่องนี้)`
     case 'RETURNED_CONTRACT_OTHER_FEE':
       return `ฝั่ง PJ มีค่าธรรมเนียม/รายการอื่นๆ ของสัญญาคืนเครื่องนี้มากกว่าที่เราบันทึกเป็นรายได้อื่นๆ ${th(row.amount)} ฿ — นี่ไม่ใช่ค่างวด กรุณาเปิดใบใน PJ ดูว่าเป็นค่าอะไร แล้วบันทึกเป็นรายได้อื่นๆ ที่หน้าสัญญาโดยตรงถ้ายังไม่มี (ระบบลงเงินให้อัตโนมัติไม่ได้ ต้องให้คนตรวจสอบเอง)`
+    case 'RECEIPT_PARTIAL_APPLIED': {
+      const isPenalty = row.paymentType === 'penalty' || row.penaltyAmount > 0
+      if (isPenalty) {
+        const pjAmount = row.paymentType === 'penalty' ? row.amount : row.penaltyAmount
+        return `PJ ออกใบค่างวดก่อน แล้วออกใบค่าปรับ ${th(pjAmount)} ฿ ตามมาทีหลัง — ระบบลงใบแรกไปแล้ว แต่ใบนี้ยังไม่ได้ลง กด "ลงตาม PJ" เพื่อบันทึกส่วนที่ค้างนี้`
+      }
+      return `PJ ออกใบเสร็จตามมาทีหลังอีกใบ ${th(row.amount + row.penaltyAmount)} ฿ — ระบบลงใบแรกไปแล้ว แต่ใบนี้ยังไม่ได้ลง กด "ลงตาม PJ" เพื่อบันทึกส่วนที่ค้างนี้`
+    }
     case 'RECEIPT_MISSING':
     case 'RECEIPT_CHANGED':
       return '' // แถว drift ใช้ DriftCompareBox แสดงรายละเอียดแทน ไม่ใช้ข้อความนี้

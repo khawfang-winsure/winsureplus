@@ -78,6 +78,7 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   RETURNED_CONTRACT_PAYMENT: 'คืนเครื่อง — เงินไม่เข้าระบบ',
   RETURNED_CONTRACT_OVERAGE: 'คืนเครื่อง — ยอดเราเกิน PJ',
   RETURNED_CONTRACT_OTHER_FEE: 'คืนเครื่อง — ค่าธรรมเนียมอื่นๆ ไม่ตรง',
+  RECEIPT_PARTIAL_APPLIED: 'ใบเสร็จตามมาทีหลัง (ยังไม่ได้ลง)',
 }
 const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'red'> = {
   MULTI: 'amber',
@@ -96,6 +97,8 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'r
   // เขียวเหมือน RETURNED_CONTRACT_PAYMENT — ทิศทางเดียวกัน (PJ มีเงิน/รายการที่เรายังไม่ได้บันทึก ไม่ใช่ error
   // ของระบบ แค่ต้องคนไปเก็บตกบันทึกเป็นรายได้อื่นๆ เอง)
   RETURNED_CONTRACT_OTHER_FEE: 'green',
+  // เหลืองเหมือน PARTIAL/MULTI — เป็นเงินจริงที่ต้องลงมือกดลง (มีปุ่ม "ลงตาม PJ") ไม่ใช่แค่รายงาน
+  RECEIPT_PARTIAL_APPLIED: 'amber',
 }
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====

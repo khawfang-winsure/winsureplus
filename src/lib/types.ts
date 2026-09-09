@@ -595,7 +595,12 @@ export interface LetterOutcomeByRound {
  * PAYMENT/OVERAGE ข้างบน: PJ item ประเภท "อื่นๆ" (ค่าธรรมเนียม/ค่าเปลี่ยนวัน) มากกว่าที่เราบันทึกไว้เป็น
  * other_income — ยิงทางเดียวเท่านั้น (ฝั่งเรามากกว่า/เท่ากัน = ไม่ยิง เพราะ other_income ของเรามีรายการที่
  * PJ ไม่มี เช่น ค่าเอกสาร backfill/ค่าธรรมเนียมปิดสัญญา ยิงสองทางจะกลายเป็น noise) เหมือนกัน — manual-only
- * ห้ามมี flow ลงเงินอัตโนมัติ (isManualOnlyReason ต้องคุมทั้ง 3) */
+ * ห้ามมี flow ลงเงินอัตโนมัติ (isManualOnlyReason ต้องคุมทั้ง 3)
+ * RECEIPT_PARTIAL_APPLIED = ร้าน PJ ออกใบเสร็จค่างวดก่อน แล้วออกใบค่าปรับ/รายการอื่นตามมาทีหลัง (คนละรอบ
+ * sync กัน) ทำให้ auto-sync ลงใบแรกไปแล้วแต่ "ข้าม" ใบที่ตามมาทิ้งเงียบๆ (bug ยืนยันแล้ว 9 ก.ย. 2026 — 35
+ * ราย ~8,000 บาทหาย) แถวนี้คือใบที่ตามมาที่ยังไม่ได้ลง — amount/penaltyAmount ของแถวนี้ = เฉพาะส่วนที่ยังไม่ได้
+ * ลง (ไม่รวมใบแรกที่ลงไปแล้ว) ต่างจาก manual-only ตรงที่เป็นเงินจริงที่ยังไม่ถูกบันทึก จึง "กดลงเงินได้" เหมือน
+ * PARTIAL/MULTI (isManualOnlyReason ห้ามคุมตัวนี้) */
 export type PjSyncReviewReason =
   | 'MULTI'
   | 'PARTIAL'
@@ -607,6 +612,7 @@ export type PjSyncReviewReason =
   | 'RETURNED_CONTRACT_PAYMENT'
   | 'RETURNED_CONTRACT_OVERAGE'
   | 'RETURNED_CONTRACT_OTHER_FEE'
+  | 'RECEIPT_PARTIAL_APPLIED'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'

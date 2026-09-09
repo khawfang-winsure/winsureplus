@@ -7852,6 +7852,32 @@ interface PjReturnedWatchRawJson {
   checkedAt: string
 }
 
+/** 1 receipt แบบย่อที่เก็บใน raw_json ของ reason RECEIPT_PARTIAL_APPLIED (9 ก.ย. 2026) — field ชื่อ
+ *  camelCase (uuid/amount/paymentType) ตรงกับ Agg.receipts ฝั่ง pj-sync/index.ts ไม่ใช่ snake_case
+ *  แบบ PjRawReceipt (แถวดิบจาก PJ ตรงๆ) */
+interface PjPartialReceiptItem {
+  uuid?: string | null
+  amount?: string | number | null
+  paymentType?: string | null
+}
+
+/** raw_json shape ของ reason RECEIPT_PARTIAL_APPLIED (9 ก.ย. 2026, pj-sync/index.ts queueReview
+ *  rawJsonOverride) — object เดียว (ไม่ใช่ array ต่อใบเสร็จแบบ PjRawReceipt เดิม) แยกใบที่ apply ไปแล้ว
+ *  ออกจากใบใหม่ที่ยังไม่เคยลง ให้กันลงเบิ้ล (already_applied_receipts) + ลงยอดที่ค้างจริง
+ *  (unapplied_receipts) ได้ถูก (ติ๊ก review RED1 fix — เดิม db.ts อ่าน shape นี้ไม่ออก ทำ uuid หลุด) */
+interface PjPartialAppliedRawJson {
+  invoice_no?: string | null
+  paid_date?: string | null
+  already_applied_receipts?: PjPartialReceiptItem[]
+  unapplied_receipts?: PjPartialReceiptItem[]
+  unapplied_totals?: { installment?: number; penalty?: number; other?: number }
+  raw?: unknown
+}
+
+/** union ของทุก raw_json shape ที่ pj_sync_review.raw_json เก็บจริง — ใช้แทนที่ `PjRawReceipt[] | null`
+ *  เดิมที่แคบเกินไปทุกจุดที่อ่านคอลัมน์นี้ (ติ๊ก review RED1 fix, 9 ก.ย. 2026) */
+type PjRawJson = PjRawReceipt[] | PjReturnedWatchRawJson | PjPartialAppliedRawJson | null
+
 interface PjSyncReviewViewRow {
   id: string
   created_at: string
@@ -7862,7 +7888,7 @@ interface PjSyncReviewViewRow {
   matched_contract_id: string | null
   reason: string
   status: string
-  raw_json: PjRawReceipt[] | PjReturnedWatchRawJson | null
+  raw_json: PjRawJson
   contracts: { contract_no: string | null; customer_name: string | null } | null
 }
 
@@ -7873,37 +7899,58 @@ function parsePjAmount(v: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0
 }
 
-/** รวม amount ของ receipt ที่ payment_type='penalty' ใน raw_json (ว่าง/พัง = 0) — raw_json shape object
- *  (mode "returned_watch") ไม่มี breakdown ค่าปรับต่อรายการแบบนี้ คืน 0 เสมอ (Array.isArray guard) */
-function sumPjPenalty(raw: PjRawReceipt[] | PjReturnedWatchRawJson | null | undefined): number {
-  if (!Array.isArray(raw)) return 0
-  return raw.reduce(
-    (sum, r) => (r?.payment_type === 'penalty' ? sum + parsePjAmount(r.amount) : sum),
+/** normalize รายการใบเสร็จ "ที่ยังไม่เคยลง" จาก raw_json ไม่ว่า shape ไหน เป็น {uuid, amount, paymentType}
+ *  เดียวกัน — ใช้ทั้ง sumPjPenalty / extractPjReceiptUuids / applyPjReviewPayment ให้อ่านตรงกันเป๊ะจุดเดียว
+ *  (ติ๊ก review RED1 fix, 9 ก.ย. 2026):
+ *  - array เดิม (PjRawReceipt, ทุกแถวคือใบที่ยังไม่เคยลง อยู่แล้วโดยธรรมชาติของ reason อื่นๆ)
+ *  - object ใหม่ RECEIPT_PARTIAL_APPLIED (unapplied_receipts[]) — ไม่รวม already_applied_receipts
+ *    (ใบพวกนั้นถูกจดใน pj_applied_receipts ไปแล้วจริง ไม่ต้องนับซ้ำ/ส่งซ้ำ)
+ *  - object returned_watch ไม่มี breakdown ต่อใบแบบนี้ → คืน [] เสมอ (จัดการแยกที่ caller) */
+function extractPjPendingReceipts(
+  raw: PjRawJson | undefined,
+): { uuid: string; amount: number; paymentType: string | null }[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((r): r is PjRawReceipt => !!r?.uuid)
+      .map(r => ({ uuid: String(r.uuid).trim(), amount: parsePjAmount(r.amount), paymentType: r.payment_type ?? null }))
+  }
+  if (raw && !('kind' in raw) && Array.isArray((raw as PjPartialAppliedRawJson).unapplied_receipts)) {
+    return ((raw as PjPartialAppliedRawJson).unapplied_receipts ?? [])
+      .filter((r): r is PjPartialReceiptItem => !!r?.uuid)
+      .map(r => ({ uuid: String(r.uuid).trim(), amount: parsePjAmount(r.amount), paymentType: r.paymentType ?? null }))
+  }
+  return []
+}
+
+/** รวม amount ของ receipt ที่ payment_type='penalty' ใน raw_json (ว่าง/พัง = 0)
+ *  - array เดิม/object RECEIPT_PARTIAL_APPLIED → ผ่าน extractPjPendingReceipts (เฉพาะใบที่ยังไม่เคยลง —
+ *    pj_amount ของแถวนี้ก็คำนวณจากส่วนที่ยังไม่ลงเหมือนกัน ดู pj-sync/index.ts queueReview RECEIPT_PARTIAL_APPLIED)
+ *  - object mode "returned_watch" ไม่มี breakdown ค่าปรับต่อรายการแบบนี้ คืน 0 เสมอ */
+function sumPjPenalty(raw: PjRawJson | undefined): number {
+  if (raw && !Array.isArray(raw) && 'kind' in raw && raw.kind === 'returned_watch') return 0
+  return extractPjPendingReceipts(raw).reduce(
+    (sum, r) => (r.paymentType === 'penalty' ? sum + r.amount : sum),
     0,
   )
 }
 
 /** ดึง uuid ดิบต่อใบเสร็จทุกตัวจาก raw_json (migration 0100 pj_applied_receipts ใช้เป็น dedup key) — [] ถ้าไม่มี
- *  รองรับทั้ง 2 shape: array ปกติ (field "uuid" ต่อแถว) และ object mode "returned_watch"
- *  (field "receiptUuids" ตรงตัว ไม่ต้อง map) */
-function extractPjReceiptUuids(raw: PjRawReceipt[] | PjReturnedWatchRawJson | null | undefined): string[] {
-  if (Array.isArray(raw)) {
-    return raw
-      .map(r => (r?.uuid ? String(r.uuid).trim() : null))
-      .filter((u): u is string => !!u)
-  }
-  if (raw && raw.kind === 'returned_watch' && Array.isArray(raw.receiptUuids)) {
+ *  รองรับ 3 shape: array ปกติ (field "uuid" ต่อแถว), object mode "returned_watch" (field "receiptUuids"
+ *  ตรงตัว ไม่ต้อง map) และ object RECEIPT_PARTIAL_APPLIED (เฉพาะ unapplied_receipts — ใบใหม่ที่ยังไม่เคยลง
+ *  เท่านั้น ให้ตรงกับความหมาย "ต้องยืนยันในกล่องนี้" ที่ใช้ dedup key/เปิดลิงก์ใบเสร็จ ติ๊ก review RED1 fix) */
+function extractPjReceiptUuids(raw: PjRawJson | undefined): string[] {
+  if (raw && !Array.isArray(raw) && 'kind' in raw && raw.kind === 'returned_watch' && Array.isArray(raw.receiptUuids)) {
     return raw.receiptUuids
       .map(u => (u ? String(u).trim() : null))
       .filter((u): u is string => !!u)
   }
-  return []
+  return extractPjPendingReceipts(raw).map(r => r.uuid)
 }
 
 /** ดึง uuid ใบ invoice ฝั่ง PJ จาก raw_json shape object (mode "returned_watch") — null ถ้า raw_json เป็น
  *  array แบบเดิม (ไม่มี invoice uuid ต่อแถว) ไว้ให้หน้ากล่องรอตรวจเปิดหน้า invoice ใน PJ ตรงๆ */
-function extractPjInvUuid(raw: PjRawReceipt[] | PjReturnedWatchRawJson | null | undefined): string | null {
-  if (raw && !Array.isArray(raw) && raw.kind === 'returned_watch' && raw.invUuid) {
+function extractPjInvUuid(raw: PjRawJson | undefined): string | null {
+  if (raw && !Array.isArray(raw) && 'kind' in raw && raw.kind === 'returned_watch' && raw.invUuid) {
     return String(raw.invUuid).trim()
   }
   return null
@@ -8114,7 +8161,7 @@ interface PjSiblingReviewRow {
   pj_paid_date: string | null
   pj_amount: string | number | null
   reason: string
-  raw_json: PjRawReceipt[] | null
+  raw_json: PjRawJson
 }
 
 /**
@@ -8322,19 +8369,28 @@ export async function applyPjReviewPayment(params: {
   }
 
   // ดึง uuid ต่อใบเสร็จจาก raw_json "ก่อน" เรียก RPC (read-only ไม่กระทบ atomicity ของการลงเงิน)
+  //
+  // ⚠️ (ติ๊ก review RED1 fix, 9 ก.ย. 2026) เดิม cast `(reviewRow?.raw_json ?? []) as PjRawReceipt[]` แล้ว
+  //    เช็ค Array.isArray ทันที — reason RECEIPT_PARTIAL_APPLIED ส่ง raw_json เป็น "object" (ดู
+  //    pj-sync/index.ts queueReview rawJsonOverride: {invoice_no, paid_date, already_applied_receipts,
+  //    unapplied_receipts, unapplied_totals, raw}) ไม่ใช่ array → Array.isArray เป็น false ทันที →
+  //    receiptsFound = [] → receiptUuidsPayload = null → RPC ไม่ได้รับ uuid → ใบที่พนักงานเพิ่งกดยืนยันไม่ถูก
+  //    จดใน pj_applied_receipts → รอบ sync ถัดไปเห็นว่า "ยังไม่เคยลง" → auto-apply ซ้ำ = เงินเบิ้ลจริง
+  //    (คอมเมนต์เดิมด้านบนฟังก์ชันนี้เตือนเรื่องนี้ไว้เองแต่โค้ดไม่ได้ทำตาม) แก้โดยใช้
+  //    extractPjPendingReceipts ตัวเดียวกับที่ sumPjPenalty/extractPjReceiptUuids ใช้ — รองรับทั้ง array
+  //    เดิมและ object ใหม่ในจุดเดียว ไม่มี regression กับ shape เดิม (array คืนผลเหมือนเดิมทุกประการ)
   let receiptUuidsPayload:
     | { uuid: string; invoice_no: string | null; paid_date: string | null; amount: number; payment_type: string | null; source: string }[]
     | null = null
   try {
-    const rawReceipts = (reviewRow?.raw_json ?? []) as PjRawReceipt[]
-    const receiptsFound = Array.isArray(rawReceipts) ? rawReceipts.filter(r => r?.uuid) : []
+    const receiptsFound = extractPjPendingReceipts(reviewRow?.raw_json as PjRawJson)
     if (receiptsFound.length > 0) {
       receiptUuidsPayload = receiptsFound.map(r => ({
-        uuid:         String(r.uuid),
+        uuid:         r.uuid,
         invoice_no:   reviewRow?.pj_invoice_no ?? null,
         paid_date:    paidDate || null,
-        amount:       parsePjAmount(r.amount),
-        payment_type: r.payment_type ?? reviewRow?.pj_payment_type ?? null,
+        amount:       r.amount,
+        payment_type: r.paymentType ?? reviewRow?.pj_payment_type ?? null,
         source:       'review',
       }))
     }

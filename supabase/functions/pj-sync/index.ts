@@ -1335,6 +1335,9 @@ export default {
       const review: { inv: string; reason: string }[] = [];
       let autoAppliedTotal = 0; // inst + pen
       let skippedAlreadySynced = 0;
+      // (9 ก.ย. 2026 — แก้บั๊ก all-or-nothing uuid dedup ทำใบค่าปรับหาย) เคส uuid ในก้อนเดียวกันตรงกับ
+      // pj_applied_receipts แค่ "บางใบ" (มีใบใหม่ปนอยู่) ห้าม skip เงียบเหมือนเดิม → นับแยกไว้ที่นี่
+      let receiptPartialApplied = 0;
 
       const reviewRows: any[] = []; // batch insert ตอนจบ (ไม่ dryRun)
 
@@ -1344,6 +1347,7 @@ export default {
         matchedContractId: string | null,
         pjType: string,
         pjAmount: number,
+        rawJsonOverride?: unknown,
       ) => {
         review.push({ inv: a.invoice_no, reason });
         reviewRows.push({
@@ -1354,7 +1358,7 @@ export default {
           pj_paid_date: a.paid_date,
           matched_contract_id: matchedContractId,
           reason,
-          raw_json: a.raw,
+          raw_json: rawJsonOverride ?? a.raw,
           status: "pending",
         });
       };
@@ -1483,13 +1487,25 @@ export default {
 
         let alreadySynced = false; // legacy path เท่านั้น
         let ledgerAlreadyApplied = false; // legacy path เท่านั้น
-        let alreadyAppliedByUuid = false; // uuid path เท่านั้น
+        let alreadyAppliedByUuid = false; // uuid path เท่านั้น — ตรงครบทุกใบ (idempotent ปกติ)
+        // (9 ก.ย. 2026 — Option B) ตรงกัน "บางใบ" เท่านั้น (มีใบใหม่ปนอยู่) — ห้าม auto-apply/skip เงียบ
+        // ต้องเข้ากล่องรอตรวจ ดู alreadyAppliedReceipts/unappliedReceipts ด้านล่าง
+        let partiallyAppliedByUuid = false;
+        let appliedReceiptUuidSet: Set<string> = new Set();
 
         if (usesUuidDedup) {
           // ── path ใหม่: เช็ค pj_applied_receipts ด้วย uuid ต่อใบเสร็จ (a.receipts) ─────────
-          //    เจอ uuid ใดก็ตามในเซ็ตนี้แปลว่า invoice นี้ (ของรอบนี้) ลงไปแล้ว → ข้ามทั้งก้อน
-          //    ใบเสร็จ invoice อื่น (uuid ต่างชุด) ของสัญญา/วันเดียวกัน ไม่ถูกกระทบ — จุดที่แก้บั๊กเงินหาย
+          //    ครบทุก uuid ในก้อนนี้ → invoice นี้ (ของรอบนี้) ลงไปแล้วทั้งหมด → ข้าม idempotent ปกติ
+          //    ตรงแค่ "บางใบ" (เช่น ค่างวดลงไปแล้ว แต่ค่าปรับยิงมาทีหลังเป็นใบใหม่) → เดิม all-or-nothing
+          //    skip ทั้งก้อนเงียบๆ ทำใบใหม่หายไปเลย ไม่เข้ากล่องด้วย (บั๊กที่แก้ตรงนี้) — ต้องแยก 2 กรณี
+          //    ใบเสร็จ invoice อื่น (uuid ต่างชุด) ของสัญญา/วันเดียวกัน ไม่ถูกกระทบอยู่แล้ว — จุดเดิมที่กันเงินหาย
           const receiptUuids = a.receipts.map((r) => r.uuid);
+          // ⚠️ (ติ๊ก review YELLOW3 fix, 9 ก.ย. 2026) เทียบ appliedReceiptUuidSet.size กับ "จำนวน uuid
+          // ไม่ซ้ำ" ไม่ใช่ receiptUuids.length ตรงๆ — ถ้า a.receipts มี uuid ซ้ำกันเอง (pagination race ตอน
+          // deep-scan ดึงใบเสร็จหน้าเดียวกันมา 2 รอบ) receiptUuids.length จะนับเกินจำนวน uuid จริง ทำให้
+          // appliedReceiptUuidSet.size (นับ unique เสมอเพราะเป็น Set) ไม่มีทาง >= length ปลอมนี้ → ก้อนที่
+          // ลงครบจริงถูกตีเป็น partial ปลอม เข้ากล่องรอตรวจแบบไร้ความหมาย (ไม่มีใบใหม่จริงให้ยืนยัน)
+          const uniqueReceiptUuidCount = new Set(receiptUuids).size;
           if (receiptUuids.length > 0) {
             const { data: seenReceipts, error: seenErr } = await db
               .from("pj_applied_receipts")
@@ -1498,7 +1514,14 @@ export default {
             if (seenErr) {
               return await failRun("error", `db error (pj_applied_receipts check): ${seenErr.message}`, 500);
             }
-            if (seenReceipts && seenReceipts.length > 0) alreadyAppliedByUuid = true;
+            appliedReceiptUuidSet = new Set((seenReceipts ?? []).map((r) => r.pj_receipt_uuid));
+            if (appliedReceiptUuidSet.size > 0) {
+              if (appliedReceiptUuidSet.size >= uniqueReceiptUuidCount) {
+                alreadyAppliedByUuid = true;
+              } else {
+                partiallyAppliedByUuid = true;
+              }
+            }
           }
         } else {
           // ── path เดิม (คงพฤติกรรมเดิมเป๊ะ — ห้ามแก้) ──────────────────────────────────
@@ -1525,6 +1548,51 @@ export default {
         if (alreadySynced || ledgerAlreadyApplied || alreadyAppliedByUuid) {
           skippedAlreadySynced++;
           continue; // ไม่ลง ไม่ review
+        }
+
+        if (partiallyAppliedByUuid) {
+          // ── Option B (9 ก.ย. 2026, อนุมัติคุณเตย) ────────────────────────────────────────
+          // ห้าม auto-apply เคสนี้เด็ดขาด (กันลงเบิ้ลใบที่ apply ไปแล้ว) และห้าม skip เงียบ (ใบใหม่ที่
+          // ปนมาจะหายไปเลย) → เข้ากล่องรอตรวจเสมอ ให้คนกดยืนยันเอง พร้อมแนบรายละเอียดครบให้ตัดสินใจได้:
+          // ใบที่ลงไปแล้ว (ตัด out) แยกจากใบที่ยังไม่เคยลง + ยอดรวมเฉพาะส่วนที่ยังไม่ลง แยกตามประเภท
+          receiptPartialApplied++;
+          const alreadyAppliedReceipts = a.receipts.filter((r) => appliedReceiptUuidSet.has(r.uuid));
+          const unappliedReceipts = a.receipts.filter((r) => !appliedReceiptUuidSet.has(r.uuid));
+          const unappliedTotals = { installment: 0, penalty: 0, other: 0 };
+          for (const r of unappliedReceipts) unappliedTotals[r.paymentType] += r.amount;
+          // ⚠️ (ติ๊ก review YELLOW4 fix, 9 ก.ย. 2026) เดิมส่ง pj_amount = ยอดรวมทุกประเภท (installment+
+          // penalty+other) พร้อม pj_payment_type = ประเภทที่ยอด "เยอะสุด" (dominantType) — ไม่ตรงกับ
+          // convention ที่ reason อื่นทั้งไฟล์นี้ใช้ (pj_amount = installment ล้วน, ค่าปรับแยกไปอยู่ raw_json
+          // ให้ sumPjPenalty ที่ db.ts บวกเพิ่มเอง — ดู queueReview(a,"PARTIAL",...,a.inst_amt) ด้านล่าง)
+          // ฝั่งหน้าเว็บ (PjSyncReview.tsx/pjReviewExplain.ts) คำนวณ total = row.amount + row.penaltyAmount
+          // เสมอ ถ้า row.amount เป็นยอดรวมอยู่แล้ว จะบวกส่วนค่าปรับซ้ำเข้าไปอีกที = เงินเบิ้ล (ถ้า dominantType
+          // ไม่ใช่ "penalty") หรือยอดเบี้ยวผิดหมวด (ถ้า dominantType เป็น "penalty" ทั้งที่ปนเงินต้นอยู่ด้วย)
+          // แก้ให้ตรง convention เดิม: มี installment ปน (ไม่ว่าจะเยอะกว่า/น้อยกว่า penalty) → ถือ
+          // pj_amount = installment ล้วน, type "installment" (ค่าปรับให้ sumPjPenalty บวกจาก unapplied_receipts
+          // เอง) ไม่มี installment เลย (penalty ล้วน) → pj_amount = penalty, type "penalty" (isPenaltyOnly ฝั่ง
+          // UI). unappliedTotals.other ในทางปฏิบัติเป็น 0 เสมอที่จุดนี้ (a.has_other คัดออกไปเข้า reason
+          // "OTHER" ตั้งแต่บรรทัดก่อนหน้าแล้ว ถ้ามีแม้แต่ใบเดียวในก้อนทั้งหมด) — เผื่อไว้ fallback "other" กันเหนียว
+          const reviewPjType: "installment" | "penalty" | "other" =
+            unappliedTotals.installment > 0
+              ? "installment"
+              : unappliedTotals.penalty > 0
+                ? "penalty"
+                : "other";
+          const reviewPjAmount =
+            reviewPjType === "installment"
+              ? unappliedTotals.installment
+              : reviewPjType === "penalty"
+                ? unappliedTotals.penalty
+                : unappliedTotals.other;
+          queueReview(a, "RECEIPT_PARTIAL_APPLIED", contract.id, reviewPjType, reviewPjAmount, {
+            invoice_no: a.invoice_no,
+            paid_date: a.paid_date,
+            already_applied_receipts: alreadyAppliedReceipts, // ใบที่ลงไปแล้ว (uuid ตรงกับ pj_applied_receipts)
+            unapplied_receipts: unappliedReceipts, // ใบใหม่ที่ยังไม่เคยลง — ต้องยืนยันในกล่องนี้
+            unapplied_totals: unappliedTotals, // ยอดรวมเฉพาะส่วนที่ยังไม่ลง แยกประเภท
+            raw: a.raw,
+          });
+          continue; // ไม่ auto-apply — รอคนกดยืนยันในกล่องรอตรวจเท่านั้น
         }
 
         // next-unpaid = ตัวแรก status in (pending, late)
@@ -1606,11 +1674,21 @@ export default {
             // ⚠️ landmine 2 (0114, พี่ดิว) — ห้าม auto_resolved กลบแถว drift (RECEIPT_MISSING/
             // RECEIPT_CHANGED) ที่บังเอิญ invoice_no เดียวกัน: เงินเข้าใหม่ไม่ได้แปลว่าใบเสร็จผีที่เคยรายงาน
             // ไปแล้วหายไปไหน (คนละใบเสร็จ/uuid กันเลย) — exclude reason drift ออกจาก bulk update นี้เสมอ
-            await db.from("pj_sync_review")
+            // ⚠️ (ติ๊ก review RED2 fix, 9 ก.ย. 2026) ต้อง exclude "RECEIPT_PARTIAL_APPLIED" ด้วยเช่นกัน —
+            // invoice_no ซ้ำกันได้คนละวัน (comment aggKey บรรทัด ~1286) เช่น ใบวันที่ 5 auto-apply ครบ
+            // (มาถึง branch นี้) จะไป bulk-close เคส partial ของใบวันที่ 20 (invoice_no เดียวกัน) ทิ้งทั้งที่
+            // ยังไม่มีใครกดยืนยัน = เงินของวันที่ 20 หายเงียบ (บั๊กเดิมที่ Option B ตั้งใจแก้กลับมาอีกทาง)
+            // เพิ่มชั้นสอง: scope ด้วย pj_paid_date ให้แน่นกว่าเดิม (แก้เฉพาะแถวของ "วันนี้ที่เพิ่งลง" จริงๆ
+            // ไม่ใช่ทุกแถว invoice_no เดียวกันไม่ว่าวันไหน) ตรงกับ granularity ของ aggKey ที่ใช้ dedup อยู่แล้ว
+            let cleanupQuery = db.from("pj_sync_review")
               .update({ status: "auto_resolved" })
               .eq("pj_invoice_no", a.invoice_no)
               .eq("status", "pending")
-              .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED")');
+              .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED","RECEIPT_PARTIAL_APPLIED")');
+            cleanupQuery = targetPaidDate
+              ? cleanupQuery.eq("pj_paid_date", targetPaidDate)
+              : cleanupQuery.is("pj_paid_date", null);
+            await cleanupQuery;
           } catch { /* best-effort — ไม่บล็อกทั้งรอบ (housekeeping เท่านั้น ไม่ใช่เงิน) */ }
           autoApplied.push({ contract_no: contractNo, amount: instAmt + a.pen_amt });
           autoAppliedTotal += instAmt + a.pen_amt;
@@ -1689,6 +1767,8 @@ export default {
         receipts_fetched: rows.length,
         down_skipped: downSkipped,
         skipped_already_synced: skippedAlreadySynced,
+        // (9 ก.ย. 2026) เคส uuid ตรงบางใบ (มีใบใหม่ปนอยู่) — เข้ากล่องรอตรวจ ไม่ auto-apply ไม่ skip เงียบ
+        receipt_partial_applied: receiptPartialApplied,
         auto_applied: autoApplied,
         auto_applied_total: autoAppliedTotal,
         review,
