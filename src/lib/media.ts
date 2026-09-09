@@ -116,6 +116,23 @@ export function isGated(
 }
 
 // ---------------------------------------------------------------------------
+// MEDIA_TRACK_FROM — วันที่ระบบแนบรูปในเว็บเริ่มใช้จริง (2026-09-08)
+// ต่างจาก isGated()/gateFrom ด้านบน (คุม "บล็อกส่งเมล" อ่านจาก app_settings แก้ได้)
+// ตัวนี้คุมแค่ "ป้ายเตือน" ในหน้ารอสรุปยอด (WaitingSummary.tsx) — เตือนอย่างเดียว ไม่บล็อก
+// ฮาร์ดโค้ดตามวันที่ฟีเจอร์รูป deploy จริง (เคสเก่ากว่านี้ไม่เคยมีกติกาให้แนบรูป เตือนย้อนหลังไม่ได้)
+// ---------------------------------------------------------------------------
+export const MEDIA_TRACK_FROM = '2026-09-08'
+
+/**
+ * เคสนี้ "เข้าเกณฑ์ติดตามรูป" หรือยัง (createdAt >= MEDIA_TRACK_FROM)
+ * createdAt ว่าง/undefined -> false (ข้อมูลเก่าไม่มี timestamp ที่เทียบได้ -> ไม่เตือน)
+ */
+export function isMediaTracked(createdAt: string | null | undefined): boolean {
+  if (!createdAt) return false
+  return createdAt.slice(0, 10) >= MEDIA_TRACK_FROM
+}
+
+// ---------------------------------------------------------------------------
 // evaluateSlots
 // ---------------------------------------------------------------------------
 
@@ -367,6 +384,12 @@ export function maskName(name: string): string {
 // (8) gateFrom='2026-09-08', contract.createdAt=undefined -> false (ข้อมูลเก่า)
 // (9) gateFrom='2026-09-08', contract.createdAt='2026-09-08T10:00:00Z' -> true (slice 0,10 เท่ากัน = gated)
 // (10) gateFrom='2026-09-08', contract.createdAt='2026-09-01' -> false (ก่อน cutoff)
+//
+// isMediaTracked:
+// (10b) createdAt=undefined/null/'' -> false (ข้อมูลเก่าไม่มี timestamp)
+// (10c) createdAt='2026-09-08T09:00:00Z' -> true (เท่ากับ MEDIA_TRACK_FROM = gated)
+// (10d) createdAt='2026-06-16' (เก่ากว่า) -> false
+// (10e) createdAt='2026-09-09' (ใหม่กว่า) -> true
 //
 // checkImageFile:
 // (11) mime:'application/pdf' -> accept:false, warnings:[{code:'not_image', message:'ไฟล์นี้ไม่ใช่รูปภาพ'}]

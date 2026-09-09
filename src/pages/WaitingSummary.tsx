@@ -3,20 +3,24 @@ import { Link } from 'react-router-dom'
 import { Pencil, RotateCcw, X } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import CopyBox from '../components/CopyBox'
+import { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractMediaCard'
 import { calcSummary } from '../lib/calc'
 import { baht, thaiDate } from '../lib/format'
 import { buildBulkSummary, buildRejectionBanner, REJECTION_REASON_LABEL } from '../lib/messages'
 import {
   clearNeedsFix,
   getContracts,
+  getMediaSlots,
+  getMediaStatuses,
   getShops,
   markSummaryShopSent,
   markSummaryAccountingSent,
   updateSummaryNote,
 } from '../lib/db'
+import { DEFAULT_MEDIA_SLOTS, isMediaTracked, type MediaSlot } from '../lib/media'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
-import type { Contract, Shop } from '../lib/types'
+import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
 
 type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
 type SortDir = 'asc' | 'desc'
@@ -170,6 +174,11 @@ export default function WaitingSummary() {
   const [toDate, setToDate] = useState('')
   const [shopFilter, setShopFilter] = useState('')
 
+  // ===== ป้ายเตือนรูป/ตรวจ ก่อนกดส่งร้าน (เตือนอย่างเดียว ไม่บล็อก — เจ้าของเคาะ 09-08) =====
+  // เฉพาะคอลัมน์ "รอส่งร้าน" (ก่อนเงินออกจริง) เฉพาะเคสตั้งแต่ MEDIA_TRACK_FROM (มีระบบรูปแล้วเท่านั้น)
+  const [mediaSlots, setMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
+  const [mediaStatuses, setMediaStatuses] = useState<Map<string, ContractMediaStatus>>(new Map())
+
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
   // หมายเหตุที่ใช้แสดงจริง — ถ้ามี override (เพิ่งบันทึกรอบนี้) ใช้ override ก่อน ไม่งั้นใช้ค่าจาก DB
   const noteOf = (c: Contract) =>
@@ -206,6 +215,45 @@ export default function WaitingSummary() {
       ),
     [data.contracts, locallyShopSent, locallyAccountingSent],
   )
+
+  // โหลดนิยามช่องรูป (ครั้งเดียว ตอน mount) — ใช้ประเมินสถานะรูปของเคสที่เข้าเกณฑ์ติดตาม
+  useEffect(() => {
+    getMediaSlots().then((raw) => setMediaSlots(normalizeMediaSlots(raw)))
+  }, [])
+
+  // เคสฝั่ง "รอส่งร้าน" ที่เข้าเกณฑ์ติดตามรูป (createdAt >= MEDIA_TRACK_FROM) เท่านั้น
+  const trackedShopIds = useMemo(
+    () => shopBase.filter((c) => isMediaTracked(c.createdAt)).map((c) => c.id),
+    [shopBase],
+  )
+
+  // โหลดสถานะรูปเฉพาะเคสที่เข้าเกณฑ์ (ไม่ดึงทั้ง 25 เคส) — กันหน้าช้าลง
+  useEffect(() => {
+    if (trackedShopIds.length === 0) {
+      setMediaStatuses(new Map())
+      return
+    }
+    let cancelled = false
+    getMediaStatuses(trackedShopIds)
+      .then((rows) => {
+        if (cancelled) return
+        setMediaStatuses(new Map(rows.map((r) => [r.contractId, r])))
+      })
+      .catch(() => {
+        /* เงียบ: ป้ายรูปแค่ไม่โชว์ ไม่บล็อกหน้า */
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackedShopIds])
+
+  // ประเมินสถานะรูปของเคส (null = ยังไม่โหลดเสร็จ/ไม่เข้าเกณฑ์ติดตาม)
+  function mediaEvaluationFor(c: Contract) {
+    const status = mediaStatuses.get(c.id)
+    if (!status) return null
+    return evaluateFromStatus(mediaSlots, status)
+  }
 
   // คอลัมน์ขวา (รอส่งบัญชี): ส่งร้านแล้ว (DB หรือรอบนี้) แต่ยังไม่ส่งบัญชี
   const accountingBase = useMemo(
@@ -513,6 +561,15 @@ export default function WaitingSummary() {
                                 {' '}— {c.contractNo}
                               </p>
                               {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
+                              {isMediaTracked(c.createdAt) && (() => {
+                                const ev = mediaEvaluationFor(c)
+                                return ev && !ev.complete ? (
+                                  <Badge tone="amber">{`รูป ขาด ${ev.missing.length}`}</Badge>
+                                ) : null
+                              })()}
+                              {isMediaTracked(c.createdAt) && (c.reviewStatus ?? null) !== 'approved' && (
+                                <Badge tone="amber">ยังไม่ผ่านตรวจ</Badge>
+                              )}
                               {canEditNote && (
                                 <button
                                   type="button"
