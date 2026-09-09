@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
 import { Badge, Button, Field, Input, Modal, Select } from './ui'
 import CopyBox from './CopyBox'
-import { baht, statusLabel } from '../lib/format'
+import { baht, statusLabel, thaiDate } from '../lib/format'
 import {
   closeContractEarlyPreserve,
   getContractExtensions,
@@ -61,6 +61,62 @@ function buildPenaltyPaidMap(
 
 function resolveCategory(row: FeeRowState): string {
   return row.categoryChoice === CUSTOM_FEE_OPTION ? row.customName.trim() : row.categoryChoice
+}
+
+interface SuspiciousPaymentRow {
+  dateStr: string
+  amount: number
+  byName: string | null
+}
+
+/** เงินที่อาจซ้ำกับยอดปิดสัญญา — รายการรับชำระ (action='pay') ที่เกิดตั้งแต่วันที่ปิด (closedAt) เป็นต้นไป
+ *  ใช้วันจ่ายจริงของงวด (installment.paidAt) เป็นหลัก เพราะเป็นวันที่งวดปิดสนิทจริง ถ้างวดยังไม่ปิดสนิท
+ *  (จ่ายบางส่วน paidAt=null) ค่อย fallback ไปวันที่บันทึกรายการ (entry.createdAt) — pattern เดียวกับ
+ *  buildPenaltyPaidMap ด้านบน กันเลขไม่ตรงกับที่คอลัมน์อื่นในหน้านี้ใช้
+ *
+ *  ⚠️ ต้องข้ามรายการ 'pay' ที่ถูกยกเลิกไปแล้ว — cancel_payment (mig 0011) reset ยอดงวดแต่ "ไม่ลบ" แถว pay
+ *  เดิมใน payment_log แค่เพิ่มแถว cancel ต่อท้าย ถ้านับ pay เดิมด้วยจะเตือนซ้ำซ้อนทั้งที่เงินถูกยกเลิกไปแล้ว
+ *  แก้ด้วย pattern เดียวกับ penaltyPaidForInstallment (calc.ts) — ไล่ log ของแต่ละงวดตามลำดับเวลา (เก่า→ใหม่)
+ *  เจอ 'cancel' เมื่อไหร่ ทิ้งรายการ 'pay' ที่สะสมมาก่อนหน้าของงวดนั้นทั้งหมด นับเฉพาะ 'pay' ที่ยังไม่โดนยกเลิก
+ *  ล่าสุด (เกิดหลัง 'cancel' ล่าสุด หรือไม่มี cancel เลย)
+ *
+ *  ⚠️ ทิศทาง logByIns: getPaymentLog (db.ts) ดึงมาเรียง created_at ใหม่→เก่า และ ContractDetail.tsx ไม่ได้
+ *  re-sort ตอน group เป็น logByIns (แค่ push ตามลำดับที่ได้มา) ดังนั้น logByIns.get(id) คือ "ใหม่→เก่า" —
+ *  ต้อง sort เป็น "เก่า→ใหม่" เองก่อน walk (เหมือนที่ penaltyPaidForInstallment ทำ [...entries].sort(...)
+ *  ภายในฟังก์ชันเอง ไม่พึ่งลำดับจากผู้เรียก) */
+function buildSuspiciousPayments(
+  installments: Installment[],
+  logByIns: Map<string, PaymentLogEntry[]>,
+  closedAt: string,
+): { count: number; total: number; rows: SuspiciousPaymentRow[] } {
+  const rows: SuspiciousPaymentRow[] = []
+  let total = 0
+  for (const ins of installments) {
+    const entries = logByIns.get(ins.id) ?? []
+    const sorted = [...entries].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
+
+    // เก็บเฉพาะแถว 'pay' ที่ยังไม่ถูกยกเลิก — เจอ 'cancel' เมื่อไหร่ ล้างสะสมของงวดนี้ทิ้งทั้งหมด
+    let livePays: PaymentLogEntry[] = []
+    for (const entry of sorted) {
+      if (entry.action === 'cancel') {
+        livePays = []
+        continue
+      }
+      if (entry.action === 'pay') {
+        livePays.push(entry)
+      }
+      // action === 'edit' → ไม่ใช่เงินเข้าใหม่ ไม่นับไม่ล้าง (0-contribution เหมือน penaltyPaidForInstallment)
+    }
+
+    for (const entry of livePays) {
+      const dateStr = ins.paidAt ? ins.paidAt.slice(0, 10) : entry.createdAt.slice(0, 10)
+      if (dateStr < closedAt) continue
+      rows.push({ dateStr, amount: entry.amount, byName: entry.byName })
+      total += entry.amount
+    }
+  }
+  rows.sort((a, b) => (a.dateStr < b.dateStr ? 1 : a.dateStr > b.dateStr ? -1 : 0))
+  return { count: rows.length, total, rows }
 }
 
 /** ข้อความสรุปยอดปิดสัญญาก่อนกำหนด สำหรับคัดลอกส่งลูกค้า — รูปแบบเดียวกับที่ทีมส่งลูกค้าจริง
@@ -330,6 +386,13 @@ export default function EarlyCloseModal({
   const notActive = contract.status !== 'active'
   const canProceed = result.errors.length === 0 && !notActive
 
+  // ตรวจกันซ้ำ: เงินที่ลงเว็บไปแล้วตั้งแต่วันที่ปิด (closedAt) — ไม่ block ปุ่ม แค่เตือนให้เช็คก่อนกด
+  // (แทนคำเตือน PJ auto-sync เดิมที่ไม่ตรงความจริง — pj-sync เข้ากล่องรอตรวจเมื่อไม่มีงวดค้าง ไม่ลงอัตโนมัติ)
+  const suspiciousPayments = useMemo(
+    () => buildSuspiciousPayments(installments, logByIns, closedAt),
+    [installments, logByIns, closedAt],
+  )
+
   async function handleConfirm() {
     setBusy(true)
     setErr(null)
@@ -402,9 +465,37 @@ export default function EarlyCloseModal({
             </div>
             <p className="mt-3 text-xs text-amber-800">วันที่ปิดจริง: {closedAt}</p>
 
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700">
-              ⚠️ ถ้าเงินก้อนนี้ถูกคีย์เข้า PJ แล้ว ระบบจะดูดมาลงให้เองอัตโนมัติ — กดปุ่มนี้เฉพาะกรณีที่ยังไม่ได้ลงใน PJ เท่านั้น
-            </div>
+            {suspiciousPayments.count === 0 ? (
+              <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2.5 text-xs text-green-800">
+                <p className="font-semibold">✅ ตรวจแล้ว — ยังไม่มีการลงเงินก้อนนี้ในเว็บ</p>
+                <p className="mt-1">
+                  ไม่พบรายการรับชำระตั้งแต่วันที่ {thaiDate(closedAt)} เป็นต้นมา กดยืนยันได้เลย ไม่ซ้ำแน่นอน
+                </p>
+              </div>
+            ) : (
+              <div className="mt-3 rounded-lg border border-amber-300 bg-amber-100 px-3 py-2.5 text-xs text-amber-800">
+                <p className="font-semibold">
+                  ⚠️ พบการลงเงินในเว็บแล้ว {suspiciousPayments.count} รายการ รวม {baht(suspiciousPayments.total)} บาท
+                </p>
+                <p className="mt-1">
+                  ถ้านี่คือเงินก้อนเดียวกับยอดปิดสัญญา ให้ยกเลิกรายการชำระนั้นก่อน แล้วค่อยกดปิด
+                  ไม่งั้นเงินจะถูกนับซ้ำ
+                </p>
+                <ul className="mt-1.5 list-disc pl-4">
+                  {suspiciousPayments.rows.slice(0, 5).map((row, idx) => (
+                    <li key={`${row.dateStr}-${idx}`}>
+                      {thaiDate(row.dateStr)} · {baht(row.amount)} บาท · โดย {row.byName ?? 'ไม่ระบุ'}
+                    </li>
+                  ))}
+                </ul>
+                {suspiciousPayments.count > 5 && (
+                  <p className="mt-1">และอีก {suspiciousPayments.count - 5} รายการ</p>
+                )}
+              </div>
+            )}
+            <p className="mt-2 text-[11px] text-ink-soft">
+              หมายเหตุ: ถ้าเงินก้อนนี้เข้า PJ แล้ว ระบบจะไม่ลงซ้ำให้เอง — จะเด้งเข้ากล่องรอตรวจให้คนตรวจอีกครั้ง
+            </p>
 
             {!hasAnyFee && (
               <p className="mt-2 text-xs text-ink-soft">
