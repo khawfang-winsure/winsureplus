@@ -3298,16 +3298,14 @@ function PaymentModal({
   // เปิดโหมด 'pay' บนงวดที่ค่างวดครบแล้ว (paidAt != null) = มาจากปุ่ม "เก็บค่าปรับ" เท่านั้น (ดู RowActions)
   // เงินต้น remaining จะเป็น 0 อยู่แล้วโดยธรรมชาติ (จ่ายครบ) — ไม่ต้อง derive แยก
   const penaltyOnly = mode === 'pay' && ins.paidAt != null
+  // ยอดค่าปรับคงค้างสุทธิ = ตั้งไว้ - เก็บไปแล้ว (ไม่ต่ำกว่า 0) — ใช้ทั้ง default ช่องกรอกและ label
+  const netPenaltyDue = Math.max(0, ins.penaltyAmount - (alreadyPaidPenalty ?? 0))
   // โหมดรับชำระ: ตั้งค่าเริ่มต้น = ยอดค้างที่เหลือ / โหมดแก้ไข: = ยอดสะสมปัจจุบัน
   const [amount, setAmount] = useState<number>(mode === 'pay' ? remaining : ins.paidAmount)
   // ค่าปรับ default: กรณีเก็บค่าปรับอย่างเดียว = netPenaltyDue (ยังค้างเก็บจริง) / กรณีรับชำระปกติ = penalty_amount ของงวด
   // (ถ้างวดยังไม่ปิด), 0 ถ้าแก้ไขยอด
   const [penaltyPaid, setPenaltyPaid] = useState<number>(
-    mode === 'pay'
-      ? penaltyOnly
-        ? Math.max(0, ins.penaltyAmount - (alreadyPaidPenalty ?? 0))
-        : ins.penaltyAmount
-      : 0,
+    mode === 'pay' ? (penaltyOnly ? netPenaltyDue : ins.penaltyAmount) : 0,
   )
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -3437,7 +3435,13 @@ function PaymentModal({
 
         {/* ค่าปรับ: แสดงเฉพาะโหมด 'pay' */}
         {mode === 'pay' && (
-          <Field label={`ค่าปรับที่จ่ายครั้งนี้ (บาท) — ค่าปรับคงค้าง ${baht(ins.penaltyAmount)} ฿`}>
+          <Field
+            label={
+              (alreadyPaidPenalty ?? 0) > 0
+                ? `ค่าปรับที่จ่ายครั้งนี้ (บาท) — คงค้าง ${baht(netPenaltyDue)} ฿ จากทั้งหมด ${baht(ins.penaltyAmount)} ฿`
+                : `ค่าปรับที่จ่ายครั้งนี้ (บาท) — ค่าปรับคงค้าง ${baht(ins.penaltyAmount)} ฿`
+            }
+          >
             <input
               type="text"
               inputMode="decimal"
