@@ -12,6 +12,7 @@ import {
   getRateSets,
   getFollowUps,
   recordPaymentWithPenalty,
+  recordPenaltyOnlyPayment,
   setInstallmentPenalty,
   getPenaltyOverrideHistory,
   getExtraCharges,
@@ -94,7 +95,7 @@ import {
   type RightStatus,
   type ReconcileResult,
 } from '../lib/feeReconcile'
-import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment } from '../lib/calc'
+import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment, netPenaltyDue } from '../lib/calc'
 import { COURIERS } from '../lib/returnWorkflow'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
@@ -704,8 +705,35 @@ export default function ContractDetail() {
     }
   }
 
+  // จัดกลุ่มประวัติการชำระตามงวด + แยก 3 ทาง (ย้ายขึ้นมาก่อน penaltyDue ด้านล่าง เพราะต้องใช้ logByIns
+  // คำนวณค่าปรับที่ "เก็บแล้วจริง" ต่องวด):
+  // - logByIns: ผูกกับงวดปัจจุบัน
+  // - orphanLogs: งวดถูกลบตอนขยายเวลา (installmentId != null แต่ไม่อยู่ใน live)
+  // - downLogs: เงินดาวน์ (installmentId == null — ไม่เคยผูกกับงวด)
+  const liveInsIds = new Set(installments.map((i) => i.id))
+  const logByIns = new Map<string, PaymentLogEntry[]>()
+  const orphanLogs: PaymentLogEntry[] = []
+  const downLogs: PaymentLogEntry[] = []
+  for (const e of log) {
+    if (e.installmentId && liveInsIds.has(e.installmentId)) {
+      const arr = logByIns.get(e.installmentId)
+      if (arr) arr.push(e)
+      else logByIns.set(e.installmentId, [e])
+    } else if (e.installmentId == null) {
+      downLogs.push(e)
+    } else {
+      orphanLogs.push(e)
+    }
+  }
+
   const paidCount = installments.filter((i) => i.paidAt).length
-  const penaltyDue = installments.filter((i) => !i.paidAt).reduce((s, i) => s + i.penaltyAmount, 0)
+  // ค่าปรับค้างรวม = ค่าปรับที่ "ยังค้างเก็บจริง" (netPenaltyDue) ของ "ทุกงวด" ไม่ใช่แค่งวดที่ยังไม่จ่ายค่างวด
+  // (แก้บั๊ก 2026-09-10: งวดที่ค่างวดจ่ายครบแล้วแต่ค่าปรับยังเก็บไม่ครบ เคยหายไปจากยอดนี้ทั้งหมด)
+  // เก็บเป็นตัวเลขดิบ ไม่ปัดเศษ (penaltyAmount/penaltyPaidForInstallment เป็นจำนวนเต็มบาทอยู่แล้ว)
+  const penaltyDue = installments.reduce(
+    (s, i) => s + netPenaltyDue(i.penaltyAmount, logByIns.get(i.id) ?? []),
+    0,
+  )
   const extraChargesSum = sumExtraCharges(extraCharges)
   const principalRemaining = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
   const totalOutstandingAmt = calcTotalOutstanding(penaltyDue, extraChargesSum, principalRemaining)
@@ -750,26 +778,6 @@ export default function ContractDetail() {
   const settleOtherIncome = otherIncomeItems.filter((oi) => oi.feeKind === 'settle')
   const settleOtherIncomeTotal = settleOtherIncome.reduce((s, oi) => s + oi.amount, 0)
   const settleTotalReceived = settlementPaidAmt + settleOtherIncomeTotal
-
-  // จัดกลุ่มประวัติการชำระตามงวด + แยก 3 ทาง:
-  // - logByIns: ผูกกับงวดปัจจุบัน
-  // - orphanLogs: งวดถูกลบตอนขยายเวลา (installmentId != null แต่ไม่อยู่ใน live)
-  // - downLogs: เงินดาวน์ (installmentId == null — ไม่เคยผูกกับงวด)
-  const liveInsIds = new Set(installments.map((i) => i.id))
-  const logByIns = new Map<string, PaymentLogEntry[]>()
-  const orphanLogs: PaymentLogEntry[] = []
-  const downLogs: PaymentLogEntry[] = []
-  for (const e of log) {
-    if (e.installmentId && liveInsIds.has(e.installmentId)) {
-      const arr = logByIns.get(e.installmentId)
-      if (arr) arr.push(e)
-      else logByIns.set(e.installmentId, [e])
-    } else if (e.installmentId == null) {
-      downLogs.push(e)
-    } else {
-      orphanLogs.push(e)
-    }
-  }
 
   // สิทธิ์ขยายที่ยังเหลือ (ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
   const canExtend = allowedExtTypes(extensions).length > 0
@@ -1978,6 +1986,10 @@ export default function ContractDetail() {
                 const closedPending = contract.status === 'closed' && !i.paidAt && !partial
                 // ค่าปรับที่เก็บแล้วจริงของงวดนี้ (ใช้ทั้งคอลัมน์ค่าปรับ + ป้ายเตือนกันลงซ้ำใน PaymentModal)
                 const rowPenaltyPaid = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
+                // ค่าปรับที่ "ยังค้างเก็บจริง" ของงวดนี้ — ใช้ตัดสินป้ายเตือน + ปุ่ม "เก็บค่าปรับ" ด้านล่าง
+                // (contract.status !== 'closed' กันป้าย/ปุ่มโผล่บนสัญญาปิดก่อนกำหนดแบบเก่าที่ผูกค่าปรับไว้เป็นก้อนเดียว = ค่าปรับผี)
+                const rowNetPenaltyDue = netPenaltyDue(i.penaltyAmount, logByIns.get(i.id) ?? [])
+                const rowPenaltyOnly = i.paidAt != null && rowNetPenaltyDue > 0 && contract.status !== 'closed'
                 return (
                   <tr
                     key={i.id}
@@ -2057,7 +2069,11 @@ export default function ContractDetail() {
                     </td>
                     <td className="px-3 py-2.5">
                       {i.paidAt ? (
-                        <Badge tone="green">{installmentLabel(i.status)}</Badge>
+                        rowPenaltyOnly ? (
+                          <Badge tone="amber">ค่างวดครบ · ค่าปรับค้าง {baht(rowNetPenaltyDue)} บาท</Badge>
+                        ) : (
+                          <Badge tone="green">{installmentLabel(i.status)}</Badge>
+                        )
                       ) : partial ? (
                         <Badge tone="amber">ชำระบางส่วน</Badge>
                       ) : returnedClosedUnpaid ? (
@@ -2085,6 +2101,7 @@ export default function ContractDetail() {
                         logCount={logByIns.get(i.id)?.length ?? 0}
                         canStaff={canStaff}
                         notCollectible={returnNotCollect || closedPending}
+                        penaltyOnly={rowPenaltyOnly}
                         onPay={() => setPayTarget({ ins: i, mode: 'pay', alreadyPaidPenalty: rowPenaltyPaid })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
                         onCancel={() => setCancelTarget(i)}
@@ -3012,6 +3029,7 @@ function RowActions({
   logCount,
   canStaff,
   notCollectible = false,
+  penaltyOnly = false,
   onPay,
   onEdit,
   onCancel,
@@ -3022,6 +3040,8 @@ function RowActions({
   logCount: number
   canStaff: boolean
   notCollectible?: boolean
+  /** true = งวดนี้ค่างวดครบแล้ว แต่ยังมีค่าปรับค้างเก็บ — โชว์ปุ่ม "เก็บค่าปรับ" แทน "รับชำระ" */
+  penaltyOnly?: boolean
   onPay: () => void
   onEdit: () => void
   onCancel: () => void
@@ -3067,13 +3087,14 @@ function RowActions({
 
   return (
     <div className="relative flex flex-wrap items-center gap-1.5">
-      {/* รับชำระ — primary, โชว์เฉพาะ admin+staff ถ้างวดยังไม่ปิด (#5) + ซ่อนถ้างวด "ไม่เก็บแล้ว" (คืนเครื่อง) */}
-      {canStaff && !ins.paidAt && !notCollectible && (
+      {/* รับชำระ — primary, โชว์เฉพาะ admin+staff ถ้างวดยังไม่ปิด (#5) + ซ่อนถ้างวด "ไม่เก็บแล้ว" (คืนเครื่อง)
+          หรือ penaltyOnly = ค่างวดครบแล้วแต่ยังมีค่าปรับค้างเก็บ → คงปุ่มไว้ แต่เปลี่ยนป้ายเป็น "เก็บค่าปรับ" */}
+      {canStaff && !notCollectible && (!ins.paidAt || penaltyOnly) && (
         <button
           onClick={onPay}
           className="rounded-lg bg-salmon-deep px-3 py-1 text-xs font-semibold text-white hover:brightness-105"
         >
-          รับชำระ
+          {penaltyOnly ? 'เก็บค่าปรับ' : 'รับชำระ'}
         </button>
       )}
 
@@ -3190,6 +3211,17 @@ function MobileModal({
   )
 }
 
+/**
+ * #5 — ข้อความ breakdown ค่าปรับของ 1 รายการในประวัติการชำระ
+ * เทียบ penaltyPaidAmount ของรายการนั้น กับ penaltyAmount ("ต้องเรียก") ปัจจุบันของงวด
+ * (caller กรองแล้วว่าไม่ใช่ action='cancel' และไม่ใช่ทั้งคู่ = 0 ก่อนเรียก)
+ */
+function penaltyBreakdownText(entryPenaltyPaid: number, installmentPenaltyAmount: number): string {
+  if (entryPenaltyPaid === 0) return `ค่าปรับ ${baht(installmentPenaltyAmount)} บาท (ยังไม่เก็บ)`
+  if (entryPenaltyPaid >= installmentPenaltyAmount) return `ค่าปรับ เก็บครบ ${baht(entryPenaltyPaid)} บาท`
+  return `ค่าปรับ เก็บแล้ว ${baht(entryPenaltyPaid)} จาก ${baht(installmentPenaltyAmount)} บาท`
+}
+
 /** ประวัติการชำระของงวดเดียว (เปิดจากปุ่ม "ประวัติ" ในแถวงวด) */
 function PaymentHistoryModal({
   ins,
@@ -3223,6 +3255,13 @@ function PaymentHistoryModal({
                   ยอดสะสมหลังทำ <span className="whitespace-nowrap">{baht(e.paidAmountAfter)} ฿</span> · โดย {e.byName || '—'}
                   {e.note ? ` · ${e.note}` : ''}
                 </p>
+                {/* #5 — breakdown ค่าปรับของรายการนี้ เทียบกับค่าปรับที่ต้องเรียกของงวด (ins.penaltyAmount)
+                    ไม่โชว์เมื่อ action='cancel' (เหมือนยอดค่างวดด้านบน) หรือแถวนี้/งวดนี้ไม่เกี่ยวกับค่าปรับเลย (ทั้งคู่ = 0)
+                    action='edit' คือแก้ยอดค่างวด ไม่เกี่ยวกับค่าปรับ — ซ่อนบรรทัดนี้เว้นแต่แถวนั้นมีค่าปรับติดมาจริง (penaltyPaidAmount > 0) */}
+                {e.action !== 'cancel' &&
+                  (e.action === 'edit' ? e.penaltyPaidAmount > 0 : !(e.penaltyPaidAmount === 0 && ins.penaltyAmount === 0)) && (
+                  <p className="mt-0.5 text-xs text-ink-soft">{penaltyBreakdownText(e.penaltyPaidAmount, ins.penaltyAmount)}</p>
+                )}
               </li>
             ))}
           </ol>
@@ -3256,10 +3295,20 @@ function PaymentModal({
   onDone: () => void
 }) {
   const remaining = Math.max(0, ins.amount - ins.paidAmount)
+  // เปิดโหมด 'pay' บนงวดที่ค่างวดครบแล้ว (paidAt != null) = มาจากปุ่ม "เก็บค่าปรับ" เท่านั้น (ดู RowActions)
+  // เงินต้น remaining จะเป็น 0 อยู่แล้วโดยธรรมชาติ (จ่ายครบ) — ไม่ต้อง derive แยก
+  const penaltyOnly = mode === 'pay' && ins.paidAt != null
   // โหมดรับชำระ: ตั้งค่าเริ่มต้น = ยอดค้างที่เหลือ / โหมดแก้ไข: = ยอดสะสมปัจจุบัน
   const [amount, setAmount] = useState<number>(mode === 'pay' ? remaining : ins.paidAmount)
-  // ค่าปรับ default = penalty_amount ของงวด (ถ้างวดยังไม่ปิด), 0 ถ้าแก้ไขยอด
-  const [penaltyPaid, setPenaltyPaid] = useState<number>(mode === 'pay' ? ins.penaltyAmount : 0)
+  // ค่าปรับ default: กรณีเก็บค่าปรับอย่างเดียว = netPenaltyDue (ยังค้างเก็บจริง) / กรณีรับชำระปกติ = penalty_amount ของงวด
+  // (ถ้างวดยังไม่ปิด), 0 ถ้าแก้ไขยอด
+  const [penaltyPaid, setPenaltyPaid] = useState<number>(
+    mode === 'pay'
+      ? penaltyOnly
+        ? Math.max(0, ins.penaltyAmount - (alreadyPaidPenalty ?? 0))
+        : ins.penaltyAmount
+      : 0,
+  )
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -3286,8 +3335,14 @@ function PaymentModal({
     setErr(null)
     try {
       if (mode === 'pay') {
-        // recordPaymentWithPenalty — แยก principal + penalty
-        await recordPaymentWithPenalty(ins.id, amount, penaltyPaid, userName)
+        if (penaltyOnly) {
+          // งวดนี้ค่างวดครบแล้ว เก็บเฉพาะค่าปรับ — ห้ามใช้ recordPaymentWithPenalty เพราะจะเขียนทับ
+          // paid_at / paid_by_name ของงวดที่ปิดไปแล้ว ทำให้ประวัติการจ่ายจริงเพี้ยน
+          await recordPenaltyOnlyPayment(ins.id, penaltyPaid, userName)
+        } else {
+          // recordPaymentWithPenalty — แยก principal + penalty
+          await recordPaymentWithPenalty(ins.id, amount, penaltyPaid, userName)
+        }
       } else {
         await adjustPayment(ins.id, amount, note || undefined)
       }
@@ -3321,7 +3376,7 @@ function PaymentModal({
   const payFooter = (
     <div className="flex justify-end gap-2">
       <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-      <Button onClick={save} disabled={busy || amount < 0}>
+      <Button onClick={save} disabled={busy || amount < 0 || (penaltyOnly && penaltyPaid <= 0)}>
         {busy ? 'กำลังบันทึก...' : mode === 'pay' ? payLabel : 'บันทึก'}
       </Button>
     </div>
@@ -3329,7 +3384,13 @@ function PaymentModal({
 
   return (
     <MobileModal
-      title={mode === 'pay' ? `รับชำระ — งวดที่ ${ins.installmentNo}` : `แก้ไขยอด — งวดที่ ${ins.installmentNo}`}
+      title={
+        mode === 'pay'
+          ? penaltyOnly
+            ? `เก็บค่าปรับ — งวดที่ ${ins.installmentNo}`
+            : `รับชำระ — งวดที่ ${ins.installmentNo}`
+          : `แก้ไขยอด — งวดที่ ${ins.installmentNo}`
+      }
       onClose={onClose}
       footer={payFooter}
     >
@@ -3349,21 +3410,29 @@ function PaymentModal({
           </div>
         </div>
 
-        <Field label={mode === 'pay' ? 'จำนวนเงินที่รับชำระครั้งนี้ (บาท)' : 'ยอดที่ชำระสะสมใหม่ (บาท)'}>
-          <input
-            type="text"
-            inputMode="decimal"
-            pattern="[0-9]*"
-            autoFocus
-            className={numericInputCls}
-            value={amount || ''}
-            onChange={(e) => setAmount(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
-          />
-        </Field>
-        {mode === 'pay' && (
-          <p className="text-xs text-ink-soft -mt-1">
-            ใส่จำนวนน้อยกว่าค่างวดได้ (ทยอยชำระ) ระบบจะบันทึกยอดสะสมและเก็บงวดเปิดไว้
+        {penaltyOnly ? (
+          <p className="rounded-lg bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
+            งวดนี้ชำระค่างวดครบแล้ว — รายการนี้เก็บเฉพาะค่าปรับ
           </p>
+        ) : (
+          <>
+            <Field label={mode === 'pay' ? 'จำนวนเงินที่รับชำระครั้งนี้ (บาท)' : 'ยอดที่ชำระสะสมใหม่ (บาท)'}>
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9]*"
+                autoFocus
+                className={numericInputCls}
+                value={amount || ''}
+                onChange={(e) => setAmount(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
+              />
+            </Field>
+            {mode === 'pay' && (
+              <p className="text-xs text-ink-soft -mt-1">
+                ใส่จำนวนน้อยกว่าค่างวดได้ (ทยอยชำระ) ระบบจะบันทึกยอดสะสมและเก็บงวดเปิดไว้
+              </p>
+            )}
+          </>
         )}
 
         {/* ค่าปรับ: แสดงเฉพาะโหมด 'pay' */}
@@ -3373,6 +3442,7 @@ function PaymentModal({
               type="text"
               inputMode="decimal"
               pattern="[0-9]*"
+              autoFocus={penaltyOnly}
               className={numericInputCls}
               value={penaltyPaid || ''}
               onChange={(e) => setPenaltyPaid(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
@@ -3422,7 +3492,7 @@ function PaymentModal({
           </p>
         )}
 
-        {mode === 'pay' && (
+        {mode === 'pay' && !penaltyOnly && (
           <p className={`rounded-lg px-3 py-2 text-sm ${payState === 'full' ? 'bg-green-50 text-green-700' : payState === 'over' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
             {payState === 'full'
               ? `ครบจำนวน — ยอดสะสม ${baht(previewTotal)} ฿ → งวดจะถูกปิด`

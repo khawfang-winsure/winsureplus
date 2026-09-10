@@ -409,6 +409,21 @@ export function penaltyPaidForInstallment(entries: PenaltyPaymentLogEntry[]): nu
   return total
 }
 
+/**
+ * ค่าปรับที่ "ยังค้างเก็บจริง" ของ 1 งวด = ค่าปรับที่ต้องเรียก (penaltyAmount) หักด้วยค่าปรับที่จ่ายแล้วจริง
+ * (penaltyPaidForInstallment ด้านบน — cancel-aware: cancel รีเซ็ตเป็น 0, edit ไม่นับ) ไม่ต่ำกว่า 0
+ *
+ * ⚠️ ต้องเรียก penaltyPaidForInstallment เสมอ ห้าม sum payment_log เอง (ดู doc ด้านบนเรื่อง cancel/edit)
+ *
+ * Trace 1: penaltyAmount=700, entries รวมจ่ายแล้ว 300 (ผ่าน penaltyPaidForInstallment) → เหลือ 400
+ * Trace 2: penaltyAmount=400, entries รวมจ่ายแล้ว 400 → เหลือ 0
+ * Trace 3: penaltyAmount=0 (ไม่มีค่าปรับตั้งไว้เลย) → เหลือ 0 เสมอ ไม่ว่า entries จะมีอะไร
+ * Trace 4: penaltyAmount=500, entries รวมจ่ายแล้ว 600 (เกิน เช่นข้อมูลเก่าคลาดเคลื่อน) → clamp เหลือ 0 ไม่ติดลบ
+ */
+export function netPenaltyDue(penaltyAmount: number, entries: PenaltyPaymentLogEntry[]): number {
+  return Math.max(0, penaltyAmount - penaltyPaidForInstallment(entries))
+}
+
 // ===== computePenaltyAccrual — กติกาค่าปรับใหม่: นับจนกว่าจะจ่ายค่าปรับ "ครบ" ไม่หยุดตอนจ่ายเงินต้น =====
 // (spec แบม 18 ก.ค. 2026, root cause บั๊ก: run_daily_update เดิม (mig 0031) freeze penalty ทันทีที่
 //  paid_at ของงวดถูกเซ็ต แม้ค่าปรับที่เรียกไว้ยังจ่ายไม่ครบ — ฟังก์ชันนี้แทนที่ด้วยตรรกะ "settled = จ่ายค่าปรับ

@@ -6223,6 +6223,38 @@ export async function recordPaymentWithPenalty(
   if (error) throw error
 }
 
+// ---------- helper 1b: recordPenaltyOnlyPayment (migration 0147) ----------
+// แก้บั๊กที่ติ๊กเจอ: ปุ่ม "เก็บค่าปรับ" (งวดที่ค่างวดจ่ายครบแล้วแต่ค่าปรับยังค้าง) เดิมเรียก
+// recordPaymentWithPenalty(principal=0) ซึ่งตกเข้า branch v_fully_paid=true (เพราะ v_prev_paid+0
+// ยังไม่ต่ำกว่า installment_amount อยู่แล้ว) แล้วเขียนทับ installments.paid_at/paid_by_name/status
+// ทุกครั้งที่กด — ทำประวัติวันที่จ่ายจริง+ชื่อคนเก็บเดิมเพี้ยน กระทบเมตริกตรงเวลา/ล่าช้าของพนักงาน
+//
+// RPC ใหม่ (0147) insert payment_log แถวเดียวเท่านั้น ไม่แตะ installments เลยแม้แต่คอลัมน์เดียว —
+// guard ฝั่ง DB: p_penalty ต้อง > 0 และห้ามเก็บเกินยอดค่าปรับที่ค้างจริงของงวดนั้น (raise exception
+// บอกยอดที่เหลือเก็บได้ ถ้าเกิน)
+
+/**
+ * เก็บเฉพาะค่าปรับของงวดที่ค่างวดจ่ายครบแล้ว — ไม่แตะสถานะ/วันที่จ่าย/ชื่อคนเก็บของงวดเลย
+ *
+ * @param installmentId  uuid ของงวดที่จะเก็บค่าปรับ (ค่างวดต้องปิดไปแล้วก่อนหน้า)
+ * @param penaltyPaid    ยอดค่าปรับที่เก็บครั้งนี้ (ต้อง > 0)
+ * @param byName         ชื่อผู้ทำรายการ (useAuth().name)
+ */
+export async function recordPenaltyOnlyPayment(
+  installmentId: string,
+  penaltyPaid: number,
+  byName: string,
+): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('record_penalty_only_payment', {
+    p_installment_id: installmentId,
+    p_penalty:        penaltyPaid,
+    p_by_name:        byName,
+    p_paid_at:        new Date().toISOString(),
+  })
+  if (error) throw error
+}
+
 // ---------- helper 2: overridePenalty ----------
 
 export interface PenaltyOverrideHistoryEntry {
