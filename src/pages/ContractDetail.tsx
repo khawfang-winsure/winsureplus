@@ -2401,6 +2401,7 @@ export default function ContractDetail() {
           installments={installments}
           extensions={extensions}
           rateSets={rateSets}
+          logByIns={logByIns}
           initialExtType={extendPreset ?? undefined}
           onClose={() => {
             setExtendOpen(false)
@@ -3943,6 +3944,7 @@ function ExtendModal({
   installments,
   extensions,
   rateSets,
+  logByIns,
   initialExtType,
   onClose,
   onDone,
@@ -3951,6 +3953,7 @@ function ExtendModal({
   installments: Installment[]
   extensions: ExtensionRecord[]
   rateSets: RateSet[]
+  logByIns: Map<string, PaymentLogEntry[]>
   initialExtType?: ExtensionType
   onClose: () => void
   onDone: () => void
@@ -3963,8 +3966,12 @@ function ExtendModal({
   const baseTerm = Math.max(1, unpaidCount)
   // ยอดคงค้าง (Σ amount − paidAmount ของงวดที่ไม่ปิด) — ใช้แสดง breakdown เท่านั้น ไม่ใช้คำนวณค่างวด
   const outstanding = installments.reduce((s, i) => s + Math.max(0, i.amount - i.paidAmount), 0)
-  // ค่าปรับค้างชำระรวม
-  const penaltyDue = installments.filter((i) => !i.paidAt).reduce((s, i) => s + i.penaltyAmount, 0)
+  // ค่าปรับค้างชำระรวม (สุทธิ — หักที่เก็บไปแล้วต่องวด, ของ "ทุกงวด" ไม่ใช่แค่งวดที่ยังไม่ปิด
+  // ให้ตรงนิยามเดียวกับการ์ดหลักบรรทัด ~733 — แก้บั๊ก 2026-09-10 ยอดในหน้าต่างขยายสัญญาต่ำกว่าจริง)
+  const penaltyDue = installments.reduce(
+    (s, i) => s + netPenaltyDue(i.penaltyAmount, logByIns.get(i.id) ?? []),
+    0,
+  )
   // เงินต้นแท้ตอนทำสัญญา (สูตรเดียวกับ DB generated column after_down)
   const afterDown = calcSummary(contract.devicePrice, contract.downPercent, contract.commissionPercent, contract.docFee).afterDown
 

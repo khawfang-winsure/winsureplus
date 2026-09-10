@@ -85,10 +85,11 @@ export interface SettlementExtensionInfo {
 export interface SettlementInstallmentInput {
   amount: number       // ค่างวดเต็มของงวด
   paidAmount: number   // จ่ายสะสมแล้วของงวด (principal)
-  penaltyAmount: number // ค่าปรับของงวด
+  penaltyAmount: number // ค่าปรับของงวด (ยอดตั้งดิบ — ยังไม่หักที่เก็บไปแล้ว)
   paidAt: string | null // null = ยังไม่ปิดงวด (รวมจ่ายบางส่วน — paidAmount > 0 แต่ paidAt ยัง null)
   dueDate: string       // วันครบกำหนดของงวด ('YYYY-MM-DD') — ใช้แยกงวดค้าง (เลยกำหนด) vs ยังไม่ถึงกำหนด
   installmentNo?: number // ลำดับงวด (1-based) — ใช้เฉพาะเคสขยายเวลาแบบเพิ่มจำนวนงวด
+  id?: string           // id ของงวด — ใช้จับคู่กับ penaltyPaidByInstallmentId (netPenaltyDue) เท่านั้น optional
 }
 
 export interface SettlementResult {
@@ -100,8 +101,9 @@ export interface SettlementResult {
   discountableCount: number     // จำนวนงวดที่ยังไม่ถึงกำหนด
   percent: number            // ส่วนลด % ที่ได้ (matrix/tiers หรือ override)
   discount: number           // ส่วนลดเป็นบาท = round(discountableRemaining x percent/100)
-  penaltyDue: number         // ค่าปรับค้างรวม (ไม่ลด)
-  customerPays: number       // ลูกค้าจ่ายปิด = (remainingPrincipal − discount) + penaltyDue
+  penaltyDue: number         // ค่าปรับค้างรวม "สุทธิ" (ไม่ลด แต่หักที่เก็บไปแล้วต่องวดแล้ว — กันเก็บซ้ำตอนปิด
+                              // แก้ 2026-09-10, ดู netPenaltyDue ใน calc.ts / computeEarlyClose ใน earlyClose.ts)
+  customerPays: number       // ลูกค้าจ่ายปิด = (remainingPrincipal − discount) + penaltyDue (penaltyDue สุทธิแล้ว)
   paidCount: number          // จำนวนงวดที่จ่ายแล้วจริง (นับตรงจาก paidAt !== null) — column key ของ matrix
   rowTerm: number            // row key จริงที่ใช้เลือก matrix (ปกติ = termMonths, ยกเว้นเคสขยายงวด = newInstallments)
   matched: boolean           // true = rowTerm มีในตาราง matrix จริง (false = term หลุดตาราง → UI ขึ้นเตือน)
@@ -141,8 +143,11 @@ function isExtendedInstallmentsCase(
  *                             ไม่งั้น pickDiscountPercentMatrix(rowTerm, paidCount, matrix) ถ้ามี matrix
  *                             ไม่งั้น (fallback wave เก่า) pickDiscountPercent(remainingCount, tiers)
  *    discount               = Math.round(discountableRemaining x percent/100)  ← เปลี่ยนจาก ceil(remainingPrincipal x ...)
- *    penaltyDue             = Σ penaltyAmount ของงวด paidAt IS NULL (ไม่ลด)
- *    customerPays           = (remainingPrincipal − discount) + penaltyDue   ← สูตรไม่เปลี่ยน (แค่ discount เปลี่ยนที่มา)
+ *    penaltyDue             = Σ max(0, penaltyAmount − penaltyPaidByInstallmentId[id]) ของงวด paidAt IS NULL
+ *                             (สุทธิ — หักค่าปรับที่เก็บไปแล้วต่องวด กันเก็บซ้ำตอนปิด, แก้ 2026-09-10
+ *                             ล็อกนิยามเดียวกับ netPenaltyDue ใน calc.ts / computeEarlyClose ใน earlyClose.ts
+ *                             penaltyPaidByInstallmentId ไม่ส่งมา/ไม่มี id ตรงกัน → ถือว่ายังไม่เก็บอะไรเลย = penaltyAmount เดิม)
+ *    customerPays           = (remainingPrincipal − discount) + penaltyDue   ← สูตรไม่เปลี่ยน (penaltyDue เป็นค่าสุทธิแล้ว)
  *
  *  ⚠️ ฟังก์ชันนี้ไม่ validate closedAt — ถ้า caller ส่ง '' หรือค่าที่ผิดรูปแบบมา string compare
  *     ('YYYY-MM-DD' < '' เป็น false เสมอ) จะทำให้ทุกงวดถูกนับเป็น "ยังไม่ถึงกำหนด" (ได้ส่วนลดหมดทั้งก้อน)
@@ -203,6 +208,8 @@ export function computeSettlement(input: {
   matrix?: SettlementMatrix       // Wave 2 — ตารางส่วนลดใหม่ (term x paidCount)
   extension?: SettlementExtensionInfo | null // ข้อมูลขยายเวลาล่าสุด (ถ้ามี)
   overridePercent?: number | null // admin กรอก % เอง (0-100) — มีค่า = ใช้แทนตาราง/band เสมอ
+  penaltyPaidByInstallmentId?: Record<string, number> // ค่าปรับที่เก็บไปแล้วจริงต่องวด (key = installment.id)
+                                                       // ไม่ส่งมา = ถือว่ายังไม่เก็บเลย (backward-compat กับ caller เดิม)
 }): SettlementResult {
   // งวดที่ยังค้าง = paidAt เป็น null (รวมงวดจ่ายบางส่วนด้วย)
   const unpaid = input.installments.filter((i) => i.paidAt === null)
@@ -228,7 +235,13 @@ export function computeSettlement(input: {
   }
 
   const remainingCount = unpaid.length
-  const penaltyDue = unpaid.reduce((s, i) => s + (i.penaltyAmount || 0), 0)
+  // ค่าปรับค้างสุทธิ — หักค่าปรับที่เก็บไปแล้วต่องวด (กันเก็บซ้ำตอนปิด, แก้ 2026-09-10)
+  // ไม่มี id ตรงกันใน map (หรือไม่ส่ง penaltyPaidByInstallmentId มาเลย) = ยังไม่เก็บอะไร = penaltyAmount เดิม
+  const penaltyPaidMap = input.penaltyPaidByInstallmentId ?? {}
+  const penaltyDue = unpaid.reduce((s, i) => {
+    const paidForThis = i.id != null ? (penaltyPaidMap[i.id] ?? 0) : 0
+    return s + Math.max(0, (i.penaltyAmount || 0) - paidForThis)
+  }, 0)
 
   // rowTerm + paidCount: ปกติ vs เคสขยายเวลาเพิ่มงวด
   let rowTerm: number
