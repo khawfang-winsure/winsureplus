@@ -42,6 +42,11 @@ export interface PJContract {
   occupation_proof: string
   notes: string
   operator: string
+  // เฉพาะจากหน้าใบสัญญา PJ ที่ scrape สด (Edge Function pj-snapshot) — ไม่มีใน CSV import เดิม เลยเป็น optional
+  // แสดงไว้ดูเฉยๆ ในแผงตรวจ (ContractMediaCard.tsx) ไม่ใช่ช่องเทียบ — ค่าว่าง = PJ ไม่ได้ระบุ ไม่ใช่ "ไม่มี/ไม่เชื่อม" (2026-09-12)
+  line_status?: string
+  line_user_count?: string
+  line_id?: string
 }
 
 /** 1 แถวจาก installments.csv */

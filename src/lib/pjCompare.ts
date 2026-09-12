@@ -33,7 +33,22 @@ export interface PjFlagCounts {
 //                  (down_payment มีอยู่แล้วในคีย์เดิม คือส่วนจำนวนเงิน 3,570.00 คนละคีย์กัน อย่าปนกัน)
 // ถ้า snapshot ที่ยิงจริงยังไม่มีคีย์นี้ (น้องชีสยังไม่เพิ่ม/ตั้งชื่อคนละอย่าง) กลไก readSnapshotKey เดิมข้างล่างจะตีเป็น
 // 'no_pj' ให้อัตโนมัติ (เพราะ key in snapshot เป็น false) — ไฟล์นี้ไม่พังแม้ยังไม่ตรงคีย์กัน 100%
-type ExtraSnapshotKey = 'device_price' | 'down_percent'
+//
+// pj_total_amount (เพิ่ม 2026-09-12) — ยืนยันชื่อคีย์จริงจาก pj-snapshot/index.ts:598 แล้ว (ไม่ใช่แค่คาดเดา):
+// การ์ด "ข้อมูลการชำระเงิน" ช่อง "จำนวนเงินรวม" (ยอดสัญญารวมทั้งก้อน รวมดาวน์อยู่ด้วย) ใช้คู่กับ down_payment
+// (คีย์เดิมที่มีอยู่แล้ว) เพื่อ derive rentTotal ของเรา (ดู compareRentTotal ด้านล่าง)
+// 🔴 ห้ามสับสนกับ pj_remaining_amount (index.ts:599 ช่อง "จำนวนเงินคงเหลือ") — คนละความหมาย เป็น "ยอดคงเหลือ"
+// ที่ลดลงเรื่อยๆ ทุกครั้งที่ลูกค้าจ่ายงวด เอามาเทียบกับ rentTotal (ยอดรวมตอนทำสัญญา คงที่ตลอดอายุสัญญา) จะขึ้น
+// แดงมั่วทันทีที่ขึ้นเดือนถัดไป — ไม่เพิ่ม pj_remaining_amount เข้า SnapshotKey เลยด้วยซ้ำ กันเผลอใช้ผิด
+//
+// facebook_link (เพิ่ม 2026-09-12 รอบ 3) — deploy แล้ว ยิง debug จริง (นฤเบศร์ สืบราษี) parser ดึงได้แล้ว
+// ค่าต่าง = 'soft' (เหลือง) เท่านั้น ไม่ใช่ 'hard' — คุณเตยเคาะแล้วว่าลิงก์เฟซบุ๊กคนเดียวกันเขียนได้หลายรูปแบบ
+// (/share/xxx vs /profile.php?id=... vs ชื่อ vanity) ทำแดงจะเตือนมั่ว ดู normalizeFacebookUrl/compareFacebookUrl ด้านล่าง
+//
+// 🚫 line_status / line_user_count / line_id — ยิง debug ได้ค่าจริงแล้วเหมือนกัน แต่ "ห้ามใส่ที่นี่เด็ดขาด"
+// ฝั่งเราไม่มีช่องพวกนี้เลยในสัญญา ไม่ใช่การเทียบ 2 ฝั่ง เป็นข้อมูล PJ ฝ่ายเดียวที่คุณเตยขอไว้ดูเฉยๆ
+// (น้องวิวโชว์เองคนละส่วนของ UI) — เพิ่มเข้า FIELD_MAP ที่นี่จะพังกลไก compareField (ไม่มี ourDisplay ให้เทียบ)
+type ExtraSnapshotKey = 'device_price' | 'down_percent' | 'pj_total_amount' | 'facebook_link'
 type SnapshotKey = keyof PJContract | ExtraSnapshotKey
 
 /** snapshot ที่ได้จาก DB เป็น jsonb ตามชื่อคีย์ของ PJContract (pjImport.ts) รวมคีย์เพิ่มที่ยังไม่เข้า type หลัก (ดู ExtraSnapshotKey ด้านบน) — อาจไม่ครบทุกคีย์ (ข้อมูลเก่า/scrape บางส่วน) */
@@ -236,19 +251,184 @@ function compareDate(ourDisplay: string, pjRaw: string): Patch {
   return { pjValue: pjDisplay, pjCompare: 'hard' }
 }
 
+/** เลขที่ INV: trim + ยุบช่องว่างที่แฝงอยู่ในตัว (เช่น "INV- 123") + uppercase แล้วเทียบตรง — เลข INV ผิด = จับคู่ข้อมูลผิดใบทั้งใบ ต้องแดง */
+export function normalizeInvoiceNo(raw: string): string {
+  return raw.replace(INVISIBLE_SPACE_RE, '').toUpperCase()
+}
+
+function compareInvoiceNo(ourDisplay: string, pjRaw: string): Patch {
+  const pjNorm = normalizeInvoiceNo(pjRaw)
+  if (pjNorm === '') return { pjValue: pjRaw, pjCompare: 'pj_blank' }
+  const ourNorm = normalizeInvoiceNo(ourDisplay)
+  if (ourNorm === pjNorm) return { pjValue: pjRaw, pjCompare: 'same' }
+  return { pjValue: pjRaw, pjCompare: 'hard' }
+}
+
+/**
+ * ชื่อร้าน: ตัดช่องว่างทั้งหมด (บางร้าน PJ คีย์ "ร้าน BFz Phone" เรากรอก "ร้านBFz Phone" ช่องว่างตำแหน่งไม่ตรงกัน)
+ * แล้วตัดคำนำหน้า "ร้าน" ออกก่อนเทียบ (ทั้ง 2 ฝั่งเขียนคำนี้ไม่สม่ำเสมอ ไม่ใช่ความต่างจริงของชื่อร้าน)
+ */
+export function normalizeShopName(raw: string): string {
+  const noSpace = raw.replace(INVISIBLE_SPACE_RE, '')
+  return noSpace.replace(/^ร้าน/, '')
+}
+
+/** ชื่อร้าน = ข้อความอิสระเช่นกัน (พนักงานคีย์เองทั้งคู่ ไม่ใช่รหัสอ้างอิง) — ต่างจริง = เตือนเหลืองเท่านั้น ห้ามแดงตามกฎข้อความอิสระที่คุณเตยล็อกไว้ */
+function compareShopName(ourDisplay: string, pjRaw: string): Patch {
+  const pjNorm = normalizeShopName(pjRaw)
+  if (pjNorm === '') return { pjValue: pjRaw, pjCompare: 'pj_blank' }
+  const ourNorm = normalizeShopName(ourDisplay)
+  if (ourNorm === pjNorm) return { pjValue: pjRaw, pjCompare: 'same' }
+  return { pjValue: pjRaw, pjCompare: 'soft' }
+}
+
+// พารามิเตอร์ query ที่ถือเป็น 'ตัวตน' จริงของลิงก์เฟซบุ๊ก (ไม่ใช่ noise ที่ตัดทิ้งได้) — allow-list เท่านั้น
+// id/profile_id คือคีย์ของ https://facebook.com/profile.php?id=... ซึ่งเก็บตัวตนไว้ใน query ล้วนๆ (ไม่มีใน path เลย)
+// ใช้ allow-list ไม่ใช่ deny-list เพราะพารามิเตอร์ติดตามใหม่ๆ ที่ยังไม่รู้จัก (เฟซบุ๊กเพิ่มเรื่อยๆ) ต้องถูกทิ้งโดยปริยาย
+// ไม่งั้นลิงก์เดียวกันจะโดนตัดสินว่าต่างกันเพราะพารามิเตอร์แปลกใหม่ที่ไม่เกี่ยวกับตัวตน
+const FACEBOOK_IDENTITY_PARAMS = ['id', 'profile_id']
+
+/**
+ * ลิงก์เฟซบุ๊ก: lowercase ทั้งก้อน → ตัด http(s):// → แยก query ออกจาก path ก่อน (กันเผลอตัด prefix/slash ผิดจุด
+ * ถ้าค่าใน query ดันมี www./m./slash ปนอยู่โดยบังเอิญ) → ที่ path: ตัด www./m./web. ที่นำหน้า (ครั้งเดียวจากหน้าสุด)
+ * แล้วตัดโดเมน "facebook.com/" ออกด้วย (โดเมนนี้คงที่ทุกค่าในช่องนี้ ไม่ใช่ตัวตน — เจอข้อมูลจริงที่พนักงานคีย์แค่ path
+ * ไม่มีโดเมนเลย เช่น "profile.php?id=123" ต้องเทียบเท่ากับลิงก์เต็ม "https://www.facebook.com/profile.php?id=123")
+ * → ตัด '/' ท้ายสุดของ path
+ * ที่ query: เก็บเฉพาะพารามิเตอร์ตัวตนจริง (FACEBOOK_IDENTITY_PARAMS ด้านบน) ตัดพารามิเตอร์ติดตาม/แชร์ทั้งหมดทิ้ง
+ * (เช่น mibextid, fbclid, rdid, share_url, sfnsn, ref, refsrc, _rdr, utm_*, locale, eav — ไม่รู้จัก = ทิ้งเสมอ)
+ * แล้วเรียง key ที่เหลือ ให้ผลลัพธ์ไม่ขึ้นกับลำดับพารามิเตอร์ในลิงก์จริง
+ * 🔴 ห้ามใช้ new URL() — ค่าจริงในฐานมีทั้งไม่มี protocol / มีช่องว่าง / ข้อความปนลิงก์ จะ throw ทำแผงพังทั้งหน้า
+ * ตัวอย่าง: "https://www.facebook.com/profile.php?id=123&mibextid=wwXIfr" → "profile.php?id=123"
+ *          "https://www.facebook.com/share/1B2oGZjkXz/?mibextid=wwXIfr"   → "share/1b2ogzjkxz"
+ */
+export function normalizeFacebookUrl(raw: string): string {
+  let s = raw.trim().toLowerCase()
+  if (s.startsWith('https://')) s = s.slice('https://'.length)
+  else if (s.startsWith('http://')) s = s.slice('http://'.length)
+
+  const qIdx = s.indexOf('?')
+  let path = qIdx === -1 ? s : s.slice(0, qIdx)
+  const query = qIdx === -1 ? '' : s.slice(qIdx + 1)
+
+  for (const prefix of ['www.', 'm.', 'web.']) {
+    if (path.startsWith(prefix)) { path = path.slice(prefix.length); break }
+  }
+  if (path.startsWith('facebook.com/')) path = path.slice('facebook.com/'.length)
+  else if (path === 'facebook.com') path = ''
+  if (path.endsWith('/')) path = path.slice(0, -1)
+
+  if (query === '') return path
+
+  const kept: string[] = []
+  for (const pair of query.split('&')) {
+    if (pair === '') continue
+    const eqIdx = pair.indexOf('=')
+    const key = eqIdx === -1 ? pair : pair.slice(0, eqIdx)
+    const value = eqIdx === -1 ? '' : pair.slice(eqIdx + 1)
+    if (value !== '' && FACEBOOK_IDENTITY_PARAMS.includes(key)) kept.push(key + '=' + value)
+  }
+  if (kept.length === 0) return path
+  kept.sort()
+  return path + '?' + kept.join('&')
+}
+
+/**
+ * ลิงก์เฟซบุ๊ก: ต่าง = 'soft' (เหลือง) เสมอ ไม่ใช่ 'hard' — คุณเตยเคาะแล้วว่าลิงก์คนเดียวกันเขียนได้หลายรูปแบบ
+ * (/share/xxx vs /profile.php?id=... vs ชื่อ vanity) ทำแดงจะเตือนมั่วเกินจริง ดู normalizeFacebookUrl ด้านบน
+ */
+function compareFacebookUrl(ourDisplay: string, pjRaw: string): Patch {
+  const pjNorm = normalizeFacebookUrl(pjRaw)
+  if (pjNorm === '') return { pjValue: pjRaw, pjCompare: 'pj_blank' }
+  const ourNorm = normalizeFacebookUrl(ourDisplay)
+  if (ourNorm === pjNorm) return { pjValue: pjRaw, pjCompare: 'same' }
+  return { pjValue: pjRaw, pjCompare: 'soft' }
+}
+
+/**
+ * ปีเกิดฝั่งเรา (reviewFields.ts) มาเป็น "1994 · ช่วงอายุ 31-40" (ปีต่อท้ายด้วยช่วงอายุ) —
+ * ห้ามใช้ extractDigits ตรงๆ เด็ดขาด เพราะจะไปยำเลขช่วงอายุ (31-40) ปนกับปีเกิดกลายเป็นเลขมั่วทั้งก้อน
+ * ต้องตัดเอาแค่เลขตัวแรกสุดของสตริง (ปีเกิดเสมอ)
+ */
+function ourBirthYear(display: string): number | null {
+  const m = display.match(/^\s*(\d{4})/)
+  return m ? parseInt(m[1], 10) : null
+}
+
+/**
+ * ปีเกิดฝั่ง PJ: ทนหลายรูปแบบที่เจอจริง ("05 Sep 1994" / "1994-09-05" / "05/09/1994" / ไทย "05 ก.ย. 2537")
+ * ทุกรูปแบบมีเลข 4 หลักอยู่ตัวเดียวในสตริง (ปี) — ดึงเลข 4 หลักตัวสุดท้ายที่เจอ (กัน edge case ที่มี 4 หลักซ้อนหลายจุด)
+ * ปี > 2400 = ปี พ.ศ. (PJ บางระบบเก่า/บางสาขาคีย์เป็น พ.ศ.) → ลบ 543 ให้เป็น ค.ศ. ก่อนเทียบเสมอ
+ */
+export function extractPjBirthYear(raw: string): number | null {
+  const matches = raw.match(/\d{4}/g)
+  if (!matches || matches.length === 0) return null
+  let year = parseInt(matches[matches.length - 1], 10)
+  if (year > 2400) year -= 543
+  return year
+}
+
+function compareBirthYear(ourDisplay: string, pjRaw: string): Patch {
+  const pjYear = extractPjBirthYear(pjRaw)
+  if (pjYear === null) return { pjValue: pjRaw, pjCompare: 'pj_blank', pjNote: `วันเกิดอ่านไม่ได้: ${pjRaw}` }
+  const ourYear = ourBirthYear(ourDisplay)
+  if (ourYear === null) return { pjValue: `${pjYear}`, pjCompare: 'no_pj' } // defensive — ไม่ควรเกิดจริง (ค่าเราขึ้นต้นด้วยปีเสมอเมื่อมี birthYear)
+  if (ourYear === pjYear) return { pjValue: `${pjYear}`, pjCompare: 'same' }
+  return { pjValue: `${pjYear}`, pjCompare: 'hard' }
+}
+
+/**
+ * rentTotal (ราคาเช่าซื้อรวม): PJ ไม่มีคีย์ตรงตัว ต้อง derive จาก pj_total_amount − down_payment
+ * (pj_total_amount ของ PJ รวมยอดดาวน์อยู่ในก้อนเดียวกัน ต้องหักดาวน์ออกก่อนถึงจะเทียบกับ rentTotal ของเราที่ไม่รวมดาวน์ได้)
+ * ยืนยันจาก production 4 เคสจริง (2026-09-12): 49305−7470=41835 · 27027−4770=22257 · 103665−9780=93885 · 21930−3570=18360 ตรงเป๊ะทุกเคส
+ * 🔴 ห้ามใช้ pj_remaining_amount แทน (ดูคำเตือนที่ ExtraSnapshotKey ด้านบนไฟล์) — เป็นยอดคงเหลือที่ไหลลงทุกเดือน ไม่ใช่ยอดรวมตอนทำสัญญา
+ * คีย์ใดคีย์หนึ่งไม่มี/ว่าง/parse ไม่ได้ → คืน no_pj/pj_blank ไม่ใช่ hard (derive ไม่ได้ ไม่เท่ากับ "ต่างจริง")
+ */
+function compareRentTotal(ourDisplay: string, snapshot: PjSnapshot): Patch {
+  const totalRes = readSnapshotKey(snapshot, 'pj_total_amount')
+  const downRes = readSnapshotKey(snapshot, 'down_payment')
+  if (!totalRes.present || !downRes.present) return { pjValue: '', pjCompare: 'no_pj' }
+  if (totalRes.raw === '' || downRes.raw === '') return { pjValue: '', pjCompare: 'pj_blank' }
+  const totalNum = normalizeMoney(totalRes.raw)
+  const downNum = normalizeMoney(downRes.raw)
+  if (totalNum === null || downNum === null) {
+    return { pjValue: '', pjCompare: 'pj_blank', pjNote: `รูปแบบอ่านไม่ได้: ${totalRes.raw} / ${downRes.raw}` }
+  }
+  const pjRentTotal = totalNum - downNum
+  return compareMoney(ourDisplay, `${pjRentTotal}`)
+}
+
 // ---------------------------------------------------------------------------
 // FIELD_MAP — ReviewField.key → วิธีเทียบกับ PJ
-// คีย์ที่ "ไม่อยู่ในตารางนี้" (เช่น contractNo, invNo, shopCode, docFee, afterDown, ...) = นอก scope เฟสนี้
+// คีย์ที่ "ไม่อยู่ในตารางนี้" (เช่น contractNo, shopCode, docFee, afterDown, ...) = นอก scope เฟสนี้ (contractNo ไม่ map ตามเจตนา — ดูคอมเมนต์เหนือ FIELD_MAP)
 // ปล่อยผ่าน ไม่ decorate เลย (ไม่ใช่ no_pj) — เก็บไว้เผื่อเฟสหน้า อย่าเดาเพิ่มเอง
 // ---------------------------------------------------------------------------
 
-type Kind = 'money' | 'int' | 'due_day' | 'nationalId' | 'imeiSn' | 'name' | 'freeText' | 'condition' | 'date' | 'always_no_pj'
+type Kind =
+  | 'money'
+  | 'int'
+  | 'due_day'
+  | 'nationalId'
+  | 'imeiSn'
+  | 'name'
+  | 'freeText'
+  | 'condition'
+  | 'date'
+  | 'always_no_pj'
+  | 'invoiceNo'
+  | 'shopName'
+  | 'birthYear'
+  | 'moneyDerived'
+  | 'facebookUrl'
 
 interface FieldMapping {
   kind: Kind
   snapshotKey: SnapshotKey | null // null = PJ ไม่มีคีย์นี้เลยเชิงโครงสร้าง (ไม่ใช่แค่เคสนี้ว่าง) → no_pj เสมอ
 }
 
+// เพิ่ม 2026-09-12 (รอบ 2) — คุณเตยทักว่า 4 ช่องนี้ snapshot มีข้อมูลจริงแต่แผงตรวจไม่โชว์เลย เพราะไม่เคย map:
+//   invNo (invoiceNo) / shopName / birthYear / rentTotal(derived) — ยืนยันด้วยเคสจริง 4 สัญญาจาก production
+// contractNo ยังคงไม่ map ตามเดิม (จงใจ) — snapshot คีย์ contract_no เป็นแค่สำเนาของ invoice_no ที่ pj-snapshot
+// เขียนซ้ำเข้าไปเฉยๆ (ไม่มีเลขที่สัญญาแยกจริงในหน้า PJ) ถ้า map จะขึ้นแดงมั่วทุกเคสที่เลขสัญญาเราไม่เท่าเลข INV
 const FIELD_MAP: Record<string, FieldMapping> = {
 // recon 2026-09-12 จากหน้า PJ สด (เคส S00029PNQ037 อารญา นาสิงห์) แก้ 3 จุดจากแผนเดิม:
 // 1) devicePrice: PJ การ์ด "ข้อมูลการชำระเงิน" ช่อง "ราคาสินค้า" = 11,900.00 ตรงกับ device_price เป๊ะ
@@ -269,16 +449,23 @@ const FIELD_MAP: Record<string, FieldMapping> = {
   dueDay: { kind: 'due_day', snapshotKey: 'first_due_date' },
   downPercent: { kind: 'int', snapshotKey: 'down_percent' },
   commissionPercent: { kind: 'always_no_pj', snapshotKey: null },
+  invNo: { kind: 'invoiceNo', snapshotKey: 'invoice_no' },
   nationalId: { kind: 'nationalId', snapshotKey: 'national_id' },
   imei: { kind: 'imeiSn', snapshotKey: 'imei' },
   sn: { kind: 'imeiSn', snapshotKey: 'sn' },
   customerName: { kind: 'name', snapshotKey: 'customer_name' },
+  birthYear: { kind: 'birthYear', snapshotKey: 'birth_date' },
   model: { kind: 'freeText', snapshotKey: 'device_name' },
   storage: { kind: 'freeText', snapshotKey: 'device_storage' },
   color: { kind: 'freeText', snapshotKey: 'device_color' },
   condition: { kind: 'condition', snapshotKey: 'condition' },
   occupation: { kind: 'freeText', snapshotKey: 'occupation' },
   transactionDate: { kind: 'date', snapshotKey: 'trade_date' },
+  shopName: { kind: 'shopName', snapshotKey: 'shop_name' },
+  rentTotal: { kind: 'moneyDerived', snapshotKey: 'pj_total_amount' },
+  // เพิ่ม 2026-09-12 (รอบ 3) — parser ดึง facebook_link ได้แล้ว ยืนยันจากเคสจริง (นฤเบศร์ สืบราษี) ลิงก์ตรงกันเป๊ะ
+  // ★ line_status/line_user_count/line_id ห้ามเพิ่มที่นี่ — ดูคอมเมนต์ที่ ExtraSnapshotKey ต้นไฟล์ (ไม่ใช่การเทียบ)
+  facebookLink: { kind: 'facebookUrl', snapshotKey: 'facebook_link' },
 }
 
 /** อ่านค่าดิบจาก snapshot ตามคีย์ — แยก "ไม่มีคีย์" (no_pj) ออกจาก "มีคีย์แต่ว่าง" (pj_blank) ให้ชัดเจน */
@@ -296,6 +483,10 @@ function compareField(field: ReviewField, snapshot: PjSnapshot): Patch | null {
 
   if (mapping.kind === 'always_no_pj' || mapping.snapshotKey === null) {
     return { pjValue: '', pjCompare: 'no_pj' }
+  }
+
+  if (mapping.kind === 'moneyDerived') {
+    return compareRentTotal(field.value, snapshot)
   }
 
   const { present, raw } = readSnapshotKey(snapshot, mapping.snapshotKey)
@@ -321,6 +512,14 @@ function compareField(field: ReviewField, snapshot: PjSnapshot): Patch | null {
       return compareCondition(field.value, raw)
     case 'date':
       return compareDate(field.value, raw)
+    case 'invoiceNo':
+      return compareInvoiceNo(field.value, raw)
+    case 'shopName':
+      return compareShopName(field.value, raw)
+    case 'birthYear':
+      return compareBirthYear(field.value, raw)
+    case 'facebookUrl':
+      return compareFacebookUrl(field.value, raw)
   }
 }
 
@@ -514,3 +713,19 @@ export function countPjFlags(groups: ReviewFieldGroup[]): PjFlagCounts {
 //      transactionDate compareDate("12/09/2026","12-09-2026")   ISO ตรงกัน      same
 //      commissionPercent always_no_pj (ยืนยันแล้วว่า PJ ไม่มีจริง)              no_pj
 //      ผลลัพธ์ตรงตามคาด: ไม่มี hard เลยสักช่องในเคสนี้
+
+//
+// (14) facebookLink (เพิ่ม 2026-09-12 รอบ 3) — compareFacebookUrl("https://www.facebook.com/share/1B2oGZjkXz/", pjRaw)
+//      pjRaw เหมือนเป๊ะ                                              → normalizeFacebookUrl ทั้งคู่ = "facebook.com/share/1b2ogzjkxz" → same
+//      pjRaw ต่อท้าย "?mibextid=wwXIfr"                             → ตัด query ก่อน normalize เหลือค่าเดิม → same
+//      pjRaw = "http://facebook.com/share/1B2oGZjkXz" (ต่าง http vs https, ไม่มี www., ไม่มี / ท้าย) → same
+//      pjRaw = "https://www.facebook.com/share/9zZ1xxAAbb/" (คนละโปรไฟล์จริง)                        → soft (ไม่ใช่ hard)
+//      snapshot ไม่มีคีย์ 'facebook_link' เลย                        → no_pj
+//      snapshot มีคีย์ 'facebook_link' แต่ค่าว่าง ('')               → pj_blank
+//
+// (15) occupation ยืนยันว่าทำงานถูก (map เป็น freeText ตั้งแต่รอบแรก, snapshot มีค่าจริงแล้วหลัง deploy)
+//      compareFreeText("พนักงานประจำ", "พนักงานประจำ") → normalizeFreeText ตัดวรรคตอน/เว้นวรรคทั้งคู่เท่ากัน → same
+//      compareFreeText("พนักงานประจำ", "ค้าขาย")        → normalize ไม่เท่ากัน → soft (ข้อความอิสระ ห้ามแดง)
+//
+// (16) line_status / line_user_count / line_id — เจตนางดใส่ FIELD_MAP ตามคำสั่ง (ดูคอมเมนต์ที่ ExtraSnapshotKey
+//      ต้นไฟล์ + เหนือ FIELD_MAP entry ของ facebookLink) — ไม่มี test case เพราะไม่ใช่ field ที่ decorate ในไฟล์นี้

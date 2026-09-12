@@ -10,13 +10,11 @@
 //   mode='debug'    → admin เท่านั้น → เครื่องมือ diagnostic ชั่วคราว (mirror pj-sync debugInv pattern) ไม่เขียน
 //     DB — ใช้ตรวจ anchor/โครง HTML จริงหลัง deploy โดยไม่ต้อง deploy ใหม่ทุกครั้งที่ปรับ parser
 //
-// ⚠️⚠️ ยังไม่ได้ทดสอบกับ PJ จริงสักครั้ง (ผู้เขียนโค้ดนี้ไม่มี PJ_USERNAME/PJ_PASSWORD/network เข้าถึง secret
-//   ของ Supabase ให้ทดสอบเอง) — ครีมต้อง smoke test ตาม curl command ท้ายไฟล์นี้ก่อนถือว่า "ใช้งานได้จริง"
-//   โดยเฉพาะ 3 เรื่อง: (1) โครง HTML ของ /manager/invoices/{uuid} ตรงกับที่ recon ไว้จริงไหม — ใช้ mode='debug'
-//   เช็คก่อนอย่างอื่นเลย (2) search[value] ใน DataTable /manager/ajax/invoices/all ใช้ได้จริงไหม — ดู
-//   diagnostics.uuidLookupMethod ในผลลัพธ์จริงครั้งแรก ควรได้ 'search' ถ้า PJ รองรับ ถ้าได้ 'paginate' แปลว่า
-//   ไม่รองรับ (โค้ด fallback เองอัตโนมัติ ไม่พัง แต่ช้ากว่า) (3) ลิงก์ "ดูภาพเต็ม" ยังเป็น presigned S3 query
-//   string รูปแบบเดิมไหม
+// ✅ LIVE ใช้งานจริงแล้ว (commit b3d5b49 — "เทียบข้อมูลสัญญากับ PJ ในแผงตรวจ") — smoke test ผ่าน mode='debug'
+//   บน PJ จริงแล้ว: (1) โครง HTML ของ /manager/invoices/{uuid} ตรงกับที่ recon ไว้ (2) search[value] ใน
+//   DataTable /manager/ajax/invoices/all ใช้ได้จริง (uuidLookupMethod ได้ 'search') (3) ลิงก์ "ดูภาพเต็ม" ยังเป็น
+//   presigned S3 query string รูปแบบเดิม — 3 เรื่องนี้ยังคงคาลิเบรตต่อได้ถ้า PJ เปลี่ยนโครงหน้าในอนาคต ใช้
+//   mode='debug' เช็คก่อนปรับ parser ทุกครั้ง (ไม่ต้อง deploy ใหม่ก็ยิงเช็คได้)
 //
 // Auth: ตาม pattern supabase/functions/media-sign/index.ts:43-64 — verify_jwt:false ที่ gateway, function เช็ค
 //   เอง: Authorization header → createClient(ANON) → userClient.auth.getUser() → profiles.role/active (ผ่าน
@@ -509,9 +507,11 @@ type ParseResult =
   | { ok: false; reason: string };
 
 /** parse หน้าใบสัญญา PJ → data ตามคีย์ PJContract (src/lib/pjImport.ts:8-41) เท่าที่หน้านี้มีจริง (ดู FIELD MAP
- * ในคำสั่งงาน — ช่องที่หน้านี้ไม่มี เช่น occupation/email/shop_code/promotion* ไม่ set คีย์เลย (ไม่ใช่ค่าว่าง)
- * เพื่อให้ pjCompare.ts อ่านเป็น 'no_pj' ถูกต้อง ไม่ใช่ 'pj_blank' — ตัดสินใจนี้อยู่ใน scope ของ backend ล้วน
- * ไม่แตะ pjCompare.ts */
+ * ในคำสั่งงาน — ช่องที่หน้านี้ไม่มี เช่น email/shop_code/promotion* ไม่ set คีย์เลย (ไม่ใช่ค่าว่าง) เพื่อให้
+ * pjCompare.ts อ่านเป็น 'no_pj' ถูกต้อง ไม่ใช่ 'pj_blank' — ตัดสินใจนี้อยู่ใน scope ของ backend ล้วน ไม่แตะ
+ * pjCompare.ts (occupation จากการ์ด "ข้อมูลส่วนตัว" กับ facebook_link จากการ์ด "ข้อมูลติดต่อ" ดึงได้แล้ว —
+ * เพิ่มรอบนี้: line_status/line_user_count จาก "ข้อมูลส่วนตัว" + line_id จาก "ข้อมูลติดต่อ" นอก PJContract
+ * ทั้ง 3 คีย์ ไม่ใช่ core field และไม่เก็บ LINE User ID (base64) เด็ดขาด) */
 function parseInvoiceDetail(html: string): ParseResult {
   // 🔴 กฎเหล็ก: anchor หลักไม่เจอ = ok:false ทันที (ดู comment หัวไฟล์ — บทเรียนจาก pj-sync)
   const invoiceNoMatch = html.match(/หมายเลขใบแจ้งหนี้[\s\S]{0,60}?(INV-[A-Za-z0-9-]+)/);
@@ -564,6 +564,20 @@ function parseInvoiceDetail(html: string): ParseResult {
   const phoneAltRaw = contactScope ? (extractLabelValue(contactScope, "โทรศัพท์สำรอง") ?? "") : "";
   const phoneAltParts = phoneAltRaw.split(/\s+/).filter(Boolean);
 
+  // สถานะ LINE — เจอปัญหาเดียวกับ "จำนวนเงินดาวน์" (ดู comment ตรงนั้น): ค่ากับจำนวนผู้ใช้ถูกหั่นเป็นหลาย
+  // element ติดกัน (recon 12/09 บนเคส "เชื่อมต่อแล้ว"): บรรทัดดิบ 3 บรรทัดแรกหลัง label คือ
+  // ["เชื่อมต่อแล้ว", "(1", "ผู้ใช้)"] — ต้อง extractLabelValueLines + join(" ") ก่อน แล้วค่อยตัดส่วนวงเล็บทิ้ง
+  // ให้เหลือสถานะล้วน (ห้ามให้ "เชื่อมต่อแล้ว (1 ผู้ใช้)" ปนไปเป็นค่า line_status)
+  // ⚠️ ไม่เคยเห็น HTML จริงของเคส "ยังไม่เชื่อมต่อ" (มีแต่ตัวอย่างเคสที่เชื่อมต่อแล้ว) — โค้ดนี้ "ทน" กับกรณีนั้น
+  // เองตามธรรมชาติของ regex (ไม่ได้ hardcode คำว่า "เชื่อมต่อแล้ว"): ถ้าไม่มีวงเล็บจำนวนผู้ใช้เลย lineStatus จะ
+  // ได้ raw string เต็มๆ (เช่น "ยังไม่เชื่อมต่อ") และ lineUserCount จะเป็น "" (หาไม่เจอ ไม่ใช่ "0") — แต่ถ้า PJ
+  // ใช้คำอื่น/โครง markup ต่างไปจนหา label "สถานะ LINE" ไม่เจอเลย extractLabelValueLines คืน [] → ทั้งคู่เป็น ""
+  // (อ่านเป็น "PJ ไม่มีข้อมูล" ที่ pjCompare.ts ได้เอง ไม่ถือเป็น core field เลยไม่ทำให้ทั้งชุด failed)
+  const lineStatusRaw = personalScope ? extractLabelValueLines(personalScope, "สถานะ LINE", 4).join(" ") : "";
+  const lineUserCountMatch = lineStatusRaw.match(/\(\s*(\d+)/);
+  const lineUserCount = lineUserCountMatch ? lineUserCountMatch[1] : "";
+  const lineStatus = lineStatusRaw.replace(/\s*\(.*$/, "").trim();
+
   const data: Record<string, string> = {
     invoice_no: invoiceNo,
     contract_no: invoiceNo, // หน้านี้ไม่มีเลขที่สัญญาแยกจาก invoice_no
@@ -587,9 +601,23 @@ function parseInvoiceDetail(html: string): ParseResult {
     device_price: String(parseAmount(extractLabelValue(paymentScope, "ราคาสินค้า") ?? "")), // นอก PJContract (ExtraSnapshotKey) — เทียบกับ device_price ฝั่งเรา
     first_due_date: extractLabelValue(paymentScope, "วันที่เริ่มต้นการผ่อนชำระ") ?? "",
     birth_date: personalScope ? (extractLabelValue(personalScope, "วันเกิด") ?? "") : "",
+    occupation: personalScope ? (extractLabelValue(personalScope, "อาชีพ") ?? "") : "",
+    // line_status: ค่าสถานะล้วน (เช่น "เชื่อมต่อแล้ว") ตัดวงเล็บจำนวนผู้ใช้ทิ้งแล้ว — ดู comment เหนือ
+    // lineStatusRaw ด้านบนสำหรับเคส "ยังไม่เชื่อมต่อ" ที่ยังไม่เคยเห็น HTML จริง
+    line_status: lineStatus,
+    // line_user_count: เลขล้วนไม่มีวงเล็บ/คำว่า "ผู้ใช้" — "" = หาไม่เจอ (ไม่รู้), ไม่ใช่ "0" (รู้ว่าไม่มี)
+    line_user_count: lineUserCount,
     phone: contactScope ? (extractLabelValue(contactScope, "โทรศัพท์") ?? "") : "",
     phone_alt1: phoneAltParts[0] ?? "",
     phone_alt2: phoneAltParts[1] ?? "",
+    // LINE ID (จากการ์ด "ข้อมูลติดต่อ") — ⚠️ เก็บเฉพาะ LINE ID (ตัวที่ลูกค้าตั้งเอง/แก้ได้) ห้ามเก็บ "LINE User
+    // ID" (ค่า base64 ใต้บล็อกผู้ใช้ LINE ที่เชื่อมต่อ) เด็ดขาด — เป็น identifier ส่วนตัวที่ไม่ได้ใช้ประโยชน์ใน
+    // งานตรวจ ไม่มี label "LINE ID" ปนกับ "LINE User ID" ในสโคปเดียวกันแบบ ambiguous เพราะ findLabelIndex ผูก
+    // tag-boundary พอดีคำ (`>LINE ID<` ไม่ match กลางคำ "LINE User ID")
+    line_id: contactScope ? (extractLabelValue(contactScope, "LINE ID") ?? "") : "",
+    // Facebook ID มีช่องว่างกลาง label เอง (findLabelIndex escape เฉพาะ regex metachar ไม่แตะช่องว่าง) —
+    // tag-boundary (`>Facebook ID<`) ยัง match ได้ปกติเพราะ regex เดิมไม่ได้ตัดคำที่ \s ตรงกลาง แค่ trim หัวท้าย
+    facebook_link: contactScope ? (extractLabelValue(contactScope, "Facebook ID") ?? "") : "",
     addr_card_full: addressScope ? (extractAddr(addressScope, "ที่อยู่ตามบัตรประชาชน") ?? "") : "",
     addr_current_full: addressScope ? (extractAddr(addressScope, "ที่อยู่ปัจจุบัน") ?? "") : "",
     addr_work_full: addressScope ? (extractAddr(addressScope, "ที่อยู่ที่ทำงาน") ?? "") : "",
@@ -598,9 +626,13 @@ function parseInvoiceDetail(html: string): ParseResult {
     pj_total_amount: String(parseAmount(extractLabelValue(paymentScope, "จำนวนเงินรวม") ?? "")),
     pj_remaining_amount: String(parseAmount(extractLabelValue(paymentScope, "จำนวนเงินคงเหลือ") ?? "")),
     pj_partner_received: String(parseAmount(extractLabelValue(paymentScope, "พาร์ทเนอร์ได้รับ") ?? "")),
-    // ไม่ set: shop_code, occupation, email, promotion, has_promotion, promotion_detail, occupation_proof,
-    // notes, operator — หน้าใบสัญญานี้ไม่มีข้อมูลพวกนี้เลย (ไม่ใช่ parse พลาด) ปล่อยให้ pjCompare.ts อ่านเป็น
-    // 'no_pj' ถูกต้อง
+    // ไม่ set: shop_code, email, promotion, has_promotion, promotion_detail, occupation_proof, notes, operator
+    // — หน้าใบสัญญานี้ไม่มีข้อมูลพวกนี้เลย (ไม่ใช่ parse พลาด) ปล่อยให้ pjCompare.ts อ่านเป็น 'no_pj' ถูกต้อง
+    // (occupation, facebook_link ดึงได้แล้วจากรอบก่อน; line_status/line_user_count (การ์ด "ข้อมูลส่วนตัว") +
+    // line_id (การ์ด "ข้อมูลติดต่อ") ดึงเพิ่มรอบนี้ — ยืนยันจาก HTML จริงบน PJ แล้ว 12/09 เฉพาะเคส "เชื่อมต่อ
+    // แล้ว" เท่านั้น เคส "ยังไม่เชื่อมต่อ" ยังไม่เคยเห็น HTML จริง แต่โค้ดออกแบบให้ไม่พัง — ว่างเปล่า/ไม่เจอ label
+    // เลย = "" ทั้งคู่ ไม่ใช่การเดา "0"/"ยังไม่เชื่อมต่อ" เอง — 3 คีย์นี้ "เก็บไว้ดูเฉยๆ" ไม่ใช่ core field
+    // ขาดไปก็ไม่ทำให้ทั้งชุด failed, ไม่มีการเก็บ LINE User ID (base64) ลง DB เด็ดขาดตามที่สั่ง)
   };
 
   return { ok: true, data };

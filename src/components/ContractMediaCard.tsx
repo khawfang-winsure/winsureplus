@@ -58,6 +58,7 @@ import {
   type SlotEvaluation,
 } from '../lib/media'
 import type { Contract, ContractMediaFile, ContractMediaStatus, MediaDuplicateMatch, PjContractSnapshot, PjImageRef, Shop } from '../lib/types'
+import type { PJContract } from '../lib/pjImport'
 import { buildReviewFields, type ReviewField, type ReviewFieldGroup } from '../lib/reviewFields'
 import { applyPjComparison, countPjFlags, type PjSnapshot } from '../lib/pjCompare'
 import { reviewAgeDays, reviewAgeLabel, REVIEW_BADGE_PENDING } from '../lib/review'
@@ -532,6 +533,32 @@ function PjStatusBar({
   )
 }
 
+/** บรรทัดข้อมูล LINE จากหน้าใบสัญญา PJ — ฝั่งเราไม่มีช่องนี้เลย แสดงไว้ดูเฉยๆ ตอนตรวจ ไม่ใช่การเทียบ (ไม่มีสีตรง/ไม่ตรง)
+ *  line_status ว่าง = PJ ไม่ได้ระบุ (ไม่ใช่ "ยังไม่เชื่อมต่อ") — ไม่แสดงบรรทัดนี้เลยถ้าว่าง กันเข้าใจผิด
+ *  status มีค่าแต่ไม่ใช่ "เชื่อมต่อแล้ว" → เน้นเหลืองแบบเดียวกับป้ายเตือนอื่นในเว็บ ให้สังเกตว่าต้องทักร้าน */
+function PjLineInfoBar({ data }: { data: Partial<PJContract> | null }) {
+  const status = (data?.line_status ?? '').trim()
+  if (!status) return null
+
+  const userCount = (data?.line_user_count ?? '').trim()
+  const lineId = (data?.line_id ?? '').trim()
+  const isConnected = status === 'เชื่อมต่อแล้ว'
+
+  const parts = [status]
+  if (userCount) parts.push(`${userCount} ผู้ใช้`)
+  if (lineId) parts.push(`ID ${lineId}`)
+
+  return (
+    <div
+      className={`border-b border-peach px-4 py-1.5 text-xs ${
+        isConnected ? 'text-ink-soft' : 'bg-amber-50 font-semibold text-amber-700'
+      }`}
+    >
+      LINE: {parts.join(' · ')}
+    </div>
+  )
+}
+
 /** กองรูปที่ scrape มาจาก PJ — แสดงรวมกัน ไม่พยายามจับคู่กับ 15 ช่องของเรา (PJ ไม่ติดป้ายว่ารูปไหนคืออะไร)
  *  lazy-load ต่อรูปผ่าน MediaThumb (useInView ในตัว) กัน 11 รูป x 3-8 วิ ยิงพร้อมกันจนหน้าค้าง */
 function PjPhotoGallery({ contractId, imageRefs }: { contractId: string; imageRefs: PjImageRef[] }) {
@@ -587,6 +614,8 @@ function ReviewPanel({
   // ต้อง fallback เป็น 2 คอลัมน์เดิมเป๊ะ ไม่โชว์คอลัมน์ที่ 3 ว่างๆ ให้ดูเหมือนพัง
   const pjData: PjSnapshot | null = pjEnabled && pjSnapshot && pjSnapshot.status === 'ok' && pjSnapshot.data ? pjSnapshot.data : null
   const hasPjData = pjData !== null
+  // ข้อมูล LINE (line_status/line_user_count/line_id) ไม่ใช่ช่องเทียบ (ไม่มีคู่ฝั่งเรา) — อ่านตรงจาก data ดิบ ไม่ผ่าน pjCompare
+  const pjLineData: Partial<PJContract> | null = pjSnapshot && pjSnapshot.status === 'ok' ? pjSnapshot.data : null
   const groups = useMemo(() => applyPjComparison(baseGroups, pjData), [baseGroups, pjData])
   const pjFlagCounts = useMemo(() => (hasPjData ? countPjFlags(groups) : null), [hasPjData, groups])
   const pjImages = useMemo(
@@ -653,13 +682,16 @@ function ReviewPanel({
       </div>
 
       {pjEnabled && (
-        <PjStatusBar
-          pjSnapshot={pjSnapshot ?? null}
-          pjRefreshing={pjRefreshing}
-          onPjRefresh={onPjRefresh}
-          hasPjData={hasPjData}
-          hardSoftCount={pjFlagCounts ? pjFlagCounts.hard + pjFlagCounts.soft : 0}
-        />
+        <>
+          <PjStatusBar
+            pjSnapshot={pjSnapshot ?? null}
+            pjRefreshing={pjRefreshing}
+            onPjRefresh={onPjRefresh}
+            hasPjData={hasPjData}
+            hardSoftCount={pjFlagCounts ? pjFlagCounts.hard + pjFlagCounts.soft : 0}
+          />
+          <PjLineInfoBar data={pjLineData} />
+        </>
       )}
 
       {open && (
