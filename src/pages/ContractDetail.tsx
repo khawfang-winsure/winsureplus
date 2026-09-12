@@ -78,6 +78,8 @@ import {
   getMediaSlots,
   getMediaGateFrom,
   getEmployees,
+  getPjSnapshot,
+  requestPjSnapshot,
 } from '../lib/db'
 import type { LetterRecord, LetterReply } from '../lib/letters'
 import {
@@ -101,7 +103,7 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
-import type { Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PrivateNote, Shop } from '../lib/types'
+import type { Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PjContractSnapshot, PrivateNote, Shop } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 import EarlyCloseModal from '../components/EarlyCloseModal'
 import CopyBox from '../components/CopyBox'
@@ -344,6 +346,11 @@ export default function ContractDetail() {
   const [unapproveOpen, setUnapproveOpen] = useState(false)
   const [unapproveReasonText, setUnapproveReasonText] = useState('')
 
+  // ===== ข้อมูล/รูปจากเว็บ PJ เอาไว้เทียบในแผงตรวจ (มิ.ย. เฟส 2, 2026-09-12) — admin เท่านั้น, เฉพาะตอนแผงตรวจกำลังแสดง =====
+  const [pjSnapshot, setPjSnapshot] = useState<PjContractSnapshot | null>(null)
+  const [pjRefreshing, setPjRefreshing] = useState(false)
+  const pjAutoRefreshedRef = useRef<string | null>(null) // เคยสั่งดึงอัตโนมัติของสัญญานี้ไปแล้ว — กันยิงซ้ำ (Edge Function debounce 60 วิเองอยู่แล้ว แต่กันไว้อีกชั้นฝั่งหน้าเว็บ)
+
   // ===== Private Notes =====
   const [myNote, setMyNote] = useState<PrivateNote | null>(null)
   const [allNotes, setAllNotes] = useState<PrivateNote[]>([])
@@ -537,6 +544,59 @@ export default function ContractDetail() {
     reloadReviewLog()
   }, [reloadReviewLog])
 
+  // ===== ข้อมูล/รูปจากเว็บ PJ เอาไว้เทียบในแผงตรวจ (มิ.ย. เฟส 2, migration 0152) =====
+  // เก็บเงียบเมื่อดึงพัง — ไม่ให้ error ของ PJ ไปกวนหน้าเว็บหลัก (แผงตรวจซ่อนอยู่หลัง isAdmin + pending_review อยู่แล้ว)
+  const loadPjSnapshot = useCallback(async (): Promise<PjContractSnapshot | null> => {
+    if (!id) return null
+    try {
+      const snap = await getPjSnapshot(id)
+      setPjSnapshot(snap)
+      return snap
+    } catch {
+      setPjSnapshot(null)
+      return null
+    }
+  }, [id])
+
+  // ปุ่ม "ดึงใหม่" ในแผงตรวจ + ตัวสั่งดึงอัตโนมัติเบื้องหลังใช้ตัวเดียวกันนี้ — requestPjSnapshot() ไม่ throw อยู่แล้ว (ดู comment db.ts)
+  const requestPjRefresh = useCallback(async () => {
+    if (!id) return
+    setPjRefreshing(true)
+    await requestPjSnapshot(id)
+    await loadPjSnapshot()
+    setPjRefreshing(false)
+  }, [id, loadPjSnapshot])
+
+  // เปลี่ยนสัญญา (เปิดหน้าใหม่ผ่าน SPA route) — เคลียร์ข้อมูล PJ ของสัญญาเก่าทิ้งก่อน กันโชว์ข้อมูลผิดสัญญาชั่วขณะ
+  useEffect(() => {
+    setPjSnapshot(null)
+  }, [id])
+
+  // โหลดข้อมูล PJ ครั้งแรก + ดึงอัตโนมัติเบื้องหลัง 1 ครั้งถ้ายังไม่เคยดึง/ดึงล่มครั้งก่อน/ข้อมูลเก่าเกิน 12 ชม.
+  // เฉพาะตอนแผงตรวจของคุณเตยกำลังจะแสดง (admin + เคสอยู่ระหว่างรอตรวจ) — staff ไม่มีทางเห็นเลย
+  useEffect(() => {
+    if (!id || !isAdmin) return
+    if (contract?.reviewStatus !== 'pending_review') return
+    if (pjAutoRefreshedRef.current === id) return
+    let cancelled = false
+    void (async () => {
+      const snap = await loadPjSnapshot()
+      if (cancelled) return
+      const staleMs = 12 * 60 * 60 * 1000
+      const needsRefresh =
+        !snap ||
+        snap.status === 'never_fetched' ||
+        snap.status === 'failed' ||
+        (snap.status !== 'fetching' && (!snap.fetchedAt || Date.now() - new Date(snap.fetchedAt).getTime() > staleMs))
+      if (!needsRefresh) return
+      pjAutoRefreshedRef.current = id
+      await requestPjRefresh()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [id, isAdmin, contract?.reviewStatus, loadPjSnapshot, requestPjRefresh])
+
   // ชื่อผู้ทำในประวัติตรวจ — เผื่อ RLS ไม่ให้พนักงานอ่านชื่อคนอื่นครบ ก็ fallback เป็นป้าย role เฉยๆ ตอน render
   useEffect(() => {
     getEmployees()
@@ -647,6 +707,9 @@ export default function ContractDetail() {
       await load()
       reloadReviewLog()
       setReviewToast(reviewStatusRaw === 'needs_fix' ? REVIEW_TOAST_RESUBMIT : REVIEW_TOAST_SUBMIT)
+      // เตรียมข้อมูลเทียบ PJ ไว้ล่วงหน้าให้คุณเตยตั้งแต่ตอนพนักงานส่งตรวจ — fire-and-forget ล้วนๆ (ห้ามพังหรือทำให้ปุ่มนี้ช้าลง พนักงานกดทุกวัน)
+      // requestPjSnapshot ไม่ throw เองอยู่แล้ว (ดักทุก error คืน ok:false ใน db.ts) แต่กัน .catch ซ้ำอีกชั้นเผื่ออนาคตเปลี่ยน
+      void requestPjSnapshot(id).catch(() => undefined)
     } catch (e) {
       setReviewErr(errMsg(e))
     } finally {
@@ -1978,6 +2041,9 @@ export default function ContractDetail() {
         canDelete={canDeleteMedia}
         isAdmin={isAdmin}
         shop={contractShop}
+        pjSnapshot={isAdmin && reviewStatusRaw === 'pending_review' ? pjSnapshot : undefined}
+        pjRefreshing={pjRefreshing}
+        onPjRefresh={() => void requestPjRefresh()}
       />
 
       {/* ตารางงวดผ่อน */}

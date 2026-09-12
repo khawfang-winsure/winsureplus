@@ -18,6 +18,7 @@ import {
   ChevronUp,
   Copy,
   Image as ImageIcon,
+  RefreshCw,
   Trash2,
   Upload,
   X,
@@ -35,6 +36,7 @@ import {
   getMediaStorageGuardMb,
   getMediaStorageUsageMb,
   getMediaUrl,
+  getPjImage,
   setCreditHistoryFound,
   softDeleteMedia,
   uploadMedia,
@@ -55,8 +57,9 @@ import {
   type MediaSlot,
   type SlotEvaluation,
 } from '../lib/media'
-import type { Contract, ContractMediaFile, ContractMediaStatus, MediaDuplicateMatch, Shop } from '../lib/types'
+import type { Contract, ContractMediaFile, ContractMediaStatus, MediaDuplicateMatch, PjContractSnapshot, PjImageRef, Shop } from '../lib/types'
 import { buildReviewFields, type ReviewField, type ReviewFieldGroup } from '../lib/reviewFields'
+import { applyPjComparison, countPjFlags, type PjSnapshot } from '../lib/pjCompare'
 import { reviewAgeDays, reviewAgeLabel, REVIEW_BADGE_PENDING } from '../lib/review'
 
 // ===== ยูทิลิตี้ใช้ร่วมกับ WaitingEmail.tsx (แคสต์/ประเมินสถานะรูปจาก view สรุป ไม่ต้องดึงไฟล์จริงทีละสัญญา) =====
@@ -190,68 +193,147 @@ function readIsCoarsePointer(): boolean {
   }
 }
 
-// ===== cache signed URL ระดับโมดูล (spec §3, 2026-09-09) =====
-// signed URL อายุจริง 300 วิ (db.ts getMediaUrl createSignedUrl(..., 300)) — ถือว่าหมดอายุก่อนเวลาจริง 30 วิ กันพลาด
-// แล้วขอใหม่อัตโนมัติในครั้งถัดไปที่มีการเรียกใช้ (thumb เข้าจอ/เปิด lightbox/preload) กันรูปพังเงียบตอนเปิดหน้าค้างไว้นาน
-// แอดมินเปิดแท็บทิ้งไว้ทั้งวันไล่ตรวจหลายสิบเคส — ตั้งเพดานจำนวน entry + ล้างของหมดอายุตอนเขียนเข้า กันแคชโตไม่มีที่สิ้นสุด
+// ===== cache URL ระดับโมดูล (spec §3, 2026-09-09; generalize เป็น key/fetcher ใดก็ได้ 2026-09-12) =====
+// เดิมผูกกับ signed URL ของรูปเราอย่างเดียว (อายุจริง 300 วิ จาก db.ts getMediaUrl createSignedUrl(..., 300))
+// ตอนนี้ generalize ให้รับ cache key + fetcher ใดก็ได้ — เผื่อรูปจากแหล่งอื่นในอนาคต (เช่นรูปบัตร PJ ที่ต้องผ่านตัวกลางฝั่งเรา
+// ไม่ให้ลิงก์ปลายทางภายนอกโผล่ในเบราว์เซอร์ แล้วคืนมาเป็นก้อน blob/data URL แทน signed URL ธรรมดา)
+// ถือว่าหมดอายุก่อนเวลาจริง 30 วิ กันพลาด แล้วขอใหม่อัตโนมัติในครั้งถัดไปที่มีการเรียกใช้ (thumb เข้าจอ/เปิด lightbox/preload)
+// กันรูปพังเงียบตอนเปิดหน้าค้างไว้นาน แอดมินเปิดแท็บทิ้งไว้ทั้งวันไล่ตรวจหลายสิบเคส
+// — ตั้งเพดานจำนวน entry + ล้างของหมดอายุตอนเขียนเข้า กันแคชโตไม่มีที่สิ้นสุด
 const MEDIA_URL_TTL_MS = 300_000
 const MEDIA_URL_SAFETY_MARGIN_MS = 30_000
 const MEDIA_URL_CACHE_MAX_ENTRIES = 300
-const mediaUrlCache = new Map<string, { url: string; expiresAt: number }>()
-// request ที่กำลังวิ่งอยู่ (ยังไม่ settle) ต่อ fileId — กัน thumb (เลื่อนถึง) กับ lightbox (preload) ยิง media-sign ซ้ำพร้อมกัน
-const mediaUrlPending = new Map<string, Promise<string | null>>()
+const urlCache = new Map<string, { url: string; expiresAt: number }>()
+// request ที่กำลังวิ่งอยู่ (ยังไม่ settle) ต่อ cache key — กัน thumb (เลื่อนถึง) กับ lightbox (preload) ยิงซ้ำพร้อมกัน
+const urlPending = new Map<string, Promise<string | null>>()
+
+/** revoke object URL ตอนทิ้งออกจากแคช — เฉพาะ blob: URL เท่านั้น (signed URL ปกติของเราไม่ใช่ blob: เรียก revoke แล้วไม่มีผลอะไร ปลอดภัย)
+ *  เผื่อไว้สำหรับรูปแหล่งอื่นในอนาคตที่ fetcher คืน URL.createObjectURL(...) แทน URL ปลายทางตรง — กัน memory รั่วตอนแคชหมดอายุ/ถูกเบียดออก */
+function releaseCachedUrl(url: string): void {
+  if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+}
 
 /** ล้าง entry ที่หมดอายุแล้วทั้งหมด แล้วถ้ายังเกินเพดานให้ทิ้งตัวเก่าสุดจนกว่าจะพอ (insertion order ของ Map) */
-function pruneMediaUrlCache(now: number): void {
-  for (const [id, entry] of mediaUrlCache) {
-    if (entry.expiresAt <= now) mediaUrlCache.delete(id)
+function pruneUrlCache(now: number): void {
+  for (const [key, entry] of urlCache) {
+    if (entry.expiresAt <= now) {
+      releaseCachedUrl(entry.url)
+      urlCache.delete(key)
+    }
   }
-  while (mediaUrlCache.size > MEDIA_URL_CACHE_MAX_ENTRIES) {
-    const oldestId = mediaUrlCache.keys().next().value
-    if (oldestId === undefined) break
-    mediaUrlCache.delete(oldestId)
+  while (urlCache.size > MEDIA_URL_CACHE_MAX_ENTRIES) {
+    const oldestKey = urlCache.keys().next().value
+    if (oldestKey === undefined) break
+    const oldest = urlCache.get(oldestKey)
+    if (oldest) releaseCachedUrl(oldest.url)
+    urlCache.delete(oldestKey)
   }
 }
 
-async function getCachedMediaUrl(file: ContractMediaFile): Promise<string | null> {
+/** cache กลาง — key ใดก็ได้ + fetcher ใดก็ได้ ไม่ผูกกับ ContractMediaFile หรือ Supabase อีกต่อไป
+ *  ttlMs default 300 วิ ตรงกับ signed URL ของเรา (และตรงกับอายุลิงก์รูปฝั่ง PJ พอดีเป๊ะ ณ วันที่เขียน — ใช้ semantics เดิมได้ 1:1) */
+async function getCachedUrl(cacheKey: string, fetcher: () => Promise<string | null>, ttlMs: number = MEDIA_URL_TTL_MS): Promise<string | null> {
   const now = Date.now()
-  pruneMediaUrlCache(now)
+  pruneUrlCache(now)
 
-  const cached = mediaUrlCache.get(file.id)
+  const cached = urlCache.get(cacheKey)
   if (cached && cached.expiresAt - MEDIA_URL_SAFETY_MARGIN_MS > now) return cached.url
 
-  const pending = mediaUrlPending.get(file.id)
+  const pending = urlPending.get(cacheKey)
   if (pending) return pending
 
-  const request = getMediaUrl(file)
+  const request = fetcher()
     .then((url) => {
+      const prev = urlCache.get(cacheKey)
+      if (prev) releaseCachedUrl(prev.url) // ทิ้งของเก่าก่อนเสมอ (ทั้งกรณี refresh สำเร็จหรือได้ null) — กัน object URL ค้างไม่ถูก revoke
+      urlCache.delete(cacheKey) // ลบก่อน set เพื่อขยับไปท้าย insertion order — ทำให้ prune ทิ้ง LRU จริง ไม่ใช่ทิ้งตัวที่ถูก refresh บ่อยที่สุด
       if (url) {
-        mediaUrlCache.delete(file.id) // ลบก่อน set เพื่อขยับไปท้าย insertion order — ทำให้ prune ทิ้ง LRU จริง ไม่ใช่ทิ้งตัวที่ถูก refresh บ่อยที่สุด
-        mediaUrlCache.set(file.id, { url, expiresAt: Date.now() + MEDIA_URL_TTL_MS })
-        pruneMediaUrlCache(Date.now())
-      } else {
-        mediaUrlCache.delete(file.id)
+        urlCache.set(cacheKey, { url, expiresAt: Date.now() + ttlMs })
+        pruneUrlCache(Date.now())
       }
       return url
     })
     .finally(() => {
-      mediaUrlPending.delete(file.id)
+      urlPending.delete(cacheKey)
     })
 
-  mediaUrlPending.set(file.id, request)
+  urlPending.set(cacheKey, request)
   return request
 }
 
-/** ขอ signed URL + วอร์มแคชรูปในเบราว์เซอร์ล่วงหน้า (fire-and-forget) — ใช้ตอนเปิด lightbox เพื่อให้กดลูกศรแล้วลื่น */
-function preloadMediaUrl(file: ContractMediaFile | undefined): void {
-  if (!file) return
-  void getCachedMediaUrl(file)
+/** thin wrapper ของ getCachedUrl เฉพาะรูปของเรา (ContractMediaFile) — คงชื่อ/พฤติกรรมเดิมไว้ให้จุดเรียกเดิมไม่ต้องแก้ */
+async function getCachedMediaUrl(file: ContractMediaFile): Promise<string | null> {
+  return getCachedUrl(file.id, () => getMediaUrl(file))
+}
+
+// ===== รูปจากเว็บ PJ (แผงตรวจ, เฟส 2 — 2026-09-12) — proxy ผ่าน Edge Function pj-snapshot ไม่มีลิงก์ S3 ตรงโผล่ในเบราว์เซอร์ =====
+
+/** base64 (จาก getPjImage) → Blob จริง เอาไปสร้าง object URL ให้ <img src> ใช้ได้ */
+function base64ToBlob(base64: string, mime: string): Blob {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return new Blob([bytes], { type: mime })
+}
+
+/** PJ ไม่ติดป้ายว่ารูปไหนคือช่องไหน (ทุกใบ alt เดียวกันหมด) — แยกได้แค่ 2 กลุ่มหยาบๆ จากชื่อคีย์ที่เราตั้งฝั่งเราเอง (id_card_* vs customer_photo_*) ห้ามพยายามเดามากกว่านี้ */
+function pjImageLabel(kind: string): string {
+  return kind.startsWith('id_card') ? 'บัตรประชาชน' : 'รูปจากร้าน'
+}
+
+/** adapter: รูป 1 ใบจากเว็บ PJ → MediaSource กลาง — cache ผ่าน getCachedUrl เดียวกับรูปของเรา
+ *  (TTL 300 วิ ตรงกับอายุลิงก์ปลายทางจริงฝั่ง PJ พอดี — ดู comment บน getCachedUrl ด้านบน)
+ *  โหลดจริงเฉพาะตอน MediaThumb เลื่อนเข้าจอ (useInView ในตัว MediaThumb เอง) — กัน 11 รูป x 3-8 วิ ยิงพร้อมกันจนค้าง */
+function pjImageToSource(contractId: string, ref: PjImageRef): MediaSource {
+  const cacheKey = `pj:${contractId}:${ref.kind}`
+  return {
+    id: cacheKey,
+    alt: pjImageLabel(ref.kind),
+    load: () =>
+      getCachedUrl(cacheKey, async () => {
+        const result = await getPjImage(contractId, ref.kind)
+        if (!result.ok || !result.base64 || !result.mime) return null
+        return URL.createObjectURL(base64ToBlob(result.base64, result.mime))
+      }),
+  }
+}
+
+/** ข้อความเวลาแบบคนอ่าน ("5 นาทีที่แล้ว") จาก timestamp ที่ดึงข้อมูล PJ ครั้งล่าสุด */
+function pjFetchedAgoLabel(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return 'เมื่อสักครู่'
+  if (minutes < 60) return `${minutes} นาทีที่แล้ว`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} ชั่วโมงที่แล้ว`
+  const days = Math.floor(hours / 24)
+  return `${days} วันที่แล้ว`
+}
+
+/** shape กลางสำหรับ MediaThumb/MediaLightbox — ไม่ผูกกับ ContractMediaFile เพื่อให้รูปจากแหล่งอื่น (เช่นรูปบัตร PJ ในแผงตรวจ รอบหน้า) ใช้ component เดียวกันได้
+ *  load() ต้องคืน string ที่ใส่ <img src> ได้ตรง — ครอบคลุมทั้ง URL ปลายทางธรรมดา และ object URL/data URL (กรณีข้อมูลรูปเป็นก้อนไบต์ ไม่ใช่ URL ปลายทาง) */
+interface MediaSource {
+  id: string
+  load: () => Promise<string | null>
+  alt?: string
+}
+
+/** adapter: ContractMediaFile (แถวรูปของเรา) → MediaSource กลาง */
+function mediaFileToSource(file: ContractMediaFile): MediaSource {
+  return { id: file.id, load: () => getCachedMediaUrl(file) }
+}
+
+/** ขอ URL ของ source + วอร์มแคชรูปในเบราว์เซอร์ล่วงหน้า (fire-and-forget) — ใช้ตอนเปิด lightbox เพื่อให้กดลูกศรแล้วลื่น */
+function preloadSource(source: MediaSource | undefined): void {
+  if (!source) return
+  void source
+    .load()
     .then((url) => {
       if (!url) return
       const img = new Image()
       img.src = url
     })
-    .catch(() => undefined) // preload ล้มเหลวเงียบๆ ได้ — ไม่กระทบ UI เพราะตอนกดดูจริงจะขอ signed URL ใหม่อยู่แล้ว
+    .catch(() => undefined) // preload ล้มเหลวเงียบๆ ได้ — ไม่กระทบ UI เพราะตอนกดดูจริงจะขอ URL ใหม่อยู่แล้ว
 }
 
 // เผื่อเคส IntersectionObserver ไม่ยิง callback เลย (เช่นแท็บพื้นหลัง — เบราว์เซอร์หยุด rendering lifecycle)
@@ -355,17 +437,164 @@ function writeReviewPanelOpen(contractId: string, open: boolean): void {
   }
 }
 
+/** ข้อความ 1 บรรทัดสำหรับปุ่มคัดลอก — ต่อค่า PJ ท้ายบรรทัดถ้ามีการเทียบแล้ว (pjCompare ถูกตั้งค่า) ไม่มี PJ เลยก็คงบรรทัดเดิมเป๊ะ */
 function fieldCopyLine(f: ReviewField): string {
   const altText = f.alt ? ` (${f.alt})` : ''
-  return `${f.label}: ${f.value || '-'}${altText}`
+  const pjText = !f.pjCompare
+    ? ''
+    : f.pjCompare === 'no_pj'
+      ? ' | PJ: ไม่มีช่องนี้'
+      : f.pjCompare === 'pj_blank'
+        ? ' | PJ: เว้นว่าง'
+        : ` | PJ: ${f.pjValue || '-'}`
+  return `${f.label}: ${f.value || '-'}${altText}${pjText}`
 }
 
 function groupCopyText(g: ReviewFieldGroup): string {
   return `${g.name}\n${g.fields.map(fieldCopyLine).join('\n')}`
 }
 
-function ReviewPanel({ contract, shop }: { contract: Contract; shop?: Shop | null }) {
-  const groups = useMemo(() => buildReviewFields(contract, shop ?? null, new Date().getFullYear()), [contract, shop])
+/** สีข้อความ + พื้นหลังของช่องค่า PJ ตามผลเทียบ — hard ต้องสะดุดตาที่สุด (แดงเข้ม+พื้นแดงอ่อน), soft เตือนเบา (เหลือง),
+ *  same/no_pj/pj_blank ไม่ต้องมีพื้นหลัง (ไม่ใช่จุดที่ต้องสนใจ) */
+function pjCellBgClass(compare: ReviewField['pjCompare']): string {
+  if (compare === 'hard') return 'bg-red-50'
+  if (compare === 'soft') return 'bg-amber-50'
+  return ''
+}
+
+/** เนื้อหาช่องค่า PJ ต่อ 1 ช่อง — คืนทั้งข้อความหลักและคลาสสี ให้ตรงกับกฎ:
+ *  hard=แดงเข้ม, soft=เหลืองเข้ม, same=ปกติ/จาง, no_pj/pj_blank=เทาจาง+ข้อความอธิบายว่าทำไมไม่มีให้เทียบ,
+ *  ไม่ได้อยู่ใน scope การเทียบเลย (f.pjCompare undefined ทั้งที่ hasPjData) = เทาจางเช่นกัน แต่ข้อความสั้นกว่า */
+function pjCellText(f: ReviewField): { text: string; className: string } {
+  if (!f.pjCompare) return { text: '—', className: 'text-ink-soft/70' }
+  if (f.pjCompare === 'no_pj') return { text: 'PJ ไม่มีช่องนี้', className: 'text-ink-soft/70 italic' }
+  if (f.pjCompare === 'pj_blank') return { text: 'PJ เว้นว่าง', className: 'text-ink-soft/70 italic' }
+  const text = f.pjValue || '—'
+  if (f.pjCompare === 'hard') return { text, className: 'font-semibold text-red-700' }
+  if (f.pjCompare === 'soft') return { text, className: 'font-semibold text-amber-700' }
+  return { text, className: 'text-ink-soft' } // same — ตรงกันแล้ว ไม่ต้องเน้น
+}
+
+/** แถบสถานะเหนือแผงตรวจ — สรุปว่าดึงข้อมูลจาก PJ มาถึงไหนแล้ว + ปุ่มดึงใหม่ + สรุปจุดที่ไม่ตรง
+ *  แสดงเสมอเมื่อหน้าเว็บส่ง pjSnapshot ลงมา (แม้เป็น null ก็แสดงเป็นสถานะ "ยังไม่เคยดึง") — ไม่ส่งลงมาเลย (undefined) = ปิดฟีเจอร์นี้ทั้งหมด ไม่โชว์อะไรเลย */
+function PjStatusBar({
+  pjSnapshot,
+  pjRefreshing,
+  onPjRefresh,
+  hasPjData,
+  hardSoftCount,
+}: {
+  pjSnapshot: PjContractSnapshot | null
+  pjRefreshing: boolean
+  onPjRefresh?: () => void
+  hasPjData: boolean
+  hardSoftCount: number
+}) {
+  let mainText: string
+  if (pjRefreshing) {
+    mainText = 'กำลังดึงข้อมูลจาก PJ มาเทียบ…'
+  } else if (!pjSnapshot || pjSnapshot.status === 'never_fetched') {
+    mainText = 'ยังไม่เคยดึงข้อมูลจาก PJ มาเทียบ'
+  } else if (pjSnapshot.status === 'fetching') {
+    mainText = 'กำลังดึงข้อมูลจาก PJ มาเทียบ…'
+  } else if (pjSnapshot.status === 'failed') {
+    mainText = pjSnapshot.errorReason ? `ดึงข้อมูลจาก PJ ไม่สำเร็จ: ${pjSnapshot.errorReason}` : 'ดึงข้อมูลจาก PJ ไม่สำเร็จ'
+  } else if (pjSnapshot.status === 'not_found_in_pj') {
+    mainText = pjSnapshot.pjInvoiceNo
+      ? `หาสัญญานี้ใน PJ ไม่เจอ (เลขที่ใบ: ${pjSnapshot.pjInvoiceNo})`
+      : 'หาสัญญานี้ใน PJ ไม่เจอ'
+  } else if (pjSnapshot.fetchedAt) {
+    mainText = `ดึงจาก PJ เมื่อ ${pjFetchedAgoLabel(pjSnapshot.fetchedAt)}`
+  } else {
+    mainText = 'ดึงข้อมูลจาก PJ แล้ว'
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-peach bg-peach-light/30 px-4 py-2 text-xs text-ink">
+      <span className="flex-1">{mainText}</span>
+      {hasPjData && (
+        <Badge tone={hardSoftCount > 0 ? 'amber' : 'green'}>
+          {hardSoftCount > 0 ? `ไม่ตรง ${hardSoftCount} จุด` : 'ข้อมูลตรงกันหมด'}
+        </Badge>
+      )}
+      {onPjRefresh && (
+        <button
+          type="button"
+          onClick={onPjRefresh}
+          disabled={pjRefreshing}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-peach bg-surface px-2.5 py-1.5 text-xs font-semibold text-ink transition hover:bg-peach-light/60 disabled:opacity-50"
+        >
+          <RefreshCw size={13} className={pjRefreshing ? 'animate-spin' : ''} />
+          {pjRefreshing ? 'กำลังดึง...' : 'ดึงใหม่'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** กองรูปที่ scrape มาจาก PJ — แสดงรวมกัน ไม่พยายามจับคู่กับ 15 ช่องของเรา (PJ ไม่ติดป้ายว่ารูปไหนคืออะไร)
+ *  lazy-load ต่อรูปผ่าน MediaThumb (useInView ในตัว) กัน 11 รูป x 3-8 วิ ยิงพร้อมกันจนหน้าค้าง */
+function PjPhotoGallery({ contractId, imageRefs }: { contractId: string; imageRefs: PjImageRef[] }) {
+  const sources = useMemo(() => imageRefs.map((ref) => pjImageToSource(contractId, ref)), [contractId, imageRefs])
+  const [openIndex, setOpenIndex] = useState<number | null>(null)
+  const openSource = openIndex != null ? sources[openIndex] : null
+
+  return (
+    <div className="border-t border-peach px-4 py-3">
+      <p className="mb-1 text-xs font-bold uppercase tracking-wide text-ink">{`รูปจาก PJ (${imageRefs.length} รูป)`}</p>
+      <p className="mb-2 text-[11px] text-ink-soft">PJ ไม่ได้บอกว่ารูปไหนคือช่องไหน แสดงเป็นกองรวมไว้ให้กวาดตาเทียบกับรูปของเราด้านล่างนี้เอง</p>
+      <div className="flex flex-wrap gap-3">
+        {imageRefs.map((ref, i) => (
+          <div key={ref.kind} className="flex flex-col items-center gap-1">
+            <MediaThumb source={sources[i]} onOpen={() => setOpenIndex(i)} />
+            <span className="text-[10px] text-ink-soft">{pjImageLabel(ref.kind)}</span>
+          </div>
+        ))}
+      </div>
+      {openSource && openIndex != null && (
+        <MediaLightbox
+          source={openSource}
+          hasPrev={openIndex > 0}
+          hasNext={openIndex < sources.length - 1}
+          onPrev={() => setOpenIndex((i) => (i != null && i > 0 ? i - 1 : i))}
+          onNext={() => setOpenIndex((i) => (i != null && i < sources.length - 1 ? i + 1 : i))}
+          onClose={() => setOpenIndex(null)}
+          preloadPrev={openIndex > 0 ? sources[openIndex - 1] : undefined}
+          preloadNext={openIndex < sources.length - 1 ? sources[openIndex + 1] : undefined}
+        />
+      )}
+    </div>
+  )
+}
+
+function ReviewPanel({
+  contract,
+  shop,
+  pjSnapshot,
+  pjRefreshing = false,
+  onPjRefresh,
+}: {
+  contract: Contract
+  shop?: Shop | null
+  /** undefined = ปิดฟีเจอร์เทียบ PJ ทั้งหมด (แผงหน้าตาเหมือนก่อนมีฟีเจอร์นี้เป๊ะ) · null = เปิดใช้แล้วแต่ยังไม่มีข้อมูล (เช่นยังโหลดไม่เสร็จ/ไม่เคยดึง) */
+  pjSnapshot?: PjContractSnapshot | null
+  pjRefreshing?: boolean
+  onPjRefresh?: () => void
+}) {
+  const baseGroups = useMemo(() => buildReviewFields(contract, shop ?? null, new Date().getFullYear()), [contract, shop])
+  const pjEnabled = pjSnapshot !== undefined
+  // มีข้อมูลจริงให้เทียบก็ต่อเมื่อดึงสำเร็จ (status='ok') และมี data จริง — สถานะอื่น (กำลังดึง/ล่ม/หาไม่เจอ/ยังไม่เคยดึง)
+  // ต้อง fallback เป็น 2 คอลัมน์เดิมเป๊ะ ไม่โชว์คอลัมน์ที่ 3 ว่างๆ ให้ดูเหมือนพัง
+  const pjData: PjSnapshot | null = pjEnabled && pjSnapshot && pjSnapshot.status === 'ok' && pjSnapshot.data ? pjSnapshot.data : null
+  const hasPjData = pjData !== null
+  const groups = useMemo(() => applyPjComparison(baseGroups, pjData), [baseGroups, pjData])
+  const pjFlagCounts = useMemo(() => (hasPjData ? countPjFlags(groups) : null), [hasPjData, groups])
+  const pjImages = useMemo(
+    () => (pjEnabled && pjSnapshot?.imageRefs ? pjSnapshot.imageRefs.filter((r) => r.kind && r.path) : []),
+    [pjEnabled, pjSnapshot],
+  )
+  const fieldsGridCls = hasPjData ? 'grid grid-cols-1 sm:grid-cols-[180px_1fr_1fr]' : 'grid grid-cols-1 sm:grid-cols-[180px_1fr]'
+
   const [open, setOpen] = useState<boolean>(() => readReviewPanelOpen(contract.id))
   const [copyToast, setCopyToast] = useState<string | null>(null)
 
@@ -423,6 +652,16 @@ function ReviewPanel({ contract, shop }: { contract: Contract; shop?: Shop | nul
         </button>
       </div>
 
+      {pjEnabled && (
+        <PjStatusBar
+          pjSnapshot={pjSnapshot ?? null}
+          pjRefreshing={pjRefreshing}
+          onPjRefresh={onPjRefresh}
+          hasPjData={hasPjData}
+          hardSoftCount={pjFlagCounts ? pjFlagCounts.hard + pjFlagCounts.soft : 0}
+        />
+      )}
+
       {open && (
         <>
           <div className="flex flex-wrap gap-4 border-b border-peach bg-surface px-4 py-2 text-xs text-ink-soft">
@@ -439,7 +678,21 @@ function ReviewPanel({ contract, shop }: { contract: Contract; shop?: Shop | nul
               </span>
               ว่างทั้งที่ควรมีค่า
             </span>
+            {hasPjData && (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-sm bg-red-200" aria-hidden="true" /> ไม่ตรงกับ PJ
+                <span className="h-2.5 w-2.5 rounded-sm bg-amber-200" aria-hidden="true" /> ต่างแบบเตือน (ข้อความ)
+              </span>
+            )}
           </div>
+
+          {hasPjData && (
+            <div className="hidden border-b border-peach bg-peach-light/40 text-[11px] font-bold uppercase tracking-wide text-ink-soft sm:grid sm:grid-cols-[180px_1fr_1fr]">
+              <div className="px-4 py-1.5">รายการ</div>
+              <div className="px-4 py-1.5">ที่เราคีย์</div>
+              <div className="px-4 py-1.5">ที่ร้านคีย์ใน PJ</div>
+            </div>
+          )}
 
           {groups.map((g) => (
             <div key={g.name} className="border-b border-peach last:border-b-0">
@@ -453,44 +706,58 @@ function ReviewPanel({ contract, shop }: { contract: Contract; shop?: Shop | nul
                   <Copy size={11} /> คัดลอกกลุ่มนี้
                 </button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr]">
-                {g.fields.map((f) => (
-                  <Fragment key={f.key}>
-                    <div className={`border-t border-peach px-4 py-1.5 text-sm text-ink-soft ${f.missing ? 'bg-red-50' : ''}`}>{f.label}</div>
-                    <div
-                      className={`flex flex-wrap items-center gap-1.5 border-t border-peach px-4 py-1.5 text-sm ${
-                        f.missing ? 'bg-red-50 font-semibold text-red-700' : 'text-ink'
-                      } ${f.mono ? 'tabular-nums' : ''}`}
-                    >
-                      {f.inEmail && (
-                        <span className="text-salmon-deep" title="อยู่ในอีเมลที่ส่งบริษัท" aria-hidden="true">
-                          ✉
-                        </span>
-                      )}
-                      {f.missing ? (
-                        <>
-                          <span aria-hidden="true" className="inline-grid h-4 w-4 place-items-center rounded-full bg-red-600 text-[10px] font-bold text-white">
-                            !
+              <div className={fieldsGridCls}>
+                {g.fields.map((f) => {
+                  const pjCell = hasPjData ? pjCellText(f) : null
+                  return (
+                    <Fragment key={f.key}>
+                      <div className={`border-t border-peach px-4 py-1.5 text-sm text-ink-soft ${f.missing ? 'bg-red-50' : ''}`}>{f.label}</div>
+                      <div
+                        className={`flex flex-wrap items-center gap-1.5 border-t border-peach px-4 py-1.5 text-sm ${
+                          f.missing ? 'bg-red-50 font-semibold text-red-700' : 'text-ink'
+                        } ${f.mono ? 'tabular-nums' : ''}`}
+                      >
+                        {f.inEmail && (
+                          <span className="text-salmon-deep" title="อยู่ในอีเมลที่ส่งบริษัท" aria-hidden="true">
+                            ✉
                           </span>
-                          <span>ยังไม่ได้กรอก</span>
-                        </>
-                      ) : f.value ? (
-                        <span>{f.value}</span>
-                      ) : (
-                        <span className="text-ink-soft">—</span>
+                        )}
+                        {f.missing ? (
+                          <>
+                            <span aria-hidden="true" className="inline-grid h-4 w-4 place-items-center rounded-full bg-red-600 text-[10px] font-bold text-white">
+                              !
+                            </span>
+                            <span>ยังไม่ได้กรอก</span>
+                          </>
+                        ) : f.value ? (
+                          <span>{f.value}</span>
+                        ) : (
+                          <span className="text-ink-soft">—</span>
+                        )}
+                        {f.derived && (
+                          <span className="rounded bg-peach-light px-1.5 py-0.5 text-[11px] font-semibold text-ink">คำนวณ</span>
+                        )}
+                        {f.alt && (
+                          <span className="text-xs text-ink-soft" title="ต่างกันเพราะปัดเศษคนละสูตร ไม่ใช่คีย์ผิด">{`(${f.alt})`}</span>
+                        )}
+                      </div>
+                      {hasPjData && pjCell && (
+                        <div className={`border-t border-peach px-4 py-1.5 text-sm ${pjCellBgClass(f.pjCompare)} ${f.mono ? 'tabular-nums' : ''}`}>
+                          <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-soft sm:hidden">
+                            ที่ร้านคีย์ใน PJ
+                          </span>
+                          <span className={pjCell.className}>{pjCell.text}</span>
+                          {f.pjNote && <span className="ml-1.5 text-xs text-ink-soft" title={f.pjNote}>{`(${f.pjNote})`}</span>}
+                        </div>
                       )}
-                      {f.derived && (
-                        <span className="rounded bg-peach-light px-1.5 py-0.5 text-[11px] font-semibold text-ink">คำนวณ</span>
-                      )}
-                      {f.alt && (
-                        <span className="text-xs text-ink-soft" title="ต่างกันเพราะปัดเศษคนละสูตร ไม่ใช่คีย์ผิด">{`(${f.alt})`}</span>
-                      )}
-                    </div>
-                  </Fragment>
-                ))}
+                    </Fragment>
+                  )
+                })}
               </div>
             </div>
           ))}
+
+          {pjImages.length > 0 && <PjPhotoGallery contractId={contract.id} imageRefs={pjImages} />}
         </>
       )}
 
@@ -512,6 +779,9 @@ export default function ContractMediaCard({
   onStatusChange,
   isAdmin,
   shop,
+  pjSnapshot,
+  pjRefreshing,
+  onPjRefresh,
 }: {
   contract: Contract
   canUpload: boolean
@@ -519,6 +789,10 @@ export default function ContractMediaCard({
   onStatusChange?: (evaluation: ReturnType<typeof evaluateSlots>) => void
   isAdmin: boolean
   shop?: Shop | null
+  /** ข้อมูล/รูปจากเว็บ PJ ไว้เทียบในแผงตรวจ — undefined = ไม่ส่งฟีเจอร์นี้มาเลย (แผงตรวจหน้าตาเหมือนเดิม) */
+  pjSnapshot?: PjContractSnapshot | null
+  pjRefreshing?: boolean
+  onPjRefresh?: () => void
 }) {
   const [slots, setSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
   const [files, setFiles] = useState<ContractMediaFile[]>([])
@@ -836,7 +1110,15 @@ export default function ContractMediaCard({
 
   return (
     <Card className="mb-4 py-4">
-      {isAdmin && contract.reviewStatus === 'pending_review' && <ReviewPanel contract={contract} shop={shop} />}
+      {isAdmin && contract.reviewStatus === 'pending_review' && (
+        <ReviewPanel
+          contract={contract}
+          shop={shop}
+          pjSnapshot={pjSnapshot}
+          pjRefreshing={pjRefreshing}
+          onPjRefresh={onPjRefresh}
+        />
+      )}
 
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -940,7 +1222,7 @@ export default function ContractMediaCard({
                     {slotFiles.map((f) => (
                       <MediaThumb
                         key={f.id}
-                        file={f}
+                        source={mediaFileToSource(f)}
                         tooSmall={tooSmallIds.has(f.id)}
                         canDelete={canDelete}
                         onOpen={() => setLightbox({ slotKey: e.key, fileId: f.id })}
@@ -1042,14 +1324,14 @@ export default function ContractMediaCard({
 
       {lightboxFile && (
         <MediaLightbox
-          file={lightboxFile}
+          source={mediaFileToSource(lightboxFile)}
           hasPrev={lightboxIndex > 0}
           hasNext={lightboxIndex < lightboxFiles.length - 1}
           onPrev={() => setLightbox({ slotKey: lightboxFile.slotKey, fileId: lightboxFiles[lightboxIndex - 1].id })}
           onNext={() => setLightbox({ slotKey: lightboxFile.slotKey, fileId: lightboxFiles[lightboxIndex + 1].id })}
           onClose={() => setLightbox(null)}
-          preloadPrev={lightboxPrevFile}
-          preloadNext={lightboxNextFile}
+          preloadPrev={lightboxPrevFile ? mediaFileToSource(lightboxPrevFile) : undefined}
+          preloadNext={lightboxNextFile ? mediaFileToSource(lightboxNextFile) : undefined}
         />
       )}
     </Card>
@@ -1064,17 +1346,17 @@ function SlotStatusPill({ status, count, min }: { status: SlotEvaluation['status
 }
 
 function MediaThumb({
-  file,
-  tooSmall,
-  canDelete,
+  source,
+  tooSmall = false,
+  canDelete = false,
   onOpen,
   onDeleteRequest,
 }: {
-  file: ContractMediaFile
-  tooSmall: boolean
-  canDelete: boolean
+  source: MediaSource
+  tooSmall?: boolean
+  canDelete?: boolean
   onOpen: () => void
-  onDeleteRequest: () => void
+  onDeleteRequest?: () => void
 }) {
   const [setInViewRef, inView] = useInView<HTMLDivElement>()
   const [url, setUrl] = useState<string | null>(null)
@@ -1086,7 +1368,8 @@ function MediaThumb({
     let cancelled = false
     setFailed(false)
     setUrl(null)
-    getCachedMediaUrl(file)
+    source
+      .load()
       .then((u) => {
         if (cancelled) return
         if (u) setUrl(u)
@@ -1099,7 +1382,7 @@ function MediaThumb({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.id, inView, retryCount])
+  }, [source.id, inView, retryCount])
 
   function handleRetry(ev: MouseEvent<HTMLButtonElement>) {
     ev.stopPropagation()
@@ -1114,7 +1397,7 @@ function MediaThumb({
     >
       <button type="button" onClick={onOpen} disabled={failed} className="block h-full w-full disabled:cursor-default" aria-label="ดูรูปขยาย">
         {url ? (
-          <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+          <img src={url} alt={source.alt ?? ''} loading="lazy" decoding="async" className="h-full w-full object-cover" />
         ) : failed ? (
           <span className="flex h-full items-center justify-center text-center text-[10px] text-ink">โหลดไม่ได้</span>
         ) : (
@@ -1139,7 +1422,7 @@ function MediaThumb({
           <AlertTriangle size={11} />
         </span>
       )}
-      {canDelete && (
+      {canDelete && onDeleteRequest && (
         <button
           type="button"
           onClick={onDeleteRequest}
@@ -1167,7 +1450,7 @@ function clampScale(v: number): number {
 }
 
 function MediaLightbox({
-  file,
+  source,
   hasPrev,
   hasNext,
   onPrev,
@@ -1176,14 +1459,14 @@ function MediaLightbox({
   preloadPrev,
   preloadNext,
 }: {
-  file: ContractMediaFile
+  source: MediaSource
   hasPrev: boolean
   hasNext: boolean
   onPrev: () => void
   onNext: () => void
   onClose: () => void
-  preloadPrev?: ContractMediaFile
-  preloadNext?: ContractMediaFile
+  preloadPrev?: MediaSource
+  preloadNext?: MediaSource
 }) {
   const [url, setUrl] = useState<string | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -1225,7 +1508,8 @@ function MediaLightbox({
   useEffect(() => {
     let cancelled = false
     setUrl(null)
-    getCachedMediaUrl(file)
+    source
+      .load()
       .then((u) => {
         if (!cancelled) setUrl(u)
       })
@@ -1233,17 +1517,20 @@ function MediaLightbox({
     return () => {
       cancelled = true
     }
-  }, [file])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.id])
 
   // preload รูปข้างเคียงล่วงหน้า — กดลูกศรแล้วลื่นไม่ต้องรอโหลดใหม่ (spec §3)
+  // dep ใช้ .id เท่านั้น: caller ส่ง MediaSource object ใหม่ทุก render (adapter สร้าง literal ใหม่) — ถ้าใช้ทั้ง object เป็น dep effect จะยิง preload ซ้ำทุกครั้งที่ parent re-render โดยไม่จำเป็น
   useEffect(() => {
-    preloadMediaUrl(preloadPrev)
-    preloadMediaUrl(preloadNext)
-  }, [preloadPrev, preloadNext])
+    preloadSource(preloadPrev)
+    preloadSource(preloadNext)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preloadPrev?.id, preloadNext?.id])
 
   useEffect(() => {
     closeRef.current?.focus()
-  }, [file.id])
+  }, [source.id])
 
   // รีเซ็ตซูม/ตำแหน่งทุกครั้งที่เปลี่ยนรูป
   useEffect(() => {
@@ -1255,7 +1542,7 @@ function MediaLightbox({
     setZoomPercent(100)
     applyTransform()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.id])
+  }, [source.id])
 
   function handleImgLoad() {
     const img = imgElRef.current
@@ -1452,7 +1739,7 @@ function MediaLightbox({
               <img
                 ref={imgElRef}
                 src={url}
-                alt=""
+                alt={source.alt ?? ''}
                 onLoad={handleImgLoad}
                 onDragStart={(ev) => ev.preventDefault()}
                 style={{ maxHeight: '80vh', maxWidth: '92vw', width: 'auto', height: 'auto', display: 'block' }}

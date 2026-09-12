@@ -20,6 +20,11 @@ export interface ReviewField {
   derived?: boolean // ระบบคำนวณให้ ไม่ใช่ค่าที่พนักงานคีย์
   missing?: boolean // ว่างทั้งที่ควรมีค่า → ไฮไลต์เตือน
   alt?: string // ค่าที่สอง กรณี 2 สูตรไม่ตรงกัน (ดาวน์ต่าง 1 บาท) — ข้อความพร้อมแสดงต่อท้าย เช่น "ตารางงวด 5,969 ฿"
+  // --- เทียบกับ PJ (คอลัมน์ที่ 3 ในแผงตรวจ) — decorate เพิ่มทีหลังโดย applyPjComparison() ใน pjCompare.ts ---
+  // buildReviewFields() เองไม่ตั้งค่า 3 ช่องนี้เลย (undefined เสมอ) — เรียก applyPjComparison(groups, null) แล้วต้องได้แผงหน้าตาเดิมเป๊ะ
+  pjValue?: string // ค่าที่ดึงมาจาก PJ จัดรูปแบบพร้อมแสดง ('' = PJ ไม่มี/ไม่มีคีย์นี้)
+  pjCompare?: 'same' | 'soft' | 'hard' | 'no_pj' | 'pj_blank' // same=ตรงกัน · soft=ต่างแบบเตือนเหลือง(ข้อความอิสระ) · hard=ต่างแบบแดง · no_pj=PJ ไม่เก็บข้อมูลนี้เลย(ไม่มีคีย์) · pj_blank=PJ มีคีย์นี้แต่ค่าว่าง/parse ไม่ได้
+  pjNote?: string // หมายเหตุประกอบ เช่น "ต่าง 1 บาท (ปัดเศษ)" หรือ "สลับช่องเบอร์สำรอง"
 }
 
 export interface ReviewFieldGroup {

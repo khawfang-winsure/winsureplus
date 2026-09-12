@@ -4,6 +4,7 @@
 
 import type { LateBucket } from './collectorPeriod'
 import type { ReviewStatus } from './review'
+import type { PJContract } from './pjImport'
 
 /** สถานะหลัก (lifecycle) ของสัญญา — กลุ่มล่าช้าเป็นค่าที่ "คำนวณ" จากวันครบกำหนด ไม่ได้เก็บตรงนี้ */
 export type ContractStatus =
@@ -904,5 +905,52 @@ export interface SendCompanyEmailResult {
   sentAt?: string
   attachmentCount?: number
   totalBytes?: number
+  error?: string
+}
+
+// ---------- แคชข้อมูลสัญญาจากเว็บ PJ — เทียบกับค่าที่ทีมเราคีย์เอง (migration 0152, Edge Function pj-snapshot) ----------
+
+/** สถานะการดึงข้อมูลจาก PJ ต่อสัญญา — ดู comment คอลัมน์ status ที่ mig 0152 สำหรับความหมายละเอียด */
+export type PjSnapshotStatus = 'never_fetched' | 'fetching' | 'ok' | 'failed' | 'not_found_in_pj'
+
+/** 1 รูปที่เจอในหน้าใบสัญญา PJ — เก็บแค่ชนิด+path บน S3 เท่านั้น (ไม่ใช่ presigned URL — หมดอายุ 300 วิ ใช้ไม่ได้
+ *  ตอนแผงตรวจโหลดจริง) ต้องขอ bytes จริงผ่าน getPjImage() เท่านั้น ห้ามคืน path นี้ตรงๆ ให้ <img src> ใช้งาน */
+export interface PjImageRef {
+  kind: string // เช่น 'id_card_1' | 'id_card_2' | 'customer_photo_1' — ส่งกลับเป็น imageKey ให้ getPjImage()
+  path: string
+}
+
+/** 1 แถวจากตาราง pj_contract_snapshot (mig 0152) — data ใช้ชื่อคีย์ตาม PJContract (pjImport.ts) เป๊ะๆ เพื่อให้
+ *  PJ 2 ทางในระบบ (import CSV เดิม กับ live-fetch ทางนี้) พูดภาษาเดียวกัน แต่ "ไม่ครบทุกคีย์เสมอ" — หน้าใบสัญญา
+ *  PJ ที่ scrape สดไม่มีข้อมูลบางอย่าง (occupation/email/shop_code/promotion*) คีย์เหล่านั้นจะไม่ปรากฏใน data เลย
+ *  (ไม่ใช่ค่าว่าง) — ส่งตรงเข้า pjCompare.ts (applyPjComparison) ได้เลยเพราะ type PjSnapshot ที่นั่นเป็น
+ *  Partial<Record<keyof PJContract, ...>> อยู่แล้ว */
+export interface PjContractSnapshot {
+  contractId: string
+  status: PjSnapshotStatus
+  pjInvoiceNo: string | null
+  pjInvoiceUuid: string | null
+  data: Partial<PJContract> | null
+  imageRefs: PjImageRef[] | null
+  fetchedAt: string | null // ISO timestamptz — null ถ้ายังไม่เคยดึงเลย (status='never_fetched')
+  errorReason: string | null
+  updatedAt: string
+}
+
+/** ผลลัพธ์จาก requestPjSnapshot() (db.ts) — เรียก Edge Function pj-snapshot mode='snapshot'
+ *  ok=true ไม่ได้แปลว่า "เจอข้อมูลตรง" เสมอ — status='not_found_in_pj' ก็ ok:true ได้ (ดึงสำเร็จ แค่ไม่เจอใบใน PJ)
+ *  ok=false = ดึงไม่สำเร็จจริงๆ (login/parse พัง) ดู error */
+export interface RequestPjSnapshotResult {
+  ok: boolean
+  status: PjSnapshotStatus
+  error?: string
+}
+
+/** ผลลัพธ์จาก getPjImage() (db.ts) — เรียก Edge Function pj-snapshot mode='images' (admin เท่านั้น)
+ *  คืนตัวไฟล์ (base64) ไม่ใช่ลิงก์ — คุณเตยเคาะแล้วว่าลิงก์รูปบัตรห้ามโผล่ในเบราว์เซอร์เลย */
+export interface PjImageResult {
+  ok: boolean
+  base64?: string
+  mime?: string
   error?: string
 }

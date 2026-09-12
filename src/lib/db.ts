@@ -33,7 +33,10 @@ import type {
   OverdueBucket,
   OverduePromiseContract,
   CollectionMonthlyRow,
+  PjContractSnapshot,
   PjDaysLateBucket,
+  PjImageRef,
+  PjImageResult,
   LetterOutcome,
   LetterOutcomeByRound,
   LetterOutcomeSummary,
@@ -45,7 +48,9 @@ import type {
   PjReviewContext,
   PjSyncReviewRow,
   PjSyncRunRow,
+  PjSnapshotStatus,
   PrivateNote,
+  RequestPjSnapshotResult,
   ReviewQueueItem,
   SendCompanyEmailResult,
   Shop,
@@ -9384,4 +9389,90 @@ export async function forceMarkSummaryShopSent(contractId: string, reason: strin
     p_date: dateISO ?? null,
   })
   if (error) throw error
+}
+
+// ===================================================================================
+// ---------- แคชข้อมูลสัญญาจากเว็บ PJ — เทียบในแผงตรวจของคุณเตย (migration 0152, เฟส 2) ----------
+// ดึงข้อมูลผ่าน Edge Function pj-snapshot (PJ = Laravel เดิม ไม่มี API ต้อง scrape) — 2 mode:
+//   'snapshot' → staff+admin เรียกได้ (fire-and-forget ตอนกด "ส่งให้คุณเตยตรวจ")
+//   'images'   → admin เท่านั้น — คืนตัวไฟล์รูป (base64) proxy ผ่าน function เสมอ ห้ามคืนลิงก์ S3 ตรง (คุณเตยเคาะ)
+// ===================================================================================
+
+interface PjContractSnapshotRow {
+  contract_id: string
+  status: PjSnapshotStatus
+  pj_invoice_no: string | null
+  pj_invoice_uuid: string | null
+  data: Record<string, unknown> | null
+  image_refs: PjImageRef[] | null
+  fetched_at: string | null
+  error_reason: string | null
+  updated_at: string
+}
+
+function mapPjContractSnapshot(r: PjContractSnapshotRow): PjContractSnapshot {
+  return {
+    contractId: r.contract_id,
+    status: r.status,
+    pjInvoiceNo: r.pj_invoice_no,
+    pjInvoiceUuid: r.pj_invoice_uuid,
+    data: r.data as PjContractSnapshot['data'],
+    imageRefs: r.image_refs,
+    fetchedAt: r.fetched_at,
+    errorReason: r.error_reason,
+    updatedAt: r.updated_at,
+  }
+}
+
+/** อ่านแคชข้อมูลสัญญาที่ scrape มาจาก PJ — RLS (0152) จำกัดให้เห็นเฉพาะแอดมิน staff เรียกแล้วได้ null เฉยๆ
+ *  (ไม่ error — แผงตรวจ/เทียบ PJ เป็นฟีเจอร์ของแอดมินเท่านั้น) คืน null ด้วยถ้ายังไม่เคยดึงเลย (ไม่มีแถว) */
+export async function getPjSnapshot(contractId: string): Promise<PjContractSnapshot | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('pj_contract_snapshot')
+    .select('*')
+    .eq('contract_id', contractId)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return null
+  return mapPjContractSnapshot(data as PjContractSnapshotRow)
+}
+
+/** สั่งให้ Edge Function pj-snapshot ไปดึงข้อมูลสัญญานี้จากเว็บ PJ สดๆ (mode='snapshot') — เรียกตอนพนักงานกด
+ *  "ส่งให้คุณเตยตรวจ" ได้แบบ fire-and-forget: ห้าม throw เด็ดขาด (ดักทุก error คืนเป็น { ok:false, error }
+ *  แทน) กันไม่ให้ดึง PJ ไม่สำเร็จทำ flow ส่งตรวจของพนักงานพังไปด้วย staff/admin เรียกได้ทั้งคู่ (function เช็ค
+ *  สิทธิ์เอง) — debounce ในตัว: กดซ้ำภายใน 60 วิ ได้ผลเดิมกลับมาเลย ไม่ยิง PJ ซ้ำ */
+export async function requestPjSnapshot(contractId: string): Promise<RequestPjSnapshotResult> {
+  if (!supabase) return { ok: false, status: 'never_fetched', error: 'ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล' }
+  try {
+    const { data, error } = await supabase.functions.invoke('pj-snapshot', {
+      body: { mode: 'snapshot', contractId },
+    })
+    if (error) {
+      return { ok: false, status: 'failed', error: await extractFunctionErrorMessage(error) }
+    }
+    const result = data as { ok?: boolean; status?: PjSnapshotStatus; error?: string } | null
+    return { ok: result?.ok ?? false, status: result?.status ?? 'failed', error: result?.error }
+  } catch (e) {
+    return { ok: false, status: 'failed', error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** ดึงไฟล์รูปบัตร/รูปลูกค้าจากเว็บ PJ ผ่าน Edge Function pj-snapshot (mode='images', admin เท่านั้น) — ต้องมี
+ *  getPjSnapshot(contractId) สำเร็จมาก่อนแล้ว (status='ok') ถึงจะมี pj_invoice_uuid ให้เปิดหน้าใบซ้ำ
+ *  คืน base64 ให้ <img src="data:...;base64,..."> แสดงตรงได้เลย ไม่มีลิงก์ S3 โผล่ในเบราว์เซอร์เด็ดขาด (คุณเตยเคาะ)
+ *  ห้ามกลืน error — ส่งข้อความกลับให้ UI แสดงต่อผู้ใช้ได้เสมอ (ไม่ throw เพื่อให้ caller เลือก render ข้อความเองได้) */
+export async function getPjImage(contractId: string, imageKey: string): Promise<PjImageResult> {
+  if (!supabase) return { ok: false, error: 'ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล' }
+  const { data, error } = await supabase.functions.invoke('pj-snapshot', {
+    body: { mode: 'images', contractId, imageKey },
+  })
+  if (error) {
+    return { ok: false, error: await extractFunctionErrorMessage(error) }
+  }
+  const result = data as { ok?: boolean; base64?: string; mime?: string; error?: string } | null
+  if (!result?.ok) {
+    return { ok: false, error: result?.error ?? 'ดึงรูปจาก PJ ไม่สำเร็จ' }
+  }
+  return { ok: true, base64: result.base64, mime: result.mime }
 }
