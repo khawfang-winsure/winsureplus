@@ -8,7 +8,9 @@
 
 /**
  * สถานะเคสในระบบตรวจก่อนส่งเมล
- * null (จากที่เก็บจริง) = สัญญาเก่าก่อน cutoff — ไม่เข้าเครื่องรัฐนี้เลย ได้รับการยกเว้นทุกกฎ
+ * null (จากที่เก็บจริง) กินความหมาย 2 อย่าง — แยกกันด้วย postCutoff (isGated) ที่ caller คำนวณเอง:
+ *   - สัญญาเก่าก่อน cutoff (postCutoff=false) -> ได้รับการยกเว้นทุกกฎ เหมือน 'approved'
+ *   - สัญญาใหม่ที่ยังไม่กดส่งตรวจ (postCutoff=true) -> เทียบเท่า 'draft' ต้องถูกกฎเหมือนสถานะอื่น
  */
 export type ReviewStatus = 'draft' | 'pending_review' | 'needs_fix' | 'approved'
 
@@ -58,11 +60,15 @@ export function canStaffEdit(status: ReviewStatus | null): boolean {
 
 /**
  * ปุ่มส่งเมล/บันทึกว่าส่งเอง กดได้ไหม (canSendEmail ที่ฝั่ง client + server ต้อง mirror กัน)
- * status===null (สัญญาเก่า) -> true เสมอ (ไม่ gate ตรงกับพฤติกรรมปัจจุบัน)
+ * postCutoff ต้องคำนวณจาก isGated() ใน src/lib/media.ts ก่อนเรียก (ห้ามส่ง Contract ทั้งก้อนเข้ามาที่นี่ —
+ * ฟังก์ชันนี้ต้องเป็น pure function ไม่ import db.ts/new Date() ดู ContractDetail.tsx: reviewPostCutoff เป็นตัวอย่าง)
+ * postCutoff===false (สัญญาเก่าก่อน cutoff) -> true เสมอ ไม่ gate เลย ไม่ว่า status จะเป็นอะไร
+ * postCutoff===true (สัญญาใหม่) -> ต้อง status==='approved' เท่านั้น — null ในยุคนี้คือ draft ที่ยังไม่ส่งตรวจ ต้อง block ด้วย
  * ไม่มี bypass สำหรับ staff หรือ timeout ใดๆ (ล็อกตาม spec — ห้ามเพิ่ม branch ที่ 3)
  */
-export function canSendEmail(status: ReviewStatus | null): boolean {
-  return status === null || status === 'approved'
+export function canSendEmail(status: ReviewStatus | null, postCutoff: boolean): boolean {
+  if (!postCutoff) return true
+  return status === 'approved'
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +234,9 @@ export function reviewBellTextStaff(adminName: string, contractNo: string): stri
 //
 // canStaffEdit / canSendEmail:
 // (6) canStaffEdit('pending_review') -> true ; canStaffEdit('approved') -> false ; canStaffEdit(null) -> true
-// (7) canSendEmail('pending_review') -> false ; canSendEmail('approved') -> true ; canSendEmail(null) -> true
+// (7) canSendEmail(null, false) -> true ; canSendEmail('pending_review', false) -> true (สัญญาเก่า ไม่ gate เลย)
+//     canSendEmail(null, true) -> false (draft ยุคใหม่ ต้อง block) ; canSendEmail('pending_review', true) -> false
+//     canSendEmail('needs_fix', true) -> false ; canSendEmail('approved', true) -> true ; canSendEmail('approved', false) -> true
 //
 // nextStatus:
 // (8)  ('pending_review','approve_and_send',{actorRole:'admin'}) -> 'approved'

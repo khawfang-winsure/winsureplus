@@ -327,6 +327,9 @@ export default function ContractDetail() {
 
   // ===== ระบบตรวจเคสก่อนส่งอีเมลบริษัท (spec-review-flow.md, 2026-09-08) =====
   const [reviewGateFrom, setReviewGateFrom] = useState<string>('')
+  // โหลดพัง -> reviewGateFrom ค้าง '' -> reviewPostCutoff เป็น false -> กล่องตรวจเคสทั้งกล่องไม่ถูกแสดง (fail closed อยู่แล้ว)
+  // ตัวนี้แค่ให้ผู้ใช้เห็นว่าทำไมกล่องหาย ไม่ได้เปลี่ยนพฤติกรรมการล็อก
+  const [reviewSettingsError, setReviewSettingsError] = useState(false)
   const [reviewMediaSlots, setReviewMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
   const [reviewMediaStatus, setReviewMediaStatus] = useState<ContractMediaStatus | null>(null)
   const [reviewLog, setReviewLog] = useState<ContractReviewLogEntry[]>([])
@@ -497,10 +500,20 @@ export default function ContractDetail() {
 
   // ===== ระบบตรวจเคสก่อนส่งอีเมลบริษัท: โหลดช่องรูป+วันคัตออฟ (ครั้งเดียว), สถานะรูปของเคสนี้, ประวัติตรวจ, ชื่อผู้ทำ =====
   useEffect(() => {
-    Promise.all([getMediaSlots(), getMediaGateFrom()]).then(([raw, gate]) => {
-      setReviewMediaSlots(normalizeMediaSlots(raw))
-      setReviewGateFrom(gate)
-    })
+    let cancelled = false
+    Promise.all([getMediaSlots(), getMediaGateFrom()])
+      .then(([raw, gate]) => {
+        if (cancelled) return
+        setReviewMediaSlots(normalizeMediaSlots(raw))
+        setReviewGateFrom(gate)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setReviewSettingsError(true)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -1044,6 +1057,13 @@ export default function ContractDetail() {
           )}
         </div>
       </div>
+
+      {/* โหลดเงื่อนไขตรวจเคส (คัตออฟ) ไม่สำเร็จ — บอกผู้ใช้ว่าทำไมกล่องตรวจเคสด้านล่างอาจไม่แสดง (fail closed อยู่แล้ว ไม่เปลี่ยนพฤติกรรม) */}
+      {reviewSettingsError && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          โหลดเงื่อนไขตรวจเคสก่อนส่งอีเมลไม่สำเร็จ (เน็ตอาจสะดุด) ลองรีเฟรชหน้านี้อีกครั้ง — ระหว่างนี้กล่องตรวจเคสจะไม่แสดง เพื่อความปลอดภัย
+        </div>
+      )}
 
       {/* ===== กล่องตรวจเคสก่อนส่งอีเมลบริษัท — สัญญาเก่าก่อน cutoff ไม่ต้องแสดง (spec-review-flow.md) ===== */}
       {reviewPostCutoff && (

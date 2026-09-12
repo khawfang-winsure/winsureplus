@@ -17,7 +17,7 @@ import {
   sendCompanyEmail,
 } from '../lib/db'
 import { DEFAULT_MEDIA_SLOTS, isGated, missingSummary, type MediaSlot } from '../lib/media'
-import { canSendEmail, reviewStatusLabel } from '../lib/review'
+import { canSendEmail, reviewStatusLabel, REVIEW_BADGE_DRAFT } from '../lib/review'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
@@ -81,8 +81,14 @@ export default function WaitingEmail() {
   // ===== รูปเอกสารแนบ — เกทส่งเมลถึงบริษัท (0136-0138, 2026-09-08) =====
   const [mediaSlots, setMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
   const [gateFrom, setGateFrom] = useState<string>('')
+  // gateFromLoaded: ต้องรอ true ก่อนถึงจะเชื่อ isGated(...) ได้ — ค่าเริ่มต้น gateFrom='' เดาไม่ได้ว่าสัญญาเก่า/ใหม่
+  // fail closed: โหลดพัง (เน็ตสะดุด/RLS/ฯลฯ) -> ค้าง false ตลอดไปจนกว่าจะลองใหม่สำเร็จ (ต่างจาก mediaSlots ที่มี DEFAULT ปลอดภัยอยู่แล้ว)
+  const [gateFromLoaded, setGateFromLoaded] = useState(false)
+  const [gateFromError, setGateFromError] = useState(false)
   const [mediaStatuses, setMediaStatuses] = useState<Map<string, ContractMediaStatus>>(new Map())
   const [mediaStatusesLoaded, setMediaStatusesLoaded] = useState(false)
+  const [mediaStatusesError, setMediaStatusesError] = useState(false)
+  const [mediaRetryNonce, setMediaRetryNonce] = useState(0)
   const [bypassedIds, setBypassedIds] = useState<Set<string>>(new Set())
 
   // ส่งเมลถึงบริษัท (Edge Function) — สถานะต่อ modal ที่เปิดอยู่
@@ -102,22 +108,42 @@ export default function WaitingEmail() {
     [data.contracts, sentIds],
   )
 
+  // โหลดค่าตั้งค่าคัตออฟ (gateFrom) + ช่องรูป — ใช้ mediaRetryNonce ร่วมกับปุ่ม "ลองใหม่" ด้านล่าง (retryLoad)
+  // เพื่อให้กดครั้งเดียวลองใหม่ทั้งค่าตั้งค่านี้และสถานะรูปต่อสัญญา ไม่ทำระบบลองใหม่ 2 ชุดซ้อนกัน
+  // fail closed: ถ้าพัง gateFromLoaded ค้าง false -> viewEraUnknown (ด้านล่าง) บล็อกการส่งเมลทุกกรณี
   useEffect(() => {
-    Promise.all([getMediaSlots(), getMediaGateFrom()]).then(([raw, gate]) => {
-      setMediaSlots(normalizeMediaSlots(raw))
-      setGateFrom(gate)
-    })
-  }, [])
+    let cancelled = false
+    setGateFromError(false)
+    Promise.all([getMediaSlots(), getMediaGateFrom()])
+      .then(([raw, gate]) => {
+        if (cancelled) return
+        setMediaSlots(normalizeMediaSlots(raw))
+        setGateFrom(gate)
+        setGateFromLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setGateFromError(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mediaRetryNonce])
 
   // โหลดสถานะรูปของเคสที่ค้างส่งทั้งหมดครั้งเดียว (ไม่ใช่ทีละแถว)
+  // fail closed: โหลดพัง (เน็ตสะดุด/RLS/ฯลฯ) -> mediaStatusesError=true และห้ามถือว่า "โหลดจบแล้วไม่มีข้อมูล"
+  // (ต่างจากกรณีสัญญาไม่มีรูปเลย ซึ่ง view เป็น LEFT JOIN คืนแถวเสมอ — ไม่มีแถว = error ไม่ใช่ empty)
   useEffect(() => {
     const ids = base.map((c) => c.id)
     if (ids.length === 0) {
       setMediaStatuses(new Map())
+      setMediaStatusesError(false)
       setMediaStatusesLoaded(true)
       return
     }
     let cancelled = false
+    setMediaStatusesLoaded(false)
+    setMediaStatusesError(false)
     getMediaStatuses(ids)
       .then((rows) => {
         if (cancelled) return
@@ -125,13 +151,20 @@ export default function WaitingEmail() {
         setMediaStatusesLoaded(true)
       })
       .catch(() => {
-        if (!cancelled) setMediaStatusesLoaded(true)
+        if (cancelled) return
+        setMediaStatusesError(true)
+        setMediaStatusesLoaded(true)
       })
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base])
+  }, [base, mediaRetryNonce])
+
+  // ลองใหม่ทั้งค่าตั้งค่าคัตออฟ (gateFrom) และสถานะรูปต่อสัญญา — ปุ่มเดียวรวม 2 ระบบ (ดูคอมเมนต์ useEffect ด้านบน)
+  function retryLoad() {
+    setMediaRetryNonce((n) => n + 1)
+  }
 
   function evaluationFor(c: Contract) {
     const status = mediaStatuses.get(c.id)
@@ -197,13 +230,35 @@ export default function WaitingEmail() {
     setBypassError(null)
   }
 
-  const viewGated = view ? isGated(view, gateFrom) : false
+  // ===== แก้ช่องโหว่ gateFrom fail-open (2026-09-12) =====
+  // viewEraUnknown = ยังไม่รู้ว่าสัญญานี้อยู่ยุคไหน (คัตออฟกำลังโหลด หรือโหลดพัง) -> fail closed ทั้งหมด
+  // ห้ามใช้ gateFrom='' (ค่าตั้งต้น/ค่าตอนพัง) ไปคำนวณ isGated ก่อน gateFromLoaded=true จริง
+  // ไม่งั้นจะเดาว่า "สัญญาเก่า ไม่ต้องตรวจอะไร" ผิดๆ แล้วปล่อยส่งเมลได้ทุกกรณีอย่างเงียบๆ
+  const viewSettingsChecking = !gateFromLoaded && !gateFromError
+  const viewSettingsError = !gateFromLoaded && gateFromError
+  const viewEraUnknown = !gateFromLoaded
+  // cutoff เดียว (media_gate_from) คุมทั้งเกทรูปแนบและเกทตรวจก่อนส่งเมล — ห้ามทำ 2 อัน (ตาม ContractDetail.tsx)
+  // มีผลเฉพาะตอน gateFromLoaded=true เท่านั้น — ตอนยังไม่รู้ ให้ viewEraUnknown เป็นตัวบล็อกแทนด้านล่าง
+  const viewGated = view && gateFromLoaded ? isGated(view, gateFrom) : false
+  const viewMediaError = viewGated && mediaStatusesLoaded && mediaStatusesError
   const viewEvaluation = view ? evaluationFor(view) : null
   const viewBypassed = view ? bypassedIds.has(view.id) : false
-  const viewBlocked = viewGated && !!viewEvaluation && !viewEvaluation.complete && !viewBypassed
-  const viewChecking = viewGated && !mediaStatusesLoaded
-  // เกทตรวจเคสก่อนส่งอีเมล (spec-review-flow.md §4.5) — สัญญาเก่า (reviewStatus null) ไม่ถูกกระทบ
-  const viewReviewBlocked = view ? !canSendEmail(view.reviewStatus ?? null) : false
+  const viewBlocked = viewGated && !mediaStatusesError && !!viewEvaluation && !viewEvaluation.complete && !viewBypassed
+  // viewChecking: ต้องเช็ค "ยังไม่รู้ยุคสัญญา" ก่อนเช็ครูป (เดิมผูกกับ viewGated อย่างเดียว —
+  // พังเพราะ viewGated เป็น false เสมอตอน gateFrom ยังว่าง ทำให้ viewChecking เป็น false ไปด้วย ปุ่มเปิดก่อนรู้ผลจริง)
+  const viewMediaChecking = viewGated && !mediaStatusesLoaded
+  const viewChecking = viewSettingsChecking || viewMediaChecking
+  // เกทตรวจเคสก่อนส่งอีเมล (spec-review-flow.md §4.5) — สัญญาเก่าก่อน cutoff (postCutoff=false) ไม่ถูกกระทบเลย
+  // สัญญาใหม่ (postCutoff=true) status===null คือ draft ที่ยังไม่กดส่งตรวจ ต้อง block เหมือนสถานะอื่นที่ไม่ใช่ approved
+  const viewReviewBlocked = view ? !canSendEmail(view.reviewStatus ?? null, viewGated) : false
+  const viewReviewStatusLabel = view
+    ? viewGated && (view.reviewStatus ?? null) === null
+      ? REVIEW_BADGE_DRAFT
+      : reviewStatusLabel(view.reviewStatus ?? null)
+    : ''
+  // ห้าม render เนื้อข้อความอีเมลจนกว่าจะผ่านการตรวจ/เช็ครูปครบ — ไม่ใช่แค่ disabled ปุ่มคัดลอก (กันก๊อปแล้วส่งเองนอกระบบ)
+  // viewEraUnknown มาก่อนเสมอ — ยังไม่รู้ยุคสัญญา ห้ามโชว์ข้อความ/ให้กดส่ง ไม่ว่า flag อื่นจะเป็นอะไร
+  const viewCopyBlocked = viewEraUnknown || viewBlocked || viewReviewBlocked || viewMediaError
 
   async function handleSendCompanyEmail() {
     if (!view) return
@@ -328,7 +383,29 @@ export default function WaitingEmail() {
       {view && (
         <Modal title={`อีเมล — ${view.customerName}`} onClose={() => setView(null)}>
           <div className="flex flex-col gap-3">
-            {viewChecking && <p className="text-sm text-ink-soft">กำลังตรวจสอบรูปเอกสาร...</p>}
+            {viewSettingsChecking && <p className="text-sm text-ink-soft">กำลังตรวจสอบเงื่อนไขสัญญา...</p>}
+
+            {viewSettingsError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <p>โหลดเงื่อนไขสัญญาไม่สำเร็จ (เน็ตอาจสะดุด) ยังส่งเมลไม่ได้จนกว่าจะโหลดสำเร็จ</p>
+                <Button variant="ghost" onClick={retryLoad} className="mt-1 text-xs">
+                  ลองใหม่
+                </Button>
+              </div>
+            )}
+
+            {!viewSettingsChecking && !viewSettingsError && viewMediaChecking && (
+              <p className="text-sm text-ink-soft">กำลังตรวจสอบรูปเอกสาร...</p>
+            )}
+
+            {viewMediaError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <p>ตรวจสอบรูปเอกสารไม่สำเร็จ (เน็ตอาจสะดุด) ยังส่งเมลไม่ได้จนกว่าจะตรวจสอบสำเร็จ</p>
+                <Button variant="ghost" onClick={retryLoad} className="mt-1 text-xs">
+                  ลองใหม่
+                </Button>
+              </div>
+            )}
 
             {viewBlocked && viewEvaluation && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -369,18 +446,23 @@ export default function WaitingEmail() {
 
             {viewReviewBlocked && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                <p>{`สถานะ: ${reviewStatusLabel(view.reviewStatus ?? null)} — ต้องตรวจผ่านก่อน จึงส่งเมลได้ที่นี่`}</p>
+                <p>{`สถานะ: ${viewReviewStatusLabel} — ต้องตรวจผ่านก่อน จึงส่งเมลได้ที่นี่`}</p>
                 <Link to={`/contract/${view.id}`} className="mt-1 inline-block font-semibold underline">
                   ไปที่หน้าสัญญาเพื่อส่งตรวจ/ดูผลตรวจ
                 </Link>
               </div>
             )}
 
-            <CopyBox
-              title="ข้อความอีเมล"
-              text={shopOf(view.shopId) ? buildEmailText(view, shopOf(view.shopId)!) : ''}
-              disabled={viewBlocked || viewReviewBlocked}
-            />
+            {viewCopyBlocked ? (
+              <div className="rounded-xl border border-peach bg-peach/20 px-4 py-3 text-sm text-ink-soft">
+                ยังแสดงข้อความอีเมลไม่ได้ จนกว่าจะผ่านเงื่อนไขด้านบนก่อน
+              </div>
+            ) : (
+              <CopyBox
+                title="ข้อความอีเมล"
+                text={shopOf(view.shopId) ? buildEmailText(view, shopOf(view.shopId)!) : ''}
+              />
+            )}
 
             {sendError && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{sendError}</div>
@@ -393,10 +475,10 @@ export default function WaitingEmail() {
 
             <div className="flex flex-wrap justify-end gap-2">
               <Button variant="ghost" onClick={() => setView(null)}>ปิด</Button>
-              <Button variant="ghost" onClick={() => void doMarkSent(view)} disabled={viewBlocked || viewReviewBlocked || viewChecking}>
+              <Button variant="ghost" onClick={() => void doMarkSent(view)} disabled={viewCopyBlocked || viewChecking}>
                 บันทึกว่าส่งเอง (สำรอง)
               </Button>
-              <Button onClick={() => void handleSendCompanyEmail()} disabled={viewBlocked || viewReviewBlocked || viewChecking || sending || !!sendSuccess}>
+              <Button onClick={() => void handleSendCompanyEmail()} disabled={viewCopyBlocked || viewChecking || sending || !!sendSuccess}>
                 {sending ? 'กำลังส่ง...' : 'ส่งเมลถึงบริษัท'}
               </Button>
             </div>

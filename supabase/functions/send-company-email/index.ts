@@ -233,12 +233,21 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ---- 2.1) เช็ค review gate (0142, server-side, ไม่เชื่อฝั่ง client) ----
-  // review_status: null = สัญญาเก่า/ยังไม่เข้า flow ตรวจ (unrestricted, พฤติกรรมเดิม) — mirror canSendEmail
-  // ใน src/lib/review.ts (แบม): canSendEmail = status === null || status === 'approved'
-  // นี่คือจุดเดียวที่ REST/curl ตรงสามารถแหกทุกปุ่ม UI ได้ — ต้องเช็คซ้ำเสมอ ห้ามเชื่อว่า UI เช็คมาแล้ว
+  // ---- 2.1) เช็ค review gate (0142/0149, server-side, ไม่เชื่อฝั่ง client) ----
+  // แก้บั๊ก 2026-09-12: เดิมเช็ค `reviewStatus !== null` ซึ่งปล่อย draft (สัญญา post-cutoff ที่ยังไม่กด
+  // "ส่งให้คุณเตยตรวจ" ครั้งแรก — review_status เป็น null เหมือนสัญญาเก่า pre-cutoff) ให้ส่งเมลผ่านได้เลย
+  // ผลจริง: 3 สัญญา (S00052PNQ001, S00026PNQ014, S00029PNQ037) ส่งเมลออกบริษัทจริงพร้อมไฟล์แนบ โดยคุณเตย
+  // ไม่เคยเห็น/อนุมัติ — ห้ามแก้ย้อนหลัง 3 เคสนี้ (ดู contract_review_log เป็น append-only ตาม 0142 SECTION 2)
+  //
+  // ใช้ isGated (คำนวณไว้แล้วบรรทัด ~204 จาก media_gate_from เทียบ created_at) แยกสัญญาเก่า/ใหม่แทน
+  // null ตรงๆ: isGated=false (pre-cutoff) → ไม่ gate เกทตรวจเลย (พฤติกรรมเดิม, review_status เป็น null
+  // ถาวรสำหรับเคสเก่า) — isGated=true (post-cutoff) → ต้อง review_status === 'approved' เท่านั้นถึงส่งได้
+  //
+  // ⚠️ ห้ามย้ายเช็คนี้เข้าไปในบล็อก `if (isGated) { ... }` ด้านบน (บรรทัด ~206-234) — บล็อกนั้นมีทางออก
+  // ผ่าน contract_media_gate_override (แอดมินกด "ข้ามการตรวจรูป") ซึ่งเป็นคนละเกทกับอันนี้ (เกทตรวจของ
+  // คุณเตย) ถ้าปนกันจะกลายเป็นบั๊กชนิดเดียวกับที่กำลังแก้อยู่นี่แหละ — override ไม่ควร skip เกทตรวจได้
   const reviewStatus: string | null = contract.review_status ?? null;
-  if (reviewStatus !== null && reviewStatus !== "approved") {
+  if (isGated && reviewStatus !== "approved") {
     return json(
       { error: "ยังส่งไม่ได้ เคสนี้ยังไม่ผ่านการตรวจจากแอดมิน ต้องได้สถานะ \"ตรวจแล้ว\" ก่อนถึงส่งอีเมลได้" },
       409,
