@@ -2,6 +2,8 @@
 // Owner-approved source: review-flow-mockup.html, owner-approved 2026-09-08 (by แบม)
 // Pure functions — ไม่มี side effect, ไม่ import db.ts/supabase, testable ด้วย node -e
 
+import { isGated } from './media'
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -69,6 +71,138 @@ export function canStaffEdit(status: ReviewStatus | null): boolean {
 export function canSendEmail(status: ReviewStatus | null, postCutoff: boolean): boolean {
   if (!postCutoff) return true
   return status === 'approved'
+}
+
+// ---------------------------------------------------------------------------
+// canMarkSummary / summaryBlockReason — เกทกดสรุปยอดส่งร้าน (ห้ามโอนเงินก่อนตรวจ, ล็อกคุณเตย 2026-09-12)
+// ---------------------------------------------------------------------------
+
+/**
+ * กดปุ่ม "สรุปยอดส่งร้าน" ได้ไหม — mental model เดียวกับ canSendEmail เป๊ะ (จงใจลอกโครง เพื่อไม่ให้คนอ่านโค้ดงง)
+ * postCutoff ต้องคำนวณจาก isGated() ก่อนเรียก (ดู canSendEmail ด้านบน — วิธีคำนวณเหมือนกันทุกประการ)
+ * postCutoff===false (สัญญาเก่าก่อน cutoff) -> true เสมอ ไม่ gate เลย ไม่ว่า status จะเป็นอะไร
+ * postCutoff===true (สัญญาใหม่) -> ต้อง status==='approved' เท่านั้น — null/'draft' ในยุคนี้ต้อง block ด้วย
+ * ห้ามมี branch ที่ 3 (ไม่มี bypass staff/timeout ใดๆ — ตาม canSendEmail)
+ */
+export function canMarkSummary(status: ReviewStatus | null, postCutoff: boolean): boolean {
+  if (!postCutoff) return true
+  return status === 'approved'
+}
+
+/**
+ * ข้อความอธิบายให้พนักงานเห็นตอนกดสรุปยอดไม่ได้ (คืน null ถ้ากดได้ — ค่าตรงข้ามกับ canMarkSummary เสมอคู่กัน)
+ * ข้อความล็อกแล้ว (คุณเตยเคาะ 2026-09-12) ต้องตรงเป๊ะกับข้อความฝั่งฐานข้อมูล (RPC guard ที่น้องชีสเขียน) — ห้ามแต่งใหม่
+ * status===null หรือ 'draft' (ยังไม่เคยส่งตรวจ) นับเป็นกลุ่มเดียวกัน — DB จริงเก็บเป็น null เท่านั้น
+ * ('draft' ไม่ถูก persist แต่ type ยอมรับไว้เผื่อ caller ส่ง state จาก nextStatus() ผ่านมาตรงๆ)
+ */
+export function summaryBlockReason(status: ReviewStatus | null, postCutoff: boolean): string | null {
+  if (!postCutoff) return null
+  if (status === 'approved') return null
+  if (status === 'pending_review') return REVIEW_SUMMARY_BLOCK_PENDING
+  if (status === 'needs_fix') return REVIEW_SUMMARY_BLOCK_NEEDS_FIX
+  return REVIEW_SUMMARY_BLOCK_NOT_SUBMITTED
+}
+
+export const REVIEW_SUMMARY_BLOCK_NOT_SUBMITTED =
+  'เคสนี้ยังไม่ได้ส่งให้ตรวจ — เปิดสัญญาแล้วกดปุ่ม "ส่งให้คุณเตยตรวจ" ก่อนนะคะ'
+export const REVIEW_SUMMARY_BLOCK_PENDING = 'เคสนี้รอคุณเตยตรวจอยู่ ยังสรุปยอดไม่ได้ค่ะ'
+export const REVIEW_SUMMARY_BLOCK_NEEDS_FIX =
+  'เคสนี้ต้องแก้ไขก่อน — ดูเหตุผลที่แจ้งไว้ในสัญญา แก้แล้วส่งตรวจใหม่นะคะ'
+
+// ---------------------------------------------------------------------------
+// buildTonightSummary — สรุปงานค้างตรวจแยกตามร้าน (หน้ารอสรุปยอด ใช้เตือนก่อนเข้าเมนูโอนเงิน)
+// ---------------------------------------------------------------------------
+
+/** แถวดิบต่อสัญญา ที่ buildTonightSummary ใช้ตัด (caller ดึงจาก getContracts/status view เอง) */
+export interface TonightSummaryRow {
+  shopId: string
+  shopCode: string
+  createdAt: string | null
+  reviewStatus: ReviewStatus | null
+}
+
+/** ยอดนับ 1 ชุด (ใช้ทั้งต่อร้าน และรวมทั้งกล่องใน totals) */
+export interface TonightSummaryCounts {
+  total: number
+  waitingReview: number // pending_review + postCutoff
+  needsFix: number // needs_fix + postCutoff
+  notSubmitted: number // null/'draft' + postCutoff (ยังไม่กดส่งตรวจเลย)
+  ready: number // สรุปยอดได้แล้ว: postCutoff=false (สัญญาเก่า ได้รับการยกเว้น) หรือ approved
+}
+
+export interface TonightSummaryShopRow extends TonightSummaryCounts {
+  shopId: string
+  shopCode: string
+}
+
+export interface TonightSummary {
+  shops: TonightSummaryShopRow[]
+  totals: TonightSummaryCounts
+}
+
+/**
+ * รวมเคสค้างตรวจของคืนนี้ แยกตามร้าน เรียง waitingReview มาก->น้อย แล้ว shopCode ก-ฮ/A-Z (localeCompare)
+ * เคสก่อน gateFrom (postCutoff=false จาก isGated) ไม่ต้องตรวจตามกฎ -> นับเป็น ready เสมอ ไม่ว่า reviewStatus จะเป็นอะไร
+ * เคสหลัง gateFrom (postCutoff=true) กระจายนับตาม reviewStatus: approved->ready, pending_review->waitingReview,
+ * needs_fix->needsFix, null/'draft'->notSubmitted
+ * rows ว่าง -> {shops:[], totals: ทุกช่อง 0} (caller เช็คเองว่าจะซ่อนกล่องนี้ทั้งกล่องหรือไม่)
+ * ไม่อ่านนาฬิกาเอง — gateFrom มาจาก caller (app_settings.media_gate_from ผ่าน db.ts) ใช้ isGated ตัวเดียวกับทั้งเว็บ
+ * (ป้ายเตือน/badge ที่ใช้ตัวเลขพวกนี้ วิวไปคำนวณสีเอง — ฟังก์ชันนี้ให้แค่ตัวนับ)
+ */
+export function buildTonightSummary(rows: TonightSummaryRow[], gateFrom: string): TonightSummary {
+  const byShop = new Map<string, TonightSummaryShopRow>()
+
+  for (const row of rows) {
+    let bucket = byShop.get(row.shopId)
+    if (!bucket) {
+      bucket = {
+        shopId: row.shopId,
+        shopCode: row.shopCode,
+        total: 0,
+        waitingReview: 0,
+        needsFix: 0,
+        notSubmitted: 0,
+        ready: 0,
+      }
+      byShop.set(row.shopId, bucket)
+    }
+
+    bucket.total += 1
+    const postCutoff = isGated({ createdAt: row.createdAt }, gateFrom)
+    if (!postCutoff) {
+      bucket.ready += 1
+    } else if (row.reviewStatus === 'approved') {
+      bucket.ready += 1
+    } else if (row.reviewStatus === 'pending_review') {
+      bucket.waitingReview += 1
+    } else if (row.reviewStatus === 'needs_fix') {
+      bucket.needsFix += 1
+    } else {
+      bucket.notSubmitted += 1
+    }
+  }
+
+  const shops = Array.from(byShop.values()).sort((a, b) => {
+    if (b.waitingReview !== a.waitingReview) return b.waitingReview - a.waitingReview
+    return a.shopCode.localeCompare(b.shopCode)
+  })
+
+  const totals: TonightSummaryCounts = {
+    total: 0,
+    waitingReview: 0,
+    needsFix: 0,
+    notSubmitted: 0,
+    ready: 0,
+  }
+  for (const s of shops) {
+    totals.total += s.total
+    totals.waitingReview += s.waitingReview
+    totals.needsFix += s.needsFix
+    totals.notSubmitted += s.notSubmitted
+    totals.ready += s.ready
+  }
+
+  return { shops, totals }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,3 +395,24 @@ export function reviewBellTextStaff(adminName: string, contractNo: string): stri
 // (21) reviewStatusLabel('pending_review') -> 'รอตรวจ' ; reviewStatusTone('pending_review') -> 'wait'
 // (22) reviewStatusLabel('needs_fix') -> 'ต้องแก้ไข' ; reviewStatusTone('needs_fix') -> 'fix'
 // (23) reviewStatusLabel('approved') -> 'ตรวจแล้ว ยังไม่ส่ง' (ค่าเริ่มต้น) ; reviewStatusTone('approved') -> 'ok'
+//
+// canMarkSummary / summaryBlockReason (เกทกดสรุปยอดส่งร้าน, ล็อกคุณเตย 2026-09-12):
+// (24) canMarkSummary(null, false) -> true ; canMarkSummary('pending_review', false) -> true (สัญญาเก่า ไม่ gate เลย)
+// (25) canMarkSummary(null, true) -> false ; canMarkSummary('pending_review', true) -> false
+//      canMarkSummary('needs_fix', true) -> false ; canMarkSummary('approved', true) -> true ; canMarkSummary('approved', false) -> true
+// (26) summaryBlockReason(null, false) -> null ; summaryBlockReason('pending_review', false) -> null (สัญญาเก่า สรุปได้เสมอ)
+// (27) summaryBlockReason(null, true) -> REVIEW_SUMMARY_BLOCK_NOT_SUBMITTED (ยังไม่ส่งตรวจ)
+// (28) summaryBlockReason('pending_review', true) -> REVIEW_SUMMARY_BLOCK_PENDING
+// (29) summaryBlockReason('needs_fix', true) -> REVIEW_SUMMARY_BLOCK_NEEDS_FIX
+// (30) summaryBlockReason('approved', true) -> null
+//
+// buildTonightSummary (gateFrom='2026-09-10'):
+// (31) ร้าน AQ S00016 3 แถว: createdAt='2026-09-05'(ก่อน cutoff, status=null) + createdAt='2026-09-11'(status='pending_review')
+//      + createdAt='2026-09-11'(status='needs_fix')
+//      -> {shopId:'AQ', shopCode:'AQ S00016', total:3, waitingReview:1, needsFix:1, notSubmitted:0, ready:1}
+// (32) ร้าน BB S00099 2 แถว: createdAt='2026-09-12'(status=null, ยังไม่ส่งตรวจ) + createdAt='2026-09-12'(status='approved')
+//      -> {shopId:'BB', shopCode:'BB S00099', total:2, waitingReview:0, needsFix:0, notSubmitted:1, ready:1}
+// (33) createdAt='2026-09-10' (เท่ากับ gateFrom เป๊ะ) status=null -> isGated ใช้ >= -> postCutoff=true -> notSubmitted:1 (ไม่ใช่ ready)
+// (34) รวม (31)+(32) เข้า rows เดียวกัน -> shops เรียง AQ ก่อน BB (waitingReview 1 > 0)
+//      -> totals = {total:5, waitingReview:1, needsFix:1, notSubmitted:1, ready:2}
+// (35) rows=[] -> {shops:[], totals:{total:0,waitingReview:0,needsFix:0,notSubmitted:0,ready:0}}

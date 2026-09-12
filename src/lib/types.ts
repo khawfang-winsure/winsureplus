@@ -327,11 +327,25 @@ export interface ContractReviewLogEntry {
   contractId: string
   fromStatus: ReviewStatus | null
   toStatus: ReviewStatus
-  action: 'submit' | 'approve' | 'reject' | 'cancel_approval'
+  // 'force_summary_shop_sent' (มิเกรชัน 0151) — ปุ่มฉุกเฉิน admin สรุปยอดส่งร้านข้าม Guard D
+  // ไม่แตะ review_status เลย (fromStatus/toStatus เหมือนกันเสมอสำหรับ action นี้) reason บังคับ ≥10 ตัวอักษร
+  action: 'submit' | 'approve' | 'reject' | 'cancel_approval' | 'force_summary_shop_sent'
   reason: string | null
   actorId: string | null   // uuid ของ auth.users — resolve ชื่อเองผ่าน getStaffProfiles ถ้าต้องโชว์
   actorRole: string | null
   createdAt: string
+}
+
+// ---------- แถวเช็คสถานะตรวจก่อนสรุปยอดส่งร้าน (migration 0151, 2026-09-12) ----------
+// select แคบเฉพาะเคสที่ยังไม่สรุปยอดส่งร้าน (summary_shop_sent_at is null) — ใช้ตัดสินใจว่าเคสไหนกดสรุปยอด
+// ไม่ได้เพราะ Guard D (ยังไม่ approved + สร้างหลัง media_gate_from) ก่อนพนักงานกดแล้วเจอ error จาก DB
+export interface SummaryReviewSnapshot {
+  id: string
+  shopId: string
+  customerName: string
+  contractNo: string
+  createdAt: string
+  reviewStatus: 'pending_review' | 'needs_fix' | 'approved' | null // ตรง DB ตรงๆ ไม่ใช่ ReviewStatus (ไม่มี 'draft')
 }
 
 // ---------- แถวในหน้า "ตรวจเคสก่อนส่งบริษัท" / "งานที่ต้องแก้" (spec-review-flow.md §5) ----------

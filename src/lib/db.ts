@@ -49,6 +49,7 @@ import type {
   ReviewQueueItem,
   SendCompanyEmailResult,
   Shop,
+  SummaryReviewSnapshot,
   TransferSlip,
   TransferSlipItem,
   TransferSlipSummaryRow,
@@ -9327,4 +9328,60 @@ export async function getReviewQueue(): Promise<ReviewQueueItem[]> {
   })
 
   return items.sort((a, b) => (a.reviewUpdatedAt ?? '').localeCompare(b.reviewUpdatedAt ?? ''))
+}
+
+interface SummaryReviewSnapshotRow {
+  id: string
+  shop_id: string
+  customer_name: string
+  contract_no: string
+  created_at: string
+  review_status: 'pending_review' | 'needs_fix' | 'approved' | null
+}
+
+function mapSummaryReviewSnapshot(r: SummaryReviewSnapshotRow): SummaryReviewSnapshot {
+  return {
+    id: r.id,
+    shopId: r.shop_id,
+    customerName: r.customer_name,
+    contractNo: r.contract_no,
+    createdAt: r.created_at,
+    reviewStatus: r.review_status,
+  }
+}
+
+/** เคสที่ยังไม่สรุปยอดส่งร้าน (summary_shop_sent_at is null) — select แคบเฉพาะคอลัมน์ที่ใช้ตัดสิน Guard D
+ *  (0151: เคส post-cutoff ที่ยังไม่ approved กดสรุปยอดไม่ได้) ก่อนพนักงานกดแล้วเจอ error จาก DB โดยไม่รู้ล่วงหน้า
+ *  ต้องใช้ fetchAllPaged (ไม่ใช่ .range(0, PAGE_CAP) เดี่ยว) — บทเรียน PAGE_CAP ตัดข้อมูลเงียบ (21 ก.ค. 2569)
+ *  ห้าม reuse getContracts() ตรงนี้ — getContracts เป็น select('*') ทั้งตาราง หนักเกินสำหรับแค่เช็คสถานะตรวจ */
+export async function getSummaryReviewSnapshot(): Promise<SummaryReviewSnapshot[]> {
+  if (!supabase) return []
+  const client = supabase
+  const rows = await fetchAllPaged<SummaryReviewSnapshotRow>(
+    (from, to, orderBy) =>
+      client
+        .from('contracts')
+        .select('id, shop_id, customer_name, contract_no, created_at, review_status')
+        .is('summary_shop_sent_at', null)
+        .order(orderBy)
+        .range(from, to),
+    'id',
+  )
+  return rows.map(mapSummaryReviewSnapshot)
+}
+
+/** ปุ่มฉุกเฉิน (0151) — admin สรุปยอดส่งร้านข้าม Guard D สำหรับเคสตรวจไม่ผ่านจริงๆ (รูปหายถาวร/ลูกค้าหายตัว)
+ *  RPC force_mark_summary_shop_sent เช็ค admin + เหตุผล ≥10 ตัวอักษรเอง (ไม่เชื่อ UI validate มาแล้ว) — ไม่แตะ
+ *  review_status เลย (ไม่ใช่การตรวจผ่านปลอม) เขียน contract_review_log action=force_summary_shop_sent ทุกครั้ง
+ *  ส่ง error ของ DB กลับไปให้ผู้เรียกแสดงเอง — ห้ามกลืน error (บทเรียน .catch กลืน error จาก staff-perf)
+ *  @param reason เหตุผล (จะถูก trim + เช็คความยาวซ้ำฝั่ง DB อีกชั้น)
+ *  @param dateISO วันที่สรุปที่เลือก (YYYY-MM-DD) — optional; ว่าง = ใช้ now() (ตาม pattern markSummaryShopSent) */
+export async function forceMarkSummaryShopSent(contractId: string, reason: string, dateISO?: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('force_mark_summary_shop_sent', {
+    p_contract_id: contractId,
+    p_reason: reason,
+    p_date: dateISO ?? null,
+  })
+  if (error) throw error
 }

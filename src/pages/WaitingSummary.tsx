@@ -9,7 +9,9 @@ import { baht, thaiDate } from '../lib/format'
 import { buildBulkSummary, buildRejectionBanner, REJECTION_REASON_LABEL } from '../lib/messages'
 import {
   clearNeedsFix,
+  forceMarkSummaryShopSent,
   getContracts,
+  getMediaGateFrom,
   getMediaSlots,
   getMediaStatuses,
   getShops,
@@ -17,7 +19,8 @@ import {
   markSummaryAccountingSent,
   updateSummaryNote,
 } from '../lib/db'
-import { DEFAULT_MEDIA_SLOTS, isMediaTracked, type MediaSlot } from '../lib/media'
+import { DEFAULT_MEDIA_SLOTS, isGated, type MediaSlot } from '../lib/media'
+import { canMarkSummary, summaryBlockReason } from '../lib/review'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
 import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
@@ -124,6 +127,100 @@ function SummaryNoteModal({
   )
 }
 
+// ===== ปุ่มฉุกเฉิน: สรุปยอดโดยไม่ผ่านตรวจ (ล็อกคุณเตย 2026-09-12, เฉพาะแอดมิน) =====
+// ใช้เฉพาะเคสที่ตรวจไม่ผ่านได้จริงๆ (รูปหายถาวร/ลูกค้าติดต่อไม่ได้) — ไม่ใช่ทางลัดใช้ประจำ
+// validate ความยาวเหตุผล ≥10 ตัวอักษรฝั่งนี้ก่อนยิง RPC (ฐานข้อมูลเช็คซ้ำอีกชั้น ห้ามพึ่ง UI อย่างเดียว)
+const FORCE_SUMMARY_MIN_REASON = 10
+
+function ForceSummaryModal({
+  contract,
+  dateISO,
+  onClose,
+  onDone,
+}: {
+  contract: Contract
+  dateISO: string
+  onClose: () => void
+  onDone: (contractId: string) => void
+}) {
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const trimmedLen = reason.trim().length
+  const tooShort = trimmedLen < FORCE_SUMMARY_MIN_REASON
+
+  async function handleConfirm() {
+    const trimmed = reason.trim()
+    if (trimmed.length < FORCE_SUMMARY_MIN_REASON) {
+      setError(`เหตุผลสั้นเกินไป (ตอนนี้ ${trimmed.length} ตัวอักษร) — เขียนอธิบายให้ละเอียดกว่านี้ อย่างน้อย ${FORCE_SUMMARY_MIN_REASON} ตัวอักษรค่ะ`)
+      return
+    }
+    setError(null)
+    setSaving(true)
+    try {
+      await forceMarkSummaryShopSent(contract.id, trimmed, dateISO)
+      onDone(contract.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title="สรุปยอดโดยไม่ผ่านตรวจ (ฉุกเฉิน)" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-semibold">{contract.customerName} — {contract.contractNo}</p>
+          <p className="mt-1">
+            เคสนี้ยังไม่ผ่านการตรวจ การกดยืนยันจะข้ามการตรวจแล้วสรุปยอดส่งร้านทันที
+            ระบบจะบันทึกชื่อผู้กดและเหตุผลนี้ไว้ถาวรในประวัติสัญญา ใช้เฉพาะเคสที่ตรวจไม่ผ่านได้จริงๆ เท่านั้น
+            (เช่น รูปหลักฐานหายถาวร ลูกค้าติดต่อไม่ได้)
+          </p>
+        </div>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-ink">เหตุผล (บังคับ)</span>
+          <Textarea
+            autoFocus
+            rows={3}
+            placeholder={`เช่น รูปหลักฐานหายถาวร ลูกค้าติดต่อไม่ได้มากกว่า 2 สัปดาห์ (อย่างน้อย ${FORCE_SUMMARY_MIN_REASON} ตัวอักษร)`}
+            value={reason}
+            onChange={(e) => { setReason(e.target.value); setError(null) }}
+          />
+          <span className={`text-xs ${tooShort ? 'text-amber-700' : 'text-ink-soft'}`}>
+            {tooShort
+              ? `ต้องอย่างน้อย ${FORCE_SUMMARY_MIN_REASON} ตัวอักษร (ตอนนี้ ${trimmedLen})`
+              : `ครบตามที่กำหนดแล้ว (${trimmedLen} ตัวอักษร)`}
+          </span>
+        </label>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            ยกเลิก
+          </Button>
+          <Button onClick={handleConfirm} disabled={saving || tooShort}>
+            {saving ? 'กำลังบันทึก...' : 'ยืนยันสรุปยอดข้ามการตรวจ'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 const today = new Date().toISOString().slice(0, 10)
 const SEL_KEY = 'waiting-summary:selected'
 const DATE_KEY = 'waiting-summary:date'
@@ -131,7 +228,11 @@ const netOf = (c: Contract) =>
   calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
 
 export default function WaitingSummary() {
-  const { name, role } = useAuth()
+  const { name, role, configured } = useAuth()
+  // ปุ่มฉุกเฉิน "สรุปยอดโดยไม่ผ่านตรวจ" ใช้ convention เดียวกับที่เหลือของเว็บ (เทียบ ReviewQueue.tsx) —
+  // !configured = โหมด mock ไม่มี Supabase (dev เครื่อง) ถือทุกคนเป็นแอดมิน กันปุ่มไม่โผล่ตอนทดสอบในเครื่อง
+  // บน prod configured เป็น true เสมอ ผลลัพธ์เท่ากับ role === 'admin' เป๊ะ ไม่เปลี่ยนพฤติกรรม
+  const isAdminOrMock = !configured || role === 'admin'
   const canEditNote = role === 'admin' || role === 'staff'
   const byName = name ?? 'ไม่ระบุชื่อ'
   const { data, loading } = useAsync(
@@ -151,6 +252,8 @@ export default function WaitingSummary() {
   // หมายเหตุเคสติดปัญหา — เก็บ override ในเครื่องหลังบันทึก (ทั้งข้อความ+คนเขียน) กันต้อง reload ทั้งหน้า
   const [noteOverride, setNoteOverride] = useState<Map<string, { note: string | null; by: string }>>(new Map())
   const [noteTarget, setNoteTarget] = useState<Contract | null>(null)
+  // ปุ่มฉุกเฉิน "สรุปยอดโดยไม่ผ่านตรวจ" — เฉพาะแอดมิน, เฉพาะเคสที่ canSummarizeCase() เป็น false (คุณเตยเคาะ 2026-09-12)
+  const [forceTarget, setForceTarget] = useState<Contract | null>(null)
   const [selected, setSelected] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(SEL_KEY)
@@ -174,10 +277,19 @@ export default function WaitingSummary() {
   const [toDate, setToDate] = useState('')
   const [shopFilter, setShopFilter] = useState('')
 
-  // ===== ป้ายเตือนรูป/ตรวจ ก่อนกดส่งร้าน (เตือนอย่างเดียว ไม่บล็อก — เจ้าของเคาะ 09-08) =====
-  // เฉพาะคอลัมน์ "รอส่งร้าน" (ก่อนเงินออกจริง) เฉพาะเคสตั้งแต่ MEDIA_TRACK_FROM (มีระบบรูปแล้วเท่านั้น)
+  // ===== ป้ายเตือนรูป (เตือนอย่างเดียว ไม่บล็อก) + เกทกดสรุปยอดจริง (บล็อกจริง — เจ้าของเคาะ 2026-09-12) =====
+  // เฉพาะคอลัมน์ "รอส่งร้าน" (ก่อนเงินออกจริง) เฉพาะเคสตั้งแต่ gateFrom (cutoff เดียวกันทั้งเว็บ — ห้ามทำ 2 อัน)
   const [mediaSlots, setMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
   const [mediaStatuses, setMediaStatuses] = useState<Map<string, ContractMediaStatus>>(new Map())
+  // gateFrom (app_settings.media_gate_from) — ตัวเดียวกับ WaitingEmail.tsx ใช้กันส่งเมล
+  // fail closed: ยังไม่โหลดเสร็จ/โหลดพัง -> canSummarizeCase คืน false เสมอ (ห้ามเดาว่าสัญญาเก่าแล้วปล่อยผ่าน)
+  const [gateFrom, setGateFrom] = useState<string>('')
+  const [gateFromLoaded, setGateFromLoaded] = useState(false)
+  const [gateFromError, setGateFromError] = useState(false)
+  const [gateFromRetryNonce, setGateFromRetryNonce] = useState(0)
+  // สถานะยิง markSummaryShopSent จริง — กันกดซ้ำระหว่างรอ + โชว์ error ถ้าฐานข้อมูลตีกลับ (RPC guard)
+  const [markShopBusy, setMarkShopBusy] = useState(false)
+  const [markShopError, setMarkShopError] = useState<string | null>(null)
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
   // หมายเหตุที่ใช้แสดงจริง — ถ้ามี override (เพิ่งบันทึกรอบนี้) ใช้ override ก่อน ไม่งั้นใช้ค่าจาก DB
@@ -216,16 +328,55 @@ export default function WaitingSummary() {
     [data.contracts, locallyShopSent, locallyAccountingSent],
   )
 
-  // โหลดนิยามช่องรูป (ครั้งเดียว ตอน mount) — ใช้ประเมินสถานะรูปของเคสที่เข้าเกณฑ์ติดตาม
+  // โหลดนิยามช่องรูป + วันเริ่มบังคับตรวจก่อนสรุปยอด (ตัวเดียวกับที่ WaitingEmail.tsx ใช้กันส่งเมล — ห้ามทำ cutoff 2 อัน)
+  // gateFromRetryNonce ให้กดปุ่ม "ลองใหม่" เมื่อโหลดพัง (ดู banner error ด้านล่าง)
   useEffect(() => {
-    getMediaSlots().then((raw) => setMediaSlots(normalizeMediaSlots(raw)))
-  }, [])
+    let cancelled = false
+    setGateFromError(false)
+    Promise.all([getMediaSlots(), getMediaGateFrom()])
+      .then(([raw, gate]) => {
+        if (cancelled) return
+        setMediaSlots(normalizeMediaSlots(raw))
+        setGateFrom(gate)
+        setGateFromLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setGateFromError(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [gateFromRetryNonce])
 
-  // เคสฝั่ง "รอส่งร้าน" ที่เข้าเกณฑ์ติดตามรูป (createdAt >= MEDIA_TRACK_FROM) เท่านั้น
+  function retryGateFrom() {
+    setGateFromRetryNonce((n) => n + 1)
+  }
+
+  // เคสฝั่ง "รอส่งร้าน" ที่เข้าเกณฑ์ต้องตรวจ (createdAt >= gateFrom) เท่านั้น — รอ gateFromLoaded ก่อนคำนวณ
+  // (ระหว่างที่ยังไม่รู้ค่า gateFrom จริง ห้ามเดาว่าเข้าเกณฑ์หรือไม่ กันดึงสถานะรูปผิดชุด)
   const trackedShopIds = useMemo(
-    () => shopBase.filter((c) => isMediaTracked(c.createdAt)).map((c) => c.id),
-    [shopBase],
+    () => (gateFromLoaded ? shopBase.filter((c) => isGated(c, gateFrom)).map((c) => c.id) : []),
+    [shopBase, gateFromLoaded, gateFrom],
   )
+
+  // กดสรุปยอดส่งร้านของเคสนี้ได้ไหม — เกทเดียวกับ canSendEmail (ห้ามโอนเงินก่อนตรวจผ่าน, ล็อกคุณเตย 2026-09-12)
+  // fail closed: ยังไม่รู้ gateFrom (กำลังโหลด/โหลดพัง) -> false เสมอ ไม่ว่าเคสจะเก่าหรือใหม่
+  function canSummarizeCase(c: Contract): boolean {
+    if (!gateFromLoaded) return false
+    return canMarkSummary(c.reviewStatus ?? null, isGated(c, gateFrom))
+  }
+
+  // ข้อความอธิบายว่าทำไมกดสรุปยอดไม่ได้ — ใช้ summaryBlockReason() ที่ล็อกคำไว้แล้ว (ห้ามพิมพ์เอง)
+  // ยกเว้นช่วงกำลังโหลด/โหลดพัง ซึ่งเป็นสถานะ "ยังไม่รู้" ไม่ใช่กฎทางธุรกิจ เลยมีข้อความของตัวเอง
+  function summaryReasonFor(c: Contract): string | null {
+    if (!gateFromLoaded) {
+      return gateFromError
+        ? 'ตรวจสอบเงื่อนไขก่อนสรุปยอดไม่สำเร็จ (เน็ตอาจสะดุด) กดลองใหม่ด้านบนก่อนนะคะ'
+        : 'กำลังตรวจสอบเงื่อนไขก่อนสรุปยอด...'
+    }
+    return summaryBlockReason(c.reviewStatus ?? null, isGated(c, gateFrom))
+  }
 
   // โหลดสถานะรูปเฉพาะเคสที่เข้าเกณฑ์ (ไม่ดึงทั้ง 25 เคส) — กันหน้าช้าลง
   useEffect(() => {
@@ -268,15 +419,20 @@ export default function WaitingSummary() {
   )
 
   // ตัด id ที่ค้างใน localStorage แต่ไม่อยู่ในคอลัมน์ซ้ายแล้ว (ถูกส่ง/เด้งไปขวา) ออก หลังโหลดเสร็จ
+  // + เขี่ยเคสที่กดสรุปยอดไม่ได้ (ยังไม่ผ่านตรวจ) ออกจาก selection ด้วย กัน selection เก่าที่ค้างใน localStorage หลุดไป
+  // (รอ gateFromLoaded ก่อนตัดด้วยเงื่อนไขตรวจ — ตอนยังไม่รู้ค่าจริง ตัดแค่เคสที่หลุดจาก shopBase ไปก่อน)
   useEffect(() => {
     if (loading) return
-    const valid = new Set(shopBase.map((c) => c.id))
+    const shopIds = new Set(shopBase.map((c) => c.id))
+    const valid = gateFromLoaded
+      ? new Set(shopBase.filter((c) => canSummarizeCase(c)).map((c) => c.id))
+      : shopIds
     setSelected((prev) => {
       const next = new Set([...prev].filter((id) => valid.has(id)))
       return next.size !== prev.size ? next : prev
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, shopBase])
+  }, [loading, shopBase, gateFromLoaded, gateFrom])
 
   // prune ฝั่งบัญชี เทียบ accountingBase (กัน id ค้างหลังเคสถูกส่งบัญชี/หายไป)
   useEffect(() => {
@@ -335,6 +491,14 @@ export default function WaitingSummary() {
     [accountingBase, sortOpt, fromDate, toDate, shopFilter],
   )
 
+  // เคสในตัวกรองปัจจุบันที่กดสรุปยอดได้จริง (ตัดเคสที่ยังไม่ผ่านตรวจออก) — ใช้ทั้งเลือกทั้งหมด + ป้ายจำนวน
+  const eligibleShopIds = useMemo(
+    () => pendingShop.filter((c) => canSummarizeCase(c)).map((c) => c.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pendingShop, gateFromLoaded, gateFrom],
+  )
+  const blockedShopCount = pendingShop.length - eligibleShopIds.length
+
   function toggleShop(id: string) {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -344,10 +508,11 @@ export default function WaitingSummary() {
     })
   }
 
+  // เลือกทั้งหมด ต้องข้ามเคสที่กดสรุปยอดไม่ได้ (ยังไม่ผ่านตรวจ) เสมอ — ไม่งั้นเงินจะโอนออกก่อนตรวจ
   function toggleAllShop() {
-    setSelected((prev) =>
-      prev.size === pendingShop.length ? new Set() : new Set(pendingShop.map((c) => c.id)),
-    )
+    if (eligibleShopIds.length === 0) return
+    const allSelected = eligibleShopIds.every((id) => selected.has(id))
+    setSelected(allSelected ? new Set() : new Set(eligibleShopIds))
   }
 
   function toggleAccounting(id: string) {
@@ -410,7 +575,13 @@ export default function WaitingSummary() {
   )
 
   async function markShopSent() {
-    const ids = [...selected]
+    // กรองซ้ำอีกชั้นก่อนยิงจริง — กันเคสที่ยังไม่ผ่านตรวจหลุดมาจาก selection เก่า
+    // (defense-in-depth คู่กับ checkbox disabled + toggleAllShop + prune effect ด้านบน ห้ามพึ่ง UI ชั้นเดียว)
+    const ids = [...selected].filter((id) => {
+      const c = shopBase.find((x) => x.id === id)
+      return !!c && canSummarizeCase(c)
+    })
+    if (ids.length === 0) return
     const flagged = pendingShop.filter((c) => ids.includes(c.id) && c.pendingDocuments)
     if (flagged.length > 0) {
       const names = flagged.map((c) => c.customerName).join(', ')
@@ -419,9 +590,17 @@ export default function WaitingSummary() {
       )
       if (!ok) return
     }
-    await markSummaryShopSent(ids, name ?? undefined, date) // บันทึกลง DB จริง (กันส่งซ้ำ) — เกาะวันที่สรุปที่เลือก
-    setLocallyShopSent((prev) => new Set([...prev, ...ids]))
-    setSelected(new Set())
+    setMarkShopError(null)
+    setMarkShopBusy(true)
+    try {
+      await markSummaryShopSent(ids, name ?? undefined, date) // บันทึกลง DB จริง (กันส่งซ้ำ) — เกาะวันที่สรุปที่เลือก
+      setLocallyShopSent((prev) => new Set([...prev, ...ids]))
+      setSelected(new Set())
+    } catch (e) {
+      setMarkShopError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setMarkShopBusy(false)
+    }
   }
 
   async function markAccountingSent() {
@@ -519,11 +698,43 @@ export default function WaitingSummary() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-base font-semibold text-ink">รอส่งร้าน ({pendingShop.length})</h2>
                 {pendingShop.length > 0 && (
-                  <Button variant="ghost" onClick={toggleAllShop} className="text-sm">
-                    {selected.size === pendingShop.length ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
+                  <Button
+                    variant="ghost"
+                    onClick={toggleAllShop}
+                    disabled={eligibleShopIds.length === 0}
+                    className="text-sm"
+                  >
+                    {selected.size === eligibleShopIds.length && eligibleShopIds.length > 0
+                      ? 'ยกเลิกเลือกทั้งหมด'
+                      : 'เลือกทั้งหมด'}
                   </Button>
                 )}
               </div>
+
+              {gateFromError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  <p>ตรวจสอบเงื่อนไขก่อนสรุปยอดไม่สำเร็จ (เน็ตอาจสะดุด) เคสที่ยังไม่ผ่านตรวจจะกดสรุปยอดไม่ได้จนกว่าจะโหลดสำเร็จ</p>
+                  <Button variant="ghost" onClick={retryGateFrom} className="mt-1 text-xs">
+                    ลองใหม่
+                  </Button>
+                </div>
+              )}
+
+              {!gateFromLoaded && !gateFromError && (
+                <p className="text-xs text-ink-soft">กำลังตรวจสอบเงื่อนไขก่อนสรุปยอด...</p>
+              )}
+
+              {gateFromLoaded && blockedShopCount > 0 && (
+                <p className="text-xs text-ink-soft">
+                  {blockedShopCount} เคส ยังกดสรุปยอดไม่ได้ (ยังไม่ผ่านตรวจ) — ดูเหตุผลที่แต่ละเคสด้านล่าง
+                </p>
+              )}
+
+              {markShopError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {markShopError}
+                </div>
+              )}
 
               {shopBase.length === 0 ? (
                 <EmptyState title="ไม่มีเคสรอส่งร้าน" />
@@ -534,20 +745,37 @@ export default function WaitingSummary() {
                   {pendingShop.map((c) => {
                     const checked = selected.has(c.id)
                     const isRejected = !!c.needsFixReason && !locallyClearedNeedsFix.has(c.id)
+                    const canPick = canSummarizeCase(c)
+                    const blockReason = canPick ? null : summaryReasonFor(c)
+                    // ป้าย "รูป ขาด" / "ยังไม่ผ่านตรวจ" ขึ้นเฉพาะเคสที่เข้าเกณฑ์จริง (createdAt >= gateFrom
+                    // จาก app_settings.media_gate_from — cutoff เดียวจริงตัวเดียวทั้งเว็บ ห้ามใช้วันตายตัวสอง
+                    // ค่าที่เคยเข้าใจผิดว่ามีสองรอบคีย์ 8-9 ก.ย. 2026 — ตอนนี้ยึด gateFrom จาก DB เท่านั้น)
+                    const showsGateBadges = gateFromLoaded && isGated(c, gateFrom)
                     return (
                       <li
                         key={c.id}
-                        onClick={() => toggleShop(c.id)}
-                        className={`flex cursor-pointer flex-col gap-2 rounded-xl border px-4 py-3 transition ${
-                          isRejected
-                            ? 'border-red-300 bg-red-50/60'
-                            : checked
-                              ? 'border-salmon-deep bg-peach-light/60'
-                              : 'border-peach bg-white hover:bg-peach-light/30'
+                        onClick={() => { if (canPick) toggleShop(c.id) }}
+                        title={blockReason ?? undefined}
+                        className={`flex flex-col gap-2 rounded-xl border px-4 py-3 transition ${
+                          !canPick
+                            ? 'cursor-not-allowed border-peach bg-peach-light/20 opacity-70'
+                            : `cursor-pointer ${
+                                isRejected
+                                  ? 'border-red-300 bg-red-50/60'
+                                  : checked
+                                    ? 'border-salmon-deep bg-peach-light/60'
+                                    : 'border-peach bg-white hover:bg-peach-light/30'
+                              }`
                         }`}
                       >
                         <div className="flex items-center gap-3">
-                          <input type="checkbox" checked={checked} readOnly className="h-4 w-4 accent-salmon-deep" />
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            readOnly
+                            disabled={!canPick}
+                            className="h-4 w-4 accent-salmon-deep disabled:cursor-not-allowed disabled:opacity-50"
+                          />
                           <div className="flex-1">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <p className="font-medium text-ink">
@@ -561,13 +789,13 @@ export default function WaitingSummary() {
                                 {' '}— {c.contractNo}
                               </p>
                               {c.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
-                              {isMediaTracked(c.createdAt) && (() => {
+                              {showsGateBadges && (() => {
                                 const ev = mediaEvaluationFor(c)
                                 return ev && !ev.complete ? (
                                   <Badge tone="amber">{`รูป ขาด ${ev.missing.length}`}</Badge>
                                 ) : null
                               })()}
-                              {isMediaTracked(c.createdAt) && (c.reviewStatus ?? null) !== 'approved' && (
+                              {showsGateBadges && (c.reviewStatus ?? null) !== 'approved' && (
                                 <Badge tone="amber">ยังไม่ผ่านตรวจ</Badge>
                               )}
                               {canEditNote && (
@@ -594,6 +822,24 @@ export default function WaitingSummary() {
                           </div>
                           <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
                         </div>
+                        {blockReason && (
+                          <p className="rounded-lg bg-peach-light/50 px-3 py-2 text-xs font-medium text-ink-soft">
+                            {blockReason}
+                          </p>
+                        )}
+                        {/* ปุ่มฉุกเฉิน — เฉพาะแอดมิน + เฉพาะเคสที่กดสรุปยอดปกติไม่ได้ + รู้ผลเกทแล้วจริงๆ (ไม่ใช่กำลังโหลด) */}
+                        {gateFromLoaded && !canPick && isAdminOrMock && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setForceTarget(c)
+                            }}
+                            className="self-start text-xs text-ink-soft underline decoration-dotted hover:text-ink"
+                          >
+                            สรุปยอดโดยไม่ผ่านตรวจ (ฉุกเฉิน)
+                          </button>
+                        )}
                         {isRejected && (
                           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-red-100 px-3 py-2">
                             <p className="text-xs font-medium text-red-700">
@@ -630,8 +876,8 @@ export default function WaitingSummary() {
                     รวม <span className="whitespace-nowrap">{baht(selectedShopNet)} ฿</span> · {groups.length} ร้าน
                   </Badge>
                   <CopyBox title="ข้อความสรุปยอดส่งร้าน" text={shopOutput} />
-                  <Button variant="ghost" onClick={markShopSent} className="self-start">
-                    ✓ ทำเครื่องหมายว่าส่งร้านแล้ว ({selected.size} เคส)
+                  <Button variant="ghost" onClick={markShopSent} disabled={markShopBusy} className="self-start">
+                    {markShopBusy ? 'กำลังบันทึก...' : `✓ ทำเครื่องหมายว่าส่งร้านแล้ว (${selected.size} เคส)`}
                   </Button>
                 </div>
               )}
@@ -733,6 +979,25 @@ export default function WaitingSummary() {
           onDone={(savedNote, savedBy) => {
             setNoteOverride((prev) => new Map(prev).set(noteTarget.id, { note: savedNote, by: savedBy }))
             setNoteTarget(null)
+          }}
+        />
+      )}
+
+      {forceTarget && (
+        <ForceSummaryModal
+          contract={forceTarget}
+          dateISO={date}
+          onClose={() => setForceTarget(null)}
+          onDone={(contractId) => {
+            // เด้งเคสนี้ออกจากคอลัมน์ซ้ายทันที เหมือน markShopSent ปกติ (ไม่ต้อง reload ทั้งหน้า)
+            setLocallyShopSent((prev) => new Set([...prev, contractId]))
+            setSelected((prev) => {
+              if (!prev.has(contractId)) return prev
+              const next = new Set(prev)
+              next.delete(contractId)
+              return next
+            })
+            setForceTarget(null)
           }}
         />
       )}

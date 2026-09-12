@@ -254,6 +254,7 @@ const REVIEW_ACTION_LABEL: Record<ContractReviewLogEntry['action'], string> = {
   approve: 'ตรวจผ่าน',
   reject: 'ตีกลับ',
   cancel_approval: 'ยกเลิกการตรวจ',
+  force_summary_shop_sent: 'สรุปยอดโดยไม่ผ่านตรวจ',
 }
 
 export default function ContractDetail() {
@@ -1211,18 +1212,35 @@ export default function ContractDetail() {
                 <Loading />
               ) : (
                 <ol className="flex flex-col gap-1.5">
-                  {reviewLog.map((e) => (
-                    <li key={e.id} className="rounded-lg bg-peach-light/40 px-3 py-2 text-xs text-ink">
-                      <span className="font-semibold">{REVIEW_ACTION_LABEL[e.action]}</span>
-                      {' โดย '}
-                      {e.actorId
-                        ? employeeNameById.get(e.actorId) ?? (e.actorRole === 'admin' ? 'แอดมิน' : 'พนักงาน')
-                        : '-'}
-                      {' · '}
-                      {thaiDate(e.createdAt.slice(0, 10))}
-                      {e.reason && <span className="block text-ink-soft">เหตุผล: {e.reason}</span>}
-                    </li>
-                  ))}
+                  {reviewLog.map((e) => {
+                    const isForceSummary = e.action === 'force_summary_shop_sent'
+                    return (
+                      <li
+                        key={e.id}
+                        className={`rounded-lg px-3 py-2 text-xs ${
+                          isForceSummary
+                            ? 'border border-amber-300 bg-amber-50 text-amber-900'
+                            : 'bg-peach-light/40 text-ink'
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1 font-semibold align-middle">
+                          {isForceSummary && <AlertTriangle size={12} className="text-amber-600" />}
+                          {REVIEW_ACTION_LABEL[e.action]}
+                        </span>
+                        {' โดย '}
+                        {e.actorId
+                          ? employeeNameById.get(e.actorId) ?? (e.actorRole === 'admin' ? 'แอดมิน' : 'พนักงาน')
+                          : '-'}
+                        {' · '}
+                        {thaiDate(e.createdAt.slice(0, 10))}
+                        {e.reason && (
+                          <span className={`block ${isForceSummary ? 'text-amber-800' : 'text-ink-soft'}`}>
+                            เหตุผล: {e.reason}
+                          </span>
+                        )}
+                      </li>
+                    )
+                  })}
                 </ol>
               )}
             </div>
