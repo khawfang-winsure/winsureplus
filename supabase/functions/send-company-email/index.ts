@@ -254,6 +254,20 @@ Deno.serve(async (req) => {
     );
   }
 
+  // ---- 2.2) หาชื่อผู้ตรวจ (contract.review_updated_by) — ใส่ในบรรทัดท้ายอีเมล ----
+  // อยู่หลังเกททุกตัวผ่านแล้ว (เคสที่ถูกเกทปฏิเสธไปแล้วด้านบนไม่ต้องเสีย query นี้)
+  // ⚠️ query error/exception ห้ามทำให้ส่งเมลล้มเหลว — ถือว่าหาชื่อผู้ตรวจไม่เจอ แล้วส่งเมลต่อตามปกติ
+  let reviewerName: string | null = null;
+  if (contract.review_updated_by) {
+    try {
+      const { data: reviewerProfile } = await db
+        .from("profiles").select("full_name").eq("id", contract.review_updated_by).maybeSingle();
+      reviewerName = reviewerProfile?.full_name ?? null;
+    } catch {
+      reviewerName = null;
+    }
+  }
+
   // ---- 3) เพดานไฟล์แนบ (เช็คก่อนโหลดไฟล์จริงเลย กัน CPU/mem บานบน free plan) ----
   const totalBytes = files.reduce((sum: number, f: any) => sum + (f.bytes ?? 0), 0);
   if (files.length > MAX_FILES || totalBytes > MAX_TOTAL_BYTES) {
@@ -310,7 +324,22 @@ Deno.serve(async (req) => {
   if (noteVideo) {
     bodyLines.push("วิดีโอส่งแยกใน Gmail");
   }
-  bodyLines.push(`ผู้ส่ง: ${callerProfile.full_name ?? ""}`);
+  // บรรทัดท้าย: ผู้ทำรายการ (contract.operator) | ตรวจโดย (reviewerName) | ผู้ส่ง (callerProfile.full_name)
+  // — trim ก่อนเทียบ/แสดงเสมอ กันช่องว่างหัวท้ายทำให้เทียบชื่อไม่ตรงแล้วโชว์ซ้ำ (ดู spec ในงานนี้)
+  const trimName = (s: unknown): string => (typeof s === "string" ? s.trim() : "");
+  const operatorName = trimName(contract.operator);
+  const senderName = trimName(callerProfile.full_name);
+  const reviewerNameTrimmed = trimName(reviewerName);
+  const isApproved = reviewStatus === "approved";
+  const reviewerSameAsSender = isApproved && !!reviewerNameTrimmed && reviewerNameTrimmed === senderName;
+
+  const lastLineParts = [
+    operatorName ? `ผู้ทำรายการ: ${operatorName}` : null,
+    isApproved && reviewerNameTrimmed ? `ตรวจโดย: ${reviewerNameTrimmed}` : null,
+    !reviewerSameAsSender && senderName ? `ผู้ส่ง: ${senderName}` : null,
+  ].filter(Boolean);
+  if (lastLineParts.length > 0) bodyLines.push(lastLineParts.join(" | "));
+
   const text = bodyLines.join("\n");
 
   // ---- 5) โหลดไฟล์แนบทีละไฟล์ (sequential — ห้าม parallel บน free plan) ----
