@@ -109,7 +109,7 @@ export interface MediaFlagsSettings {
 // (คอมเมนต์เดิมเขียนว่า "15 slots" แต่นับจริงคือ 16 มาตั้งแต่ก่อน Wave1 — ตกหล่นตอนเพิ่ม warranty_check
 //  sortOrder 4.1 ทีหลังแล้วลืมแก้เลข ตอนนี้แก้ให้ตรงของจริง 17 = 16 เดิม + lock_test_video ใหม่)
 // อัปเดต 2026-09-13: เจ้าของกลับคำจากเดิม (เคยตัดวิดีโอออกโดยตั้งใจ เพราะกังวลพื้นที่เก็บ/ขนาดไฟล์)
-// ตอนนี้ยอมรับคลิปเทสล็อกเครื่อง 1 คลิป/เคส (ไม่เกิน ~10 MB, ~1 นาที) แนบไปกับเมลบริษัทฉบับเดียวกับรูป
+// ตอนนี้ยอมรับคลิปเทสล็อกเครื่อง 1 คลิป/เคส (เพดานขนาดตามค่าตั้ง app_settings.media_video_max_mb, ~1 นาที) แนบไปกับเมลบริษัทฉบับเดียวกับรูป
 // แล้วลบคลิปออกจากเว็บ 30 วันหลังส่งเมล ทุกเคสไม่มีข้อยกเว้น (ดู videoPurgeDueAt ด้านล่าง) — รูปไม่ลบ
 // ---------------------------------------------------------------------------
 
@@ -130,7 +130,7 @@ export const DEFAULT_MEDIA_SLOTS: MediaSlot[] = [
   { key: 'credit_check', label: 'ผลเช็คเครดิต', sortOrder: 13, min: 1, max: 1, required: 'always' },
   { key: 'credit_history_evidence', label: 'ใบแจ้งความ / หลักฐานเคลียร์ยอด', sortOrder: 13.1, min: 1, max: null, required: { when: 'flag', name: 'credit_history_found' } },
   { key: 'device_on_off', label: 'สถานะ On/Off ของเครื่อง', sortOrder: 14, min: 1, max: 1, required: 'always' },
-  { key: 'lock_test_video', label: 'คลิปเทสล็อกเครื่อง', sortOrder: 15, min: 1, max: 1, kind: 'video', required: { when: 'flag', name: 'video_required' }, hint: 'ไม่เกิน 10 MB (ประมาณ 1 นาที)' },
+  { key: 'lock_test_video', label: 'คลิปเทสล็อกเครื่อง', sortOrder: 15, min: 1, max: 1, kind: 'video', required: { when: 'flag', name: 'video_required' }, hint: 'ไม่เกินขนาดที่ตั้งไว้ (ประมาณ 1 นาที)' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ export const CHECK_IMAGE_MIN_LONG_SIDE = 800 // px, warn ไม่บล็อ�
 // checkVideoFile / emailBudget policy constants
 // อัปเดต 2026-09-13 (คำตัดสินใหม่): ทดสอบแล้ว Gmail SMTP รับข้อมูลได้จริง ~200 KB/s (แก้ฝั่งโค้ดไม่ได้)
 // เจ้าของเคาะเพดานใหม่: เมลรวม 16 MB (ตรง app_settings.media_email_max_total_mb='16')
-// คลิปเดียวยังคง ≤10 MB (media_video_max_mb='10'), จำนวนไฟล์ต่อเมล 30 (รูปจริงบางเคส 25 + คลิป 1)
+// คลิปเดียว ≤ ค่าตั้ง media_video_max_mb (ปรับได้ที่ app_settings ไม่ผูกกับตัวเลขในไฟล์นี้), จำนวนไฟล์ต่อเมล 30 (รูปจริงบางเคส 25 + คลิป 1)
 // ค่าคงที่ด้านล่างเป็นแค่ default ตอนไม่ส่งเพดานมาเอง — ของจริงต้องอ่านจาก getMediaVideoSettings()
 // แล้วแปลงด้วย mbToBytes() ส่งเข้า checkVideoFile/emailBudget ผ่านพารามิเตอร์ (ห้าม hardcode เพดานใน UI)
 // ---------------------------------------------------------------------------

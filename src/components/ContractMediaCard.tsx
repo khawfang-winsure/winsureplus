@@ -1085,6 +1085,7 @@ export default function ContractMediaCard({
     [videoSettings?.emailMaxTotalMb],
   )
   const emailMaxMbLabel = Math.round(emailMaxBytes / (1024 * 1024))
+  const videoMaxMbLabel = Math.round(videoMaxBytes / (1024 * 1024))
   const emailBudgetFiles: EmailBudgetFile[] = useMemo(
     () => files.map((f) => ({ bytes: f.bytes, purgedAt: f.purgedAt, deletedAt: f.deletedAt })),
     [files],
@@ -1494,6 +1495,8 @@ export default function ContractMediaCard({
             const isDragOver = dragOverKey === e.key
             const isOverMax = def?.max != null && e.count > def.max
             const isEmptyUploadable = canUpload && slotFiles.length === 0
+            // เพดานคลิปมาจาก app_settings เสมอ (ห้าม hardcode MB ในข้อความ) — ช่องอื่นใช้ hint เดิมจาก media.ts
+            const hintText = def?.kind === 'video' ? `ไม่เกิน ${videoMaxMbLabel} MB (ประมาณ 1 นาที)` : def?.hint
             return (
               <div
                 key={e.key}
@@ -1520,7 +1523,7 @@ export default function ContractMediaCard({
                 <div className="mb-2 flex items-start justify-between gap-2">
                   <div>
                     <p className="text-sm font-semibold text-ink">{e.label}</p>
-                    {def?.hint && <p className="text-xs text-ink-soft">{def.hint}</p>}
+                    {hintText && <p className="text-xs text-ink-soft">{hintText}</p>}
                   </div>
                   <SlotStatusPill status={e.status} count={e.count} min={e.min} />
                 </div>
