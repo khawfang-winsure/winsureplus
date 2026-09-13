@@ -14,6 +14,7 @@ import {
   getMediaGateFrom,
   getMediaSlots,
   getMediaStatuses,
+  getMediaVideoSettings,
   getShops,
   markSummaryShopSent,
   markSummaryAccountingSent,
@@ -287,6 +288,8 @@ export default function WaitingSummary() {
   const [gateFromLoaded, setGateFromLoaded] = useState(false)
   const [gateFromError, setGateFromError] = useState(false)
   const [gateFromRetryNonce, setGateFromRetryNonce] = useState(0)
+  // ค่าตั้งค่าคลิปเทสล็อกเครื่อง (Wave 3) — ใช้คำนวณ video_required ให้ตรงกับที่การ์ดในหน้าสัญญาใช้ (buildMediaFlags)
+  const [videoRequiredFrom, setVideoRequiredFrom] = useState<string | null | undefined>(undefined)
   // สถานะยิง markSummaryShopSent จริง — กันกดซ้ำระหว่างรอ + โชว์ error ถ้าฐานข้อมูลตีกลับ (RPC guard)
   const [markShopBusy, setMarkShopBusy] = useState(false)
   const [markShopError, setMarkShopError] = useState<string | null>(null)
@@ -333,11 +336,12 @@ export default function WaitingSummary() {
   useEffect(() => {
     let cancelled = false
     setGateFromError(false)
-    Promise.all([getMediaSlots(), getMediaGateFrom()])
-      .then(([raw, gate]) => {
+    Promise.all([getMediaSlots(), getMediaGateFrom(), getMediaVideoSettings()])
+      .then(([raw, gate, videoSettings]) => {
         if (cancelled) return
         setMediaSlots(normalizeMediaSlots(raw))
         setGateFrom(gate)
+        setVideoRequiredFrom(videoSettings.videoRequiredFrom)
         setGateFromLoaded(true)
       })
       .catch(() => {
@@ -403,7 +407,7 @@ export default function WaitingSummary() {
   function mediaEvaluationFor(c: Contract) {
     const status = mediaStatuses.get(c.id)
     if (!status) return null
-    return evaluateFromStatus(mediaSlots, status)
+    return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, emailSentAt: c.emailSentAt })
   }
 
   // คอลัมน์ขวา (รอส่งบัญชี): ส่งร้านแล้ว (DB หรือรอบนี้) แต่ยังไม่ส่งบัญชี

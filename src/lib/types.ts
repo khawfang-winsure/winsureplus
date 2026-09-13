@@ -860,6 +860,9 @@ export interface ContractMediaFile {
   uploadedBy: string | null                // uuid ของ auth.users
   uploadedAt: string                       // ISO timestamptz
   dupConfirmed: boolean                    // true = admin/staff ยืนยันแล้วว่ารูปซ้ำข้ามสัญญาถูกต้อง
+  deletedAt: string | null                 // (0146) ผู้ใช้ลบไฟล์นี้เอง (soft delete) — getContractMedia กรอง null แล้วเสมอ จึงเป็น null ทุกแถวที่ได้จากตรงนั้น เก็บไว้ให้ตรง shape กับ MediaFile ของ media.ts เวลาแปลงส่งเข้า evaluateSlots/emailBudget
+  emailedAt: string | null                 // (0154) เวลาที่ไฟล์นี้ถูกแนบไปกับอีเมลบริษัทสำเร็จจริง — จุดเริ่มนับอายุ 30 วันก่อน purge (คลิปเท่านั้น รูปเป็น null เสมอ)
+  purgedAt: string | null                  // (0154) เวลาที่ purge job ลบไฟล์จริงออกจาก storage แล้ว (แถว/เมทาดาต้ายังอยู่) — ต้องเช็คก่อนขอ URL เปิดดู (getMediaUrl คืน null ถ้ามีค่านี้)
 }
 
 /** สรุปสถานะไฟล์แนบต่อสัญญา — จาก view v_contract_media_status (0137) */
@@ -906,6 +909,28 @@ export interface SendCompanyEmailResult {
   attachmentCount?: number
   totalBytes?: number
   error?: string
+}
+
+/** ผลลัพธ์จาก preflightCompanyEmail() (db.ts) — เรียก Edge Function send-company-email ด้วย dryRun:true
+ *  (ไม่ยิง SMTP จริง) ใช้โชว์ก่อนกดปุ่มส่งจริงว่าจะผ่านเกทอะไรบ้าง — ok=false เสมอถ้าตรวจไม่สำเร็จ
+ *  (network/HTTP error) ไม่ throw ให้หน้าเว็บค้าง ดู reasons เป็นข้อความไทยพร้อมโชว์ตรงๆ */
+export interface CompanyEmailPreflight {
+  ok: boolean
+  gateOk: boolean
+  reviewOk: boolean
+  totalBytes: number
+  maxBytes: number
+  fileCount: number
+  reasons: string[]
+}
+
+/** ค่าตั้งค่าฟีเจอร์คลิปเทสล็อกเครื่อง (0154) — อ่านรวมทีเดียวจาก app_settings ผ่าน getMediaVideoSettings()
+ *  videoRequiredFrom = null หมายถึงยังไม่บังคับ (ปิดฟีเจอร์ หรือยังไม่ apply migration) */
+export interface MediaVideoSettings {
+  videoRequiredFrom: string | null
+  videoMaxMb: number
+  emailMaxTotalMb: number
+  retentionDays: number
 }
 
 // ---------- แคชข้อมูลสัญญาจากเว็บ PJ — เทียบกับค่าที่ทีมเราคีย์เอง (migration 0152, Edge Function pj-snapshot) ----------

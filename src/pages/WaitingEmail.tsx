@@ -11,6 +11,7 @@ import {
   getMediaGateFrom,
   getMediaSlots,
   getMediaStatuses,
+  getMediaVideoSettings,
   getShops,
   logMediaGateBypass,
   markEmailSent,
@@ -89,6 +90,8 @@ export default function WaitingEmail() {
   const [mediaStatusesLoaded, setMediaStatusesLoaded] = useState(false)
   const [mediaStatusesError, setMediaStatusesError] = useState(false)
   const [mediaRetryNonce, setMediaRetryNonce] = useState(0)
+  // ค่าตั้งค่าคลิปเทสล็อกเครื่อง (Wave 3) — ใช้คำนวณ video_required ให้ตรงกับที่การ์ดในหน้าสัญญาใช้ (buildMediaFlags)
+  const [videoRequiredFrom, setVideoRequiredFrom] = useState<string | null | undefined>(undefined)
   const [bypassedIds, setBypassedIds] = useState<Set<string>>(new Set())
 
   // ส่งเมลถึงบริษัท (Edge Function) — สถานะต่อ modal ที่เปิดอยู่
@@ -114,11 +117,12 @@ export default function WaitingEmail() {
   useEffect(() => {
     let cancelled = false
     setGateFromError(false)
-    Promise.all([getMediaSlots(), getMediaGateFrom()])
-      .then(([raw, gate]) => {
+    Promise.all([getMediaSlots(), getMediaGateFrom(), getMediaVideoSettings()])
+      .then(([raw, gate, videoSettings]) => {
         if (cancelled) return
         setMediaSlots(normalizeMediaSlots(raw))
         setGateFrom(gate)
+        setVideoRequiredFrom(videoSettings.videoRequiredFrom)
         setGateFromLoaded(true)
       })
       .catch(() => {
@@ -169,7 +173,7 @@ export default function WaitingEmail() {
   function evaluationFor(c: Contract) {
     const status = mediaStatuses.get(c.id)
     if (!status) return null
-    return evaluateFromStatus(mediaSlots, status)
+    return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, emailSentAt: c.emailSentAt })
   }
 
   function renderMediaPill(c: Contract) {

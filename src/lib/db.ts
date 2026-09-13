@@ -12,6 +12,7 @@ import type {
   CollectorEverHeldRow,
   CollectorOwnershipRow,
   CollectorRecoveryRow,
+  CompanyEmailPreflight,
   Contract,
   ContractMediaFile,
   ContractMediaStatus,
@@ -27,6 +28,7 @@ import type {
   GradeMonthlyChange,
   Installment,
   MediaDuplicateMatch,
+  MediaVideoSettings,
   NotificationItem,
   Option,
   OtherIncome,
@@ -8765,6 +8767,8 @@ interface ContractMediaRow {
   deleted_at: string | null
   deleted_by: string | null
   dup_confirmed: boolean
+  emailed_at: string | null // (0154)
+  purged_at: string | null  // (0154)
 }
 
 function mapContractMedia(r: ContractMediaRow): ContractMediaFile {
@@ -8782,6 +8786,9 @@ function mapContractMedia(r: ContractMediaRow): ContractMediaFile {
     uploadedBy: r.uploaded_by,
     uploadedAt: r.uploaded_at,
     dupConfirmed: r.dup_confirmed,
+    deletedAt: r.deleted_at,
+    emailedAt: r.emailed_at,
+    purgedAt: r.purged_at,
   }
 }
 
@@ -8881,6 +8888,50 @@ export async function getMediaEmailAttachSummary(): Promise<'short' | 'full' | '
     .maybeSingle()
   if (error) throw error
   return data?.value === 'full' || data?.value === 'off' ? data.value : 'short'
+}
+
+const MEDIA_VIDEO_REQUIRED_FROM_KEY = 'media_video_required_from'
+const MEDIA_VIDEO_MAX_MB_KEY = 'media_video_max_mb'
+const MEDIA_EMAIL_MAX_TOTAL_MB_KEY = 'media_email_max_total_mb'
+const MEDIA_VIDEO_RETENTION_DAYS_KEY = 'media_video_retention_days'
+
+/** ค่าตั้งค่าฟีเจอร์คลิปเทสล็อกเครื่อง (0154) รวมทีเดียว — 1 query ด้วย .in() แทนยิงทีละ key
+ *  fallback ปลอดภัยถ้าอ่านไม่ได้/ยังไม่ apply migration: videoRequiredFrom=null (ไม่บังคับ — isVideoRequired
+ *  ของ media.ts มองว่าไม่ใช่วันที่ที่ถูกต้อง = false เสมอ), videoMaxMb=10, emailMaxTotalMb=16 (เจ้าของเลือกเพดานเมลรวม 16 MB), retentionDays=30 */
+export async function getMediaVideoSettings(): Promise<MediaVideoSettings> {
+  const fallback: MediaVideoSettings = {
+    videoRequiredFrom: null,
+    videoMaxMb: 10,
+    emailMaxTotalMb: 16,
+    retentionDays: 30,
+  }
+  if (!supabase) return fallback
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('key, value')
+    .in('key', [
+      MEDIA_VIDEO_REQUIRED_FROM_KEY,
+      MEDIA_VIDEO_MAX_MB_KEY,
+      MEDIA_EMAIL_MAX_TOTAL_MB_KEY,
+      MEDIA_VIDEO_RETENTION_DAYS_KEY,
+    ])
+  if (error) throw error
+  const rows = (data ?? []) as Array<{ key: string; value: string | null }>
+  const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]))
+
+  const videoRequiredFrom = byKey[MEDIA_VIDEO_REQUIRED_FROM_KEY]?.trim() || null
+
+  const parsePositiveInt = (raw: string | null | undefined, fallbackN: number): number => {
+    const n = Number(raw)
+    return Number.isFinite(n) && n > 0 ? n : fallbackN
+  }
+
+  return {
+    videoRequiredFrom,
+    videoMaxMb: parsePositiveInt(byKey[MEDIA_VIDEO_MAX_MB_KEY], fallback.videoMaxMb),
+    emailMaxTotalMb: parsePositiveInt(byKey[MEDIA_EMAIL_MAX_TOTAL_MB_KEY], fallback.emailMaxTotalMb),
+    retentionDays: parsePositiveInt(byKey[MEDIA_VIDEO_RETENTION_DAYS_KEY], fallback.retentionDays),
+  }
 }
 
 /** ไฟล์แนบทั้งหมด (ไม่รวมที่ลบ) ของสัญญาเดียว เรียงตามเวลาอัปโหลด */
@@ -8992,35 +9043,95 @@ export interface UploadMediaInput {
   width: number | null
   height: number | null
   mime: string
+  /** ใช้กับคลิปเท่านั้น (PUT ผ่าน XMLHttpRequest รายงาน progress ได้) — รูปยังอัปแบบ fetch เดิม ไม่มี progress
+   *  optional เพื่อไม่ให้ caller เดิมของรูปต้องแก้ */
+  onProgress?: (pct: number) => void
+  /** ใช้กับคลิปเท่านั้น — ให้ caller ยกเลิกการอัปคลิปกลางทางได้ (เช่นปิด modal ระหว่างอัป)
+   *  optional เพื่อไม่ให้ caller เดิม (ทั้งรูปและคลิป) ต้องแก้ */
+  signal?: AbortSignal
 }
 
-/** อัปโหลดไฟล์รูป 1 ช่อง — เลือก provider ตาม app_settings.media_provider เอง
- *  provider='supabase': เช็ค guard พื้นที่เก็บก่อน (media_storage_usage_bytes RPC) → upload ตรงเข้า bucket
- *    contract-media → insert แถว contract_media
- *  provider='r2': ขอ presigned PUT จาก Edge Function media-sign → fetch PUT ตรงไป R2 → insert แถว contract_media
- *    (storage_provider='r2') — ยังไม่ทำงานจริงจนกว่าจะตั้ง R2_* secrets (ดู media-sign/index.ts) */
+// (0154 Wave 2) mime คลิปที่รองรับ — ตรงกับ media.ts VideoMime/ALLOWED_VIDEO_MIME ของ media-sign
+const VIDEO_MIME_SET = new Set(['video/mp4', 'video/quicktime'])
+
+/** PUT ไฟล์ไป presigned URL ด้วย XMLHttpRequest แทน fetch — รายงาน progress ระหว่างอัปได้ (ใช้กับคลิปที่ไฟล์
+ *  ใหญ่กว่ารูปมาก อัปช้ากว่า ผู้ใช้ต้องเห็นความคืบหน้า) ห้ามตั้ง header Content-Length เอง — media-sign เซ็น
+ *  URL ด้วยขนาดไฟล์ที่ประกาศไว้ตอนขอ sign แล้ว (bytes) ปล่อยให้ browser ใส่ Content-Length เองตามจริง
+ *  403 = ขนาดไฟล์จริงไม่ตรงกับที่ sign ไว้ (ไฟล์เปลี่ยนระหว่างทาง/เลือกไฟล์ผิด) → error ไทยเฉพาะเจาะจง
+ *  timeout 5 นาที กันเน็ตร้าน/มือถือช้าค้างไม่รู้จบ (คลิป ≤10 MB บนเน็ตช้ามาก ก็ควรเสร็จในเวลานี้)
+ *  รองรับ signal ยกเลิกจากภายนอก (เช่นปิด modal ระหว่างอัป) — ไม่ผูกกับ timeout/error อื่น */
+function putBlobWithProgress(
+  url: string,
+  blob: Blob,
+  mime: string,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('ยกเลิกการอัปคลิปแล้ว'))
+      return
+    }
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url, true)
+    xhr.timeout = 5 * 60 * 1000
+    xhr.setRequestHeader('Content-Type', mime)
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    }
+    const onAbortSignal = () => xhr.abort()
+    const cleanup = () => {
+      if (signal) signal.removeEventListener('abort', onAbortSignal)
+    }
+    xhr.onload = () => {
+      cleanup()
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else if (xhr.status === 403) {
+        reject(new Error('อัปคลิปไม่สำเร็จ ขนาดไฟล์ไม่ตรง ลองเลือกไฟล์ใหม่'))
+      } else {
+        reject(new Error(`อัปโหลดไฟล์ไม่สำเร็จ (${xhr.status})`))
+      }
+    }
+    xhr.onerror = () => {
+      cleanup()
+      reject(new Error('อัปโหลดไฟล์ไม่สำเร็จ'))
+    }
+    xhr.ontimeout = () => {
+      cleanup()
+      reject(new Error('อัปคลิปนานเกินไป เน็ตอาจช้า ลองใหม่อีกครั้ง'))
+    }
+    xhr.onabort = () => {
+      cleanup()
+      reject(new Error('ยกเลิกการอัปคลิปแล้ว'))
+    }
+    if (signal) signal.addEventListener('abort', onAbortSignal, { once: true })
+    xhr.send(blob)
+  })
+}
+
+/** อัปโหลดไฟล์รูป/คลิป 1 ช่อง
+ *  รูป: เลือก provider ตาม app_settings.media_provider เอง (เหมือนเดิมทุกอย่าง ไม่เปลี่ยนพฤติกรรม)
+ *    provider='supabase': เช็ค guard พื้นที่เก็บก่อน (media_storage_usage_bytes RPC) → upload ตรงเข้า bucket
+ *      contract-media → insert แถว contract_media
+ *    provider='r2': ขอ presigned PUT จาก Edge Function media-sign → fetch PUT ตรงไป R2 → insert แถว contract_media
+ *  คลิป (mime เป็น video/mp4 หรือ video/quicktime — ตัดสินจาก mime ไม่ใช่ media_provider เพื่อไม่ต้องแก้ signature
+ *  ผู้เรียกที่อัปรูปอยู่แล้ว): ใช้ R2 ผ่าน media-sign เสมอไม่ว่า media_provider ตั้งเป็นอะไร (bucket supabase
+ *  storage รับแค่รูปไม่เกิน 8 MB — คลิปใหญ่กว่านั้น) → PUT ด้วย XHR รายงาน progress → insert width/height=null
+ *  เสมอ (คลิปไม่มีมิติภาพ) */
 export async function uploadMedia(input: UploadMediaInput): Promise<ContractMediaFile> {
   if (!supabase) throw new Error('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
-  const { contractId, slotKey, blob, sha256, width, height, mime } = input
-  const provider = await getMediaProvider()
+  const { contractId, slotKey, blob, sha256, width, height, mime, onProgress, signal } = input
+  const isVideo = VIDEO_MIME_SET.has(mime)
 
   let storagePath: string
   let storageProvider: 'supabase' | 'r2'
+  let insertWidth = width
+  let insertHeight = height
 
-  if (provider === 'supabase') {
-    const guardMb = await getMediaStorageGuardMb()
-    const usageBytes = await fetchMediaStorageUsageBytes()
-    const usedMb = usageBytes / (1024 * 1024)
-    if (usedMb >= guardMb) throw new Error('ที่เก็บรูปเต็ม แจ้งแอดมิน')
-
-    const path = `${contractId}/${slotKey}/${crypto.randomUUID()}.jpg`
-    const { error: upErr } = await supabase.storage
-      .from('contract-media')
-      .upload(path, blob, { contentType: mime, upsert: false })
-    if (upErr) throw upErr
-    storagePath = path
-    storageProvider = 'supabase'
-  } else {
+  if (isVideo) {
     const { data: signed, error: signErr } = await supabase.functions.invoke('media-sign', {
       body: { action: 'put', contractId, slotKey, mime, bytes: blob.size },
     })
@@ -9028,10 +9139,40 @@ export async function uploadMedia(input: UploadMediaInput): Promise<ContractMedi
     const url = (signed as { url?: string; path?: string } | null)?.url
     const path = (signed as { url?: string; path?: string } | null)?.path
     if (!url || !path) throw new Error('ขอสิทธิ์อัปโหลดไม่สำเร็จ')
-    const putRes = await fetch(url, { method: 'PUT', headers: { 'Content-Type': mime }, body: blob })
-    if (!putRes.ok) throw new Error('อัปโหลดไฟล์ไม่สำเร็จ')
+    await putBlobWithProgress(url, blob, mime, onProgress, signal)
     storagePath = path
     storageProvider = 'r2'
+    insertWidth = null
+    insertHeight = null
+  } else {
+    const provider = await getMediaProvider()
+
+    if (provider === 'supabase') {
+      const guardMb = await getMediaStorageGuardMb()
+      const usageBytes = await fetchMediaStorageUsageBytes()
+      const usedMb = usageBytes / (1024 * 1024)
+      if (usedMb >= guardMb) throw new Error('ที่เก็บรูปเต็ม แจ้งแอดมิน')
+
+      const path = `${contractId}/${slotKey}/${crypto.randomUUID()}.jpg`
+      const { error: upErr } = await supabase.storage
+        .from('contract-media')
+        .upload(path, blob, { contentType: mime, upsert: false })
+      if (upErr) throw upErr
+      storagePath = path
+      storageProvider = 'supabase'
+    } else {
+      const { data: signed, error: signErr } = await supabase.functions.invoke('media-sign', {
+        body: { action: 'put', contractId, slotKey, mime, bytes: blob.size },
+      })
+      if (signErr) throw new Error(await extractFunctionErrorMessage(signErr))
+      const url = (signed as { url?: string; path?: string } | null)?.url
+      const path = (signed as { url?: string; path?: string } | null)?.path
+      if (!url || !path) throw new Error('ขอสิทธิ์อัปโหลดไม่สำเร็จ')
+      const putRes = await fetch(url, { method: 'PUT', headers: { 'Content-Type': mime }, body: blob })
+      if (!putRes.ok) throw new Error('อัปโหลดไฟล์ไม่สำเร็จ')
+      storagePath = path
+      storageProvider = 'r2'
+    }
   }
 
   const { data: inserted, error: insErr } = await supabase
@@ -9043,8 +9184,8 @@ export async function uploadMedia(input: UploadMediaInput): Promise<ContractMedi
       path: storagePath,
       bytes: blob.size,
       sha256,
-      width,
-      height,
+      width: insertWidth,
+      height: insertHeight,
       mime,
       // uploaded_by: ไม่ต้องส่ง — mig 0146 ตั้ง default auth.uid() ให้ที่ DB แล้ว
       // (เลี่ยง getUser() ที่ยิง network ตรวจ JWT ทุกครั้ง — แนบรูปหลายใบจะช้าบนเน็ตมือถือ)
@@ -9052,8 +9193,9 @@ export async function uploadMedia(input: UploadMediaInput): Promise<ContractMedi
     .select('*')
     .single()
   if (insErr) {
-    // 23505 = ชน unique index contract_media_unique_live (0140) — ไฟล์นี้ (สัญญา/ช่อง/เนื้อไฟล์เดียวกัน)
-    // เคยอัปสำเร็จไปแล้ว (ปกติเกิดตอนกดซ้ำเร็วๆ/เน็ตช้าแล้วกดซ้ำ) — เก็บไฟล์ที่เพิ่งอัปออก (best effort) แล้วแจ้ง toast เดียวกับที่เว็บเช็คไว้ก่อนหน้า
+    // 23505 = ชน unique index contract_media_unique_live (0140, แก้ 0154 ให้ยอมรับ sha256 เดิมซ้ำได้ถ้าแถวเก่า
+    // ถูก purge ไปแล้ว) — ไฟล์นี้ (สัญญา/ช่อง/เนื้อไฟล์เดียวกัน) เคยอัปสำเร็จไปแล้วและยังไม่ถูก purge (ปกติเกิด
+    // ตอนกดซ้ำเร็วๆ/เน็ตช้าแล้วกดซ้ำ) — เก็บไฟล์ที่เพิ่งอัปออก (best effort) แล้วแจ้ง toast เดียวกับที่เว็บเช็คไว้ก่อนหน้า
     if ((insErr as PostgrestError).code === '23505') {
       if (storageProvider === 'supabase') {
         try {
@@ -9062,8 +9204,8 @@ export async function uploadMedia(input: UploadMediaInput): Promise<ContractMedi
           /* best effort — ไม่ throw ซ้อน ปล่อยให้ error หลักด้านล่างขึ้นแทน */
         }
       }
-      // storageProvider === 'r2': media-sign ยังไม่มี action='delete' (wave 6 ยังไม่ตั้ง secret จริง) — ข้ามการล้างไฟล์ฝั่ง R2 ไปก่อน
-      throw new Error('รูปนี้อัปไว้แล้ว ระบบนับให้ 1 ครั้ง')
+      // storageProvider === 'r2': media-sign ยังไม่มี action='delete' — ข้ามการล้างไฟล์ฝั่ง R2 ไปก่อน
+      throw new Error(isVideo ? 'คลิปนี้แนบไว้แล้ว' : 'รูปนี้อัปไว้แล้ว ระบบนับให้ 1 ครั้ง')
     }
     throw insErr
   }
@@ -9073,6 +9215,9 @@ export async function uploadMedia(input: UploadMediaInput): Promise<ContractMedi
 /** URL ชั่วคราวเปิดดูไฟล์ (300 วิ) — supabase: signed URL ปกติ, r2: ขอผ่าน media-sign action='get' */
 export async function getMediaUrl(file: ContractMediaFile): Promise<string | null> {
   if (!supabase) return null
+  // (0154) ไฟล์ถูก purge job ลบออกจาก storage จริงแล้ว (แถว/เมทาดาต้ายังอยู่เป็นหลักฐาน) — ไม่มีอะไรให้ขอ URL
+  // ไม่ต้องยิง media-sign/storage เปล่าๆ (จะได้ 404 อยู่ดี) หน้าเว็บควรโชว์ "ลบอัตโนมัติแล้ว" แทน
+  if (file.purgedAt) return null
   if (file.storageProvider === 'r2') {
     const { data, error } = await supabase.functions.invoke('media-sign', {
       body: { action: 'get', path: file.path },
@@ -9156,6 +9301,43 @@ export async function sendCompanyEmail(contractId: string): Promise<SendCompanyE
     return { ok: false, error: (data as { error?: string }).error }
   }
   return data as SendCompanyEmailResult
+}
+
+/** ตรวจก่อนส่งจริงว่าเมลบริษัทของสัญญานี้จะผ่านเกทอะไรบ้าง (เกทรูป/คลิปครบ, ผ่านการตรวจของคุณเตย, ขนาดรวม
+ *  ไม่เกินเพดาน) โดยไม่ยิง SMTP จริง — เรียก Edge Function send-company-email ตัวเดียวกับ sendCompanyEmail
+ *  แค่เพิ่ม dryRun:true ให้ฝั่ง server คำนวณแล้วตอบกลับโดยไม่ส่งเมล (เลี่ยงคำนวณเกทซ้ำฝั่ง client ที่อาจไม่ตรง
+ *  กับกติกาจริงบน server) — ไม่ throw เด็ดขาดไม่ว่า network/HTTP/parse พังแบบไหน แปลงเป็น ok:false + reasons
+ *  ภาษาไทยเสมอ กันหน้าเว็บค้างตอนกดปุ่ม "ตรวจก่อนส่ง" */
+export async function preflightCompanyEmail(contractId: string): Promise<CompanyEmailPreflight> {
+  const fail = (reason: string): CompanyEmailPreflight => ({
+    ok: false,
+    gateOk: false,
+    reviewOk: false,
+    totalBytes: 0,
+    maxBytes: 0,
+    fileCount: 0,
+    reasons: [reason],
+  })
+  if (!supabase) return fail('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
+  try {
+    const { data, error } = await supabase.functions.invoke('send-company-email', {
+      body: { contractId, dryRun: true },
+    })
+    if (error) return fail(await extractFunctionErrorMessage(error))
+    const d = (data ?? {}) as Partial<CompanyEmailPreflight> & { error?: string }
+    if (d.error) return fail(d.error)
+    return {
+      ok: d.ok === true,
+      gateOk: d.gateOk === true,
+      reviewOk: d.reviewOk === true,
+      totalBytes: Number(d.totalBytes ?? 0),
+      maxBytes: Number(d.maxBytes ?? 0),
+      fileCount: Number(d.fileCount ?? 0),
+      reasons: Array.isArray(d.reasons) ? d.reasons.filter((r): r is string => typeof r === 'string') : [],
+    }
+  } catch {
+    return fail('ตรวจขนาดเมลไม่สำเร็จ ลองใหม่อีกครั้ง')
+  }
 }
 
 interface EmailSendLogRow {

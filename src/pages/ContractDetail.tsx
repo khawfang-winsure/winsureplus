@@ -77,9 +77,11 @@ import {
   getMediaStatuses,
   getMediaSlots,
   getMediaGateFrom,
+  getMediaVideoSettings,
   getEmployees,
   getPjSnapshot,
   requestPjSnapshot,
+  preflightCompanyEmail,
 } from '../lib/db'
 import type { LetterRecord, LetterReply } from '../lib/letters'
 import {
@@ -103,7 +105,7 @@ import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingA
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
 import { useAuth } from '../lib/auth'
-import type { Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PjContractSnapshot, PrivateNote, Shop } from '../lib/types'
+import type { CompanyEmailPreflight, Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PjContractSnapshot, PrivateNote, Shop } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 import EarlyCloseModal from '../components/EarlyCloseModal'
 import CopyBox from '../components/CopyBox'
@@ -335,6 +337,8 @@ export default function ContractDetail() {
   const [reviewSettingsError, setReviewSettingsError] = useState(false)
   const [reviewMediaSlots, setReviewMediaSlots] = useState<MediaSlot[]>(DEFAULT_MEDIA_SLOTS)
   const [reviewMediaStatus, setReviewMediaStatus] = useState<ContractMediaStatus | null>(null)
+  // วันที่บังคับมีคลิปเทสล็อก (ตั้งค่าเดียวกับ WaitingEmail.tsx/WaitingSummary.tsx) — ให้ evaluateFromStatus รู้ว่าต้องเช็คคลิปด้วยไหม
+  const [videoRequiredFrom, setVideoRequiredFrom] = useState<string | null | undefined>(undefined)
   const [reviewLog, setReviewLog] = useState<ContractReviewLogEntry[]>([])
   const [reviewLogLoading, setReviewLogLoading] = useState(true)
   const [employeeNameById, setEmployeeNameById] = useState<Map<string, string>>(new Map())
@@ -509,11 +513,12 @@ export default function ContractDetail() {
   // ===== ระบบตรวจเคสก่อนส่งอีเมลบริษัท: โหลดช่องรูป+วันคัตออฟ (ครั้งเดียว), สถานะรูปของเคสนี้, ประวัติตรวจ, ชื่อผู้ทำ =====
   useEffect(() => {
     let cancelled = false
-    Promise.all([getMediaSlots(), getMediaGateFrom()])
-      .then(([raw, gate]) => {
+    Promise.all([getMediaSlots(), getMediaGateFrom(), getMediaVideoSettings()])
+      .then(([raw, gate, videoSettings]) => {
         if (cancelled) return
         setReviewMediaSlots(normalizeMediaSlots(raw))
         setReviewGateFrom(gate)
+        setVideoRequiredFrom(videoSettings.videoRequiredFrom)
       })
       .catch(() => {
         if (cancelled) return
@@ -676,7 +681,9 @@ export default function ContractDetail() {
   const reviewPostCutoff = isGated(contract, reviewGateFrom)
   const reviewStatusRaw: ReviewStatus | null = contract.reviewStatus ?? null
   const reviewStatusForMachine: ReviewStatus = reviewStatusRaw ?? 'draft'
-  const reviewMediaEvaluation = reviewMediaStatus ? evaluateFromStatus(reviewMediaSlots, reviewMediaStatus) : null
+  const reviewMediaEvaluation = reviewMediaStatus
+    ? evaluateFromStatus(reviewMediaSlots, reviewMediaStatus, { videoRequiredFrom, emailSentAt: contract.emailSentAt })
+    : null
   const reviewCanSubmit =
     reviewPostCutoff &&
     !!reviewMediaEvaluation &&
@@ -717,11 +724,31 @@ export default function ContractDetail() {
     }
   }
 
+  // ตรวจซ้ำก่อนอนุมัติเสมอ (Wave 3, 2026-09-13) — กันเคสที่พนักงานลบรูป/คลิประหว่างรอตรวจแล้วคุณเตยกดผ่านได้ทั้งที่ไม่ครบ/เกินขนาดเมล
+  // ก่อนอนุมัติ pre.reviewOk จะเป็น false เสมอ (ยังไม่ approved จริง) — ตัดสินใจจาก gateOk + ขนาดไฟล์เท่านั้น ห้ามดู reviewOk/reasons ตรงนี้
   async function handleApprove(withSend: boolean) {
     if (!id) return
     setReviewBusy(true)
     setReviewErr(null)
     try {
+      let pre: CompanyEmailPreflight
+      try {
+        pre = await preflightCompanyEmail(id)
+      } catch {
+        setReviewErr('ตรวจความครบไม่สำเร็จ ลองกดใหม่')
+        return
+      }
+      if (!pre.gateOk) {
+        setReviewErr('รูปหรือคลิปยังไม่ครบ (อาจถูกลบระหว่างรอตรวจ) ให้พนักงานแนบให้ครบก่อน')
+        return
+      }
+      if (pre.totalBytes > pre.maxBytes) {
+        const totalMb = (pre.totalBytes / (1024 * 1024)).toFixed(1)
+        const maxMb = (pre.maxBytes / (1024 * 1024)).toFixed(1)
+        setReviewErr(`ไฟล์รวม ${totalMb} MB เกินเพดาน ${maxMb} MB ส่งเมลไม่ได้ ให้ลบรูปที่ไม่จำเป็นหรือย่อคลิปก่อน`)
+        return
+      }
+
       await approveReview(id)
       if (!withSend) {
         await load()
