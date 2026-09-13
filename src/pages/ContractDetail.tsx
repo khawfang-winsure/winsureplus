@@ -2034,10 +2034,11 @@ export default function ContractDetail() {
         )}
       </Card>
 
-      {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin+staff, delete: admin เสมอ / staff เฉพาะยังไม่ส่งตรวจหรือถูกตีกลับ (2026-09-09) ===== */}
+      {/* ===== รูปเอกสารแนบ (0136-0138, 2026-09-08) — upload: admin เสมอ (แม้ตรวจผ่านแล้ว) / staff เฉพาะยังไม่ส่งตรวจหรือถูกตีกลับ,
+          delete: admin เสมอ / staff เฉพาะยังไม่ส่งตรวจหรือถูกตีกลับ (2026-09-09; เปิดให้แอดมินแนบตอนตรวจผ่านแล้ว 2026-09-13 ตามคำสั่งเจ้าของ) ===== */}
       <ContractMediaCard
         contract={contract}
-        canUpload={canStaff && reviewEditAllowed}
+        canUpload={isAdmin || (canStaff && reviewEditAllowed)}
         canDelete={canDeleteMedia}
         isAdmin={isAdmin}
         shop={contractShop}

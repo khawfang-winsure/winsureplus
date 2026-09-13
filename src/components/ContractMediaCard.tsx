@@ -804,6 +804,12 @@ function ReviewPanel({
 
 // ===== การ์ดรูปเอกสารต่อสัญญา =====
 
+/** เตือนแอดมินตอนแนบ/ลบรูปบนเคสที่ตรวจผ่านแล้ว "และ" อีเมลออกไปให้บริษัทแล้ว (2026-09-13 — เปิดให้แอดมินแนบ/ลบได้แม้ตรวจผ่านแล้ว)
+ *  รูปที่เพิ่ม/ลบตอนนี้จะไม่ไปอยู่ในอีเมลที่บริษัทได้รับแล้ว ต้องกดส่งเมลใหม่เองถ้าต้องการให้บริษัทเห็น
+ *  ข้อความนี้เจาะจงเรื่องรูปโดยตรง — ต่างจาก REVIEW_WARNING_EMAIL_ALREADY_SENT ใน lib/review.ts ที่ใช้ตอนกดยกเลิกการตรวจ (ห้ามแก้ไฟล์นั้น) */
+const MEDIA_EMAIL_ALREADY_SENT_WARNING =
+  'เมลส่งให้บริษัทไปแล้ว รูปที่เพิ่ม/ลบตอนนี้บริษัทจะยังไม่เห็น ถ้าต้องการให้บริษัทเห็นรูปนี้ ต้องกดส่งเมลใหม่เองอีกครั้ง'
+
 export default function ContractMediaCard({
   contract,
   canUpload,
@@ -909,6 +915,33 @@ export default function ContractMediaCard({
     const t = setTimeout(() => setToast(null), 3500)
     return () => clearTimeout(t)
   }, [toast])
+
+  // กันลากไฟล์รูปมาวาง "นอก" ช่องอัปโหลด (พื้นหลังหน้า/ระหว่างการ์ด) แล้วเบราว์เซอร์ทำ default action = เปิดรูปนั้นทับหน้าเว็บ
+  // ทำให้พนักงานหลุดออกจากหน้าสัญญาทันที งานที่ทำค้างหาย — ต้อง preventDefault ที่ dragover ระดับ window เสมอ
+  // (เบราว์เซอร์ยิง 'drop' ต่อเมื่อมีจุดใดจุดหนึ่งใน path ของ dragover เรียก preventDefault ไว้ก่อน ไม่งั้นจะไปทำ default action เลย)
+  // แล้วเช็คตอน 'drop' อีกที — ถ้า defaultPrevented แล้ว (ช่องอัปโหลดจัดการไปแล้ว) ไม่ต้องเตือนซ้ำ ถ้ายังไม่มีใครรับ ให้กันไว้ + บอกทางที่ถูก
+  // เช็ค dataTransfer.types ว่ามี 'Files' ก่อนทุกครั้ง กันไปยุ่งกับการลาก-วางอย่างอื่นในหน้า (เช่นลากข้อความที่เลือกไว้ระหว่างช่อง input)
+  useEffect(() => {
+    function isFileDrag(dt: DataTransfer | null): boolean {
+      return !!dt && Array.from(dt.types).includes('Files')
+    }
+    function onWindowDragOver(ev: globalThis.DragEvent) {
+      if (!isFileDrag(ev.dataTransfer)) return
+      ev.preventDefault()
+    }
+    function onWindowDrop(ev: globalThis.DragEvent) {
+      if (!isFileDrag(ev.dataTransfer)) return
+      if (ev.defaultPrevented) return // ช่องอัปโหลดรับไปจัดการแล้ว
+      ev.preventDefault()
+      setToast('วางรูปไม่ได้ตรงนี้ — ต้องลากไปวางในช่องอัปโหลด (กรอบเส้นประ) ด้านล่าง')
+    }
+    window.addEventListener('dragover', onWindowDragOver)
+    window.addEventListener('drop', onWindowDrop)
+    return () => {
+      window.removeEventListener('dragover', onWindowDragOver)
+      window.removeEventListener('drop', onWindowDrop)
+    }
+  }, [])
 
   // ปิดกล่องยืนยันรูปซ้ำข้ามสัญญาด้วย Esc = ยกเลิก
   useEffect(() => {
@@ -1073,23 +1106,24 @@ export default function ContractMediaCard({
     })
   }
 
-  async function handleFilesSelected(slotKey: string, fileList: FileList | null) {
+  async function handleFilesSelected(slotKey: string, def: MediaSlot | undefined, fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return
-    await handleFilesArray(slotKey, Array.from(fileList))
+    await handleFilesArray(slotKey, capToSlotMax(def, Array.from(fileList)))
     const input = fileInputRefs.current[slotKey]
     if (input) input.value = ''
   }
 
-  /** เอาไฟล์แรกถ้าช่องรับได้แค่ 1 รูป (ลาก/วางหลายไฟล์เข้าช่องเดียว) */
+  /** เอาไฟล์แรกถ้าช่องรับได้แค่ 1 รูป (ลาก/วางหลายไฟล์เข้าช่องเดียว) — ต้องบอกด้วยว่าตัดไปกี่ไฟล์ ไม่งั้นพนักงานคิดว่าเข้าครบหมด
+   *  เรียกทั้งทางลาก/วาง/คลิปบอร์ด/ปุ่มเลือกไฟล์ ให้พฤติกรรมตรงกันทุกทาง (ปุ่มเลือกไฟล์ปกติ browser จะกันเลือกได้เกิน 1 ไฟล์ให้อยู่แล้วเพราะไม่ได้ตั้ง multiple แต่กันไว้อีกชั้นเผื่อ edge case) */
   function capToSlotMax(def: MediaSlot | undefined, arr: File[]): File[] {
     const allowMultiple = def?.max !== 1
     if (allowMultiple || arr.length <= 1) return arr
-    setToast('ช่องนี้ใส่ได้ 1 รูป ระบบใช้รูปแรก')
+    setToast(`เลือกมา ${arr.length} ไฟล์ แต่ช่องนี้ใส่ได้ 1 รูป ระบบใช้ไฟล์แรก ตัดอีก ${arr.length - 1} ไฟล์ออก`)
     return [arr[0]]
   }
 
   function handleDragOver(slotKey: string, ev: DragEvent<HTMLDivElement>) {
-    if (!canUpload || progress[slotKey]) return
+    if (!canUpload) return
     ev.preventDefault()
     setDragOverKey(slotKey)
   }
@@ -1102,7 +1136,10 @@ export default function ContractMediaCard({
     if (!canUpload) return
     ev.preventDefault()
     setDragOverKey((k) => (k === slotKey ? null : k))
-    if (progress[slotKey]) return // กำลังอัปช่องนี้อยู่ — ไม่รับซ้ำ
+    if (progress[slotKey]) {
+      setToast('ช่องนี้กำลังอัปโหลดอยู่ รอสักครู่แล้วลากใหม่')
+      return
+    }
     const fileList = ev.dataTransfer.files
     if (!fileList || fileList.length === 0) {
       setToast('ลากไฟล์รูปจากเครื่องเท่านั้น (ลากจากหน้าเว็บไม่ได้ ให้เซฟรูปก่อน)')
@@ -1183,6 +1220,12 @@ export default function ContractMediaCard({
 
       {expanded && (
         <>
+          {isAdmin && contract.reviewStatus === 'approved' && contract.emailSentAt && (
+            <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+              <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span>{MEDIA_EMAIL_ALREADY_SENT_WARNING}</span>
+            </div>
+          )}
           {toast && (
             <div className="mb-3 rounded-xl border border-peach bg-peach-light/40 px-3 py-2 text-xs text-ink">{toast}</div>
           )}
@@ -1209,17 +1252,22 @@ export default function ContractMediaCard({
             const allowMultiple = def?.max !== 1
             const isDragOver = dragOverKey === e.key
             const isOverMax = def?.max != null && e.count > def.max
+            const isEmptyUploadable = canUpload && slotFiles.length === 0
             return (
               <div
                 key={e.key}
                 tabIndex={canUpload ? 0 : undefined}
-                aria-label={canUpload ? `ช่องอัปโหลด ${e.label}` : undefined}
+                aria-label={canUpload ? `ช่องอัปโหลด ${e.label} ลากไฟล์รูปมาวางหรือกดปุ่มเพิ่มรูป` : undefined}
                 onDragOver={(ev) => handleDragOver(e.key, ev)}
                 onDragLeave={() => handleDragLeave(e.key)}
                 onDrop={(ev) => handleDrop(e.key, def, ev)}
                 onPaste={(ev) => handlePaste(e.key, def, ev)}
                 className={`rounded-xl border p-3 transition ${
-                  isDragOver ? 'border-dashed border-salmon-deep bg-peach-light/50' : 'border-peach bg-white'
+                  isDragOver
+                    ? 'border-dashed border-salmon-deep bg-peach-light/50'
+                    : isEmptyUploadable
+                      ? 'border-dashed border-peach bg-peach-light/20'
+                      : 'border-peach bg-white'
                 } ${canUpload ? 'focus:outline-none focus:ring-2 focus:ring-salmon/40 focus:border-salmon-deep' : ''}`}
               >
                 <div className="mb-2 flex items-start justify-between gap-2">
@@ -1264,6 +1312,13 @@ export default function ContractMediaCard({
                   </div>
                 )}
 
+                {isEmptyUploadable && !isCoarsePointer && (
+                  <div className="mb-2 flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-peach/80 bg-white/60 py-4 text-center text-xs text-ink">
+                    <Upload size={15} aria-hidden="true" />
+                    <span>ลากรูปมาวางที่นี่ หรือกดปุ่มด้านล่าง</span>
+                  </div>
+                )}
+
                 {canUpload && (
                   <>
                     <label className="sr-only" htmlFor={`media-input-${e.key}`}>
@@ -1279,7 +1334,7 @@ export default function ContractMediaCard({
                       capture="environment"
                       multiple={allowMultiple}
                       className="hidden"
-                      onChange={(ev) => void handleFilesSelected(e.key, ev.target.files)}
+                      onChange={(ev) => void handleFilesSelected(e.key, def, ev.target.files)}
                     />
                     <button
                       type="button"
