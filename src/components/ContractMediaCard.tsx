@@ -1331,7 +1331,6 @@ export default function ContractMediaCard({
                       }}
                       type="file"
                       accept="image/*"
-                      capture="environment"
                       multiple={allowMultiple}
                       className="hidden"
                       onChange={(ev) => void handleFilesSelected(e.key, def, ev.target.files)}
@@ -1480,7 +1479,7 @@ function MediaThumb({
   return (
     <div
       ref={setInViewRef}
-      className="group relative h-28 w-28 shrink-0 overflow-hidden rounded-lg border border-peach bg-peach-light/30 sm:h-40 sm:w-40"
+      className="relative h-28 w-28 shrink-0 overflow-hidden rounded-lg border border-peach bg-peach-light/30 sm:h-40 sm:w-40"
     >
       <button type="button" onClick={onOpen} disabled={failed} className="block h-full w-full disabled:cursor-default" aria-label="ดูรูปขยาย">
         {url ? (
@@ -1514,9 +1513,9 @@ function MediaThumb({
           type="button"
           onClick={onDeleteRequest}
           aria-label="ลบรูปนี้"
-          className="absolute right-0.5 top-0.5 rounded bg-black/60 p-0.5 text-white opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100"
+          className="absolute right-0.5 top-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-black/60 text-white transition hover:bg-black/75 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
         >
-          <Trash2 size={12} />
+          <Trash2 size={15} />
         </button>
       )}
     </div>
