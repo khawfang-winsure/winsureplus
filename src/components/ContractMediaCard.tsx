@@ -519,6 +519,31 @@ function pjCellText(f: ReviewField): { text: string; className: string } {
   return { text, className: 'text-ink-soft' } // same — ตรงกันแล้ว ไม่ต้องเน้น
 }
 
+/** ค่าในเซลล์ที่ยาวเกินนี้ (เช่นลิงก์เฟซบุ๊กยาวๆ ไม่มีช่องว่างให้ตัดคำ) ย่อเหลือบรรทัดเดียว + ปุ่ม "ดูเต็ม" กดขยายได้
+ *  ปุ่มคัดลอก (fieldCopyLine/groupCopyText) อ่านค่าดิบจาก field ตรงๆ ไม่ผ่าน component นี้ — คัดลอกได้ค่าเต็มเสมอไม่ว่าจะย่อหรือขยายอยู่ */
+const REVIEW_CELL_TRUNCATE_LEN = 60
+
+function ExpandableCellValue({ text, className }: { text: string; className?: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const isLong = text.length > REVIEW_CELL_TRUNCATE_LEN
+  const display = isLong && !expanded ? `${text.slice(0, REVIEW_CELL_TRUNCATE_LEN)}…` : text
+  return (
+    <span className="inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-1">
+      <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${className ?? ''}`}>{display}</span>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="shrink-0 rounded text-[11px] font-semibold text-salmon-deep underline underline-offset-2 hover:text-salmon-deep/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
+        >
+          {expanded ? 'ย่อ' : 'ดูเต็ม'}
+        </button>
+      )}
+    </span>
+  )
+}
+
 /** แถบสถานะเหนือแผงตรวจ — สรุปว่าดึงข้อมูลจาก PJ มาถึงไหนแล้ว + ปุ่มดึงใหม่ + สรุปจุดที่ไม่ตรง
  *  แสดงเสมอเมื่อหน้าเว็บส่ง pjSnapshot ลงมา (แม้เป็น null ก็แสดงเป็นสถานะ "ยังไม่เคยดึง") — ไม่ส่งลงมาเลย (undefined) = ปิดฟีเจอร์นี้ทั้งหมด ไม่โชว์อะไรเลย */
 function PjStatusBar({
@@ -665,7 +690,9 @@ function ReviewPanel({
     () => (pjEnabled && pjSnapshot?.imageRefs ? pjSnapshot.imageRefs.filter((r) => r.kind && r.path) : []),
     [pjEnabled, pjSnapshot],
   )
-  const fieldsGridCls = hasPjData ? 'grid grid-cols-1 sm:grid-cols-[180px_1fr_1fr]' : 'grid grid-cols-1 sm:grid-cols-[180px_1fr]'
+  const fieldsGridCls = hasPjData
+    ? 'grid grid-cols-1 sm:grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)]'
+    : 'grid grid-cols-1 sm:grid-cols-[180px_minmax(0,1fr)]'
 
   const [open, setOpen] = useState<boolean>(() => readReviewPanelOpen(contract.id))
   const [copyToast, setCopyToast] = useState<string | null>(null)
@@ -762,7 +789,7 @@ function ReviewPanel({
           </div>
 
           {hasPjData && (
-            <div className="hidden border-b border-peach bg-peach-light/40 text-[11px] font-bold uppercase tracking-wide text-ink-soft sm:grid sm:grid-cols-[180px_1fr_1fr]">
+            <div className="hidden border-b border-peach bg-peach-light/40 text-[11px] font-bold uppercase tracking-wide text-ink-soft sm:grid sm:grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)]">
               <div className="px-4 py-1.5">รายการ</div>
               <div className="px-4 py-1.5">ที่เราคีย์</div>
               <div className="px-4 py-1.5">ที่ร้านคีย์ใน PJ</div>
@@ -786,9 +813,9 @@ function ReviewPanel({
                   const pjCell = hasPjData ? pjCellText(f) : null
                   return (
                     <Fragment key={f.key}>
-                      <div className={`border-t border-peach px-4 py-1.5 text-sm text-ink-soft ${f.missing ? 'bg-red-50' : ''}`}>{f.label}</div>
+                      <div className={`min-w-0 border-t border-peach px-4 py-1.5 text-sm text-ink-soft [overflow-wrap:anywhere] ${f.missing ? 'bg-red-50' : ''}`}>{f.label}</div>
                       <div
-                        className={`flex flex-wrap items-center gap-1.5 border-t border-peach px-4 py-1.5 text-sm ${
+                        className={`flex min-w-0 flex-wrap items-center gap-1.5 border-t border-peach px-4 py-1.5 text-sm ${
                           f.missing ? 'bg-red-50 font-semibold text-red-700' : 'text-ink'
                         } ${f.mono ? 'tabular-nums' : ''}`}
                       >
@@ -805,7 +832,7 @@ function ReviewPanel({
                             <span>ยังไม่ได้กรอก</span>
                           </>
                         ) : f.value ? (
-                          <span>{f.value}</span>
+                          <ExpandableCellValue text={f.value} />
                         ) : (
                           <span className="text-ink-soft">—</span>
                         )}
@@ -817,11 +844,11 @@ function ReviewPanel({
                         )}
                       </div>
                       {hasPjData && pjCell && (
-                        <div className={`border-t border-peach px-4 py-1.5 text-sm ${pjCellBgClass(f.pjCompare)} ${f.mono ? 'tabular-nums' : ''}`}>
+                        <div className={`min-w-0 border-t border-peach px-4 py-1.5 text-sm ${pjCellBgClass(f.pjCompare)} ${f.mono ? 'tabular-nums' : ''}`}>
                           <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-soft sm:hidden">
                             ที่ร้านคีย์ใน PJ
                           </span>
-                          <span className={pjCell.className}>{pjCell.text}</span>
+                          <ExpandableCellValue text={pjCell.text} className={pjCell.className} />
                           {f.pjNote && <span className="ml-1.5 text-xs text-ink-soft" title={f.pjNote}>{`(${f.pjNote})`}</span>}
                         </div>
                       )}
