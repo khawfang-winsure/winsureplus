@@ -86,6 +86,12 @@ import {
   type ReconcileResult,
 } from './feeReconcile'
 import { calcSummary, computePenaltyAccrual, penaltyPaidForInstallment, type PenaltyPayEvent } from './calc'
+import {
+  normalizeInvNo,
+  type ContractTransfer,
+  type TransferAddresses,
+  type TransferNewPerson,
+} from './contractTransfer'
 import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from './deviceReturnByCollector'
 import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
 import { LATE_BUCKETS, type LateBucket } from './collectorPeriod'
@@ -2193,6 +2199,222 @@ export async function getAllExtensions(): Promise<ExtensionRecord[]> {
     .range(0, PAGE_CAP)
   if (error) throw error
   return ((data ?? []) as ExtensionRow[]).map(mapExtension)
+}
+
+// ---------- เปลี่ยนผู้ผ่อน (contract transfer) — migration 0157/0158 ----------
+// สัญญาแถวเดิม (ไม่สร้างสัญญาใหม่) เปลี่ยนแค่ตัวตนผู้ผ่อน — ประวัติโชว์ถัดจากประวัติขยายเวลาใน ContractDetail
+// เขียนได้ทาง RPC (SECURITY DEFINER) เท่านั้น — ตารางเปิด SELECT ให้ admin/staff/accounting ตรงๆ
+
+interface ContractTransferRow {
+  id: string
+  contract_id: string
+  transfer_no: number
+  effective_at: string
+  old_customer_name: string
+  new_customer_name: string
+  old_national_id: string | null
+  new_national_id: string | null
+  old_phone: string | null
+  new_phone: string | null
+  old_phone_alt1: string | null
+  new_phone_alt1: string | null
+  old_phone_alt2: string | null
+  new_phone_alt2: string | null
+  old_facebook_link: string | null
+  new_facebook_link: string | null
+  old_birth_year: number | null
+  new_birth_year: number | null
+  old_occupation: string | null
+  new_occupation: string | null
+  old_occupation_proof: string | null
+  new_occupation_proof: string | null
+  old_addresses: TransferAddresses | null
+  new_addresses: TransferAddresses | null
+  old_inv_no: string | null
+  new_inv_no: string | null
+  cutover_at: string | null
+  note: string | null
+  created_by_name: string | null
+  created_at: string
+  reversed_at: string | null
+  reversed_by_name: string | null
+  reversed_reason: string | null
+  cutover_pj_total: number | string | null
+  cutover_our_total: number | string | null
+  cutover_matched: boolean | null
+  cutover_override_reason: string | null
+  cutover_by_name: string | null
+}
+
+// หมายเหตุ: ต้องเป็น string literal เดียว (ห้ามต่อด้วย +) ไม่งั้น TS widen เป็น `string` เฉยๆ แล้ว
+// supabase-js อนุมาน type จาก .select() ไม่ได้ (ได้ GenericStringError แทน) — mirror EXT_SELECT ด้านบน
+const TRANSFER_SELECT =
+  'id, contract_id, transfer_no, effective_at, old_customer_name, new_customer_name, old_national_id, new_national_id, old_phone, new_phone, old_phone_alt1, new_phone_alt1, old_phone_alt2, new_phone_alt2, old_facebook_link, new_facebook_link, old_birth_year, new_birth_year, old_occupation, new_occupation, old_occupation_proof, new_occupation_proof, old_addresses, new_addresses, old_inv_no, new_inv_no, cutover_at, note, created_by_name, created_at, reversed_at, reversed_by_name, reversed_reason, cutover_pj_total, cutover_our_total, cutover_matched, cutover_override_reason, cutover_by_name'
+
+function mapContractTransfer(r: ContractTransferRow): ContractTransfer {
+  return {
+    id: r.id,
+    contractId: r.contract_id,
+    transferNo: r.transfer_no,
+    effectiveAt: r.effective_at,
+    oldCustomerName: r.old_customer_name,
+    oldNationalId: r.old_national_id,
+    oldPhone: r.old_phone,
+    oldPhoneAlt1: r.old_phone_alt1,
+    oldPhoneAlt2: r.old_phone_alt2,
+    oldFacebookLink: r.old_facebook_link,
+    oldBirthYear: r.old_birth_year,
+    oldOccupation: r.old_occupation,
+    oldOccupationProof: r.old_occupation_proof,
+    oldAddresses: r.old_addresses ?? null,
+    newCustomerName: r.new_customer_name,
+    newNationalId: r.new_national_id,
+    newPhone: r.new_phone,
+    newPhoneAlt1: r.new_phone_alt1,
+    newPhoneAlt2: r.new_phone_alt2,
+    newFacebookLink: r.new_facebook_link,
+    newBirthYear: r.new_birth_year,
+    newOccupation: r.new_occupation,
+    newOccupationProof: r.new_occupation_proof,
+    newAddresses: r.new_addresses ?? null,
+    oldInvNo: r.old_inv_no,
+    newInvNo: r.new_inv_no,
+    cutoverAt: r.cutover_at,
+    note: r.note,
+    createdByName: r.created_by_name,
+    createdAt: r.created_at,
+    reversedAt: r.reversed_at,
+    reversedByName: r.reversed_by_name,
+    reversedReason: r.reversed_reason,
+    cutoverPjTotal: r.cutover_pj_total != null ? Number(r.cutover_pj_total) : null,
+    cutoverOurTotal: r.cutover_our_total != null ? Number(r.cutover_our_total) : null,
+    cutoverMatched: r.cutover_matched,
+    cutoverOverrideReason: r.cutover_override_reason,
+    cutoverByName: r.cutover_by_name,
+  }
+}
+
+/** ประวัติเปลี่ยนผู้ผ่อนของสัญญาหนึ่ง (เรียง ครั้งที่ 1 → ล่าสุด รวมรายการที่ถูกยกเลิกแล้ว) */
+export async function getContractTransfers(contractId: string): Promise<ContractTransfer[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('contract_transfers')
+    .select(TRANSFER_SELECT)
+    .eq('contract_id', contractId)
+    .order('transfer_no', { ascending: true })
+  if (error) throw new Error(error.message)
+  return ((data ?? []) as ContractTransferRow[]).map(mapContractTransfer)
+}
+
+/**
+ * staff/admin (active) เปลี่ยนผู้ผ่อนบนสัญญาเดิม (RPC transfer_contract_owner, mig 0157 SECTION 5) —
+ * สัญญาต้อง status='active', เอกสารแนบครบตาม transferMediaSlots(nextTransferNo(history)) ก่อนเรียก
+ * (DB validate ซ้ำอีกชั้น — error message เป็นภาษาไทยพร้อมใช้โชว์ผู้ใช้ตรงๆ)
+ */
+export async function transferContractOwner(
+  contractId: string,
+  person: TransferNewPerson,
+  addresses: TransferAddresses,
+  newInvNo?: string | null,
+  note?: string | null,
+): Promise<{ transferId: string; transferNo: number }> {
+  if (!supabase) throw new Error('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
+  const { data, error } = await supabase.rpc('transfer_contract_owner', {
+    p_contract_id: contractId,
+    p_new: {
+      customer_name: person.customerName,
+      national_id: person.nationalId,
+      phone: person.phone,
+      phone_alt1: person.phoneAlt1,
+      phone_alt2: person.phoneAlt2,
+      facebook_link: person.facebookLink,
+      birth_year: person.birthYear,
+      occupation: person.occupation,
+      occupation_proof: person.occupationProof,
+    },
+    p_addresses: addresses,
+    p_new_inv_no: newInvNo ? normalizeInvNo(newInvNo) : null,
+    p_note: note ?? null,
+  })
+  if (error) throw new Error(error.message)
+  const result = data as { transfer_id: string; transfer_no: number }
+  return { transferId: result.transfer_id, transferNo: result.transfer_no }
+}
+
+/**
+ * ดึงรายการใบเสร็จจริงของเลขที่ใบ PJ ใหม่ (Edge Function pj-snapshot mode='invoice_receipts', mig 0158) —
+ * เขียนแคชลง pj_invoice_prechecks ด้วย service role ฝั่ง Edge Function (client ปลอมยอดไม่ได้) ก่อนกด
+ * cutoverTransferInvoice ต้องเรียกอันนี้ก่อนเสมอ (precheck มีอายุใช้ได้ <= 30 นาที)
+ */
+export async function fetchPjInvoiceReceipts(
+  contractId: string,
+  pjInvoiceNo: string,
+): Promise<{
+  precheckId: string
+  receipts: { uuid: string; paymentType: string; amount: number; paidDate: string }[]
+  total: number
+}> {
+  if (!supabase) throw new Error('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
+  const { data, error } = await supabase.functions.invoke('pj-snapshot', {
+    body: { mode: 'invoice_receipts', contract_id: contractId, pj_invoice_no: normalizeInvNo(pjInvoiceNo) },
+  })
+  if (error) throw new Error(await extractFunctionErrorMessage(error))
+  const result = data as {
+    ok?: boolean
+    error?: string
+    precheck_id?: string
+    receipts?: { uuid: string; payment_type: string; amount: number; paid_date: string | null }[]
+    total?: number
+  } | null
+  if (!result?.ok) throw new Error(result?.error ?? 'ดึงข้อมูลใบเสร็จจาก PJ ไม่สำเร็จ')
+  return {
+    precheckId: result.precheck_id ?? '',
+    receipts: (result.receipts ?? []).map((r) => ({
+      uuid: r.uuid,
+      paymentType: r.payment_type,
+      amount: Number(r.amount),
+      paidDate: r.paid_date ?? '',
+    })),
+    total: Number(result.total ?? 0),
+  }
+}
+
+/**
+ * ผูกเลขที่ใบ PJ ใหม่เข้าสัญญาจริง (RPC cutover_transfer_invoice, mig 0158 SECTION 3) — ต้องมี precheckId
+ * จาก fetchPjInvoiceReceipts มาก่อน (ยังไม่เกิน 30 นาที); ยอดไม่ตรง staff ทำต่อไม่ได้ ต้อง admin + overrideReason
+ */
+export async function cutoverTransferInvoice(
+  transferId: string,
+  precheckId: string,
+  newInvNo?: string | null,
+  overrideReason?: string | null,
+): Promise<{ transferId: string; invNo: string; matched: boolean; ourTotal: number; pjTotal: number }> {
+  if (!supabase) throw new Error('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
+  const { data, error } = await supabase.rpc('cutover_transfer_invoice', {
+    p_transfer_id: transferId,
+    p_precheck_id: precheckId,
+    p_new_inv_no: newInvNo ? normalizeInvNo(newInvNo) : null,
+    p_override_reason: overrideReason ?? null,
+  })
+  if (error) throw new Error(error.message)
+  const r = data as { transfer_id: string; inv_no: string; matched: boolean; our_total: number; pj_total: number }
+  return {
+    transferId: r.transfer_id,
+    invNo: r.inv_no,
+    matched: r.matched,
+    ourTotal: Number(r.our_total),
+    pjTotal: Number(r.pj_total),
+  }
+}
+
+/** admin เท่านั้น ยกเลิกรายการเปลี่ยนผู้ผ่อนล่าสุดของสัญญา (RPC undo_contract_transfer, mig 0157/0158) — reason บังคับ */
+export async function undoContractTransfer(transferId: string, reason: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.rpc('undo_contract_transfer', {
+    p_transfer_id: transferId,
+    p_reason: reason,
+  })
+  if (error) throw new Error(error.message)
 }
 
 interface StatusRow {
@@ -6543,32 +6765,66 @@ export async function getFeeWaivers(contractId: string): Promise<FeeRight[]> {
   return ((data ?? []) as { fee_right: FeeRight }[]).map((r) => r.fee_right)
 }
 
-/** admin ยกเว้นค่าธรรมเนียมสิทธิ์หนึ่ง (INSERT — admin only ตาม RLS 0106)
- *  unique(contract_id, fee_right) กันซ้ำ — ยกเว้นซ้ำจะ error 23505 (UI ควรกันก่อน) */
+/**
+ * รายการรอบที่ admin ยกเว้นค่าธรรมเนียม "เปลี่ยนผู้ผ่อน" แล้ว (right='transfer' เท่านั้น) — ต่างจาก getFeeWaivers
+ * ตรงที่คืน transferId ต่อแถวด้วย (ต้องรู้ว่ายกเว้น "รอบไหน" เพราะ transfer เป็นสิทธิ์ที่ยกเว้นได้ต่อรอบ ไม่ใช่
+ * ครั้งเดียวตลอดสัญญา — ใช้คู่กับ deleteFeeWaiver(contractId,'transfer',transferId) ตอนกดยกเลิกยกเว้นเฉพาะรอบนั้น)
+ * ไม่แตะ/เปลี่ยน getFeeWaivers เดิม (ยังใช้กับ due_day/months/settle เหมือนเดิม)
+ */
+export async function getTransferFeeWaivers(
+  contractId: string,
+): Promise<{ transferId: string; createdAt: string }[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('fee_waivers')
+    .select('transfer_id, created_at')
+    .eq('contract_id', contractId)
+    .eq('fee_right', 'transfer')
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return ((data ?? []) as { transfer_id: string; created_at: string }[]).map((r) => ({
+    transferId: r.transfer_id,
+    createdAt: r.created_at,
+  }))
+}
+
+/**
+ * admin ยกเว้นค่าธรรมเนียมสิทธิ์หนึ่ง (INSERT — admin only ตาม RLS 0106)
+ * unique(contract_id, fee_right) กันซ้ำสำหรับ due_day/months/settle — ยกเว้นซ้ำจะ error 23505 (UI ควรกันก่อน)
+ * right='transfer' (0157 SECTION 2) ยกเว้นได้ "ต่อรอบ" ไม่ใช่ครั้งเดียวตลอดสัญญา — ต้องส่ง transferId มาด้วย
+ * เสมอ (unique(contract_id, transfer_id) partial index กันซ้ำต่อรอบแทน) — plain insert เหมือนเดิม ไม่ใช้ upsert
+ * (partial unique index ใช้กับ PostgREST on_conflict ไม่ได้ — พึ่ง error 23505 เหมือนเดิมทุกประการ)
+ */
 export async function insertFeeWaiver(
   contractId: string,
   right: FeeRight,
   byName?: string,
   note?: string,
+  transferId?: string,
 ): Promise<void> {
   if (!supabase) return
+  if (right === 'transfer' && !transferId) {
+    throw new Error('ยกเว้นค่าธรรมเนียมเปลี่ยนผู้ผ่อนต้องระบุรอบที่ต้องการยกเว้น')
+  }
   const { error } = await supabase.from('fee_waivers').insert({
     contract_id: contractId,
     fee_right: right,
     waived_by: byName ?? null,
     note: note ?? null,
+    transfer_id: right === 'transfer' ? transferId : null,
   })
   if (error) throw error
 }
 
-/** ยกเลิกการยกเว้น (DELETE — admin only ตาม RLS 0106) */
-export async function deleteFeeWaiver(contractId: string, right: FeeRight): Promise<void> {
+/** ยกเลิกการยกเว้น (DELETE — admin only ตาม RLS 0106) — right='transfer' ต้องส่ง transferId มาด้วยเสมอ
+ *  (ลบเฉพาะรอบนั้น ไม่ลบทุกรอบของสัญญา — ดู insertFeeWaiver) */
+export async function deleteFeeWaiver(contractId: string, right: FeeRight, transferId?: string): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase
-    .from('fee_waivers')
-    .delete()
-    .eq('contract_id', contractId)
-    .eq('fee_right', right)
+  if (right === 'transfer' && !transferId) {
+    throw new Error('ยกเลิกการยกเว้นค่าธรรมเนียมเปลี่ยนผู้ผ่อนต้องระบุรอบที่ต้องการยกเลิก')
+  }
+  const query = supabase.from('fee_waivers').delete().eq('contract_id', contractId).eq('fee_right', right)
+  const { error } = await (right === 'transfer' ? query.eq('transfer_id', transferId!) : query)
   if (error) throw error
 }
 
@@ -6579,13 +6835,14 @@ export async function deleteFeeWaiver(contractId: string, right: FeeRight): Prom
  */
 export async function getContractFeeReconcile(contractId: string): Promise<ReconcileResult> {
   if (!supabase) {
-    return { due_day: 'none', months: 'none', settle: 'none' }
+    return { due_day: 'none', months: 'none', settle: 'none', transfer: 'none' }
   }
-  const [exts, income, waivers, contractRow] = await Promise.all([
+  const [exts, income, waivers, contractRow, transfers] = await Promise.all([
     getContractExtensions(contractId),
     getOtherIncome(contractId),
     getFeeWaivers(contractId),
     supabase.from('contracts').select('settled_at').eq('id', contractId).maybeSingle(),
+    getContractTransfers(contractId),
   ])
   if (contractRow.error) throw contractRow.error
   const settledAt = (contractRow.data as { settled_at: string | null } | null)?.settled_at ?? null
@@ -6596,6 +6853,9 @@ export async function getContractFeeReconcile(contractId: string): Promise<Recon
     otherIncome: income.map((oi) => ({ feeKind: oi.feeKind ?? null, receivedAt: oi.receivedAt })),
     dismisses: waivers,
     launchDate: FEE_RECONCILE_LAUNCH,
+    // effectiveAt = "เมื่อไหร่ที่เปลี่ยนผู้ผ่อนมีผล" (ความหมายตรงกับ createdAt ของ extension/settledAt ที่ใช้
+    // เป็นวัน action เกิด) — reversed=true (ถูก undo แล้ว) ไม่นับเป็น action จริงตาม decideTransfer()
+    transfers: transfers.map((t) => ({ createdAt: t.effectiveAt, reversed: t.reversedAt != null })),
   })
 }
 

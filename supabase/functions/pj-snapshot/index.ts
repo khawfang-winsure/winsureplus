@@ -1,12 +1,16 @@
 // Edge Function: pj-snapshot — ดึงข้อมูลสัญญาจากเว็บ PJ (Laravel เดิม ไม่มี API) มาเก็บแคชไว้เทียบกับค่าที่
 // ทีมเราคีย์เอง ในแผงตรวจของคุณเตย (เฟส 2 ต่อจาก migration 0152 — ดู schema/comment ที่ไฟล์นั้น)
 //
-// 2 mode ต่อ 1 สัญญา ไม่มี loop ทั้งฐาน:
+// 4 mode ต่อ 1 สัญญา ไม่มี loop ทั้งฐาน:
 //   mode='snapshot' → staff+admin เรียกได้ (พนักงานกด "ส่งให้คุณเตยตรวจ" ยิงอัตโนมัติแบบ fire-and-forget) →
 //     login PJ → หา uuid จาก inv_no → GET หน้าใบ → parse → upsert public.pj_contract_snapshot
 //   mode='images'   → admin เท่านั้น → คืน "ตัวไฟล์รูป" (base64) ไม่ใช่ลิงก์ — คุณเตยเคาะแล้วว่าลิงก์รูปบัตร
 //     ห้ามโผล่ในเบราว์เซอร์เลย ต้อง proxy bytes ผ่าน function นี้เสมอ (รับช้าได้ 3-8 วิ) ห้ามเก็บสำเนาไฟล์รูป
 //     ไว้ที่ไหนทั้งนั้น (ไม่ storage.upload, ไม่ insert ตารางไหน) fetch สดทุกครั้งแล้วส่งผ่านไปเลย
+//   mode='invoice_receipts' (0157/0158 เพิ่ม 14 ก.ย. 2026) → staff+admin (SNAPSHOT_ROLES เดียวกับ snapshot) →
+//     ดึงใบเสร็จจริง (รวมดาวน์) ของ 1 invoice ใหม่จาก PJ ก่อนผูกเลขที่ใบเข้าสัญญา (cutover) → เขียน
+//     public.pj_invoice_prechecks ด้วย service role เท่านั้น (client ปลอมยอดไม่ได้) → RPC
+//     cutover_transfer_invoice (0158) อ่าน precheck นี้ไปเทียบยอดก่อนผูกจริง — ดู FUNCTION handleInvoiceReceipts
 //   mode='debug'    → admin เท่านั้น → เครื่องมือ diagnostic ชั่วคราว (mirror pj-sync debugInv pattern) ไม่เขียน
 //     DB — ใช้ตรวจ anchor/โครง HTML จริงหลัง deploy โดยไม่ต้อง deploy ใหม่ทุกครั้งที่ปรับ parser
 //
@@ -68,6 +72,10 @@ const SNAPSHOT_ROLES = ["admin", "staff"] as readonly string[];
 const PJ_BASE = "https://pj-soft.net";
 const LOGIN_URL = `${PJ_BASE}/manager/login`;
 const INVOICES_URL = `${PJ_BASE}/manager/ajax/invoices/all`;
+// (0157/0158 — เปลี่ยนผู้ผ่อน) endpoint เดียวกับที่ pj-sync/index.ts ใช้ดึงยอดเงินเข้า (RECEIPTS_URL,
+// pj-sync/index.ts:43) — ใช้ดึงรายการใบเสร็จของ 1 invoice ก่อนผูกเลขจริง (precheck) ต่างจาก
+// /manager/ajax/invoice-items/{uuid} (ไม่มี receipt uuid ผูกไม่ได้กับ pj_receipt_ignores)
+const RECEIPTS_URL = `${PJ_BASE}/manager/ajax/receipts`;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -165,6 +173,56 @@ function pick(row: any, keys: string[]): any {
 
 function digitsOnly(s: string): string {
   return s.replace(/[^\d]/g, "");
+}
+
+// (0157/0158 — เปลี่ยนผู้ผ่อน) normalize เลข INV ให้ตรงกับ src/lib/format.ts sanitizeInvNo() เป๊ะ (ก๊อปเดียวกับ
+// supabase/functions/pj-sync/index.ts normalizeInvNoEdge ตรงตัว — ไฟล์นี้ไม่ import ข้าม runtime เหมือนกัน)
+// ใช้เทียบ pj_invoice_no ที่ frontend ส่งมา + invoice_no ที่ดึงจาก PJ receipts feed ให้เป็นรูปแบบเดียวกันเป๊ะ
+// ก่อนเทียบ/ก่อนเขียนลง pj_invoice_prechecks (cutover_transfer_invoice, 0158, เทียบ btrim ตรงตัวไม่ normalize
+// ซ้ำฝั่ง SQL — ต้อง normalize ให้ตรงกันตั้งแต่ฝั่งนี้)
+function normalizeInvNoEdge(raw: unknown): string {
+  const trimmed = String(raw ?? "").trim();
+  const firstToken = trimmed.split(/\s+/)[0] ?? "";
+  return firstToken.replace(/[^A-Za-z0-9-]/g, "").toUpperCase();
+}
+
+// (0157/0158) แปลง "DD-MM-YYYY"/"YYYY-MM-DD"/"DD/MM/YYYY" (มีเวลาต่อท้ายได้) → "YYYY-MM-DD" — ก๊อปจาก
+// pj-sync/index.ts:158-170 ตรงตัว ⚠️ ไฟล์นี้เดิมตั้งใจไม่ copy toIsoDate มา (ดู comment หัวไฟล์ บรรทัด 28-30 —
+// เก็บวันที่ดิบไว้ให้ pjImport.ts ฝั่ง frontend แปลงเอง) แต่ precheck.receipts[].paid_date ของฟีเจอร์นี้ต้องเป็น
+// ISO date เพราะ cutover_transfer_invoice (0158 SECTION 3) cast ตรงเป็น `::date` ตอน insert ลง
+// pj_receipt_ignores.pj_paid_date — ส่งดิบไปจะ error ถ้า PJ ใช้ฟอร์แมต DD-MM-YYYY (Postgres cast ผิดเดือน/วัน)
+function toIsoDate(raw: unknown): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const datePart = s.split(/[ T]/)[0];
+  let m = datePart.match(/^(\d{2})-(\d{2})-(\d{4})$/); // DD-MM-YYYY
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  m = datePart.match(/^(\d{4})-(\d{2})-(\d{2})$/); // YYYY-MM-DD
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = datePart.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); // DD/MM/YYYY
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return null;
+}
+
+// (0157/0158) เลื่อนวันที่ DD-MM-YYYY ไป deltaDays วัน — ก๊อปจาก pj-sync/index.ts:135-144 ตรงตัว (UTC ล้วน
+// กัน DST/timezone ข้ามเดือน/ปี — เทียบแค่ "วันที่" ไม่มีเวลา ไม่เกี่ยวเวลาไทย)
+function shiftDdMmYyyy(ddmmyyyy: string, deltaDays: number): string {
+  const m = ddmmyyyy.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!m) return ddmmyyyy;
+  const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+function ddmmyyyyToday(): string {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
 }
 
 // ============================================================================
@@ -365,6 +423,148 @@ async function findInvoiceUuid(
   }
 
   return { uuid: null, method: "not_found", pagesFetched };
+}
+
+// ============================================================================
+// (0157/0158 — "เปลี่ยนผู้ผ่อน") ดึงรายการใบเสร็จของ 1 invoice — precheck ก่อนผูกเลขที่ใบ PJ ใหม่จริง
+// (cutover_transfer_invoice, 0158) ── POST DataTable เดียวกับที่ pj-sync ใช้ (RECEIPTS_URL) แต่ endpoint นี้
+// กรองด้วย "ช่วงวันที่" เท่านั้น ไม่มีพารามิเตอร์กรอง invoice_no ตรงๆ (ต่างจาก INVOICES_URL ที่มี
+// search[value]) จึงต้องดึงมาทั้งช่วงแล้วกรอง invoice_no ตรงนี้เอง (client-side)
+//
+// ⚠️ (บทเรียนจาก memory pj-deleted-receipt-drift-2026-07-16) ถ้าไม่ตั้ง start_date/end_date ชัดเจน PJ จะคืน
+// แค่ "วันนี้" เป็น default — ตั้ง RECEIPTS_LOOKBACK_DAYS กว้างพอ (180 วัน) ครอบเคสเปลี่ยนผู้ผ่อนที่ร้านสร้าง
+// invoice ใหม่ + คีย์ใบเสร็จ (ดาวน์/งวดแรก) ไม่เกินไม่กี่เดือนหลังจากนั้นแน่นอน — ถ้าร้านคีย์ย้อนไกลกว่านี้ (หา
+// ยากมาก) precheck จะได้ total ไม่ครบ → cutover_transfer_invoice เทียบยอดไม่ตรง → ต้อง admin+เหตุผลอยู่ดี
+// (ไม่ใช่ money-loss เงียบ แค่ต้องมือเพิ่ม) + page length ให้ครบด้วย pagination วนจนหมดหน้า (แบบเดียวกับ
+// fetchInvoicesPage/fetchReceiptsPage ของ pj-sync)
+// ============================================================================
+const RECEIPTS_PAGE_LENGTH = 500;
+const RECEIPTS_MAX_PAGES = 30; // เผื่อ invoice เก่ามาก (ไม่ควรเกิดในทางปฏิบัติ) — กันวนไม่รู้จบชั้นที่ 2 (ชั้นแรกคือ deadline)
+const RECEIPTS_LOOKBACK_DAYS = 180;
+
+type PrecheckReceipt = {
+  uuid: string;
+  payment_type: "down" | "installment" | "penalty" | "other";
+  amount: number;
+  paid_date: string | null; // YYYY-MM-DD
+};
+
+async function fetchReceiptsPage(
+  jar: Map<string, string>,
+  token: string,
+  xsrfToken: string,
+  startOffset: number,
+  startDate: string,
+  endDate: string,
+  deadline: Deadline,
+): Promise<{ rows: any[]; recordsTotal: number; recordsFiltered: number }> {
+  const dtBody = new URLSearchParams();
+  dtBody.set("draw", String(Math.floor(startOffset / RECEIPTS_PAGE_LENGTH) + 1));
+  dtBody.set("start", String(startOffset));
+  dtBody.set("length", String(RECEIPTS_PAGE_LENGTH));
+  dtBody.set("_token", token);
+  dtBody.set("start_date", startDate);
+  dtBody.set("end_date", endDate);
+
+  const res = await fetchWithTimeout(RECEIPTS_URL, {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: cookieHeader(jar),
+      Referer: `${PJ_BASE}/manager/home`,
+      Origin: PJ_BASE,
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      "X-Requested-With": "XMLHttpRequest",
+      "X-CSRF-TOKEN": xsrfToken,
+    },
+    body: dtBody.toString(),
+    redirect: "manual",
+  }, perCallTimeout(deadline));
+
+  const ct = res.headers.get("content-type") ?? "";
+  const text = await res.text();
+  let parsed: any = null;
+  if (ct.includes("application/json")) {
+    try { parsed = JSON.parse(text); } catch { /* not json */ }
+  } else {
+    const trimmed = text.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { parsed = JSON.parse(trimmed); } catch { /* not json */ }
+    }
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("receipts: response ไม่ใช่ JSON (session/CSRF อาจไม่ผ่าน)");
+  }
+  return {
+    rows: Array.isArray(parsed.data) ? parsed.data : [],
+    recordsTotal: Number(parsed.recordsTotal ?? 0),
+    recordsFiltered: Number(parsed.recordsFiltered ?? 0),
+  };
+}
+
+/** ดึงใบเสร็จทุกใบของ invoice เดียว (invNoNorm ต้อง normalize มาก่อนเรียก) — รวม "down" (เงินดาวน์) ด้วยเสมอ
+ * (ต่างจาก path เงินเข้าของ pj-sync ที่ตัดดาวน์ทิ้งตั้งแต่ต้น — precheck ตัวนี้ต้องเห็นยอดครบทุกประเภทเพราะ
+ * cutover_transfer_invoice (0158) เทียบยอดรวม "ดาวน์+งวด+ค่าปรับ+รายได้อื่นๆ" ของเราทั้งก้อน) */
+async function fetchReceiptsForInvoice(
+  jar: Map<string, string>,
+  token: string,
+  xsrfToken: string,
+  invNoNorm: string,
+  deadline: Deadline,
+): Promise<{ receipts: PrecheckReceipt[]; pagesFetched: number; truncated: boolean }> {
+  const endDate = ddmmyyyyToday();
+  const startDate = shiftDdMmYyyy(endDate, -RECEIPTS_LOOKBACK_DAYS);
+
+  const rawMatches: PrecheckReceipt[] = [];
+  let offset = 0;
+  let pagesFetched = 0;
+  let truncated = false;
+
+  while (true) {
+    if (deadline.timeLeftMs() <= 0) { truncated = true; break; }
+    const page = await fetchReceiptsPage(jar, token, xsrfToken, offset, startDate, endDate, deadline);
+    pagesFetched++;
+
+    for (const row of page.rows) {
+      const rowInvRaw = pick(row, ["invoice_no", "inv_no", "invoiceNo", "contract_no"]);
+      if (!rowInvRaw || normalizeInvNoEdge(rowInvRaw) !== invNoNorm) continue; // ไม่ใช่ใบของ invoice นี้ — ข้าม
+      const uuidRaw = pick(row, ["uuid"]);
+      const uuid = uuidRaw ? String(uuidRaw).trim() : null;
+      if (!uuid) continue; // ไม่มี uuid ผูกเข้า pj_receipt_ignores ไม่ได้ — ข้าม (ไม่ error ทั้งรอบ)
+
+      const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
+      let category: PrecheckReceipt["payment_type"];
+      if (typeRaw.includes("down")) category = "down";
+      else if (typeRaw.includes("penalty")) category = "penalty";
+      else if (typeRaw.includes("installment")) category = "installment";
+      else category = "other";
+
+      rawMatches.push({
+        uuid,
+        payment_type: category,
+        amount: parseAmount(pick(row, ["amount", "paid_amount", "total"])),
+        paid_date: toIsoDate(pick(row, ["paid_date", "payment_date", "date", "created_at"])),
+      });
+    }
+
+    const known = page.recordsFiltered || page.recordsTotal || 0;
+    const gotFullPage = page.rows.length >= RECEIPTS_PAGE_LENGTH;
+    const reachedKnownTotal = known > 0 && offset + page.rows.length >= known;
+    if (!gotFullPage || reachedKnownTotal || page.rows.length === 0) break;
+    if (pagesFetched >= RECEIPTS_MAX_PAGES) { truncated = true; break; }
+    offset += RECEIPTS_PAGE_LENGTH;
+  }
+
+  // dedup uuid (pagination race อาจดึงหน้าเดียวกันซ้ำ — เจอมาแล้วจริงฝั่ง pj-sync deep-scan)
+  const seen = new Set<string>();
+  const receipts = rawMatches.filter((r) => {
+    if (seen.has(r.uuid)) return false;
+    seen.add(r.uuid);
+    return true;
+  });
+
+  return { receipts, pagesFetched, truncated };
 }
 
 // ============================================================================
@@ -912,6 +1112,118 @@ async function handleImages(userClient: any, adminClient: any, body: any, deadli
 }
 
 // ============================================================================
+// mode='invoice_receipts' (0157/0158 — "เปลี่ยนผู้ผ่อน") — staff+admin (active) — ดึงรายการใบเสร็จจริงของ
+// invoice ใหม่จาก PJ (รวมดาวน์) → เขียนแคชลง pj_invoice_prechecks ด้วย service role (client ปลอมยอดไม่ได้) →
+// staff ใช้ผลนี้กดผ่าน RPC cutover_transfer_invoice (0158) ผูกเลขที่ใบจริงเข้า contracts.inv_no
+//
+// รับ { contractId/contract_id, pjInvoiceNo/pj_invoice_no } (รองรับทั้ง camelCase/snake_case กันไม่ตรง
+// convention ฝั่ง caller — ไฟล์นี้ mode อื่นใช้ camelCase ล้วน แต่คำสั่งงาน spec เป็น snake_case ไว้)
+// ============================================================================
+async function handleInvoiceReceipts(
+  userClient: any,
+  adminClient: any,
+  userId: string,
+  body: any,
+  deadline: Deadline,
+): Promise<Response> {
+  const contractId = String(body?.contractId ?? body?.contract_id ?? "").trim();
+  const invNoRaw = String(body?.pjInvoiceNo ?? body?.pj_invoice_no ?? "").trim();
+  if (!contractId || !invNoRaw) {
+    return json({ ok: false, error: "contract_id และ pj_invoice_no จำเป็นทั้งคู่" }, 400);
+  }
+  const invNoNorm = normalizeInvNoEdge(invNoRaw);
+  if (!invNoNorm) {
+    return json({ ok: false, error: "เลขที่ใบ PJ ไม่ถูกต้อง" }, 400);
+  }
+
+  // เช็ค scope ด้วย user client (เกาะ RLS) — ผ่าน role gate มาแล้วยังต้องเห็นสัญญานี้จริง (mirror handleSnapshot)
+  const { data: scopeRow, error: scopeErr } = await userClient
+    .from("contracts").select("id, status").eq("id", contractId).maybeSingle();
+  if (scopeErr) return json({ ok: false, error: scopeErr.message }, 500);
+  if (!scopeRow) return json({ ok: false, error: "ไม่มีสิทธิ์เข้าถึงสัญญานี้" }, 403);
+  // (ติ๊ก review fix 1, 14 ก.ย. 2026) เปลี่ยนผู้ผ่อน/cutover ทำได้เฉพาะสัญญา status='active' เท่านั้น
+  // (ตรงกับ guard ของ transfer_contract_owner, 0157 SECTION 5) — เช็คตรงนี้ด้วยกันเรียก precheck ล่วงหน้า
+  // สำหรับสัญญาที่ปิด/คืนเครื่อง/อื่นๆ ที่ผูกเลขที่ใบจริงไม่ได้อยู่ดี
+  if (scopeRow.status !== "active") {
+    return json({ ok: false, error: "สัญญานี้ไม่ได้อยู่ในสถานะกำลังผ่อน เปลี่ยนผู้ผ่อนไม่ได้" });
+  }
+
+  const jar = new Map<string, string>();
+  const loginResult = await loginPJ(jar, deadline);
+  if (!loginResult.ok) {
+    return json({ ok: false, error: `เข้าเว็บ PJ ไม่สำเร็จ: ${loginResult.reason}` });
+  }
+  const { token, xsrfToken } = loginResult;
+
+  if (deadline.timeLeftMs() <= 0) {
+    return json({ ok: false, error: "เกินเวลาที่กำหนด (20 วิ) ตอน login เสร็จ" });
+  }
+
+  // ── ข้อผิดพลาด "หา invoice ไม่เจอ" (เลขผิด/ร้านยังไม่สร้างใบใน PJ) — แยกจากเคส "มี invoice แต่ยังไม่มี
+  //    ใบเสร็จ" ด้วยการเช็ค uuid ของ invoice ก่อนเสมอ (ใช้ findInvoiceUuid ตัวเดียวกับ mode='snapshot'/'debug') ──
+  const lookup = await findInvoiceUuid(jar, token, xsrfToken, invNoNorm, null, deadline);
+  if (!lookup.uuid) {
+    return json({
+      ok: false,
+      error: `ไม่พบเลขที่ใบ "${invNoNorm}" ใน PJ — เช็คว่าพิมพ์ถูก และร้านสร้างใบนี้ใน PJ แล้วจริง`,
+      diagnostics: { uuidLookupMethod: lookup.method, pagesFetched: lookup.pagesFetched },
+    });
+  }
+
+  if (deadline.timeLeftMs() <= 0) {
+    return json({ ok: false, error: "เกินเวลาที่กำหนด (20 วิ) ตอนหา invoice เจอแล้ว" });
+  }
+
+  let fetched: { receipts: PrecheckReceipt[]; pagesFetched: number; truncated: boolean };
+  try {
+    fetched = await fetchReceiptsForInvoice(jar, token, xsrfToken, invNoNorm, deadline);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return json({ ok: false, error: `ดึงรายการใบเสร็จจาก PJ ไม่สำเร็จ: ${msg}` });
+  }
+
+  // ── ข้อผิดพลาด "invoice ไม่มีใบเสร็จ" (มี invoice จริง แต่ร้านยังไม่คีย์เงินเข้าเลย) ──
+  if (fetched.receipts.length === 0) {
+    return json({
+      ok: false,
+      error: `พบใบแจ้งหนี้ "${invNoNorm}" ใน PJ แล้ว แต่ยังไม่มีใบเสร็จเลย (ร้านอาจยังไม่คีย์เงินเข้าใบนี้)`,
+      diagnostics: { uuidLookupMethod: lookup.method, pagesFetched: fetched.pagesFetched, truncated: fetched.truncated },
+    });
+  }
+
+  const totalRaw = fetched.receipts.reduce((sum, r) => sum + r.amount, 0);
+  const total = Math.round(totalRaw * 100) / 100;
+
+  const { data: inserted, error: insErr } = await adminClient
+    .from("pj_invoice_prechecks")
+    .insert({
+      contract_id: contractId,
+      pj_invoice_no: invNoNorm,
+      receipts: fetched.receipts,
+      total,
+      fetched_by: userId,
+    })
+    .select("id")
+    .single();
+  if (insErr || !inserted) {
+    return json({ ok: false, error: `บันทึกข้อมูลที่ดึงมาไม่สำเร็จ: ${insErr?.message ?? "unknown error"}` }, 500);
+  }
+
+  return json({
+    ok: true,
+    precheck_id: inserted.id,
+    receipts: fetched.receipts,
+    total,
+    diagnostics: {
+      uuidLookupMethod: lookup.method,
+      pagesFetched: fetched.pagesFetched,
+      truncated: fetched.truncated,
+      receiptCount: fetched.receipts.length,
+    },
+  });
+}
+
+// ============================================================================
 // mode='debug' — admin เท่านั้น, ไม่เขียน DB — เครื่องมือ diagnostic ชั่วคราว mirror pj-sync debugInv pattern
 // (pj-sync/index.ts:725-732) ใช้ตรวจ anchor/โครง HTML จริงหลัง deploy โดยไม่ต้อง deploy ใหม่ทุกครั้งที่ปรับ
 // parser — ลบทิ้งได้เมื่อ parser คาลิเบรตจนมั่นใจแล้ว (ไม่ใช่โค้ดถาวร)
@@ -1006,11 +1318,16 @@ Deno.serve(async (req) => {
     if (profile.role !== "admin") return json({ error: "ดึงรูปจาก PJ ได้เฉพาะแอดมิน" }, 403);
     return await handleImages(userClient, adminClient, body, deadline);
   }
+  // (0157/0158 — "เปลี่ยนผู้ผ่อน") staff+admin (active) เหมือน mode='snapshot' — SNAPSHOT_ROLES ตัวเดียวกัน
+  if (mode === "invoice_receipts") {
+    if (!SNAPSHOT_ROLES.includes(profile.role)) return json({ error: "ไม่มีสิทธิ์ดึงข้อมูล PJ" }, 403);
+    return await handleInvoiceReceipts(userClient, adminClient, user.id, body, deadline);
+  }
   if (mode === "debug") {
     if (profile.role !== "admin") return json({ error: "debug เฉพาะแอดมิน" }, 403);
     return await handleDebug(userClient, body, deadline);
   }
-  return json({ error: "unknown mode (ต้องเป็น snapshot/images/debug)" }, 400);
+  return json({ error: "unknown mode (ต้องเป็น snapshot/images/invoice_receipts/debug)" }, 400);
 });
 
 // ============================================================================
@@ -1033,4 +1350,17 @@ Deno.serve(async (req) => {
 //   curl -s -X POST ".../pj-snapshot" -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
 //     -H "Content-Type: application/json" -d '{"mode":"images","contractId":"<uuid>","imageKey":"id_card_1"}'
 //   → เช็ค ok:true + base64 ไม่ว่าง + เปิด base64 เป็นรูปได้จริง (เช่นแปะใส่ <img src="data:image/jpeg;base64,...">)
+//
+// 4) mode='invoice_receipts' (0157/0158 — staff หรือ admin) — ก่อนเรียก ต้องมี invoice ใหม่ + ใบเสร็จจริงใน PJ
+//    แล้ว (ร้านคีย์เงินเข้าอย่างน้อย 1 ใบ — เช่นดาวน์):
+//   curl -s -X POST ".../pj-snapshot" -H "Authorization: Bearer <STAFF_ACCESS_TOKEN>" \
+//     -H "Content-Type: application/json" \
+//     -d '{"mode":"invoice_receipts","contract_id":"<uuid สัญญาที่กำลังเปลี่ยนผู้ผ่อน>","pj_invoice_no":"INV-XXXXXXXXXXXXXX"}'
+//   → เช็ค ok:true + precheck_id ไม่ว่าง + receipts เป็น array ที่มี uuid/payment_type/amount/paid_date ครบทุก
+//     แถว (⚠️ ต้องเห็น payment_type="down" ถ้า invoice นี้มีใบดาวน์จริง — บั๊กเดิมที่ pj-sync ตัดดาวน์ทิ้งต้อง
+//     "ไม่" เกิดที่นี่) + total = ผลรวม receipts ตรงกับที่ PJ แสดงในหน้าใบจริง
+//   → select * from pj_invoice_prechecks where id='<precheck_id>' ตรวจว่า contract_id/pj_invoice_no/receipts/
+//     total/fetched_by ตรงตามที่ curl เห็น
+//   → ทดสอบ error 2 เคสตามบรีฟ: pj_invoice_no ที่ไม่มีจริงใน PJ (คาด error "ไม่พบเลขที่ใบ...") กับ invoice ที่
+//     มีจริงแต่ร้านยังไม่คีย์เงิน (คาด error "...แต่ยังไม่มีใบเสร็จเลย")
 // ============================================================================

@@ -177,6 +177,16 @@ function pick(row: any, keys: string[]): any {
   return null;
 }
 
+// (0157/0158 — เปลี่ยนผู้ผ่อน) normalize เลข INV ให้ตรงกับ src/lib/format.ts sanitizeInvNo() เป๊ะ (ก๊อปมาตรงตัว
+// ตาม convention เดิมของไฟล์นี้ — ไม่ import ข้าม runtime Deno/browser) ใช้เทียบ invoice_no จาก PJ กับ
+// contract_transfers.new_inv_no/old_inv_no (ที่ normalizeInvNo ฝั่ง RPC ผูกไว้ตอน cutover) ให้ตรงกันเป๊ะ
+// ไม่ว่า casing/ช่องว่างท้ายจะต่างกันแค่ไหน
+function normalizeInvNoEdge(raw: unknown): string {
+  const trimmed = String(raw ?? "").trim();
+  const firstToken = trimmed.split(/\s+/)[0] ?? "";
+  return firstToken.replace(/[^A-Za-z0-9-]/g, "").toUpperCase();
+}
+
 // ⚠️ DEPRECATED (23 ก.ค. 2026 รอบ 4) — ห้าม flow ปกติเรียกใช้ฟังก์ชันนี้อีกต่อไป: พิสูจน์แล้วผ่าน debug
 // probe ว่าตาราง #invoiceItemTable ใน HTML ดิบมี `<tbody></tbody>` ว่างเปล่าเสมอ (server-side DataTable
 // ajax ต่อ invoice — แถวถูกเติมทีหลังฝั่ง browser ด้วย JS ไม่ได้ฝังมากับ HTML) parser regex ด้านล่างนี้จึง
@@ -1247,6 +1257,72 @@ export default {
         });
       }
 
+      // ══════════════════════════════════════════════════════════════════════════
+      // (0157/0158 — "เปลี่ยนผู้ผ่อน") โหลด pj_receipt_ignores + contract_transfers (cutover แล้ว) ครั้งเดียว
+      // ต่อรอบ ก่อน grouping — จุดนี้รันเฉพาะ path เงินเข้า (mode="sync" เท่านั้น เพราะ mode="reconcile"/
+      // "returned_watch" return ไปก่อนถึงจุดนี้แล้วทั้งคู่)
+      //
+      // ⚠️ no-op เป๊ะเมื่อ 2 ตารางว่าง (เคสปกติก่อนมีการเปลี่ยนผู้ผ่อนเลยสักครั้ง): ignoreSet.size===0 →
+      // filteredRows===rows ตัวเดิม (อ้างอิง array เดิมเป๊ะ ไม่ copy) + cutoverByNewInv/oldInvContractMap
+      // ว่าง → guard ทั้ง 2 จุดใน aggEntries loop ข้างล่าง .has()/.get() คืน false/undefined ทันที ไม่มีทาง
+      // เปลี่ยนพฤติกรรมเดิมแม้แต่บรรทัดเดียว
+      // ══════════════════════════════════════════════════════════════════════════
+      let ignoredReceiptCount = 0;
+      let transferCutoverQueued = 0;
+      let oldInvAfterTransferQueued = 0;
+      const ignoreSet = new Set<string>();
+      // normalize(new_inv_no) → { contractId, cutoverDateBkk } — receipt ของ new_inv_no ที่วันที่จ่าย <=
+      // วันนี้ (เวลาไทย) ห้าม auto-apply (เป็นใบเก่าของคนก่อนที่ร้านคีย์ย้ายมา ไม่ใช่เงินคนใหม่จริง)
+      const cutoverByNewInv = new Map<string, { contractId: string; cutoverDateBkk: string }>();
+      // normalize(old_inv_no) → contract_id (hint เท่านั้น — ยังต้องเช็คว่าไม่มีสัญญาอื่นชิงใช้เลขนี้ใหม่จริง
+      // ก่อนถึงจะ intercept ดูจุดใช้งานด้านล่าง)
+      const oldInvContractMap = new Map<string, string>();
+
+      {
+        const { data: ignoreRows, error: ignoreErr } = await db
+          .from("pj_receipt_ignores")
+          .select("pj_receipt_uuid");
+        if (ignoreErr) {
+          return await failRun("error", `db error (pj_receipt_ignores): ${ignoreErr.message}`, 500);
+        }
+        for (const r of (ignoreRows ?? []) as any[]) {
+          if (r.pj_receipt_uuid) ignoreSet.add(String(r.pj_receipt_uuid).trim());
+        }
+
+        const { data: transferRows, error: transferErr } = await db
+          .from("contract_transfers")
+          .select("contract_id, new_inv_no, old_inv_no, cutover_at")
+          .not("cutover_at", "is", null)
+          .is("reversed_at", null);
+        if (transferErr) {
+          return await failRun("error", `db error (contract_transfers): ${transferErr.message}`, 500);
+        }
+        for (const t of (transferRows ?? []) as any[]) {
+          const newInv = t.new_inv_no ? normalizeInvNoEdge(t.new_inv_no) : "";
+          const oldInv = t.old_inv_no ? normalizeInvNoEdge(t.old_inv_no) : "";
+          if (newInv && t.cutover_at) {
+            // cutover_at เป็น timestamptz (UTC) — บวก 7 ชม.ก่อนตัดวันที่ ให้ได้ "วันที่ตามเวลาไทย" ของ cutover
+            const cutoverBkkMs = new Date(t.cutover_at).getTime() + 7 * 60 * 60 * 1000;
+            const cutoverDateBkk = new Date(cutoverBkkMs).toISOString().slice(0, 10);
+            cutoverByNewInv.set(newInv, { contractId: t.contract_id, cutoverDateBkk });
+          }
+          if (oldInv) oldInvContractMap.set(oldInv, t.contract_id);
+        }
+      }
+
+      // ── ตัดใบเสร็จที่อยู่ใน pj_receipt_ignores ทิ้งก่อน grouping (ครอบทุก path ที่กิน aggMap: installment,
+      //    penalty-only, other-only, mixed OTHER — ทุก path build จาก filteredRows ก้อนนี้ก้อนเดียว จึงตัด
+      //    ที่จุดเดียวพอ ไม่ต้องแก้ทีละ branch) — เขียน uuid ที่ตัดไว้นับ ignoredReceiptCount ใส่ summary ท้ายไฟล์
+      const filteredRows = ignoreSet.size === 0 ? rows : rows.filter((row) => {
+        const uuidRaw = pick(row, ["uuid"]);
+        const uuid = uuidRaw ? String(uuidRaw).trim() : null;
+        if (uuid && ignoreSet.has(uuid)) {
+          ignoredReceiptCount++;
+          return false;
+        }
+        return true;
+      });
+
       // ── aggregate ต่อ invoice_no ─────────────────────────────────────────────
       type Agg = {
         invoice_no: string;
@@ -1265,7 +1341,7 @@ export default {
       const aggMap = new Map<string, Agg>();
       let downSkipped = 0;
 
-      for (const row of rows) {
+      for (const row of filteredRows) {
         const invRaw = pick(row, ["invoice_no", "inv_no", "invoiceNo", "contract_no"]);
         const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
         const amt = parseAmount(pick(row, ["amount", "paid_amount", "total"]));
@@ -1363,6 +1439,21 @@ export default {
         });
       };
 
+      // (ติ๊ก review fix 3, 14 ก.ย. 2026) เช็คว่า (pj_invoice_no + pj_paid_date) นี้มี pj_sync_review ที่
+      // resolved/skipped/auto_resolved ไปแล้วหรือยัง — natural key เดียวกับ branch !a.has_installment
+      // (บรรทัด ~1516-1534 ด้านล่าง) ใช้ร่วมกันทั้ง guard TRANSFER_CUTOVER/OLD_INV_AFTER_TRANSFER กันแถวเด้ง
+      // ซ้ำทุกรอบ cron (15 นาที) หลังคนกดข้าม/ยืนยันไปแล้วรอบหนึ่ง
+      async function reviewAlreadyHandled(invoiceNo: string, paidDate: string | null): Promise<boolean> {
+        let q = db
+          .from("pj_sync_review")
+          .select("id")
+          .eq("pj_invoice_no", invoiceNo)
+          .in("status", ["resolved", "skipped", "auto_resolved"]);
+        q = paidDate ? q.eq("pj_paid_date", paidDate) : q.is("pj_paid_date", null);
+        const { data } = await q.limit(1);
+        return !!(data && data.length > 0);
+      }
+
       // ── time budget (14 ก.ค. 2026 เพิ่ม) — กัน gateway timeout ตอน window กว้าง (30 วัน) ────────
       // ประมวลผลแต่ละ invoice-วัน ต้องเรียก DB หลายรอบ (lookup contract/installments/ledger + RPC) —
       // window ยาวอาจมี aggMap หลายร้อยก้อน รันจนหมดอาจเกิน wall-clock limit ของ Edge Function จน
@@ -1383,6 +1474,57 @@ export default {
           break; // ที่เหลือปล่อยรอบถัดไป (ดู comment ด้านบน) — ไม่ error ไม่ crash ทั้งรอบ
         }
         aggEntriesProcessed++;
+
+        // ══════════════════════════════════════════════════════════════════════
+        // (0157/0158 — "เปลี่ยนผู้ผ่อน") guard คู่ — ตรวจก่อน categorize ปกติเสมอ ครอบทุก path (installment/
+        // penalty-only/other-only/mixed) เพราะอยู่บนสุดของ loop นี้ก้อนเดียว ไม่ต้องแก้ทีละ branch ด้านล่าง
+        // ══════════════════════════════════════════════════════════════════════
+        const normInv = normalizeInvNoEdge(a.invoice_no);
+        const cutoverHit = cutoverByNewInv.get(normInv);
+        if (cutoverHit && (!a.paid_date || a.paid_date <= cutoverHit.cutoverDateBkk)) {
+          // ใบเสร็จของ new_inv_no ที่วันที่จ่าย <= วัน cutover (หรือไม่รู้วันที่ — กันเหนียว ไม่เดา) = ใบเดิม
+          // ของคนก่อนที่ร้านคีย์ย้ายมาไว้ใต้เลขใหม่ ไม่ใช่เงินคนใหม่จริง — ห้าม auto-apply เด็ดขาด
+          // (ติ๊ก review fix 3) กันแถวเด้งซ้ำถ้าคนกด resolved/skipped ไปแล้วรอบก่อน
+          if (await reviewAlreadyHandled(a.invoice_no, a.paid_date)) {
+            skippedAlreadySynced++;
+            continue;
+          }
+          const pjType = a.has_installment ? "installment" : a.has_other ? "other" : "penalty";
+          const pjAmount = a.inst_amt + a.pen_amt + a.other_amt;
+          queueReview(a, "TRANSFER_CUTOVER", cutoverHit.contractId, pjType, pjAmount);
+          transferCutoverQueued++;
+          continue;
+        }
+        if (oldInvContractMap.has(normInv)) {
+          // ใบเสร็จคีย์เข้าเลขที่ใบเดิม (old_inv_no) หลัง cutover ไปแล้ว — เช็คก่อนว่าไม่มีสัญญาอื่นชิงใช้เลข
+          // นี้ใหม่จริง (กันเหตุการณ์หายาก: เลขเดิมถูกพิมพ์มือผูกกับสัญญาใหม่ทีหลัง) ถ้ามีเจ้าของปัจจุบันจริง
+          // ให้ไหลลงไปตาม logic ปกติด้านล่าง (lookup contract ตามปกติ) ไม่ intercept
+          // (ติ๊ก review fix 2) เช็คด้วยทั้งค่าดิบและค่า normalize แล้ว — contracts.inv_no อาจถูกผูกด้วย
+          // normalizeInvNo (RPC) เสมอ แต่ a.invoice_no ที่มาจาก PJ ดิบอาจต่าง casing/ช่องว่างท้ายเล็กน้อย
+          const ownerCandidates = Array.from(new Set([a.invoice_no, normInv]));
+          const { data: currentOwner, error: ownErr } = await db
+            .from("contracts")
+            .select("id")
+            .in("inv_no", ownerCandidates)
+            .limit(1);
+          if (ownErr) {
+            return await failRun("error", `db error (old-inv owner check): ${ownErr.message}`, 500);
+          }
+          if (!currentOwner || currentOwner.length === 0) {
+            // (ติ๊ก review fix 3) กันแถวเด้งซ้ำถ้าคนกด resolved/skipped ไปแล้วรอบก่อน
+            if (await reviewAlreadyHandled(a.invoice_no, a.paid_date)) {
+              skippedAlreadySynced++;
+              continue;
+            }
+            const oldHintContractId = oldInvContractMap.get(normInv)!;
+            const pjType = a.has_installment ? "installment" : a.has_other ? "other" : "penalty";
+            const pjAmount = a.inst_amt + a.pen_amt + a.other_amt;
+            queueReview(a, "OLD_INV_AFTER_TRANSFER", oldHintContractId, pjType, pjAmount);
+            oldInvAfterTransferQueued++;
+            continue;
+          }
+        }
+
         // เคสไม่มี installment เลย — penalty-only หรือ other-only → review
         if (!a.has_installment) {
           // lookup contract ด้วย inv_no ก่อน — เหมือน path installment (บรรทัด 399-407)
@@ -1766,6 +1908,11 @@ export default {
         pages_fetched: pagesFetched,
         receipts_fetched: rows.length,
         down_skipped: downSkipped,
+        // (0157/0158 — เปลี่ยนผู้ผ่อน) ตัดก่อน grouping/เข้ากล่องรอตรวจแยกเหตุผล — 0 ทั้งคู่เมื่อยังไม่มีใคร
+        // กดเปลี่ยนผู้ผ่อนเลยสักครั้ง (ตาราง contract_transfers/pj_receipt_ignores ว่าง)
+        ignored_receipts: ignoredReceiptCount,
+        transfer_cutover_queued: transferCutoverQueued,
+        old_inv_after_transfer_queued: oldInvAfterTransferQueued,
         skipped_already_synced: skippedAlreadySynced,
         // (9 ก.ย. 2026) เคส uuid ตรงบางใบ (มีใบใหม่ปนอยู่) — เข้ากล่องรอตรวจ ไม่ auto-apply ไม่ skip เงียบ
         receipt_partial_applied: receiptPartialApplied,

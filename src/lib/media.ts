@@ -540,6 +540,57 @@ export function videoPurgeDueAt(emailedAt: string, retentionDays: number): Date 
 }
 
 // ---------------------------------------------------------------------------
+// transferMediaSlots — ช่องเอกสารรอบ "เปลี่ยนผู้ผ่อน" (feature ใหม่ 2026-09-14)
+// คุณเตยเคาะ: ใช้กลไกเดียวกับรูปตอนรอตรวจเมล แต่เอาเฉพาะเอกสาร/บุคคล ไม่เอารูปตัวเครื่อง
+// derive จาก DEFAULT_MEDIA_SLOTS ของจริง (label/min/max/hint เดิมทุกอย่าง) ห้ามแก้ DEFAULT_MEDIA_SLOTS เอง
+// key เปลี่ยนเป็น `transfer_{N}_<baseKey>` (namespaced ต่อรอบ — เปลี่ยนผู้ผ่อนได้หลายครั้ง ไม่ชนกัน)
+// required บังคับเป็น 'always' เสมอ (ต่างจาก base ที่บาง key เป็น conditional เช่น box_back/warranty_check
+// ผูกกับ condition มือ1/มือ2 — แต่ 5 คีย์ที่เลือกใช้ตอนนี้ล้วน 'always' อยู่แล้วใน DEFAULT_MEDIA_SLOTS พอดี)
+// ---------------------------------------------------------------------------
+
+/** base key ใน DEFAULT_MEDIA_SLOTS ที่ใช้ประกอบช่องเอกสารรอบเปลี่ยนผู้ผ่อน — เพิ่ม/ลดง่ายที่จุดเดียว */
+export const TRANSFER_DOC_BASE_KEYS = [
+  'id_card_front',     // หน้าบัตรประชาชนลูกค้า (ผู้ผ่อนคนใหม่) — min1 max1
+  'occupation_photo',  // รูปอาชีพ — min1 max null
+  'contract_docs',     // เอกสารสัญญามีลายเซ็น — min4 max null
+  'id_copy_consent',   // สำเนาบัตรฯ เซ็นยินยอม — min1 max1
+  'credit_check',      // ผลเช็คเครดิต — min1 max1 (เพิ่ม 2026-09-14 ตามคุณเตยเคาะ)
+] as const
+
+/**
+ * สร้างช่องเอกสาร (MediaSlot[]) ของรอบเปลี่ยนผู้ผ่อนที่ N (transferNo เริ่มที่ 1)
+ * key namespaced เป็น `transfer_{N}_<baseKey>`, label ต่อท้าย "(ผู้ผ่อนคนใหม่)" ให้อ่านง่ายว่าเป็นเอกสารของใคร
+ * ทุกช่อง required:'always' (เงื่อนไข condition/flag ของ base slot ไม่เกี่ยว — บังคับครบทั้ง 4 ก่อนกดยืนยันเสมอ)
+ * ใช้กับ evaluateSlots ตรงๆ ได้ (ไม่ต้องพก contract/flags จริง — ดู evaluateTransferDocs ด้านล่าง)
+ */
+export function transferMediaSlots(transferNo: number): MediaSlot[] {
+  return TRANSFER_DOC_BASE_KEYS.map((baseKey, i) => {
+    const base = DEFAULT_MEDIA_SLOTS.find((s) => s.key === baseKey)
+    if (!base) throw new Error(`transferMediaSlots: ไม่พบ base slot key="${baseKey}" ใน DEFAULT_MEDIA_SLOTS`)
+    return {
+      key: `transfer_${transferNo}_${baseKey}`,
+      label: `${base.label} (ผู้ผ่อนคนใหม่)`,
+      sortOrder: transferNo * 10 + i + 1,
+      min: base.min,
+      max: base.max,
+      required: 'always',
+      hint: base.hint,
+    }
+  })
+}
+
+/**
+ * ประเมินช่องเอกสารรอบเปลี่ยนผู้ผ่อนที่ N ตรงๆ (wrapper รอบ evaluateSlots + transferMediaSlots)
+ * ไม่ต้องพก contract {condition,origin} จริงเข้ามา เพราะทุกช่อง required:'always' อยู่แล้ว (ค่า dummy ไม่มีผลต่อผลลัพธ์)
+ */
+export function evaluateTransferDocs(
+  transferNo: number,
+  files: MediaFile[],
+): { complete: boolean; slots: SlotEvaluation[]; missing: string[] } {
+  return evaluateSlots(transferMediaSlots(transferNo), { condition: 'used', origin: 'th' }, {}, files)
+}
+
+// ---------------------------------------------------------------------------
 // mediaFilename — ตั้งชื่อไฟล์แนบ ตาม slug map (spec section 3)
 // ---------------------------------------------------------------------------
 
@@ -747,3 +798,24 @@ export function maskName(name: string): string {
 // (28) mediaFilename('credit_history_evidence', 2, 'png') === '13-1-credit-history-2.png'
 // (29) mediaFilename('lock_test_video', 1, 'mp4') === '15-lock-test-video-1.mp4'
 // (30) maskName('สมชาย ใจดี') === 'สม***'
+//
+// transferMediaSlots (feature "เปลี่ยนผู้ผ่อน" 2026-09-14; เพิ่ม credit_check เป็นช่องที่ 5 ตามคุณเตยเคาะเพิ่ม):
+// (31) transferMediaSlots(1) -> 5 ช่อง key ตามลำดับ:
+//      'transfer_1_id_card_front' (label 'หน้าบัตรประชาชนลูกค้า (ผู้ผ่อนคนใหม่)', min1,max1,required:'always')
+//      'transfer_1_occupation_photo' (min1,max:null,required:'always')
+//      'transfer_1_contract_docs' (min4,max:null,required:'always')
+//      'transfer_1_id_copy_consent' (min1,max1,required:'always')
+//      'transfer_1_credit_check' (label 'ผลเช็คเครดิต (ผู้ผ่อนคนใหม่)', min1,max1,required:'always')
+//      sortOrder เรียง 11,12,13,14,15 (transferNo*10 + i+1)
+// (32) transferMediaSlots(2) -> key ขึ้นต้น 'transfer_2_...' ทั้งหมด, sortOrder 21-25
+//      (ไม่ชนกับรอบ 1 — namespaced ต่อรอบ)
+// (33) evaluateTransferDocs(1, files) กับ files ครบตาม min ทุกช่อง (contract_docs 4 ไฟล์, ที่เหลือ 1 รวม credit_check)
+//      -> complete:true, missing:[]
+// (34) evaluateTransferDocs(1, files) กับ contract_docs มีแค่ 3 ไฟล์ (ขาด 1 จากขั้นต่ำ 4) ที่เหลือครบ
+//      -> complete:false, missing:['เอกสารสัญญามีลายเซ็น (ผู้ผ่อนคนใหม่)'] (evaluateSlots.missing เป็น label ล้วน
+//      ไม่มี "(มี X/Y)" ต่อท้าย — ถ้าต้องการ summary แบบมีตัวเลข ให้เรียก missingSummary({slots: result.slots}) ต่อเอง)
+// (35) evaluateTransferDocs(1, []) (ไม่มีไฟล์เลย) -> complete:false, missing ครบ 5 ช่อง
+//      ('หน้าบัตรประชาชนลูกค้า (ผู้ผ่อนคนใหม่)', 'รูปอาชีพ (ผู้ผ่อนคนใหม่)',
+//       'เอกสารสัญญามีลายเซ็น (ผู้ผ่อนคนใหม่)', 'สำเนาบัตรฯ เซ็นยินยอม (ผู้ผ่อนคนใหม่)', 'ผลเช็คเครดิต (ผู้ผ่อนคนใหม่)')
+// (36) [namespace ไม่ชนกัน] files ของรอบ 1 (slotKey='transfer_1_id_card_front') ไม่ถูกนับใน evaluateTransferDocs(2, files)
+//      -> รอบ 2 ช่อง 'transfer_2_id_card_front' ยัง count:0 (คนละ key กันเด็ดขาด)

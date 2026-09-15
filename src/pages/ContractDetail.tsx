@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock, Copy, Check } from 'lucide-react'
+import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock, Copy, Check, Repeat } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
-import { baht, conditionLabel, installmentLabel, statusLabel, thaiDate } from '../lib/format'
+import { baht, conditionLabel, installmentLabel, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import {
   getContract,
   getInstallments,
@@ -82,7 +82,14 @@ import {
   getPjSnapshot,
   requestPjSnapshot,
   preflightCompanyEmail,
+  getContractTransfers,
+  undoContractTransfer,
+  getTransferFeeWaivers,
 } from '../lib/db'
+import type { ContractTransfer } from '../lib/contractTransfer'
+import TransferOwnerModal from '../components/TransferOwnerModal'
+import TransferInvoiceCutover from '../components/TransferInvoiceCutover'
+import TransferDocSlots from '../components/TransferDocSlots'
 import type { LetterRecord, LetterReply } from '../lib/letters'
 import {
   activeRateSets,
@@ -156,17 +163,20 @@ const FEE_RIGHT_LABEL: Record<FeeRight, string> = {
   due_day: 'เปลี่ยนวันชำระ',
   months: 'ขยายงวด',
   settle: 'ปิดก่อนกำหนด',
+  transfer: 'เปลี่ยนผู้ผ่อน',
 }
 /** ข้อความหลักในกล่อง ตาม (right × status) */
 const FEE_PENDING_INCOME_MSG: Record<FeeRight, string> = {
   due_day: 'สัญญานี้เปลี่ยนวันชำระแล้ว แต่ยังไม่ได้ลงค่าธรรมเนียมเป็นรายได้',
   months: 'สัญญานี้ขยายจำนวนงวดแล้ว แต่ยังไม่ได้ลงค่าธรรมเนียมเป็นรายได้',
   settle: 'สัญญานี้ปิดก่อนกำหนดแล้ว แต่ยังไม่ได้ลงค่าปิดด่วนเป็นรายได้',
+  transfer: 'รอดำเนินการ (ค่าธรรมเนียมเปลี่ยนผู้ผ่อน) — ทำเปลี่ยนผู้ผ่อนแล้ว ยังไม่ได้ลงรายได้',
 }
 const FEE_PENDING_ACTION_MSG: Record<FeeRight, string> = {
   due_day: 'ลงค่าเปลี่ยนวันที่ชำระไว้แล้ว แต่ยังไม่ได้เปลี่ยนวันชำระบนสัญญา',
   months: 'ลงค่าขยายระยะเวลาไว้แล้ว แต่ยังไม่ได้ขยายจำนวนงวด',
   settle: 'ลงค่าปิดด่วนไว้แล้ว แต่ยังไม่ได้ปิดสัญญาก่อนกำหนด',
+  transfer: 'มีรายได้ค่าธรรมเนียมเปลี่ยนผู้ผ่อน แต่ไม่พบประวัติเปลี่ยนผู้ผ่อน',
 }
 const FEE_STATUS_BADGE: Partial<Record<RightStatus, { text: string; tone: 'amber' | 'red' | 'neutral' }>> = {
   pending_income: { text: 'รอลงค่าธรรมเนียม', tone: 'amber' },
@@ -286,6 +296,17 @@ export default function ContractDetail() {
   const [addOtherIncomePreset, setAddOtherIncomePreset] = useState<{ category: string; feeKind: FeeKind | null } | null>(null)
   // ===== Fee reconcile (ค่าธรรมเนียม ↔ action) =====
   const [feeReconcile, setFeeReconcile] = useState<ReconcileResult | null>(null)
+  // ===== เปลี่ยนผู้ผ่อน (feature ใหม่ 2026-09-14) =====
+  const [transferHistory, setTransferHistory] = useState<ContractTransfer[]>([])
+  const [transferFeeWaivers, setTransferFeeWaivers] = useState<{ transferId: string; createdAt: string }[]>([])
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [transferToast, setTransferToast] = useState<string | null>(null)
+  const [cutoverTarget, setCutoverTarget] = useState<ContractTransfer | null>(null) // ผูกเลข INV ใหม่จากแถวประวัติ
+  const [undoTransferTarget, setUndoTransferTarget] = useState<ContractTransfer | null>(null)
+  const [undoTransferReason, setUndoTransferReason] = useState('')
+  const [undoTransferBusy, setUndoTransferBusy] = useState(false)
+  const [undoTransferErr, setUndoTransferErr] = useState<string | null>(null)
+  const [transferDocsTarget, setTransferDocsTarget] = useState<ContractTransfer | null>(null)
   const [extendPreset, setExtendPreset] = useState<ExtensionType | null>(null) // preset extType ตอนเปิด ExtendModal จาก banner
   const [waiveBusy, setWaiveBusy] = useState<FeeRight | null>(null) // right ที่กำลัง waive/unwaive
   const [waiveErr, setWaiveErr] = useState<string | null>(null)
@@ -399,7 +420,7 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec, poh, oi, fr, ce, rd] = await Promise.all([
+    const [c, ins, lg, ext, rs, ec, poh, oi, fr, ce, rd, tr, tfw] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
@@ -411,6 +432,8 @@ export default function ContractDetail() {
       getContractFeeReconcile(id),
       getCloseEvent(id),
       getContractReturnDate(id),
+      getContractTransfers(id).catch(() => []),
+      getTransferFeeWaivers(id).catch(() => []),
     ])
     setContract(c)
     setInstallments(ins)
@@ -424,6 +447,8 @@ export default function ContractDetail() {
     setCloseEvent(ce)
     setReturnDate(rd.returnDate)
     setRepairFee(rd.repairFee)
+    setTransferHistory(tr)
+    setTransferFeeWaivers(tfw)
     setLoading(false)
   }, [id])
 
@@ -453,12 +478,12 @@ export default function ContractDetail() {
   }, [loading, searchParams])
 
   // ===== Handlers: ยกเว้น/ยกเลิกยกเว้นค่าธรรมเนียม (admin only) =====
-  const handleWaive = useCallback(async (right: FeeRight) => {
+  const handleWaive = useCallback(async (right: FeeRight, transferId?: string) => {
     if (!id) return
     setWaiveBusy(right)
     setWaiveErr(null)
     try {
-      await insertFeeWaiver(id, right, userName ?? undefined)
+      await insertFeeWaiver(id, right, userName ?? undefined, undefined, transferId)
       await load()
     } catch (e) {
       setWaiveErr(errMsg(e))
@@ -467,12 +492,12 @@ export default function ContractDetail() {
     }
   }, [id, userName, load])
 
-  const handleUnwaive = useCallback(async (right: FeeRight) => {
+  const handleUnwaive = useCallback(async (right: FeeRight, transferId?: string) => {
     if (!id) return
     setWaiveBusy(right)
     setWaiveErr(null)
     try {
-      await deleteFeeWaiver(id, right)
+      await deleteFeeWaiver(id, right, transferId)
       await load()
     } catch (e) {
       setWaiveErr(errMsg(e))
@@ -993,6 +1018,27 @@ export default function ContractDetail() {
     }
   }
 
+  // ยกเลิกการเปลี่ยนผู้ผ่อน (admin only) — บังคับกรอกเหตุผล เฉพาะครั้งล่าสุดที่ยังไม่ถูกยกเลิก
+  async function handleUndoTransfer() {
+    if (!undoTransferTarget) return
+    if (!undoTransferReason.trim()) {
+      setUndoTransferErr('กรุณาระบุเหตุผลในการยกเลิก')
+      return
+    }
+    setUndoTransferBusy(true)
+    setUndoTransferErr(null)
+    try {
+      await undoContractTransfer(undoTransferTarget.id, undoTransferReason.trim())
+      setUndoTransferTarget(null)
+      setUndoTransferReason('')
+      await load()
+    } catch (e) {
+      setUndoTransferErr(errMsg(e))
+    } finally {
+      setUndoTransferBusy(false)
+    }
+  }
+
   // เปิดป็อปอัพลบสัญญา — โหลดประวัติ (จ่ายเงิน/คืนเครื่อง/โอนร้าน) มาโชว์คำเตือนก่อนให้กดยืนยัน
   async function handleOpenDelete() {
     if (!contract) return
@@ -1125,6 +1171,10 @@ export default function ContractDetail() {
               <Button onClick={() => setReturnOpen(true)}>
                 <PackageOpen size={15} /> คืนเครื่อง
               </Button>
+              {/* เปลี่ยนผู้ผ่อน — สัญญาเดิม เปลี่ยนแค่ชื่อผู้ผ่อน (feature ใหม่ 2026-09-14) */}
+              <Button variant="ghost" onClick={() => { setTransferToast(null); setTransferOpen(true) }}>
+                <Repeat size={15} /> เปลี่ยนผู้ผ่อน
+              </Button>
             </>
           )}
           {/* ยกเลิกการปิดสัญญาก่อนกำหนด (คงตารางงวด) — admin เท่านั้น, ต้องมี close event ที่ยังไม่ถูกยกเลิก */}
@@ -1148,6 +1198,12 @@ export default function ContractDetail() {
           )}
         </div>
       </div>
+
+      {transferToast && (
+        <div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          {transferToast}
+        </div>
+      )}
 
       {/* โหลดเงื่อนไขตรวจเคส (คัตออฟ) ไม่สำเร็จ — บอกผู้ใช้ว่าทำไมกล่องตรวจเคสด้านล่างอาจไม่แสดง (fail closed อยู่แล้ว ไม่เปลี่ยนพฤติกรรม) */}
       {reviewSettingsError && (
@@ -1390,10 +1446,16 @@ export default function ContractDetail() {
 
       {/* ===== กล่อง "รายการรอดำเนินการ (ค่าธรรมเนียม)" — ผูก action ↔ รายได้ 2 ทิศทาง ===== */}
       {feeReconcile && (() => {
-        const rows = (['due_day', 'months', 'settle'] as FeeRight[])
+        const rows = (['due_day', 'months', 'settle', 'transfer'] as FeeRight[])
           .map((r) => ({ right: r, status: feeReconcile[r] }))
           .filter((x) => x.status === 'pending_income' || x.status === 'pending_action' || x.status === 'waived')
         if (rows.length === 0) return null
+        // ===== 'transfer' เป็น count-based ต้องระบุว่ายกเว้น/ยกเลิกยกเว้น "รอบไหน" (transferId) =====
+        const waivedTransferIds = new Set(transferFeeWaivers.map((w) => w.transferId))
+        const latestUnwaivedTransfer = transferHistory
+          .filter((t) => !t.reversedAt && !waivedTransferIds.has(t.id))
+          .reduce<ContractTransfer | null>((latest, t) => (!latest || t.transferNo > latest.transferNo ? t : latest), null)
+        const latestWaiver = [...transferFeeWaivers].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))[0] ?? null
         return (
           <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/60 px-4 py-3">
             <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink">
@@ -1438,7 +1500,7 @@ export default function ContractDetail() {
                           <Button variant="ghost" onClick={() => setSettleOpen(true)}>
                             <BadgePercent size={14} /> ปิดสัญญาก่อนกำหนด
                           </Button>
-                        ) : (
+                        ) : right === 'transfer' ? null : (
                           <Button
                             variant="ghost"
                             onClick={() => {
@@ -1450,20 +1512,23 @@ export default function ContractDetail() {
                           </Button>
                         )
                       )}
-                      {/* ยกเว้น (ฟรี) — admin เท่านั้น */}
-                      {(status === 'pending_income' || status === 'pending_action') && isAdmin && (
+                      {/* ยกเว้น (ฟรี) — admin เท่านั้น
+                          right='transfer' เป็น count-based ต้องมีรอบเปลี่ยนผู้ผ่อนที่ยังไม่ถูกยกเว้นอยู่จริงถึงจะกดได้
+                          (ไม่มี = ซ่อนปุ่ม กันยิง insertFeeWaiver แบบไม่รู้ว่ายกเว้นรอบไหน) */}
+                      {(status === 'pending_income' || status === 'pending_action') && isAdmin &&
+                        (right !== 'transfer' || latestUnwaivedTransfer) && (
                         <Button
                           variant="ghost"
                           disabled={waiveBusy === right}
-                          onClick={() => void handleWaive(right)}
+                          onClick={() => void handleWaive(right, right === 'transfer' ? latestUnwaivedTransfer?.id : undefined)}
                         >
                           {waiveBusy === right ? 'กำลังบันทึก...' : 'ไม่คิดค่าธรรมเนียม (ฟรี)'}
                         </Button>
                       )}
-                      {status === 'waived' && isAdmin && (
+                      {status === 'waived' && isAdmin && (right !== 'transfer' || latestWaiver) && (
                         <button
                           disabled={waiveBusy === right}
-                          onClick={() => void handleUnwaive(right)}
+                          onClick={() => void handleUnwaive(right, right === 'transfer' ? latestWaiver?.transferId : undefined)}
                           className="rounded px-2 py-1 text-xs text-ink-soft underline underline-offset-2 hover:text-ink disabled:opacity-50"
                         >
                           {waiveBusy === right ? 'กำลังยกเลิก...' : 'ยกเลิกยกเว้น'}
@@ -2519,6 +2584,69 @@ export default function ContractDetail() {
         </>
       )}
 
+      {/* ประวัติเปลี่ยนผู้ผ่อน */}
+      {transferHistory.length > 0 && (() => {
+        const latestActive = transferHistory
+          .filter((t) => !t.reversedAt)
+          .reduce<ContractTransfer | null>((latest, t) => (!latest || t.transferNo > latest.transferNo ? t : latest), null)
+        const waivedTransferIdSet = new Set(transferFeeWaivers.map((w) => w.transferId))
+        return (
+          <>
+            <h3 className="mb-2 mt-6 flex items-center gap-1.5 font-semibold text-ink">
+              <Repeat size={16} /> เปลี่ยนผู้ผ่อนแล้ว {transferHistory.length} ครั้ง
+            </h3>
+            <div className="flex flex-col gap-2">
+              {[...transferHistory].sort((a, b) => b.transferNo - a.transferNo).map((t) => (
+                <div key={t.id} className={`rounded-xl border p-3 text-sm ${t.reversedAt ? 'border-peach bg-peach-light/20 opacity-70' : 'border-peach bg-white'}`}>
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
+                    <Badge tone="neutral">{`ครั้งที่ ${t.transferNo}`}</Badge>
+                    {t.reversedAt && <Badge tone="red">ยกเลิกแล้ว</Badge>}
+                    {waivedTransferIdSet.has(t.id) && <Badge tone="neutral">ยกเว้นค่าธรรมเนียมแล้ว</Badge>}
+                    <span className="text-xs text-ink-soft">{thaiDateTime(t.effectiveAt)}</span>
+                  </div>
+                  <p className="text-ink">
+                    ผู้ผ่อนเดิม: <span className="font-medium">{t.oldCustomerName}</span>{' '}
+                    <span className="text-ink-soft">({maskNationalId(t.oldNationalId ?? undefined)})</span>
+                    {' → '}
+                    ผู้ผ่อนใหม่: <span className="font-medium">{t.newCustomerName}</span>{' '}
+                    <span className="text-ink-soft">({maskNationalId(t.newNationalId ?? undefined)})</span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-ink-soft">
+                    เลข INV: {t.oldInvNo || '—'} → {t.newInvNo || (t.cutoverAt ? '—' : 'ยังไม่ผูก')}
+                    {t.cutoverAt && <span className="ml-1 text-green-700">(ผูกแล้ว {thaiDateTime(t.cutoverAt)})</span>}
+                    {' · ผู้ทำ: '}{t.createdByName || 'ไม่ทราบ'}
+                  </p>
+                  {t.reversedAt && (
+                    <p className="mt-1 text-xs text-red-600">
+                      ยกเลิกเมื่อ {thaiDateTime(t.reversedAt)} โดย {t.reversedByName || 'ไม่ทราบ'} — เหตุผล: {t.reversedReason || '—'}
+                    </p>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button variant="ghost" onClick={() => setTransferDocsTarget(t)}>
+                      <FileBox size={14} /> ดูเอกสาร
+                    </Button>
+                    {!t.reversedAt && !t.cutoverAt && canStaff && (
+                      <Button variant="ghost" onClick={() => setCutoverTarget(t)}>
+                        <FileCheck size={14} /> ผูกเลข INV ใหม่
+                      </Button>
+                    )}
+                    {!t.reversedAt && isAdmin && latestActive?.id === t.id && (
+                      <Button
+                        variant="ghost"
+                        className="border-red-200 text-red-600 hover:bg-red-50"
+                        onClick={() => { setUndoTransferErr(null); setUndoTransferReason(''); setUndoTransferTarget(t) }}
+                      >
+                        <RotateCcw size={14} /> ยกเลิกการเปลี่ยนผู้ผ่อน
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )
+      })()}
+
       {histTarget && (
         <PaymentHistoryModal
           ins={histTarget}
@@ -2697,6 +2825,79 @@ export default function ContractDetail() {
                 className="border-red-200 text-red-600 hover:bg-red-50"
               >
                 {undoCloseBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกการปิดสัญญา'}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* เปลี่ยนผู้ผ่อน — 3 ขั้น (feature ใหม่ 2026-09-14) */}
+      {transferOpen && (
+        <TransferOwnerModal
+          contract={contract}
+          history={transferHistory}
+          overdueAmount={principalRemaining + extraChargesSum}
+          penaltyDue={displayPenaltyDue}
+          isAdmin={isAdmin}
+          onClose={() => setTransferOpen(false)}
+          onDone={() => void load()}
+          onSuccess={(msg) => setTransferToast(msg)}
+        />
+      )}
+
+      {/* ผูกเลข INV ใหม่ — จากแถวประวัติเปลี่ยนผู้ผ่อน */}
+      {cutoverTarget && (
+        <Modal title="ผูกเลข INV ใหม่" onClose={() => setCutoverTarget(null)}>
+          <TransferInvoiceCutover
+            contractId={contract.id}
+            transferId={cutoverTarget.id}
+            isAdmin={isAdmin}
+            initialInvNo={cutoverTarget.newInvNo}
+            onDone={() => { void load(); setCutoverTarget(null) }}
+          />
+        </Modal>
+      )}
+
+      {/* ดูเอกสารเปลี่ยนผู้ผ่อนของรอบนั้น */}
+      {transferDocsTarget && (
+        <Modal title={`เอกสารเปลี่ยนผู้ผ่อน — ครั้งที่ ${transferDocsTarget.transferNo}`} onClose={() => setTransferDocsTarget(null)} size="lg">
+          <TransferDocSlots contractId={contract.id} transferNo={transferDocsTarget.transferNo} />
+        </Modal>
+      )}
+
+      {/* ยกเลิกการเปลี่ยนผู้ผ่อน — admin only, บังคับกรอกเหตุผล, เฉพาะครั้งล่าสุดที่ยังไม่ถูกยกเลิก */}
+      {undoTransferTarget && (
+        <Modal title="ยกเลิกการเปลี่ยนผู้ผ่อน" onClose={() => !undoTransferBusy && setUndoTransferTarget(null)}>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink">
+              ยกเลิกการเปลี่ยนผู้ผ่อนครั้งที่ {undoTransferTarget.transferNo} — สัญญาจะกลับเป็นชื่อ{' '}
+              <span className="font-semibold">{undoTransferTarget.oldCustomerName}</span>
+            </p>
+            {undoTransferTarget.cutoverAt && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+                ผูกเลข INV แล้ว — ถ้ายกเลิก ใบเสร็จของใบใหม่จะกลับเข้ากล่องรอตรวจ
+              </p>
+            )}
+            <Field label="เหตุผลที่ยกเลิก" required>
+              <Textarea
+                value={undoTransferReason}
+                onChange={(e) => setUndoTransferReason(e.target.value)}
+                placeholder="เช่น กรอกข้อมูลผู้ผ่อนใหม่ผิด"
+                rows={3}
+              />
+            </Field>
+            {undoTransferErr && <p className="text-sm text-red-600">{undoTransferErr}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" disabled={undoTransferBusy} onClick={() => setUndoTransferTarget(null)}>
+                ยกเลิก
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={undoTransferBusy || !undoTransferReason.trim()}
+                onClick={() => void handleUndoTransfer()}
+                className="border-red-200 text-red-600 hover:bg-red-50"
+              >
+                {undoTransferBusy ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกการเปลี่ยนผู้ผ่อน'}
               </Button>
             </div>
           </div>
