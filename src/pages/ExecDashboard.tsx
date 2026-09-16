@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
 import { Loading, PageTitle, Card, Badge } from '../components/ui'
@@ -32,12 +33,15 @@ import {
   getDueScheduleMonthly,
   getForecastByGrade,
   getClawbackAggregates,
-  getOverdueMonthSnapshot,
   getDeviceReturnReportRows,
+  getNplHistory,
+  NPL_HISTORY_MIN_DATE,
   type EscalateContract,
   type ForecastByGradeRow,
+  type NplHistoryPoint,
 } from '../lib/db'
-import { buildExecDashboard, buildGradeMovement, buildOverdueTrend, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult, type OverdueTrendResult, type ExpenseSummary, type FirstDefaultSummary } from '../lib/execDashboard'
+import { buildExecDashboard, buildGradeMovement, type ExecDashboard, type RiskGroup, type CashflowRow, type Granularity, type GradeMovementResult, type ExpenseSummary, type FirstDefaultSummary } from '../lib/execDashboard'
+import { buildNplMonthlyTrend, nplChangeVsPreviousMonthEnd, nplHistoryFootnote, todayISOBangkok, type NplMonthlyPoint } from '../lib/nplHistory'
 import { buildCashflowForecast, type CashflowForecastResult } from '../lib/cashflowForecast'
 import { detectBottlenecks, type BottleneckAlert } from '../lib/bottleneck'
 import { DateRangePicker, loadStoredRange, type DateRange } from '../components/DateRangePicker'
@@ -94,7 +98,6 @@ export default function ExecDashboard() {
   const rangeKey = range ? `${range.start}_${range.end}` : 'all'
   const [data, setData] = useState<ExecDashboard | null>(null)
   const [loading, setLoading] = useState(true)
-  const [overdueTrend, setOverdueTrend] = useState<OverdueTrendResult | null>(null)
   useEffect(() => {
     let active = true
     setLoading(true)
@@ -113,9 +116,8 @@ export default function ExecDashboard() {
       getContractAggregates(),
       getDueScheduleMonthly(),
       getClawbackAggregates(),
-      getOverdueMonthSnapshot(),
     ])
-      .then(([contracts, statuses, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome, contractAggregates, dueSchedule, clawbackAggregates, overdueSnapshot]) => {
+      .then(([contracts, statuses, shops, dailyRows, extensions, returns, commissionTiers, recruitTiers, recruitBonuses, employees, otherIncome, contractAggregates, dueSchedule, clawbackAggregates]) => {
         if (!active) return
         const built = buildExecDashboard({
           contracts,
@@ -137,11 +139,19 @@ export default function ExecDashboard() {
           clawbackAggregates,
         })
         setData(built)
-        setOverdueTrend(buildOverdueTrend(overdueSnapshot))
       })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [rangeKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ===== ประวัติหนี้เสีย/ค้างชำระรายเดือน (การ์ด "แนวโน้มหนี้ล่าช้า / หนี้เสีย") =====
+  // โหลดแยกจาก Promise.all หลัก — เป็น query หนัก ไม่ให้หน่วงส่วนอื่นของหน้า; ไม่อิงช่วงวันที่ที่เลือก (snapshot รายวัน)
+  const { data: nplHistoryPoints, loading: nplHistoryLoading, error: nplHistoryError } = useAsync<NplHistoryPoint[]>(
+    () => getNplHistory(NPL_HISTORY_MIN_DATE, todayISOBangkok(), { monthEndOnly: true }),
+    [],
+  )
+  const nplMonthly = useMemo(() => buildNplMonthlyTrend(nplHistoryPoints), [nplHistoryPoints])
+  const nplChange = useMemo(() => nplChangeVsPreviousMonthEnd(nplMonthly), [nplMonthly])
 
   const { data: gradeMovement, loading: gradeLoading, error: gradeError } = useAsync<GradeMovementResult | null>(async () => {
     const [rows, count] = await Promise.all([getGradeChangesMonthly(), getActiveGradedCount()])
@@ -192,6 +202,7 @@ export default function ExecDashboard() {
         collectedThisMonth={d.receivedThisMonth}
         expectedThisMonth={d.expectedThisMonth}
         isExec={isExec}
+        nplPrevMonthEnd={nplChange?.previous ? { rate: nplChange.previous.valuePct, label: nplChange.previous.label } : null}
       />
 
       {/* ===== Workflow Bottleneck Alert ===== */}
@@ -414,9 +425,7 @@ export default function ExecDashboard() {
       </div>
 
       {/* ===== แถว 6b: แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน ===== */}
-      {overdueTrend && overdueTrend.points.length >= 2 && (
-        <OverdueTrendCard trend={overdueTrend} />
-      )}
+      <OverdueTrendCard monthly={nplMonthly} loading={nplHistoryLoading} error={nplHistoryError} />
 
       {/* ===== แถว 7: ความเสี่ยงตามกลุ่ม ===== */}
       <div className="grid gap-4 lg:grid-cols-3">
@@ -1064,259 +1073,304 @@ function ForecastView({ result }: { result: CashflowForecastResult }) {
   )
 }
 
-// ---------- แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน ----------
-function OverdueTrendCard({ trend }: { trend: OverdueTrendResult }) {
-  const { points } = trend
+// ---------- แนวโน้มหนี้ล่าช้า/หนี้เสียรายเดือน (จากประวัติหนี้เสียรายวัน — บันทึกอัตโนมัติทุกคืน) ----------
+type OverdueTrendMetric = 'value' | 'count'
 
-  // label format: "มิ.ย. 26" (CE year 2-digit suffix จาก execDashboard.ts)
-  // derive CE = 2000 + parseInt(suffix), กรองเฉพาะปีที่มีข้อมูลจริง (overdueCount > 0 อย่างน้อย 1 เดือน)
-  const availableYears = useMemo(() => {
-    const ceMap = new Map<number, number>() // ce → max overdueCount ของปีนั้น
-    for (const p of points) {
-      const parts = p.label.split(' ')
-      if (parts.length === 2) {
-        const ce = 2000 + parseInt(parts[1], 10)
-        ceMap.set(ce, Math.max(ceMap.get(ce) ?? 0, p.overdueCount))
-      }
-    }
-    return Array.from(ceMap.entries())
-      .filter(([, maxCount]) => maxCount > 0)
-      .map(([ce]) => ce)
-      .sort((a, b) => a - b)
-  }, [points])
+/** format จุดเปลี่ยนแปลง % หน่วย "จุด" เช่น +0.24 จุด / -1.10 จุด */
+function fmtPts(delta: number): string {
+  return `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} จุด`
+}
 
-  const latestYear = availableYears[availableYears.length - 1] ?? new Date().getFullYear()
-  const [trendMetric, setTrendMetric] = useState<'count' | 'amount'>('count')
-  const [trendYear, setTrendYear] = useState<number>(latestYear)
+function OverdueTrendCard({
+  monthly,
+  loading,
+  error,
+}: {
+  monthly: NplMonthlyPoint[]
+  loading: boolean
+  error: string | null
+}) {
+  const [metric, setMetric] = useState<OverdueTrendMetric>('value')
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
 
-  // sync trendYear เมื่อ availableYears เปลี่ยน (เช่น first render หรือข้อมูลโหลดใหม่)
-  useEffect(() => {
-    if (!availableYears.includes(trendYear)) {
-      setTrendYear(latestYear)
-    }
-  }, [availableYears, latestYear, trendYear])
+  // เคลียร์จุดที่เลือกเมื่อข้อมูลโหลดใหม่ (จำนวนเดือนเปลี่ยน)
+  useEffect(() => { setActiveIndex(null) }, [monthly.length])
 
-  // filter เฉพาะเดือนในปีที่เลือก
-  const filteredPoints = useMemo(() => {
-    return points.filter((p) => {
-      const parts = p.label.split(' ')
-      if (parts.length !== 2) return false
-      return 2000 + parseInt(parts[1], 10) === trendYear
-    })
-  }, [points, trendYear])
-
-  // MoM จากจุดสุดท้าย 2 จุดของ filtered list ตาม metric ที่กำลังดู
-  const mom = useMemo(() => {
-    if (filteredPoints.length < 2) return null
-    const prev = filteredPoints[filteredPoints.length - 2]
-    const last = filteredPoints[filteredPoints.length - 1]
-    if (trendMetric === 'count') {
-      return {
-        overdue: last.overdueCount - prev.overdueCount,
-        bad: last.badCount - prev.badCount,
-        isCount: true,
-      }
-    } else {
-      return {
-        overdue: last.overdueAmount - prev.overdueAmount,
-        bad: last.badAmount - prev.badAmount,
-        isCount: false,
-      }
-    }
-  }, [filteredPoints, trendMetric])
-
-  /** format delta จำนวนเคส: +12 หรือ -5 */
-  function fmtCount(delta: number): string {
-    return `${delta >= 0 ? '+' : ''}${delta.toLocaleString('th-TH')} เคส`
-  }
-  /** format delta ยอดเงิน: +฿1.20M / -฿320K */
-  function fmtAmt(delta: number): string {
-    const sign = delta >= 0 ? '+' : '-'
-    const abs = Math.abs(delta)
-    if (abs >= 1_000_000) return `${sign}฿${(abs / 1_000_000).toFixed(2)}M`
-    if (abs >= 10_000) return `${sign}฿${(abs / 1_000).toFixed(0)}K`
-    return `${sign}฿${abs.toLocaleString('th-TH')}`
-  }
-
-  const labels = filteredPoints.map((p) => p.label.split(' ')[0]) // แสดงแค่ชื่อเดือน (ปีอยู่ใน dropdown แล้ว)
-
-  const seriesCount = [
-    { name: 'ค้างทั้งหมด (เคส)', color: '#f59e0b', values: filteredPoints.map((p) => p.overdueCount), fill: true as const },
-    { name: 'หนี้เสีย (เคส)', color: '#dc2626', values: filteredPoints.map((p) => p.badCount) },
-  ]
-  const seriesAmount = [
-    { name: 'ค้างทั้งหมด (พันบาท)', color: '#f59e0b', values: filteredPoints.map((p) => Math.round(p.overdueAmount / 1000)), fill: true as const },
-    { name: 'หนี้เสีย (พันบาท)', color: '#dc2626', values: filteredPoints.map((p) => Math.round(p.badAmount / 1000)) },
-  ]
+  const hasOverdueData = monthly.some((m) => (metric === 'value' ? m.overdueValuePct : m.overdueCountPct) !== null)
+  const change = nplChangeVsPreviousMonthEnd(monthly)
+  const shown = activeIndex !== null ? monthly[activeIndex] : monthly.length > 0 ? monthly[monthly.length - 1] : null
+  const shownChangePts = change && change.previous ? (metric === 'value' ? change.changeValuePts : change.changeCountPts) : null
 
   return (
     <Card>
-      {/* Header row */}
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="font-semibold text-ink">
-            แนวโน้มหนี้ล่าช้า / หนี้เสีย
-            <span className="ml-2 text-xs font-normal text-ink-soft">(ประมาณการ)</span>
-          </h3>
-          <p className="mt-0.5 text-xs text-ink-soft">สัญญาที่ค้างชำระรายเดือน ณ สิ้นเดือน</p>
+          <h3 className="font-semibold text-ink">แนวโน้มหนี้ล่าช้า / หนี้เสีย</h3>
+          <p className="mt-0.5 text-xs text-ink-soft">สรุปทุกสิ้นเดือน จากยอดคงเหลือทั้งสัญญา</p>
         </div>
-
-        {/* Controls: metric toggle + year dropdown */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Segmented toggle: จำนวนเคส / ยอดเงิน */}
+        {monthly.length > 0 && (
           <div className="flex overflow-hidden rounded-xl border border-peach text-sm">
             <button
-              onClick={() => setTrendMetric('count')}
-              className={`px-3 py-1.5 font-medium transition ${
-                trendMetric === 'count'
-                  ? 'bg-salmon-deep text-white'
-                  : 'bg-white text-ink-soft hover:bg-peach-light'
-              }`}
+              type="button"
+              aria-pressed={metric === 'value'}
+              onClick={() => setMetric('value')}
+              className={`px-3 py-1.5 font-medium transition ${metric === 'value' ? 'bg-salmon-deep text-white' : 'bg-white text-ink-soft hover:bg-peach-light'}`}
             >
-              จำนวนเคส
+              % ตามยอดเงิน
             </button>
             <button
-              onClick={() => setTrendMetric('amount')}
-              className={`px-3 py-1.5 font-medium transition ${
-                trendMetric === 'amount'
-                  ? 'bg-salmon-deep text-white'
-                  : 'bg-white text-ink-soft hover:bg-peach-light'
-              }`}
+              type="button"
+              aria-pressed={metric === 'count'}
+              onClick={() => setMetric('count')}
+              className={`px-3 py-1.5 font-medium transition ${metric === 'count' ? 'bg-salmon-deep text-white' : 'bg-white text-ink-soft hover:bg-peach-light'}`}
             >
-              ยอดเงิน (บาท)
+              % ตามจำนวนสัญญา
             </button>
           </div>
-
-          {/* Year dropdown */}
-          {availableYears.length > 1 && (
-            <select
-              value={trendYear}
-              onChange={(e) => setTrendYear(Number(e.target.value))}
-              className="rounded-xl border border-peach bg-white px-3 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-salmon-deep/30"
-            >
-              {availableYears.map((ce) => (
-                <option key={ce} value={ce}>
-                  พ.ศ. {ce + 543}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+        )}
       </div>
 
-      {/* ===== บล็อกสรุปภาษาคน ===== */}
-      {filteredPoints.length > 0 && (() => {
-        const last = filteredPoints[filteredPoints.length - 1]
-        const monthLabel = last.label // เช่น "มิ.ย. 26"
-        const overdueCount = last.overdueCount
-        const overdueAmt = last.overdueAmount
-        const badCount = last.badCount
-        const badAmt = last.badAmount
-
-        const overdueDir = mom ? (mom.overdue > 0 ? 'up' : mom.overdue < 0 ? 'down' : 'flat') : 'flat'
-        const badDir = mom ? (mom.bad > 0 ? 'up' : mom.bad < 0 ? 'down' : 'flat') : 'flat'
-
-        const arrowOverdue = overdueDir === 'up' ? '▲' : overdueDir === 'down' ? '▼' : '—'
-        const arrowBad = badDir === 'up' ? '▲' : badDir === 'down' ? '▼' : '—'
-        const colorOverdue = overdueDir === 'up' ? 'text-red-600' : overdueDir === 'down' ? 'text-green-600' : 'text-ink-soft'
-        const colorBad = badDir === 'up' ? 'text-red-600' : badDir === 'down' ? 'text-green-600' : 'text-ink-soft'
-
-        const momOverdueStr = mom
-          ? (mom.isCount
-            ? `${arrowOverdue} ${mom.overdue >= 0 ? '+' : ''}${mom.overdue.toLocaleString('th-TH')} ราย`
-            : `${arrowOverdue} ${fmtAmt(mom.overdue)}`)
-          : null
-        const momBadStr = mom
-          ? (mom.isCount
-            ? `${arrowBad} ${mom.bad >= 0 ? '+' : ''}${mom.bad.toLocaleString('th-TH')} ราย`
-            : `${arrowBad} ${fmtAmt(mom.bad)}`)
-          : null
-
-        return (
-          <div className="mb-4 rounded-2xl border-2 border-amber-200 bg-amber-50 px-4 py-4">
-            <p className="mb-3 text-sm font-bold text-ink">
-              สรุปเดือน {monthLabel}
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {/* ค้างชำระทั้งหมด */}
-              <div>
-                <p className="mb-0.5 text-xs text-ink-soft">ค้างชำระทั้งหมด</p>
-                <p className="text-2xl font-bold text-amber-700">
-                  {trendMetric === 'count'
-                    ? <>{overdueCount.toLocaleString('th-TH')} <span className="text-base font-normal">ราย</span></>
-                    : <>{fmtAmt(overdueAmt).replace(/^[+-]/, '')}</>
-                  }
-                </p>
-                {trendMetric === 'count' && (
-                  <p className="mt-0.5 text-xs text-ink-soft">{fmtAmt(overdueAmt).replace(/^[+-]/, '')} คงค้าง</p>
-                )}
-                {momOverdueStr && (
-                  <p className={`mt-1 text-sm font-semibold ${colorOverdue}`}>
-                    {momOverdueStr}
-                    <span className="ml-1 font-normal text-ink-soft">จากเดือนก่อน</span>
+      {loading && monthly.length === 0 ? (
+        <p className="py-6 text-center text-sm text-ink-soft">กำลังโหลดแนวโน้ม...</p>
+      ) : error ? (
+        <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">ดึงข้อมูลแนวโน้มไม่สำเร็จ — ลองรีเฟรชหน้าใหม่</p>
+      ) : monthly.length === 0 ? (
+        <p className="py-6 text-center text-sm text-ink-soft">ยังไม่มีข้อมูลแนวโน้ม</p>
+      ) : (
+        <>
+          {/* ===== บล็อกสรุปภาษาคน ===== */}
+          {shown && (
+            <div className="mb-4 rounded-2xl border-2 border-amber-200 bg-amber-50 px-4 py-4">
+              <p className="mb-3 text-sm font-bold text-ink">
+                สรุป {shown.label}
+                {shown.isPartial && <span className="ml-1 font-normal text-ink-soft">(ยังไม่จบเดือน)</span>}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {/* หนี้เสีย 60+ (มีข้อมูลทุกเดือนเสมอ) */}
+                <div>
+                  <p className="mb-0.5 text-xs text-ink-soft">หนี้เสีย (ค้าง 60 วันขึ้นไป)</p>
+                  <p className="text-2xl font-bold text-red-700">
+                    {(metric === 'value' ? shown.valuePct : shown.countPct).toFixed(2)}%
                   </p>
-                )}
-              </div>
-              {/* หนี้เสีย */}
-              <div>
-                <p className="mb-0.5 text-xs text-ink-soft">หนี้เสีย (ค้าง ≥ 60 วัน)</p>
-                <p className="text-2xl font-bold text-red-700">
-                  {trendMetric === 'count'
-                    ? <>{badCount.toLocaleString('th-TH')} <span className="text-base font-normal">ราย</span></>
-                    : <>{fmtAmt(badAmt).replace(/^[+-]/, '')}</>
-                  }
-                </p>
-                {trendMetric === 'count' && (
-                  <p className="mt-0.5 text-xs text-ink-soft">{fmtAmt(badAmt).replace(/^[+-]/, '')} คงค้าง</p>
-                )}
-                {momBadStr && (
-                  <p className={`mt-1 text-sm font-semibold ${colorBad}`}>
-                    {momBadStr}
-                    <span className="ml-1 font-normal text-ink-soft">จากเดือนก่อน</span>
+                  <p className="mt-0.5 text-xs text-ink-soft">
+                    ฿{money(shown.badOutstanding)} · {shown.badCount.toLocaleString('th-TH')} ราย
                   </p>
-                )}
+                  {change?.previous && shownChangePts !== null && (
+                    <p className={`mt-1 text-sm font-semibold ${shownChangePts > 0 ? 'text-red-600' : shownChangePts < 0 ? 'text-green-600' : 'text-ink-soft'}`}>
+                      {shownChangePts > 0 ? '▲' : shownChangePts < 0 ? '▼' : '—'} {fmtPts(shownChangePts)}
+                      <span className="ml-1 font-normal text-ink-soft">เทียบสิ้น{change.previous.label}</span>
+                    </p>
+                  )}
+                </div>
+                {/* ค้างทั้งหมด 1+ (อาจไม่มีข้อมูลย้อนหลังไกล) */}
+                <div>
+                  <p className="mb-0.5 text-xs text-ink-soft">ค้างทั้งหมด (ค้าง 1 วันขึ้นไป)</p>
+                  {(metric === 'value' ? shown.overdueValuePct : shown.overdueCountPct) !== null ? (
+                    <>
+                      <p className="text-2xl font-bold text-amber-700">
+                        {(metric === 'value' ? shown.overdueValuePct! : shown.overdueCountPct!).toFixed(2)}%
+                      </p>
+                      <p className="mt-0.5 text-xs text-ink-soft">
+                        ฿{money(shown.overdueOutstanding ?? 0)} · {(shown.overdueCount ?? 0).toLocaleString('th-TH')} ราย
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-ink-soft">ยังไม่มีข้อมูลเดือนนี้</p>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )
-      })()}
+          )}
 
-      {/* MoM badges (เล็ก ยังคงไว้เป็น reference) */}
-      {mom && (
-        <div className="mb-3 flex flex-wrap gap-2 text-xs">
-          <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
-            <p className="font-semibold text-ink">ค้างทั้งหมด (vs เดือนก่อน)</p>
-            <p className={mom.overdue > 0 ? 'font-medium text-red-600' : mom.overdue < 0 ? 'font-medium text-green-600' : 'text-ink-soft'}>
-              {mom.isCount ? fmtCount(mom.overdue) : fmtAmt(mom.overdue)}
-              {mom.overdue > 0 ? ' ↑' : mom.overdue < 0 ? ' ↓' : ''}
-            </p>
-          </div>
-          <div className="rounded-xl border border-peach bg-peach-light/50 px-3 py-1.5">
-            <p className="font-semibold text-ink">หนี้เสีย (vs เดือนก่อน)</p>
-            <p className={mom.bad > 0 ? 'font-medium text-red-600' : mom.bad < 0 ? 'font-medium text-green-600' : 'text-ink-soft'}>
-              {mom.isCount ? fmtCount(mom.bad) : fmtAmt(mom.bad)}
-              {mom.bad > 0 ? ' ↑' : mom.bad < 0 ? ' ↓' : ''}
-            </p>
-          </div>
-        </div>
+          <OverdueTrendChart
+            monthly={monthly}
+            metric={metric}
+            hasOverdueData={hasOverdueData}
+            activeIndex={activeIndex}
+            onActiveIndexChange={setActiveIndex}
+          />
+        </>
       )}
 
-      {filteredPoints.length === 0 ? (
-        <p className="py-6 text-center text-sm text-ink-soft">ไม่มีข้อมูลในปีนี้</p>
-      ) : (
-        <LineChart
-          labels={labels}
-          valueSuffix={trendMetric === 'amount' ? 'K' : undefined}
-          series={trendMetric === 'count' ? seriesCount : seriesAmount}
-        />
-      )}
-
-      <p className="mt-2 text-xs text-ink-soft">
-        * หนี้เสีย = ค้างชำระ ≥ 60 วัน · ค้างทั้งหมด = ค้างชำระ ≥ 1 วัน
-        {trendMetric === 'amount' ? ' · ยอดเงินหน่วยพันบาท (K)' : ''}
-        {' '}· ตัวเลขประมาณการจากข้อมูลปัจจุบัน
+      <p className="mt-3 text-xs text-ink-soft">
+        {nplHistoryFootnote(NPL_HISTORY_MIN_DATE, true)} สูตรเดียวกับการ์ด "หนี้เสีย" ในหน้ารายงานประจำเดือน ·
+        นับยอดคงเหลือทั้งสัญญา รวมสัญญาที่คืนเครื่อง/ปิดไปแล้วด้วย ถ้ายังไม่ปิดหรือคืน ณ วันนั้น
       </p>
     </Card>
+  )
+}
+
+// ---------- กราฟแนวโน้ม — SVG แตะได้ (มือถือ/iPad) ด้วย Pointer Events ----------
+function OverdueTrendChart({
+  monthly,
+  metric,
+  hasOverdueData,
+  activeIndex,
+  onActiveIndexChange,
+}: {
+  monthly: NplMonthlyPoint[]
+  metric: OverdueTrendMetric
+  hasOverdueData: boolean
+  activeIndex: number | null
+  onActiveIndexChange: (i: number | null) => void
+}) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const n = monthly.length
+  if (n === 0) return null
+
+  const W = 680
+  const H = 220
+  const PAD = { l: 34, r: 14, t: 18, b: 26 }
+  const plotW = W - PAD.l - PAD.r
+  const lastIdx = n - 1
+
+  const redValues = monthly.map((m) => (metric === 'value' ? m.valuePct : m.countPct))
+  const amberValues = monthly.map((m) => (metric === 'value' ? m.overdueValuePct : m.overdueCountPct))
+  const nonNullAmber = amberValues.filter((v): v is number => v !== null)
+  const rawMax = Math.max(0.1, ...redValues, ...nonNullAmber)
+  const yMax = Math.ceil(rawMax * 1.2 * 10) / 10
+
+  const xAt = (i: number) => PAD.l + (n <= 1 ? plotW / 2 : (i / lastIdx) * plotW)
+  const yAt = (v: number) => PAD.t + (1 - v / yMax) * (H - PAD.t - PAD.b)
+
+  const redLinePts = monthly.map((_, i) => `${xAt(i).toFixed(1)},${yAt(redValues[i]).toFixed(1)}`).join(' ')
+
+  // เส้นค้างทั้งหมด (อำพัน) ตัดเป็นช่วงต่อเนื่อง — เดือนที่ไม่มีข้อมูลเป็นช่องว่าง ไม่ลากเส้นผ่าน
+  const amberSegments: number[][] = []
+  {
+    let cur: number[] = []
+    amberValues.forEach((v, i) => {
+      if (v === null) {
+        if (cur.length) { amberSegments.push(cur); cur = [] }
+      } else {
+        cur.push(i)
+      }
+    })
+    if (cur.length) amberSegments.push(cur)
+  }
+
+  const gridVals = [0, yMax / 4, yMax / 2, (yMax * 3) / 4, yMax]
+  const showEvery = n <= 8 ? 1 : Math.ceil(n / 8)
+
+  function indexFromClientX(clientX: number): number | null {
+    const svgEl = svgRef.current
+    if (!svgEl) return null
+    const rect = svgEl.getBoundingClientRect()
+    if (rect.width === 0) return null
+    const scaleX = rect.width / W
+    const xInSvg = (clientX - rect.left) / scaleX
+    const clamped = Math.max(PAD.l, Math.min(W - PAD.r, xInSvg))
+    const frac = n <= 1 ? 0 : (clamped - PAD.l) / plotW
+    return Math.max(0, Math.min(lastIdx, Math.round(frac * lastIdx)))
+  }
+
+  function handlePointerMove(e: ReactPointerEvent<SVGRectElement>) {
+    const idx = indexFromClientX(e.clientX)
+    if (idx !== null) onActiveIndexChange(idx)
+  }
+  function handlePointerDown(e: ReactPointerEvent<SVGRectElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    handlePointerMove(e)
+  }
+  function handlePointerLeave(e: ReactPointerEvent<SVGRectElement>) {
+    if (e.pointerType === 'mouse') onActiveIndexChange(null)
+  }
+
+  const metricLabel = metric === 'value' ? 'ตามมูลค่า' : 'ตามจำนวนสัญญา'
+  const ariaLabel = `กราฟแนวโน้มหนี้เสีย ${metricLabel} ตั้งแต่ ${monthly[0].label} ถึง ${monthly[lastIdx].label} — เริ่มที่ ${redValues[0].toFixed(2)}% จบที่ ${redValues[lastIdx].toFixed(2)}%`
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="mb-2 flex flex-wrap gap-4 text-xs text-ink-soft">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: '#dc2626' }} /> หนี้เสีย (ค้าง 60 วันขึ้นไป)
+        </span>
+        {hasOverdueData && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: '#f59e0b' }} /> ค้างทั้งหมด (ค้าง 1 วันขึ้นไป)
+          </span>
+        )}
+      </div>
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ minWidth: n > 20 ? 480 : undefined }}
+        role="img"
+        aria-label={ariaLabel}
+      >
+        {gridVals.map((g, gi) => (
+          <g key={gi}>
+            <line x1={PAD.l} x2={W - PAD.r} y1={yAt(g)} y2={yAt(g)} stroke="currentColor" className="text-peach" strokeWidth={1} opacity={0.6} />
+            <text x={PAD.l - 6} y={yAt(g) + 3} textAnchor="end" fill="currentColor" className="text-ink-soft" fontSize={10}>
+              {g.toFixed(1)}%
+            </text>
+          </g>
+        ))}
+
+        {hasOverdueData && amberSegments.map((seg, si) => (
+          <polyline
+            key={si}
+            points={seg.map((i) => `${xAt(i).toFixed(1)},${yAt(amberValues[i] as number).toFixed(1)}`).join(' ')}
+            fill="none"
+            stroke="#f59e0b"
+            strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            opacity={0.85}
+          />
+        ))}
+        <polyline points={redLinePts} fill="none" stroke="#dc2626" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+
+        {activeIndex !== null && (
+          <line
+            x1={xAt(activeIndex)}
+            x2={xAt(activeIndex)}
+            y1={PAD.t}
+            y2={H - PAD.b}
+            stroke="currentColor"
+            className="text-ink-soft"
+            strokeWidth={1}
+            strokeDasharray="3 3"
+          />
+        )}
+
+        {monthly.map((m, i) => {
+          const show = i === activeIndex || (activeIndex === null && i === lastIdx)
+          if (!show) return null
+          return (
+            <g key={m.monthKey}>
+              <circle cx={xAt(i)} cy={yAt(redValues[i])} r={5} fill="#dc2626" stroke="#fff" strokeWidth={2} />
+              {amberValues[i] !== null && (
+                <circle cx={xAt(i)} cy={yAt(amberValues[i] as number)} r={4} fill="#f59e0b" stroke="#fff" strokeWidth={2} />
+              )}
+            </g>
+          )
+        })}
+
+        {monthly.map((m, i) =>
+          i % showEvery === 0 || i === lastIdx ? (
+            <text key={m.monthKey} x={xAt(i)} y={H - 7} textAnchor="middle" fill="currentColor" className="text-ink-soft" fontSize={10}>
+              {m.label}
+            </text>
+          ) : null,
+        )}
+
+        {/* พื้นที่รับ pointer สำหรับชี้/แตะดูรายละเอียด — touchAction: pan-y ให้ยังเลื่อนหน้าจอแนวตั้งได้ปกติบนมือถือ/iPad */}
+        <rect
+          x={PAD.l}
+          y={0}
+          width={plotW}
+          height={H}
+          fill="transparent"
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          onPointerLeave={handlePointerLeave}
+          style={{ touchAction: 'pan-y', cursor: 'crosshair' }}
+        />
+      </svg>
+      {n > 1 && <p className="mt-1 text-center text-xs italic text-ink-soft">แตะหรือชี้ที่กราฟเพื่อดูเดือนอื่น</p>}
+    </div>
   )
 }
 

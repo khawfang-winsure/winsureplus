@@ -7929,19 +7929,30 @@ interface NplHistoryRow {
   bad_count: number | string | null
   outstanding_total: number | string | null
   bad_outstanding: number | string | null
+  overdue_count: number | string | null       // mig 0160 — null = แถวเก่าก่อน backfill ยังไม่มีข้อมูล
+  overdue_outstanding: number | string | null // mig 0160
   source: string | null
 }
 
 /**
- * ประวัติหนี้เสียรายวัน (days_late>=60) ในช่วง [from, to] (RPC 0159 get_npl_history)
+ * ประวัติหนี้เสียรายวัน (days_late>=60) ในช่วง [from, to] (RPC 0159/0160 get_npl_history)
  * @param from วันเริ่ม 'YYYY-MM-DD' (ฝั่ง DB clamp ไม่ให้ต่ำกว่า NPL_HISTORY_MIN_DATE)
  * @param to วันสิ้นสุด 'YYYY-MM-DD' (ฝั่ง DB clamp ไม่ให้เกินวันนี้ — เวลาไทย)
+ * @param opts.monthEndOnly true = ส่ง p_month_end_only ไป RPC ด้วย (ได้เฉพาะแถวสิ้นเดือน + แถวล่าสุด ≤ to +
+ *   แถวสด) — ไม่ส่งพารามิเตอร์นี้เลยถ้าไม่ระบุ (rely on default false ฝั่ง DB, คง 2-arg call เดิมไว้)
  */
-export async function getNplHistory(from: string, to: string): Promise<NplHistoryPoint[]> {
+export async function getNplHistory(
+  from: string,
+  to: string,
+  opts?: { monthEndOnly?: boolean },
+): Promise<NplHistoryPoint[]> {
   if (!supabase) return []
 
+  const params: Record<string, unknown> = { p_from: from, p_to: to }
+  if (opts?.monthEndOnly) params.p_month_end_only = true
+
   const { data, error } = await supabase
-    .rpc('get_npl_history', { p_from: from, p_to: to })
+    .rpc('get_npl_history', params)
   if (error) throw error
 
   return ((data ?? []) as NplHistoryRow[]).map(r => ({
@@ -7950,6 +7961,8 @@ export async function getNplHistory(from: string, to: string): Promise<NplHistor
     badCount: Number(r.bad_count ?? 0),
     outstandingTotal: Number(r.outstanding_total ?? 0),
     badOutstanding: Number(r.bad_outstanding ?? 0),
+    overdueCount: r.overdue_count == null ? null : Number(r.overdue_count),
+    overdueOutstanding: r.overdue_outstanding == null ? null : Number(r.overdue_outstanding),
     source: (r.source ?? 'daily') as NplHistoryPoint['source'],
   })).sort((a, b) => a.date.localeCompare(b.date))
 }

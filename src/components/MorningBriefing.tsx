@@ -11,6 +11,10 @@ interface MorningBriefingProps {
   collectedThisMonth: number
   expectedThisMonth: number
   isExec?: boolean
+  /** % หนี้เสียตามมูลค่า ณ สิ้นเดือนก่อนหน้า (จากประวัติหนี้เสียรายวัน — สูตรเดียวกับ npl เป๊ะ) + ป้ายเดือน
+   *  null = ยังไม่มีข้อมูล (เช่น ก่อนวันที่ระบบเริ่มเก็บ, โหลดไม่สำเร็จ, หรือ role ไม่ตรง) — ถ้า null จะ fallback
+   *  ไปใช้ nplDeltaPct เดิม (ประมาณการจากสถานะปัจจุบัน) แทน ไม่ทำให้การ์ดพัง */
+  nplPrevMonthEnd?: { rate: number; label: string } | null
 }
 
 function alertText(a: BriefingAlert, isExec: boolean): string {
@@ -73,19 +77,23 @@ export default function MorningBriefing({
   collectedThisMonth,
   expectedThisMonth,
   isExec = false,
+  nplPrevMonthEnd = null,
 }: MorningBriefingProps) {
   const [showComModal, setShowComModal] = useState(false)
 
   const { commissionLiabilityThisMonth, nplDeltaPct, alerts } = data
 
-  // NPL delta display
+  // NPL delta display — ใช้ nplPrevMonthEnd (จากประวัติหนี้เสียรายวัน, สูตรเดียวกับ npl) ถ้ามี
+  // ไม่มี (ยังไม่มีข้อมูล/โหลดไม่สำเร็จ) → fallback ไป nplDeltaPct เดิม (ประมาณการจากสถานะปัจจุบัน)
+  const nplDelta = nplPrevMonthEnd ? npl - nplPrevMonthEnd.rate : nplDeltaPct
+  const nplDeltaVsLabel = nplPrevMonthEnd ? `vs สิ้น${nplPrevMonthEnd.label}` : 'vs เดือนก่อน (ประมาณการ)'
   let nplDeltaText = '—'
   let nplDeltaTone = 'text-ink-soft'
-  if (nplDeltaPct > 0) {
-    nplDeltaText = `▲ +${nplDeltaPct.toFixed(1)}%`
+  if (nplDelta > 0) {
+    nplDeltaText = `▲ +${nplDelta.toFixed(1)}%`
     nplDeltaTone = 'text-red-600'
-  } else if (nplDeltaPct < 0) {
-    nplDeltaText = `▼ ${nplDeltaPct.toFixed(1)}%`
+  } else if (nplDelta < 0) {
+    nplDeltaText = `▼ ${nplDelta.toFixed(1)}%`
     nplDeltaTone = 'text-green-600'
   }
 
@@ -125,7 +133,7 @@ export default function MorningBriefing({
         <KpiCell
           label="NPL%"
           value={`${npl.toFixed(1)}%`}
-          sub={<><span className={nplDeltaTone}>{nplDeltaText}</span>{' '}vs เดือนก่อน</>}
+          sub={<><span className={nplDeltaTone}>{nplDeltaText}</span>{' '}{nplDeltaVsLabel}</>}
           tone={npl >= 10 ? 'text-red-600' : npl >= 5 ? 'text-amber-600' : 'text-ink'}
         />
         <KpiCell

@@ -980,7 +980,7 @@ export interface PjImageResult {
   error?: string
 }
 
-/** 1 แถวต่อวันจาก getNplHistory() (db.ts, RPC get_npl_history — mig 0159) — ประวัติหนี้เสีย (days_late>=60)
+/** 1 แถวต่อวันจาก getNplHistory() (db.ts, RPC get_npl_history — mig 0159/0160) — ประวัติหนี้เสีย (days_late>=60)
  *  ของหน้า /monthly-report — สูตรเดียวกับ kpiBadDebt60/buildBucketKpi (monthlyReport.ts) ณ วันนั้น
  *  date = 'YYYY-MM-DD' (สิ้นวันนั้น เวลาไทย); source='live' = แถวสุดท้ายคำนวณสด (ยังไม่ถูก cron เก็บ) */
 export interface NplHistoryPoint {
@@ -989,5 +989,7 @@ export interface NplHistoryPoint {
   badCount: number
   outstandingTotal: number
   badOutstanding: number
+  overdueCount?: number | null        // สัญญาค้าง ≥1 วัน (รวม 60+) — null/undefined = ยังไม่มีข้อมูล
+  overdueOutstanding?: number | null  // ยอดคงเหลือทั้งสัญญาของกลุ่มค้าง ≥1 วัน
   source: 'backfill' | 'daily' | 'live'
 }
