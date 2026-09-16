@@ -979,3 +979,15 @@ export interface PjImageResult {
   mime?: string
   error?: string
 }
+
+/** 1 แถวต่อวันจาก getNplHistory() (db.ts, RPC get_npl_history — mig 0159) — ประวัติหนี้เสีย (days_late>=60)
+ *  ของหน้า /monthly-report — สูตรเดียวกับ kpiBadDebt60/buildBucketKpi (monthlyReport.ts) ณ วันนั้น
+ *  date = 'YYYY-MM-DD' (สิ้นวันนั้น เวลาไทย); source='live' = แถวสุดท้ายคำนวณสด (ยังไม่ถูก cron เก็บ) */
+export interface NplHistoryPoint {
+  date: string
+  activeCount: number
+  badCount: number
+  outstandingTotal: number
+  badOutstanding: number
+  source: 'backfill' | 'daily' | 'live'
+}

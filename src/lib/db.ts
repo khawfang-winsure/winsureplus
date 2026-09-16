@@ -30,6 +30,7 @@ import type {
   MediaDuplicateMatch,
   MediaVideoSettings,
   NotificationItem,
+  NplHistoryPoint,
   Option,
   OtherIncome,
   OverdueBucket,
@@ -118,6 +119,13 @@ const PAGE_CAP = 4999
 /** ก่อน 2 ก.ค. 2026 device_returns.created_at = วันนำเข้า/สร้างแถว ไม่ใช่วันคืนจริง (import ครั้งเดียว)
  *  → เคสที่ returnedAt < ค่านี้ ห้ามใช้เป็น anchor วันคืน (ทั้ง "คืนมากี่วัน" และ collectible-remaining gate) */
 export const RETURN_DATE_RELIABLE_FROM = '2026-07-02'
+
+/** วันเก่าสุดที่ประวัติหนี้เสียรายวัน (npl_daily_snapshot, mig 0159) มีข้อมูล — backfill เริ่มจากวันนี้
+ *  getNplHistory() clamp p_from ไม่ให้ต่ำกว่าค่านี้ (ฝั่ง DB clamp ซ้ำอีกชั้นใน get_npl_history RPC)
+ *  เดิมตั้ง 2026-06-16 แต่เลื่อนมา 2026-06-24 เพราะ device_returns มี 66 แถวคีย์ย้อนหลังพร้อมกัน (created_at
+ *  ไม่ใช่วันคืนจริง) วันที่ 21 มิ.ย. (28 แถว) และ 23 มิ.ย. (38 แถว) ทำให้สัญญาพวกนี้ถูกนับเป็น active+หนี้เสีย
+ *  เกินจริงก่อนหน้านั้น (ตัวเลขพอง 16–22 มิ.ย. แล้วตกฮวบวันที่ 23) — ตั้งแต่ 24 มิ.ย. ตัวเลขเรียบแล้ว */
+export const NPL_HISTORY_MIN_DATE = '2026-06-24'
 
 /**
  * ดึงข้อมูลทั้งตาราง/view แบบวนหน้า (loop .range ทีละ PAGE_CAP+1 แถว จนกว่าจะได้แถวไม่เต็มหน้า)
@@ -7903,6 +7911,47 @@ export async function getCollectionMonthly(): Promise<CollectionMonthlyRow[]> {
     activeCollectedBaht: Number(r.active_collected_baht ?? 0),
     activePctCollected: Number(r.active_pct_collected ?? 0),  // null → 0
   }))
+}
+
+// ---------- ประวัติหนี้เสียรายวัน (days_late>=60) — หน้า /monthly-report (migration 0159) ----------
+// snapshot รายวันเก็บด้วย cron ทุกคืน + backfill ครั้งเดียวตั้งแต่ NPL_HISTORY_MIN_DATE — ต่อท้าย 1 แถวสด
+// source='live' อัตโนมัติเมื่อช่วงที่ขอครอบวันนี้ (ฝั่ง DB ทำให้แล้วใน get_npl_history)
+// guard สิทธิ์ = admin หรือ executive (ตรง route gate /monthly-report ใน App.tsx) — role อื่นได้ [] เปล่าๆ
+// aggregate ฝั่ง DB → ไม่ติด PAGE_CAP; รองรับ isSupabaseConfigured=false
+
+// re-export type (ปกติ types.ts ให้ page import ตรง — เพิ่ม re-export นี้ไว้ด้วยเพราะ contract ของฟีเจอร์นี้
+// กำหนดให้ import { NplHistoryPoint } from '../lib/db' ใช้ได้เลย)
+export type { NplHistoryPoint }
+
+interface NplHistoryRow {
+  snapshot_date: string
+  active_count: number | string | null
+  bad_count: number | string | null
+  outstanding_total: number | string | null
+  bad_outstanding: number | string | null
+  source: string | null
+}
+
+/**
+ * ประวัติหนี้เสียรายวัน (days_late>=60) ในช่วง [from, to] (RPC 0159 get_npl_history)
+ * @param from วันเริ่ม 'YYYY-MM-DD' (ฝั่ง DB clamp ไม่ให้ต่ำกว่า NPL_HISTORY_MIN_DATE)
+ * @param to วันสิ้นสุด 'YYYY-MM-DD' (ฝั่ง DB clamp ไม่ให้เกินวันนี้ — เวลาไทย)
+ */
+export async function getNplHistory(from: string, to: string): Promise<NplHistoryPoint[]> {
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .rpc('get_npl_history', { p_from: from, p_to: to })
+  if (error) throw error
+
+  return ((data ?? []) as NplHistoryRow[]).map(r => ({
+    date: r.snapshot_date,
+    activeCount: Number(r.active_count ?? 0),
+    badCount: Number(r.bad_count ?? 0),
+    outstandingTotal: Number(r.outstanding_total ?? 0),
+    badOutstanding: Number(r.bad_outstanding ?? 0),
+    source: (r.source ?? 'daily') as NplHistoryPoint['source'],
+  })).sort((a, b) => a.date.localeCompare(b.date))
 }
 
 // ---------- Letter outcome report — วัดผลจดหมายติดตามหนี้ (migration 0069) ----------

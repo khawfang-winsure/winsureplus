@@ -1,9 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Printer } from 'lucide-react'
-import { Badge, Card, Loading, PageTitle } from '../components/ui'
+import { Badge, Card, Field, Input, Loading, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getContracts, getAllStatuses, getFirstInstallments, getReturns, getAllShops, getContractAggregates } from '../lib/db'
+import {
+  getContracts,
+  getAllStatuses,
+  getFirstInstallments,
+  getReturns,
+  getAllShops,
+  getContractAggregates,
+  getNplHistory,
+  NPL_HISTORY_MIN_DATE,
+  type NplHistoryPoint,
+} from '../lib/db'
 import {
   buildMonthlyReport,
   DEFAULT_MONTHLY_TARGETS,
@@ -11,6 +21,18 @@ import {
   type DimensionRow,
   type RiskLevel,
 } from '../lib/monthlyReport'
+import {
+  nplValueRate,
+  nplCountRate,
+  summarizeNplRange,
+  pickNplTableRows,
+  nplHistorySourceLabel,
+  nplHistoryPresetRange,
+  nplHistoryAnchorISO,
+  nplHistoryFootnote,
+  todayISOBangkok,
+  type NplHistoryPreset,
+} from '../lib/nplHistory'
 
 /** เดือนก่อนหน้าเดือนปัจจุบัน (Asia/Bangkok) — default = เดือนล่าสุดที่จบแล้ว */
 function defaultMonthISO(): string {
@@ -108,6 +130,9 @@ export default function MonthlyReportPage() {
       ) : (
         <>
           <KpiSection data={data} />
+          {/* key=monthISO: เปลี่ยนเดือนรายงาน (ลูกศร ◀/▶) → remount การ์ดนี้ทั้งก้อน รีเซ็ตกลับ "3 เดือนล่าสุด" ของเดือนใหม่เสมอ
+              (เลี่ยง effect ไล่ sync เอง — unmount ตัวเก่าจะ cleanup fetch ค้างให้อัตโนมัติ ไม่มีผลเก่าทับผลใหม่) */}
+          <NplHistoryCard key={data.monthISO} reportMonthISO={data.monthISO} badDebtTarget={data.targets.badDebt60Target} />
           <ApprovalSection data={data} />
           <FollowUpSection data={data} />
           <DimensionSection title="อาชีพ" rows={data.occupationRows} />
@@ -184,6 +209,383 @@ function KpiSection({ data }: { data: MonthlyReport }) {
         </div>
         <p className="mt-2 text-xs text-ink-soft">ยังไม่ตั้งเป้าหมาย</p>
       </Card>
+    </div>
+  )
+}
+
+// ===== ประวัติหนี้เสีย (โหลดแยกจาก data หลักของหน้า — error/ช้าที่นี่ไม่กระทบส่วนอื่น) =====
+const NPL_PRESETS: { value: NplHistoryPreset; label: string }[] = [
+  { value: 'thisMonth', label: 'เดือนนี้' },
+  { value: 'last3Months', label: '3 เดือนล่าสุด' },
+  { value: 'all', label: 'ทั้งหมด' },
+]
+
+const NPL_SOURCE_TONE: Record<NplHistoryPoint['source'], 'green' | 'amber' | 'neutral'> = {
+  backfill: 'amber',
+  daily: 'green',
+  live: 'neutral',
+}
+
+/** ตัวย่อวันที่แกน X กราฟ เช่น "16/9" (ไม่มีปี — วันที่เต็มดูได้ที่ตาราง/แผงรายละเอียดใต้กราฟ) */
+function shortAxisDate(iso: string): string {
+  const parts = iso.split('-')
+  return `${Number(parts[2] ?? 0)}/${Number(parts[1] ?? 0)}`
+}
+
+/** เปลี่ยนแปลงหน่วยจุด % เช่น "+0.24 จุด" / "-0.24 จุด" / "±0.00 จุด" */
+function fmtChangePts(delta: number): string {
+  const sign = delta > 0 ? '+' : delta < 0 ? '' : '±'
+  return `${sign}${delta.toFixed(2)} จุด`
+}
+
+/** เปลี่ยนแปลง: เพิ่ม = แย่ลง (แดง), ลด = ดีขึ้น (เขียว), เท่าเดิม = เทา */
+function changeTone(delta: number): 'text-red-600' | 'text-green-600' | 'text-ink-soft' {
+  if (delta > 0) return 'text-red-600'
+  if (delta < 0) return 'text-green-600'
+  return 'text-ink-soft'
+}
+
+function NplHistoryCard({ reportMonthISO, badDebtTarget }: { reportMonthISO: string; badDebtTarget: number }) {
+  const today = todayISOBangkok()
+
+  const [preset, setPreset] = useState<NplHistoryPreset | null>('last3Months')
+  // ค่าเริ่มต้น (ครั้งเดียวตอน mount): ถ้าหน้ารายงานกำลังดูเดือนในอดีต ให้กราฟจบตรงสิ้นเดือนนั้น ไม่ใช่วันนี้เสมอไป
+  const [range, setRange] = useState<{ from: string; to: string }>(() =>
+    nplHistoryPresetRange('last3Months', NPL_HISTORY_MIN_DATE, nplHistoryAnchorISO(reportMonthISO)),
+  )
+  const [points, setPoints] = useState<NplHistoryPoint[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
+
+  const invalidRange = range.from > range.to
+
+  useEffect(() => {
+    if (range.from > range.to) {
+      setLoading(false)
+      setErr(null)
+      return
+    }
+    let active = true
+    setLoading(true)
+    setErr(null)
+    getNplHistory(range.from, range.to)
+      .then((pts) => {
+        if (!active) return
+        setPoints(pts)
+        setActiveIndex(null)
+      })
+      .catch((e: unknown) => {
+        if (active) setErr(e instanceof Error ? e.message : 'โหลดข้อมูลประวัติหนี้เสียไม่สำเร็จ')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [range.from, range.to])
+
+  function applyPreset(p: NplHistoryPreset) {
+    setPreset(p)
+    // ปุ่มลัดยึดวันนี้จริงเสมอ (ต่างจากค่าเริ่มต้นตอน mount ที่ยึดเดือนของรายงานที่กำลังดู)
+    setRange(nplHistoryPresetRange(p, NPL_HISTORY_MIN_DATE, todayISOBangkok()))
+  }
+
+  function updateFrom(value: string) {
+    setPreset(null)
+    setRange((r) => ({ ...r, from: value }))
+  }
+
+  function updateTo(value: string) {
+    setPreset(null)
+    setRange((r) => ({ ...r, to: value }))
+  }
+
+  const summary = useMemo(() => summarizeNplRange(points), [points])
+  const tableRows = useMemo(() => pickNplTableRows(points), [points])
+  const activePoint = activeIndex !== null ? points[activeIndex] : null
+  const detailPoint = activePoint ?? (points.length > 0 ? points[points.length - 1] : null)
+
+  return (
+    <Card className="print:break-inside-avoid">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-ink">ประวัติหนี้เสีย (ล่าช้า 60 วันขึ้นไป)</h3>
+          <p className="mt-0.5 text-xs text-ink-soft">ย้อนดูหนี้เสีย ณ วันที่ต่าง ๆ ในอดีต — เทียบการเปลี่ยนแปลงตามช่วงที่เลือก</p>
+        </div>
+        <div
+          className="flex overflow-hidden rounded-xl border border-peach text-sm print:hidden"
+          role="group"
+          aria-label="เลือกช่วงเวลาแบบลัด"
+        >
+          {NPL_PRESETS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              onClick={() => applyPreset(p.value)}
+              aria-pressed={preset === p.value}
+              className={`px-3 py-1.5 font-medium transition ${
+                preset === p.value ? 'bg-salmon-deep text-white' : 'bg-white text-ink-soft hover:bg-peach-light'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-end gap-3 print:hidden">
+        <Field label="จากวันที่">
+          <Input type="date" value={range.from} min={NPL_HISTORY_MIN_DATE} max={today} onChange={(e) => updateFrom(e.target.value)} />
+        </Field>
+        <Field label="ถึงวันที่">
+          <Input type="date" value={range.to} min={NPL_HISTORY_MIN_DATE} max={today} onChange={(e) => updateTo(e.target.value)} />
+        </Field>
+      </div>
+
+      {invalidRange ? (
+        <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">"จากวันที่" ต้องไม่เกิน "ถึงวันที่" — กรุณาเลือกช่วงวันที่ใหม่</p>
+      ) : loading ? (
+        <Loading label="กำลังโหลดประวัติหนี้เสีย..." />
+      ) : err ? (
+        <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>
+      ) : points.length === 0 || !summary ? (
+        <p className="rounded-xl border-2 border-dashed border-peach bg-peach-light/30 px-4 py-6 text-center text-sm text-ink-soft">
+          ยังไม่มีข้อมูลในช่วงที่เลือก
+        </p>
+      ) : (
+        <>
+          {/* แถวสรุป 4 ช่อง */}
+          <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-xl bg-peach-light/40 py-2.5 text-center">
+              <p className="text-xs text-ink-soft">ต้นช่วง ({thaiDate(summary.start.date)})</p>
+              <p className={`text-xl font-bold ${deltaTone(nplValueRate(summary.start), badDebtTarget)}`}>
+                {nplValueRate(summary.start).toFixed(2)}%
+              </p>
+              <p className="text-xs text-ink-soft">สัญญา {nplCountRate(summary.start).toFixed(2)}%</p>
+            </div>
+            <div className="rounded-xl bg-peach-light/40 py-2.5 text-center">
+              <p className="text-xs text-ink-soft">ปลายช่วง ({thaiDate(summary.end.date)})</p>
+              <p className={`text-xl font-bold ${deltaTone(nplValueRate(summary.end), badDebtTarget)}`}>
+                {nplValueRate(summary.end).toFixed(2)}%
+              </p>
+              <p className="text-xs text-ink-soft">สัญญา {nplCountRate(summary.end).toFixed(2)}%</p>
+            </div>
+            <div className="rounded-xl bg-peach-light/40 py-2.5 text-center">
+              <p className="text-xs text-ink-soft">เปลี่ยนแปลง</p>
+              <p className={`text-xl font-bold ${changeTone(summary.changeValuePts)}`}>{fmtChangePts(summary.changeValuePts)}</p>
+              <p className="text-xs text-ink-soft">สัญญา {fmtChangePts(summary.changeCountPts)}</p>
+            </div>
+            <div className="rounded-xl bg-peach-light/40 py-2.5 text-center">
+              <p className="text-xs text-ink-soft">สูงสุดในช่วง ({thaiDate(summary.peak.date)})</p>
+              <p className={`text-xl font-bold ${deltaTone(nplValueRate(summary.peak), badDebtTarget)}`}>
+                {nplValueRate(summary.peak).toFixed(2)}%
+              </p>
+              <p className="text-xs text-ink-soft">สัญญา {nplCountRate(summary.peak).toFixed(2)}%</p>
+            </div>
+          </div>
+
+          {/* legend + กราฟ */}
+          <div className="mb-2 flex items-center gap-4 text-xs text-ink-soft">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: '#dc2626' }} /> % มูลค่า
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: '#f59e0b' }} /> % สัญญา
+            </span>
+          </div>
+          <NplHistoryChart points={points} activeIndex={activeIndex} onActiveIndexChange={setActiveIndex} />
+
+          {/* แผงรายละเอียดวันที่เลือก (แตะ/ชี้ที่กราฟ หรือค่าเริ่มต้น = วันล่าสุดของช่วง) */}
+          {detailPoint && (
+            <div className="mt-2 rounded-xl border border-peach bg-white px-4 py-3 text-sm">
+              <p className="font-semibold text-ink">{thaiDate(detailPoint.date)}</p>
+              <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-ink-soft sm:grid-cols-4">
+                <p className="tabular-nums">มูลค่า {nplValueRate(detailPoint).toFixed(2)}%</p>
+                <p className="tabular-nums">สัญญา {nplCountRate(detailPoint).toFixed(2)}%</p>
+                <p className="tabular-nums">
+                  ฿{baht(detailPoint.badOutstanding)} / ฿{baht(detailPoint.outstandingTotal)}
+                </p>
+                <p className="tabular-nums">
+                  {detailPoint.badCount} / {detailPoint.activeCount} ราย
+                </p>
+              </div>
+              {points.length > 1 && activeIndex === null && (
+                <p className="mt-1 text-xs italic text-ink-soft print:hidden">แตะหรือชี้ที่กราฟเพื่อดูวันอื่น</p>
+              )}
+            </div>
+          )}
+
+          {/* ตาราง */}
+          <div className="scrollbar-thin mt-4 overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="border-b border-peach text-left text-ink-soft">
+                  <th className="py-2 font-semibold">ณ วันที่</th>
+                  <th className="py-2 text-right font-semibold">หนี้เสีย (มูลค่า) %</th>
+                  <th className="py-2 text-right font-semibold">ยอดหนี้เสีย / ยอดคงเหลือ</th>
+                  <th className="py-2 text-right font-semibold">หนี้เสีย (สัญญา) %</th>
+                  <th className="py-2 text-right font-semibold">ราย / ทั้งหมด</th>
+                  <th className="py-2 text-right font-semibold">ที่มา</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableRows.map((r) => (
+                  <tr key={r.date} className="border-b border-peach/50 last:border-0">
+                    <td className="py-1.5 text-ink">{thaiDate(r.date)}</td>
+                    <td className="py-1.5 text-right tabular-nums text-ink">{nplValueRate(r).toFixed(2)}%</td>
+                    <td className="py-1.5 text-right tabular-nums text-ink-soft">
+                      ฿{baht(r.badOutstanding)} / ฿{baht(r.outstandingTotal)}
+                    </td>
+                    <td className="py-1.5 text-right tabular-nums text-ink">{nplCountRate(r).toFixed(2)}%</td>
+                    <td className="py-1.5 text-right tabular-nums text-ink-soft">
+                      {r.badCount} / {r.activeCount}
+                    </td>
+                    <td className="py-1.5 text-right">
+                      <Badge tone={NPL_SOURCE_TONE[r.source]}>{nplHistorySourceLabel(r.source)}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <p className="mt-3 text-xs text-ink-soft">{nplHistoryFootnote(NPL_HISTORY_MIN_DATE)}</p>
+    </Card>
+  )
+}
+
+function NplHistoryChart({
+  points,
+  activeIndex,
+  onActiveIndexChange,
+}: {
+  points: NplHistoryPoint[]
+  activeIndex: number | null
+  onActiveIndexChange: (i: number | null) => void
+}) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const n = points.length
+  if (n === 0) return null
+
+  const W = 680
+  const H = 220
+  const PAD = { l: 34, r: 14, t: 18, b: 26 }
+  const plotW = W - PAD.l - PAD.r
+  const lastIdx = n - 1
+
+  const valueRates = points.map(nplValueRate)
+  const countRates = points.map(nplCountRate)
+  const rawMax = Math.max(0.1, ...valueRates, ...countRates)
+  const yMax = Math.ceil(rawMax * 1.2 * 10) / 10
+
+  const xAt = (i: number) => PAD.l + (n <= 1 ? plotW / 2 : (i / lastIdx) * plotW)
+  const yAt = (v: number) => PAD.t + (1 - v / yMax) * (H - PAD.t - PAD.b)
+
+  const valueLinePts = points.map((p, i) => `${xAt(i).toFixed(1)},${yAt(nplValueRate(p)).toFixed(1)}`).join(' ')
+  const countLinePts = points.map((p, i) => `${xAt(i).toFixed(1)},${yAt(nplCountRate(p)).toFixed(1)}`).join(' ')
+
+  const gridVals = [0, yMax / 4, yMax / 2, (yMax * 3) / 4, yMax]
+  const showEvery = n <= 8 ? 1 : Math.ceil(n / 8)
+
+  function indexFromClientX(clientX: number): number | null {
+    const svgEl = svgRef.current
+    if (!svgEl) return null
+    const rect = svgEl.getBoundingClientRect()
+    if (rect.width === 0) return null
+    const scaleX = rect.width / W
+    const xInSvg = (clientX - rect.left) / scaleX
+    const clamped = Math.max(PAD.l, Math.min(W - PAD.r, xInSvg))
+    const frac = n <= 1 ? 0 : (clamped - PAD.l) / plotW
+    return Math.max(0, Math.min(lastIdx, Math.round(frac * lastIdx)))
+  }
+
+  function handlePointerMove(e: React.PointerEvent<SVGRectElement>) {
+    const idx = indexFromClientX(e.clientX)
+    if (idx !== null) onActiveIndexChange(idx)
+  }
+  function handlePointerDown(e: React.PointerEvent<SVGRectElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    handlePointerMove(e)
+  }
+  function handlePointerLeave(e: React.PointerEvent<SVGRectElement>) {
+    if (e.pointerType === 'mouse') onActiveIndexChange(null)
+  }
+
+  const first = points[0]
+  const last = points[lastIdx]
+  const ariaLabel = `กราฟแนวโน้มหนี้เสียตามมูลค่า ตั้งแต่วันที่ ${thaiDate(first.date)} ถึง ${thaiDate(last.date)} — เริ่มที่ ${nplValueRate(first).toFixed(2)}% จบที่ ${nplValueRate(last).toFixed(2)}%`
+
+  return (
+    <div className="overflow-x-auto">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ minWidth: n > 20 ? 480 : undefined }}
+        role="img"
+        aria-label={ariaLabel}
+      >
+        {gridVals.map((g, gi) => (
+          <g key={gi}>
+            <line x1={PAD.l} x2={W - PAD.r} y1={yAt(g)} y2={yAt(g)} stroke="currentColor" className="text-peach" strokeWidth={1} opacity={0.6} />
+            <text x={PAD.l - 6} y={yAt(g) + 3} textAnchor="end" fill="currentColor" className="text-ink-soft" fontSize={10}>
+              {g.toFixed(1)}
+            </text>
+          </g>
+        ))}
+
+        <polyline points={countLinePts} fill="none" stroke="#f59e0b" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" opacity={0.85} />
+        <polyline points={valueLinePts} fill="none" stroke="#dc2626" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+
+        {activeIndex !== null && (
+          <line
+            x1={xAt(activeIndex)}
+            x2={xAt(activeIndex)}
+            y1={PAD.t}
+            y2={H - PAD.b}
+            stroke="currentColor"
+            className="text-ink-soft"
+            strokeWidth={1}
+            strokeDasharray="3 3"
+          />
+        )}
+
+        {points.map((p, i) => {
+          const show = i === activeIndex || (activeIndex === null && i === lastIdx)
+          if (!show) return null
+          return (
+            <g key={p.date}>
+              <circle cx={xAt(i)} cy={yAt(nplValueRate(p))} r={5} fill="#dc2626" stroke="#fff" strokeWidth={2} />
+              <circle cx={xAt(i)} cy={yAt(nplCountRate(p))} r={4} fill="#f59e0b" stroke="#fff" strokeWidth={2} />
+            </g>
+          )
+        })}
+
+        {points.map((p, i) =>
+          i % showEvery === 0 || i === lastIdx ? (
+            <text key={p.date} x={xAt(i)} y={H - 7} textAnchor="middle" fill="currentColor" className="text-ink-soft" fontSize={10}>
+              {shortAxisDate(p.date)}
+            </text>
+          ) : null,
+        )}
+
+        {/* พื้นที่รับ pointer สำหรับชี้/แตะดูรายละเอียด — touchAction: pan-y ให้ยังเลื่อนหน้าจอแนวตั้งได้ปกติบนมือถือ/iPad */}
+        <rect
+          x={PAD.l}
+          y={0}
+          width={plotW}
+          height={H}
+          fill="transparent"
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          onPointerLeave={handlePointerLeave}
+          style={{ touchAction: 'pan-y', cursor: 'crosshair' }}
+        />
+      </svg>
     </div>
   )
 }
