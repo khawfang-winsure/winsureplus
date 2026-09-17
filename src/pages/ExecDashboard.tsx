@@ -1097,8 +1097,10 @@ function OverdueTrendCard({
   useEffect(() => { setActiveIndex(null) }, [monthly.length])
 
   const hasOverdueData = monthly.some((m) => (metric === 'value' ? m.overdueValuePct : m.overdueCountPct) !== null)
-  const change = nplChangeVsPreviousMonthEnd(monthly)
-  const shown = activeIndex !== null ? monthly[activeIndex] : monthly.length > 0 ? monthly[monthly.length - 1] : null
+  // เดือนที่กำลังโชว์ในบล็อกสรุป — ค่าเปลี่ยนแปลงต้องเทียบ "เดือนนี้ vs เดือนก่อนหน้ามันเอง" ไม่ใช่เดือนล่าสุดเสมอ
+  const shownIndex = activeIndex !== null ? activeIndex : monthly.length > 0 ? monthly.length - 1 : null
+  const shown = shownIndex !== null ? monthly[shownIndex] : null
+  const change = shownIndex !== null ? nplChangeVsPreviousMonthEnd(monthly, shownIndex) : null
   const shownChangePts = change && change.previous ? (metric === 'value' ? change.changeValuePts : change.changeCountPts) : null
 
   return (
@@ -1158,7 +1160,7 @@ function OverdueTrendCard({
                   {change?.previous && shownChangePts !== null && (
                     <p className={`mt-1 text-sm font-semibold ${shownChangePts > 0 ? 'text-red-600' : shownChangePts < 0 ? 'text-green-600' : 'text-ink-soft'}`}>
                       {shownChangePts > 0 ? '▲' : shownChangePts < 0 ? '▼' : '—'} {fmtPts(shownChangePts)}
-                      <span className="ml-1 font-normal text-ink-soft">เทียบสิ้น{change.previous.label}</span>
+                      <span className="ml-1 font-normal text-ink-soft">เทียบสิ้น {change.previous.label}</span>
                     </p>
                   )}
                 </div>

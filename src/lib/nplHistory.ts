@@ -251,11 +251,17 @@ export interface NplMonthlyChange {
   changeCountPts: number | null
 }
 
-/** monthly ว่าง → null; monthly ต้องเรียงเก่า→ใหม่ (ผลจาก buildNplMonthlyTrend เรียงแบบนี้อยู่แล้ว) */
-export function nplChangeVsPreviousMonthEnd(monthly: NplMonthlyPoint[]): NplMonthlyChange | null {
+/**
+ * monthly ว่าง → null; monthly ต้องเรียงเก่า→ใหม่ (ผลจาก buildNplMonthlyTrend เรียงแบบนี้อยู่แล้ว)
+ * index ไม่ส่ง (undefined) = เดือนล่าสุด (พฤติกรรมเดิม — ใช้ที่ MorningBriefing ห้ามเปลี่ยน)
+ * ส่ง index = เทียบเดือนนั้นกับเดือนก่อนหน้ามันเอง (ใช้ที่การ์ดแนวโน้ม /exec ตอนแตะเลือกเดือนอื่นในกราฟ)
+ * index นอกช่วง [0, monthly.length-1] จะถูก clamp ให้อัตโนมัติ; index=0 → previous เป็น null เสมอ (ไม่มีเดือนก่อนหน้า)
+ */
+export function nplChangeVsPreviousMonthEnd(monthly: NplMonthlyPoint[], index?: number): NplMonthlyChange | null {
   if (monthly.length === 0) return null
-  const current = monthly[monthly.length - 1]
-  const previous = monthly.length >= 2 ? monthly[monthly.length - 2] : null
+  const i = index === undefined ? monthly.length - 1 : Math.max(0, Math.min(monthly.length - 1, index))
+  const current = monthly[i]
+  const previous = i >= 1 ? monthly[i - 1] : null
   return {
     current,
     previous,
@@ -281,3 +287,6 @@ export function nplChangeVsPreviousMonthEnd(monthly: NplMonthlyPoint[]): NplMont
 //    overdueValuePct/overdueCountPct = null (ไม่ใช่ 0) ให้หน้าเว็บรู้ว่า "ไม่มีข้อมูล" ต่างจาก "ค้าง 0%"
 // 8) nplChangeVsPreviousMonthEnd([]) → null; มี 1 จุด → previous=null, changeValuePts/changeCountPts=null
 //    มี ≥2 จุด → previous=จุดก่อนสุดท้าย, changeValuePts=current.valuePct-previous.valuePct (บวก=แย่ลง)
+// 9) nplChangeVsPreviousMonthEnd(monthly, 0) → previous=null เสมอ (เดือนแรกไม่มีเดือนก่อนหน้า)
+//    nplChangeVsPreviousMonthEnd(monthly, 1) → current=monthly[1], previous=monthly[0] (ไม่ใช่เดือนล่าสุด)
+//    เรียกไม่ส่ง index (undefined) → เหมือนเดิมทุกกรณี (เดือนล่าสุด vs ก่อนหน้า) — MorningBriefing ไม่พัง
