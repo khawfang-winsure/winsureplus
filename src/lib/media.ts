@@ -512,6 +512,29 @@ export function isVideoRequired(
 }
 
 // ---------------------------------------------------------------------------
+// isVideoSlotVisible — ช่องคลิปเทสล็อกควร "โผล่ในการ์ด" ไหม (คนละเรื่องกับ isVideoRequired ที่ตัดสิน "ต้องมีไหม")
+// บั๊กที่แก้ (2026-09-20): ContractMediaCard เดิมใช้ required=false + count=0 ตัดสินซ่อนช่อง conditional slot
+// สัญญาที่ส่งเมลไปแล้ว isVideoRequired คืน false เสมอ (ไม่บังคับซ้ำ) -> พอแอดมินลบคลิปทิ้ง (count กลับเป็น 0)
+// ช่องทั้งช่องหายไปจากการ์ด กลายเป็นกับดักทางเดียว แนบใหม่ไม่ได้อีกเลย (เคส "นาง รุ่งนภา สวนยิ้ม" S00023PNQ037)
+// ---------------------------------------------------------------------------
+
+/**
+ * video_slot_visible = requiredFrom เป็นวันที่ถูกต้อง AND createdAt (slice 0,10) >= requiredFrom
+ * ตั้งใจ "ไม่เช็ค" emailSentAt เลย — นี่คือจุดต่างเดียวจาก isVideoRequired ด้านบน
+ * (ส่งเมลแล้วก็ยังเห็นช่องอยู่เสมอ ถ้าสัญญาเข้าเกณฑ์ตามวันที่สร้าง — กันช่องหายทั้งช่องเวลาลบไฟล์ทิ้ง)
+ * requiredFrom ว่าง/ไม่ใช่วันที่ที่ถูกต้อง -> false (ไม่โชว์ช่อง เหมือนยังไม่เปิดฟีเจอร์)
+ * createdAt ไม่มีค่า -> false (ข้อมูลเก่าไม่มี timestamp ที่เทียบได้)
+ */
+export function isVideoSlotVisible(
+  contract: { createdAt: string | null | undefined },
+  requiredFrom: string | null | undefined,
+): boolean {
+  if (!isValidDateString(requiredFrom)) return false
+  if (!contract.createdAt) return false
+  return contract.createdAt.slice(0, 10) >= requiredFrom.slice(0, 10)
+}
+
+// ---------------------------------------------------------------------------
 // buildMediaFlags — รวม flag ทุกตัวที่ slot ใช้ไว้จุดเดียว (credit_history_found, video_required, ...)
 // ทุกหน้าที่เรียก evaluateSlots ควรประกอบ flags ผ่านฟังก์ชันนี้ตัวเดียว ห้ามประกอบ object เองกระจาย
 // น้องวิว wire ครบแล้ว (ContractMediaCard.tsx, ContractDetail.tsx, WaitingEmail.tsx, WaitingSummary.tsx)
@@ -778,6 +801,14 @@ export function maskName(name: string): string {
 //      ข้อควรระวัง: ถ้าใครแก้ให้แปลงเป็นเวลาไทยก่อนเทียบ จะกลายเป็น true ผิด ต้องเทียบ UTC ตรงๆ ตามที่เก็บจริง
 // (24y) requiredFrom:'2026-09-10', createdAt:'2026-09-11', emailSentAt:'2026-09-12T03:00:00Z' -> false (เคยส่งเมลแล้ว)
 // (24z) requiredFrom:'2026-09-10', createdAt:undefined -> false (ข้อมูลเก่าไม่มี timestamp)
+//
+// isVideoSlotVisible (ต่างจาก isVideoRequired ตรงไม่เช็ค emailSentAt เลย):
+// (24z1) requiredFrom:'2026-09-10', createdAt:'2026-09-11', emailSentAt ไม่มีผลใดๆ (ฟังก์ชันนี้ไม่รับพารามิเตอร์นี้ด้วยซ้ำ) -> true
+// (24z2) [เคสบั๊กที่แก้] requiredFrom:'2026-09-10', createdAt:'2026-09-19' (ส่งเมลไปแล้วก็ตาม)
+//      -> true เสมอ ต่างจาก isVideoRequired ที่จะ false ถ้าเคยส่งเมล -> ช่องยังโผล่ให้แนบใหม่ได้ ไม่ใช่กับดักทางเดียวอีกต่อไป
+// (24z3) requiredFrom:null/'' -> false (ปิดฟีเจอร์)
+// (24z4) createdAt:undefined -> false (ข้อมูลเก่าไม่มี timestamp)
+// (24z5) requiredFrom:'2026-09-10', createdAt:'2026-09-09' (ก่อน cutoff) -> false
 //
 // buildMediaFlags:
 // (25a) contract:{creditHistoryFound:true, createdAt:'2026-09-11', emailSentAt:null}, settings:{videoRequiredFrom:'2026-09-10'}

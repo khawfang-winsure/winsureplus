@@ -55,6 +55,7 @@ import {
   emailBudget,
   evaluateSlots,
   isGated,
+  isVideoSlotVisible,
   mbToBytes,
   MEDIA_JPEG_QUALITY,
   MEDIA_JPEG_QUALITY_RETRY,
@@ -1082,9 +1083,18 @@ export default function ContractMediaCard({
 
   const slotDefByKey = useMemo(() => new Map(slots.map((s) => [s.key, s])), [slots])
 
+  // ช่อง kind='video' (lock_test_video) แยกออกจาก conditional slot ทั่วไป — ตัดสินด้วย isVideoSlotVisible
+  // (ไม่เช็ค emailSentAt) แทน required/count เดิม กันบั๊ก 2026-09-20: สัญญาที่ส่งเมลแล้ว isVideoRequired
+  // คืน false เสมอ พอลบไฟล์ทิ้ง (count=0) เงื่อนไขเดิม (!required && count===0) จะซ่อนช่องทั้งช่อง แนบใหม่ไม่ได้อีกเลย
+  // ต้องมี `|| e.count > 0` เสมอ — ล้อ invariant เดียวกับช่อง conditional อื่นด้านล่าง (มีไฟล์อยู่แล้วต้องเห็นช่องเสมอ
+  // ไม่ว่าเงื่อนไขจะพลิกยังไง) กันเคสในอนาคตที่มีคนเลื่อนค่า media_video_required_from ไปข้างหน้า (ยังไม่มีหน้าแก้ในเว็บ
+  // แต่แก้ผ่าน SQL ได้) แล้วสัญญาเก่าที่มีคลิปอยู่จริงใน DB ตกไปอยู่ก่อน cutoff ใหม่ — ห้ามลบเงื่อนไขนี้ทิ้ง
   const visibleSlots = evaluation.slots.filter((e) => {
     const def = slotDefByKey.get(e.key)
     if (!def) return true
+    if (def.kind === 'video') {
+      return isVideoSlotVisible({ createdAt: contract.createdAt }, videoSettings.videoRequiredFrom) || e.count > 0
+    }
     if (isConditionalRule(def.required) && !e.required && e.count === 0) return false
     return true
   })
