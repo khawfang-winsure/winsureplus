@@ -1612,6 +1612,20 @@ export default {
       // (9 ก.ย. 2026 — แก้บั๊ก all-or-nothing uuid dedup ทำใบค่าปรับหาย) เคส uuid ในก้อนเดียวกันตรงกับ
       // pj_applied_receipts แค่ "บางใบ" (มีใบใหม่ปนอยู่) ห้าม skip เงียบเหมือนเดิม → นับแยกไว้ที่นี่
       let receiptPartialApplied = 0;
+      // (21 ก.ย. 2026 — อนุมัติคุณเตย, Wave 2B) กันลงเงินซ้ำกับที่พนักงานลงมือไปแล้ว — ดูจุดเรียก
+      // find_staff_payment_overlap_engine ก่อน auto-apply (ในบล็อก EXACT ด้านล่าง) staffOverlapQueued =
+      // เข้ากล่องรอตรวจ (reason=STAFF_MANUAL_OVERLAP), staffOverlapHandled = เคยตรวจ/ผูกไปแล้วรอบก่อน
+      // ข้ามเงียบไม่ต้อง flag ซ้ำ, staffOverlapDryRunQueue = รายการที่ "จะ" ถูกส่งกล่องถ้ารันจริง (เฉพาะ
+      // dryRun — ไว้ให้ครีมดูผลก่อนเปิดใช้งานจริงบน prod)
+      let staffOverlapQueued = 0;
+      let staffOverlapHandled = 0;
+      const staffOverlapDryRunQueue: {
+        invoice_no: string;
+        paid_date: string | null;
+        contract_no: string;
+        candidate_count: number;
+        match_kinds: string[];
+      }[] = [];
 
       const reviewRows: any[] = []; // batch insert ตอนจบ (ไม่ dryRun)
 
@@ -1622,6 +1636,9 @@ export default {
         pjType: string,
         pjAmount: number,
         rawJsonOverride?: unknown,
+        overlapDetail?: unknown, // (21 ก.ย. 2026, Wave 2B) เฉพาะ reason=STAFF_MANUAL_OVERLAP — รายชื่อ
+        // payment_log ของพนักงานที่อาจซ้ำ เก็บคอลัมน์แยก overlap_detail (migration 0162) ไม่ปนกับ
+        // raw_json (raw_json ต้องคง shape ใบเสร็จ PJ ล้วนๆ ตามที่หน้าเว็บ extractPjPendingReceipts อ่าน)
       ) => {
         review.push({ inv: a.invoice_no, reason });
         reviewRows.push({
@@ -1633,6 +1650,7 @@ export default {
           matched_contract_id: matchedContractId,
           reason,
           raw_json: rawJsonOverride ?? a.raw,
+          overlap_detail: overlapDetail ?? null,
           status: "pending",
         });
       };
@@ -2271,6 +2289,97 @@ export default {
         //   instAmt <  remaining (จ่ายขาด ไม่ถึงงวด)       → PARTIAL เข้ากล่องรอตรวจ
         //   remaining<=0 หรือเคสแปลก                        → AMOUNT_MISMATCH รอตรวจ
         if (remaining > 0 && instAmt >= remaining) {
+          // ══════════════════════════════════════════════════════════════════════════════
+          // (21 ก.ย. 2026 — อนุมัติคุณเตย, Wave 2B) กันลงเงินซ้ำกับที่พนักงานลงมือไปแล้ว — เช็คก่อน
+          // auto-apply ทุกครั้ง (ก่อนแม้แต่ dryRun early-return ด้านล่าง เพื่อให้ dryRun รายงานผลได้ด้วย)
+          // เคสจริงที่เจอ 21 ก.ย. 2026: หนูคิด/ภูสิทธิ/เสกสรร รับเงินหน้าร้านแล้วลงมือในระบบเอง แต่ PJ
+          // auto-sync มาเห็นใบเสร็จของยอดเดียวกันทีหลัง (ร้าน PJ คีย์ใบเสร็จช้ากว่า) → auto-apply เดิมจะ
+          // ลงซ้ำทับยอดที่พนักงานลงไปแล้ว เงินเบิ้ล/ตารางงวดเพี้ยน
+          //
+          // find_staff_payment_overlap_engine (migration 0162 — service_role เรียกได้ ไม่มี guard
+          // role เหมือนตัว UI ใช้) หา payment_log ของ "คน" (acted_by ไม่ null, action=pay ไม่ถูก cancel)
+          // ในสัญญาเดียวกัน ใกล้ยอด+วันที่ PJ รายงานมา (±10 วัน, capacity_left>20 กันจับของที่ผูกไปแล้ว)
+          //
+          // rpc error → fail-closed เหมือน db error อื่นในลูปนี้ (ห้ามลงเงินถ้าเช็คไม่ได้ว่าซ้ำหรือเปล่า)
+          const { data: overlapCandidates, error: overlapErr } = await db.rpc(
+            "find_staff_payment_overlap_engine",
+            {
+              p_contract_id: contract.id,
+              p_paid_date: targetPaidDate ?? syncIsoDate,
+              p_principal: instAmt,
+              p_penalty: a.pen_amt,
+              p_window_days: 10,
+            },
+          );
+          if (overlapErr) {
+            return await failRun(
+              "error",
+              `db error (staff overlap check): ${overlapErr.message}`,
+              500,
+            );
+          }
+          if (overlapCandidates && overlapCandidates.length > 0) {
+            // (ติ๊ก review fix 3 pattern เดิม) เคยตรวจ/ผูกไปแล้วรอบก่อน (admin กด "ผูกกับรายการที่
+            // พนักงานลงมือ" ผ่าน link_pj_review_to_payment_log หรือกด skip) → ไม่ flag ซ้ำ ไม่ลงเงิน —
+            // ถ้าลงสำเร็จไปแล้วจริง uuid dedup ด้านบนสุดของ loop นี้จะกันไว้อยู่แล้วตามปกติ จุดนี้เป็นแค่
+            // safety-net เพิ่มอีกชั้นกันแถวเด้งกลับมาแจ้งซ้ำเฉยๆ ทั้งที่คนจัดการแล้ว
+            if (await reviewAlreadyHandled(a.invoice_no, a.paid_date)) {
+              staffOverlapHandled++;
+              continue;
+            }
+
+            // ยังไม่มีใครตัดสินใจ — เข้ากล่องรอตรวจแทนการลงเงินอัตโนมัติ ห้าม auto-apply เด็ดขาด (จะซ้ำ
+            // กับที่พนักงานลงไปแล้วถ้าเดาผิด ต้องให้ admin ยืนยันเอง)
+            //
+            // pj_amount = instAmt ล้วน (ไม่บวก a.pen_amt) ตาม convention เดียวกับ reason=PARTIAL ทั้งไฟล์
+            // นี้ — ค่าปรับไปอยู่ raw_json ให้ sumPjPenalty (db.ts) บวกเพิ่มเองฝั่งหน้าเว็บ
+            //
+            // raw_json ต้องคง a.raw (array ใบเสร็จดิบ) เหมือน PARTIAL เป๊ะ — ห้ามใส่ candidates ลง
+            // raw_json เด็ดขาด เพราะ extractPjPendingReceipts ฝั่งหน้าเว็บ (PjSyncReview.tsx) อ่านได้แค่
+            // shape ใบเสร็จ PJ ตายตัว 3 รูปแบบเท่านั้น ถ้าเปลี่ยน shape ปุ่ม "ลงเพิ่ม" จะลงเงินโดยไม่จด
+            // uuid ใบเสร็จไว้ → รอบ sync ถัดไปเห็นว่า "ยังไม่เคยลง" แล้วลงซ้ำอีกที — รายละเอียดผู้สมัคร
+            // (candidates) ไปอยู่คอลัมน์ overlap_detail แยกต่างหาก (migration 0162) แทน
+            const overlapDetail = {
+              candidates: overlapCandidates.map((c: any) => ({
+                payment_log_id: c.log_id,
+                created_at: c.created_at,
+                by_name: c.by_name,
+                amount: c.amount,
+                penalty_paid_amount: c.penalty_paid_amount,
+                installment_no: c.installment_no,
+                capacity_left: c.capacity_left,
+                match_kind: c.match_kind,
+              })),
+            };
+            staffOverlapQueued++;
+            if (dryRun) {
+              // dryRun ไม่เขียน DB อะไรเลย (แม้แต่ queueReview ก็แค่ push เข้า array ไม่ insert จริงอยู่
+              // แล้ว) — แต่แยกรายงานออกมาต่างหากจาก reviewRows ให้ครีมเห็นชัดว่า "จะเข้ากล่องเพราะซ้ำกับ
+              // พนักงาน" ไม่ใช่เหตุผลอื่น ก่อนกล้าเปิดใช้งานจริงบน prod
+              staffOverlapDryRunQueue.push({
+                invoice_no: a.invoice_no,
+                paid_date: a.paid_date,
+                contract_no: contractNo,
+                candidate_count: overlapCandidates.length,
+                match_kinds: Array.from(
+                  new Set(overlapCandidates.map((c: any) => String(c.match_kind))),
+                ),
+              });
+              continue;
+            }
+            queueReview(
+              a,
+              "STAFF_MANUAL_OVERLAP",
+              contract.id,
+              "installment",
+              instAmt,
+              undefined,
+              overlapDetail,
+            );
+            continue;
+          }
+          // ══════════════════════════════════════════════════════════════════════════════
+
           // จ่ายครบงวด/เกิน → ลงอัตโนมัติด้วย spread
           if (dryRun) {
             autoApplied.push({ contract_no: contractNo, amount: instAmt + a.pen_amt });
@@ -2338,6 +2447,14 @@ export default {
             // ยังไม่มีใครกดยืนยัน = เงินของวันที่ 20 หายเงียบ (บั๊กเดิมที่ Option B ตั้งใจแก้กลับมาอีกทาง)
             // เพิ่มชั้นสอง: scope ด้วย pj_paid_date ให้แน่นกว่าเดิม (แก้เฉพาะแถวของ "วันนี้ที่เพิ่งลง" จริงๆ
             // ไม่ใช่ทุกแถว invoice_no เดียวกันไม่ว่าวันไหน) ตรงกับ granularity ของ aggKey ที่ใช้ dedup อยู่แล้ว
+            //
+            // (21 ก.ย. 2026, Wave 2B) ตั้งใจ "ไม่" เพิ่ม "STAFF_MANUAL_OVERLAP" เข้า exclusion list นี้ —
+            // ถ้าโค้ดวิ่งมาถึงจุดนี้ได้ (auto-apply สำเร็จ) แปลว่ารอบนี้เช็ค find_staff_payment_overlap_engine
+            // แล้วไม่เจอ candidate ซ้ำแล้ว (ไม่งั้นจะเข้า branch queueReview ด้านบนแล้ว continue ไปก่อนถึง
+            // ตรงนี้) แถว STAFF_MANUAL_OVERLAP เดิมที่ยังค้าง pending ของ invoice_no+paid_date เดียวกันจึง
+            // ถือว่า stale จริง (เงินลงสำเร็จไปแล้วโดยไม่ชนพนักงาน) ปิดด้วย auto_resolved ได้ตามปกติ
+            // ต่างจาก RECEIPT_MISSING/RECEIPT_CHANGED/RECEIPT_PARTIAL_APPLIED ที่เป็น drift/ใบเสร็จใหม่
+            // แยกก้อนกันเลย ปิดปนกันไม่ได้
             let cleanupQuery = db.from("pj_sync_review")
               .update({ status: "auto_resolved" })
               .eq("pj_invoice_no", a.invoice_no)
@@ -2372,6 +2489,12 @@ export default {
         // อยู่ก่อน ไม่งั้นถ้า invoice_no เดียวกันมีแถว RECEIPT_MISSING/RECEIPT_CHANGED ค้างอยู่ จะทำให้เคส
         // MULTI/PARTIAL/UNMATCHED/OTHER/AMOUNT_MISMATCH ใหม่ของ invoice นั้นถูกมองว่า "ซ้ำ" แล้วข้ามทิ้งไป
         // เงียบๆ (หายจริง ไม่ใช่แค่ drift หายอย่างเดียว) — exclude reason drift ออกจากการนับ seen เสมอ
+        //
+        // (21 ก.ย. 2026, Wave 2B) แถว reason=STAFF_MANUAL_OVERLAP ที่เพิ่ง queueReview ไว้ในรอบนี้ก็โดน
+        // "seen" ตัวนี้ทิ้งได้เหมือนกัน ถ้า invoice_no เดียวกันมี pending review reason อื่นค้างอยู่แล้ว —
+        // ยอมรับได้ตั้งใจ ไม่แก้รอบนี้ (ไม่ลงเงินอยู่แล้วไม่ว่ากรณีไหน — แค่ไม่ขึ้นแถวใหม่ซ้ำในกล่องเฉยๆ
+        // ถ้า admin เคลียร์ pending เก่าของ invoice นั้นแล้ว รอบ cron ถัดไปจะ flag STAFF_MANUAL_OVERLAP ใหม่
+        // ให้เอง เพราะ overlapCandidates ยังหาเจอซ้ำอยู่ทุกรอบจนกว่าจะมีคน resolve/skip/ผูกจริง)
         const { data: existing } = await db
           .from("pj_sync_review")
           .select("pj_invoice_no")
@@ -2432,6 +2555,14 @@ export default {
         skipped_already_synced: skippedAlreadySynced,
         // (9 ก.ย. 2026) เคส uuid ตรงบางใบ (มีใบใหม่ปนอยู่) — เข้ากล่องรอตรวจ ไม่ auto-apply ไม่ skip เงียบ
         receipt_partial_applied: receiptPartialApplied,
+        // (21 ก.ย. 2026, Wave 2B) กันลงเงินซ้ำกับที่พนักงานลงมือเอง — staff_overlap_queued = เข้ากล่อง
+        // รอตรวจรอบนี้ (reason=STAFF_MANUAL_OVERLAP), staff_overlap_handled = เจอ candidate แต่เคยตรวจ/
+        // ผูกไปแล้วรอบก่อน (ข้ามเงียบ ไม่ flag ซ้ำ), staff_overlap_dry_run_queue = เฉพาะตอน dryRun=true
+        // รายการที่ "จะ" ถูกส่งกล่องถ้ารันจริง (array ว่างเสมอตอนรันจริง เพราะรันจริงลง reviewRows ปกติ
+        // ไปแล้วไม่ต้องรายงานซ้ำที่นี่)
+        staff_overlap_queued: staffOverlapQueued,
+        staff_overlap_handled: staffOverlapHandled,
+        staff_overlap_dry_run_queue: staffOverlapDryRunQueue,
         auto_applied: autoApplied,
         auto_applied_total: autoAppliedTotal,
         review,
