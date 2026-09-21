@@ -7,6 +7,7 @@ import {
   applyPjReviewAsOtherIncome,
   applyPjReviewPayment,
   getContractFeeReconcile,
+  getPjPlanChangeDetail,
   getPjReceiptDriftDetail,
   getPjReviewContext,
   getPjSyncReview,
@@ -24,6 +25,12 @@ import {
   type PjReviewContractGroup,
 } from '../lib/pjReviewExplain'
 import type { DriftKind, PjReceiptDriftSnapshot } from '../lib/pjReceiptDrift'
+import {
+  comparisonRowDiffers,
+  isPlanChangeManualFixReason,
+  isPlanChangeReason,
+  type PjPlanChangeSnapshot,
+} from '../lib/pjPlanChange'
 import type { PjSyncReviewReason, PjSyncReviewRow, PjReviewContext, PjSyncRunRow } from '../lib/types'
 import { useAuth } from '../lib/auth'
 
@@ -79,6 +86,9 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   RETURNED_CONTRACT_OVERAGE: 'คืนเครื่อง — ยอดเราเกิน PJ',
   RETURNED_CONTRACT_OTHER_FEE: 'คืนเครื่อง — ค่าธรรมเนียมอื่นๆ ไม่ตรง',
   RECEIPT_PARTIAL_APPLIED: 'ใบเสร็จตามมาทีหลัง (ยังไม่ได้ลง)',
+  PLAN_CHANGE_REVIEW: 'ร้านเปลี่ยนวันชำระ — ต้องตรวจ',
+  PLAN_CHANGE_DRYRUN: 'ทดลอง: ระบบจะเลื่อนวันให้',
+  PLAN_CHANGE_AUTO: 'ระบบเลื่อนวันให้แล้ว',
 }
 const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'red'> = {
   MULTI: 'amber',
@@ -99,6 +109,20 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'r
   RETURNED_CONTRACT_OTHER_FEE: 'green',
   // เหลืองเหมือน PARTIAL/MULTI — เป็นเงินจริงที่ต้องลงมือกดลง (มีปุ่ม "ลงตาม PJ") ไม่ใช่แค่รายงาน
   RECEIPT_PARTIAL_APPLIED: 'amber',
+  // เหลือง = ต้องลงมือไปแก้ที่หน้าสัญญาเอง ระบบเลื่อนวันให้ไม่ได้ (คล้าย manual-only แต่ไม่ใช่เงิน)
+  PLAN_CHANGE_REVIEW: 'amber',
+  // เทา = แค่โหมดทดลองให้ดูผลลัพธ์ก่อน ยังไม่มีอะไรเปลี่ยนจริงในระบบ ไม่ต้องรีบทำอะไร
+  PLAN_CHANGE_DRYRUN: 'neutral',
+  // เขียว = ระบบทำสำเร็จให้แล้วอัตโนมัติ เหลือแค่ตรวจทานว่าถูกต้อง
+  PLAN_CHANGE_AUTO: 'green',
+}
+
+/** ป้ายเหตุผลแบบกันพัง — เผื่อฝั่งระบบส่ง reason ใหม่มาก่อนหน้าเว็บรู้จัก (กัน badge ว่างเปล่าในอนาคต) */
+function reasonLabel(reason: PjSyncReviewReason): string {
+  return (REASON_LABEL as Partial<Record<string, string>>)[reason] ?? `เหตุผลอื่น (${reason})`
+}
+function reasonTone(reason: PjSyncReviewReason): 'neutral' | 'green' | 'amber' | 'red' {
+  return (REASON_TONE as Partial<Record<string, 'neutral' | 'green' | 'amber' | 'red'>>)[reason] ?? 'neutral'
 }
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====
@@ -149,6 +173,7 @@ export default function PjSyncReview() {
   const [rows, setRows] = useState<PjSyncReviewRow[]>([])
   const [runs, setRuns] = useState<PjSyncRunRow[]>([])
   const [driftDetails, setDriftDetails] = useState<Record<string, PjReceiptDriftSnapshot | null>>({})
+  const [planChangeDetails, setPlanChangeDetails] = useState<Record<string, PjPlanChangeSnapshot | null>>({})
   const [ctxByContract, setCtxByContract] = useState<Record<string, PjReviewContext | null>>({})
   const [loading, setLoading] = useState(true)
 
@@ -160,17 +185,25 @@ export default function PjSyncReview() {
     ])
     // แถว drift (ใบเสร็จหาย/ถูกแก้) ต้องโชว์กล่องเทียบ "เราถือ vs PJ ว่า" — ดึงรายละเอียดเพิ่มเฉพาะแถวพวกนี้
     const driftRows = review.filter((r) => isDriftReason(r.reason))
+    // แถวร้านเปลี่ยนแผนผ่อน/วันชำระ ต้องโชว์ตารางเทียบงวดเหมือนกัน — ดึงรายละเอียดเพิ่มเฉพาะแถวพวกนี้
+    const planChangeRows = review.filter((r) => isPlanChangeReason(r.reason))
     // บริบทสัญญา (งวดถัดไป/ประวัติจ่าย/เป้าหมายค่าปรับ) — ดึงครั้งเดียวต่อสัญญา (dedupe) ใช้ทั้งการ์ด+ป็อปอัพ
     const contractIds = [...new Set(review.map((r) => r.contractId).filter((id): id is string => id != null))]
-    const [details, contexts] = await Promise.all([
+    const [details, contexts, planChangeList] = await Promise.all([
       Promise.all(driftRows.map((r) => getPjReceiptDriftDetail(r.id))),
       // ⚠️ .catch(() => null) ต่อสัญญา — ถ้าสัญญาใดสัญญาหนึ่งดึงบริบทพลาด (เช่น RLS/ข้อมูลแปลก) ต้องไม่ทำให้
       // ทั้งกล่องรอตรวจล่ม การ์ดสัญญานั้นจะแค่โชว์แบบไม่มีบริบท (การ์ดอื่นใช้งานได้ปกติ)
       Promise.all(contractIds.map((id) => getPjReviewContext(id).catch(() => null))),
+      // ⚠️ .catch(() => null) ต่อแถวเหมือนกัน — ดึงตารางเทียบพลาดไม่ควรทำทั้งกล่องล่ม แค่แถวนั้นโชว์ไม่มีตาราง
+      Promise.all(planChangeRows.map((r) => getPjPlanChangeDetail(r.id).catch(() => null))),
     ])
     const detailMap: Record<string, PjReceiptDriftSnapshot | null> = {}
     driftRows.forEach((r, i) => {
       detailMap[r.id] = details[i]
+    })
+    const planChangeMap: Record<string, PjPlanChangeSnapshot | null> = {}
+    planChangeRows.forEach((r, i) => {
+      planChangeMap[r.id] = planChangeList[i]
     })
     const ctxMap: Record<string, PjReviewContext | null> = {}
     contractIds.forEach((id, i) => {
@@ -179,6 +212,7 @@ export default function PjSyncReview() {
     setRows(review)
     setRuns(runList)
     setDriftDetails(detailMap)
+    setPlanChangeDetails(planChangeMap)
     setCtxByContract(ctxMap)
     setLoading(false)
   }, [isAdmin])
@@ -291,6 +325,7 @@ export default function PjSyncReview() {
               ctx={ctxByContract[group.contractId] ?? null}
               dupMap={dupMap}
               driftDetails={driftDetails}
+              planChangeDetails={planChangeDetails}
               onApply={setApplyTarget}
               onOtherIncome={setOtherIncomeTarget}
               onResolve={(row, action) => setTarget({ row, action })}
@@ -311,7 +346,7 @@ export default function PjSyncReview() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                          <Badge tone={REASON_TONE[row.reason]}>{REASON_LABEL[row.reason]}</Badge>
+                          <Badge tone={reasonTone(row.reason)}>{reasonLabel(row.reason)}</Badge>
                           <span className="text-xs text-ink-soft whitespace-nowrap">
                             เลขใบเสร็จ {row.invoiceNo} · {row.paidDate ? thaiDate(row.paidDate.slice(0, 10)) : 'ไม่ระบุวันที่'}
                           </span>
@@ -344,6 +379,7 @@ export default function PjSyncReview() {
           action={target.action}
           byName={userName ?? 'ไม่ทราบ'}
           driftDetail={driftDetails[target.row.id] ?? null}
+          planChangeDetail={planChangeDetails[target.row.id] ?? null}
           onClose={() => setTarget(null)}
           onDone={async () => {
             setTarget(null)
@@ -391,6 +427,7 @@ function ContractReviewCard({
   ctx,
   dupMap,
   driftDetails,
+  planChangeDetails,
   onApply,
   onOtherIncome,
   onResolve,
@@ -399,6 +436,7 @@ function ContractReviewCard({
   ctx: PjReviewContext | null
   dupMap: Map<string, PjReviewDupFlag>
   driftDetails: Record<string, PjReceiptDriftSnapshot | null>
+  planChangeDetails: Record<string, PjPlanChangeSnapshot | null>
   onApply: (row: PjSyncReviewRow) => void
   onOtherIncome: (row: PjSyncReviewRow) => void
   onResolve: (row: PjSyncReviewRow, action: 'resolved' | 'skipped') => void
@@ -446,6 +484,7 @@ function ContractReviewCard({
             ctx={ctx}
             isDuplicate={dupMap.get(row.id)?.isDuplicate ?? false}
             driftDetail={driftDetails[row.id] ?? null}
+            planChangeDetail={planChangeDetails[row.id] ?? null}
             onApply={() => onApply(row)}
             onOtherIncome={() => onOtherIncome(row)}
             onResolve={(action) => onResolve(row, action)}
@@ -462,6 +501,7 @@ function ReviewLineItem({
   ctx,
   isDuplicate,
   driftDetail,
+  planChangeDetail,
   onApply,
   onOtherIncome,
   onResolve,
@@ -470,12 +510,15 @@ function ReviewLineItem({
   ctx: PjReviewContext | null
   isDuplicate: boolean
   driftDetail: PjReceiptDriftSnapshot | null
+  planChangeDetail: PjPlanChangeSnapshot | null
   onApply: () => void
   onOtherIncome: () => void
   onResolve: (action: 'resolved' | 'skipped') => void
 }) {
   const isDrift = isDriftReason(row.reason)
   const isManualOnly = isManualOnlyReason(row.reason)
+  const isPlanChange = isPlanChangeReason(row.reason)
+  const planChangeNeedsFix = isPlanChangeManualFixReason(row.reason)
   const chip = reviewRowTypeChip(row)
   // ค่าปรับล้วน (paymentType='penalty'): row.amount กับ row.penaltyAmount เป็นเลขเดียวกัน (ยอด PJ ใบเดียว)
   // ห้ามบวกกัน ไม่งั้นยอดเบิ้ล (เช่น 229 → โชว์ 458) — ใช้ตรรกะเดียวกับ isPenaltyOnly ใน ApplyPjModal
@@ -490,14 +533,18 @@ function ReviewLineItem({
       : null
 
   return (
-    <div className={`rounded-xl border px-4 py-3 ${isDrift ? 'border-red-200 bg-red-50/40' : 'border-peach bg-cream'}`}>
+    <div
+      className={`rounded-xl border px-4 py-3 ${
+        isDrift ? 'border-red-200 bg-red-50/40' : isPlanChange ? 'border-amber-200 bg-amber-50/30' : 'border-peach bg-cream'
+      }`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex flex-wrap items-center gap-1.5">
             <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_CHIP_CLS[chip.tone]}`}>
               {chip.label}
             </span>
-            <Badge tone={REASON_TONE[row.reason]}>{REASON_LABEL[row.reason]}</Badge>
+            <Badge tone={reasonTone(row.reason)}>{reasonLabel(row.reason)}</Badge>
             {isDuplicate && <Badge tone="red">น่าจะซ้ำ</Badge>}
             <span className="text-xs text-ink-soft whitespace-nowrap">
               เลขใบเสร็จ {row.invoiceNo} · {row.paidDate ? thaiDate(row.paidDate.slice(0, 10)) : 'ไม่ระบุวันที่'}
@@ -525,6 +572,12 @@ function ReviewLineItem({
         </div>
       )}
 
+      {isPlanChange && planChangeDetail && (
+        <div className="mt-3">
+          <PlanChangeCompareBox detail={planChangeDetail} />
+        </div>
+      )}
+
       <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5 border-t border-peach/60 pt-2.5">
         {pjLinkHref && (
           <a href={pjLinkHref} target="_blank" rel="noreferrer">
@@ -538,6 +591,13 @@ function ReviewLineItem({
           <Button variant="ghost" onClick={() => onResolve('resolved')}>
             <CheckCircle2 size={13} />
             รับทราบ
+          </Button>
+        ) : isPlanChange ? (
+          // ร้านเปลี่ยนแผนผ่อน/วันชำระ — ไม่มีปุ่มลงเงิน/รายได้อื่นๆ (ไม่ใช่เรื่องเงิน) แยก 2 แบบ:
+          // ต้องแก้เอง (REVIEW/DRYRUN) บังคับกรอกหมายเหตุว่าแก้อะไรไปบ้าง ส่วน AUTO แค่รับทราบว่าระบบทำให้แล้ว
+          <Button variant="ghost" onClick={() => onResolve('resolved')}>
+            <CheckCircle2 size={13} />
+            {planChangeNeedsFix ? 'แก้แล้ว' : 'รับทราบ'}
           </Button>
         ) : isManualOnly ? (
           // ต้องลงมือทำเอง (เปิด PJ เทียบยอด แล้วลงชำระที่หน้าสัญญาโดยตรง) — ไม่มีปุ่มลงเงิน/รายได้อื่นๆ
@@ -615,12 +675,74 @@ function DriftCompareBox({ detail }: { detail: PjReceiptDriftSnapshot }) {
   )
 }
 
-// ===== Modal ยืนยัน ทำเสร็จแล้ว / ข้าม / รับทราบ (drift) — note optional =====
+// ===== ตารางเทียบงวด "เรา vs PJ" — เฉพาะแถวร้านเปลี่ยนแผนผ่อน/วันชำระ (PLAN_CHANGE_*) =====
+// กันพัง: raw_json มาจากฝั่ง pj-sync (น้องชีสเขียน) shape อาจยังไม่ล็อก 100% — ถ้าไม่มีตารางเทียบเลย
+// (comparison ว่าง + ไม่มี proposedDueDay/decisionReason) โชว์ข้อมูลดิบแทนไม่ให้จอว่างเปล่า
+function PlanChangeCompareBox({ detail }: { detail: PjPlanChangeSnapshot }) {
+  const hasSummary = detail.proposedDueDay != null || !!detail.decisionReason
+  return (
+    <div className="rounded-xl border border-amber-200 bg-cream px-4 py-3 text-sm">
+      {hasSummary && (
+        <div className="mb-2.5 flex flex-col gap-1">
+          {detail.proposedDueDay != null && (
+            <p className="text-ink">
+              วันครบกำหนดใหม่ที่ PJ ใช้ <span className="font-semibold">ทุกวันที่ {detail.proposedDueDay}</span> ของเดือน
+            </p>
+          )}
+          {detail.decisionReason && <p className="text-xs text-ink-soft">เหตุผลที่ระบบตัดสินใจ: {detail.decisionReason}</p>}
+        </div>
+      )}
+
+      {detail.comparison.length > 0 ? (
+        <div className="overflow-x-auto rounded-lg border border-peach">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-peach text-left text-ink-soft">
+                <th className="px-3 py-2 font-medium">งวด</th>
+                <th className="px-3 py-2 font-medium">วันเดิม (เรา)</th>
+                <th className="px-3 py-2 font-medium">วันใหม่ (PJ)</th>
+                <th className="px-3 py-2 font-medium text-right">ยอดเดิม</th>
+                <th className="px-3 py-2 font-medium text-right">ยอด PJ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.comparison.map((c) => {
+                const diff = comparisonRowDiffers(c)
+                return (
+                  <tr key={c.no} className={`border-b border-peach/50 last:border-0 ${diff ? 'bg-amber-50' : ''}`}>
+                    <td className="px-3 py-2 text-ink whitespace-nowrap">งวด {c.no}</td>
+                    <td className="px-3 py-2 text-ink-soft whitespace-nowrap">{c.ourDue ? thaiDate(c.ourDue.slice(0, 10)) : '—'}</td>
+                    <td className={`px-3 py-2 whitespace-nowrap ${diff ? 'font-semibold text-amber-700' : 'text-ink-soft'}`}>
+                      {c.pjDue ? thaiDate(c.pjDue.slice(0, 10)) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right text-ink-soft whitespace-nowrap">{c.ourAmount != null ? `${baht(c.ourAmount)} ฿` : '—'}</td>
+                    <td className="px-3 py-2 text-right text-ink-soft whitespace-nowrap">{c.pjAmount != null ? `${baht(c.pjAmount)} ฿` : '—'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : detail.rawNote ? (
+        <p className="break-all rounded-lg bg-peach-light/40 px-3 py-2 text-xs text-ink-soft">
+          ระบบยังอ่านตารางเทียบงวดของเคสนี้ไม่ครบ — ข้อมูลดิบที่ได้รับ: {detail.rawNote}
+        </p>
+      ) : (
+        <p className="text-xs text-ink-soft">ไม่มีตารางเทียบงวดสำหรับเคสนี้</p>
+      )}
+    </div>
+  )
+}
+
+// ===== Modal ยืนยัน ทำเสร็จแล้ว / ข้าม / รับทราบ (drift) / แก้แล้ว-รับทราบ (plan change) =====
+// note ปกติไม่บังคับ ยกเว้นเคสร้านเปลี่ยนแผนผ่อน/วันชำระที่ต้องแก้เอง (PLAN_CHANGE_REVIEW/DRYRUN) —
+// บังคับกรอกว่าแก้อะไรไปบ้าง กันลืม/กันกดผ่านมั่วๆ เพราะเคสนี้ไม่มีระบบช่วยตรวจทานซ้ำเหมือนเงิน
 function ResolveModal({
   row,
   action,
   byName,
   driftDetail,
+  planChangeDetail,
   onClose,
   onDone,
 }: {
@@ -628,6 +750,7 @@ function ResolveModal({
   action: 'resolved' | 'skipped'
   byName: string
   driftDetail: PjReceiptDriftSnapshot | null
+  planChangeDetail: PjPlanChangeSnapshot | null
   onClose: () => void
   onDone: () => void
 }) {
@@ -645,9 +768,20 @@ function ResolveModal({
   }, [onClose])
 
   const isDrift = isDriftReason(row.reason)
-  const title = isDrift ? 'รับทราบเคสนี้' : action === 'resolved' ? 'ทำเสร็จแล้ว' : 'ข้ามเคสนี้'
+  const isPlanChange = isPlanChangeReason(row.reason)
+  const planChangeNeedsFix = isPlanChangeManualFixReason(row.reason)
+  const noteRequired = planChangeNeedsFix
+  const title = planChangeNeedsFix
+    ? 'แก้แล้ว'
+    : isDrift || isPlanChange
+      ? 'รับทราบเคสนี้'
+      : action === 'resolved'
+        ? 'ทำเสร็จแล้ว'
+        : 'ข้ามเคสนี้'
+  const canConfirm = !noteRequired || note.trim().length > 0
 
   async function confirm() {
+    if (!canConfirm) return
     setBusy(true)
     setErr(null)
     try {
@@ -663,11 +797,15 @@ function ResolveModal({
     <Modal title={title} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-ink">
-          {isDrift
-            ? 'ยืนยันว่ารับทราบเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ) — การรับทราบไม่มีการแก้ไขยอดเงินใดๆ ในระบบ'
-            : action === 'resolved'
-              ? 'ยืนยันว่าได้จัดการเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ)'
-              : 'ข้ามเคสนี้ออกจากกล่องรอตรวจโดยไม่ดำเนินการ'}
+          {planChangeNeedsFix
+            ? 'ยืนยันว่าไปแก้วันชำระ/แผนผ่อนของสัญญานี้ที่หน้าสัญญาเรียบร้อยแล้ว — กรุณาระบุว่าแก้อะไรไปบ้าง (บังคับกรอก)'
+            : isPlanChange
+              ? 'ยืนยันว่ารับทราบว่าระบบเลื่อนวันครบกำหนดให้อัตโนมัติแล้ว — การรับทราบไม่มีการแก้ไขข้อมูลเพิ่มเติม'
+              : isDrift
+                ? 'ยืนยันว่ารับทราบเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ) — การรับทราบไม่มีการแก้ไขยอดเงินใดๆ ในระบบ'
+                : action === 'resolved'
+                  ? 'ยืนยันว่าได้จัดการเคสนี้แล้ว (เอาออกจากกล่องรอตรวจ)'
+                  : 'ข้ามเคสนี้ออกจากกล่องรอตรวจโดยไม่ดำเนินการ'}
         </p>
 
         <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-xl bg-peach-light/40 px-4 py-3 text-sm">
@@ -676,20 +814,21 @@ function ResolveModal({
           <span className="text-ink-soft">ลูกค้า</span>
           <span className="text-ink">{row.contractId ? `${row.customerName ?? '—'} (${row.contractNo ?? '—'})` : 'หาสัญญาไม่เจอ'}</span>
           <span className="text-ink-soft">เหตุผล</span>
-          <span className="text-ink">{REASON_LABEL[row.reason]}</span>
+          <span className="text-ink">{reasonLabel(row.reason)}</span>
           <span className="text-ink-soft">ยอด</span>
           <span className="text-ink whitespace-nowrap">{baht(row.amount)} ฿</span>
         </div>
 
         {isDrift && driftDetail && <DriftCompareBox detail={driftDetail} />}
+        {isPlanChange && planChangeDetail && <PlanChangeCompareBox detail={planChangeDetail} />}
 
         <div>
-          <label className="mb-1 block text-sm text-ink-soft">หมายเหตุ (ไม่บังคับ)</label>
+          <label className="mb-1 block text-sm text-ink-soft">หมายเหตุ{noteRequired ? ' (บังคับกรอก)' : ' (ไม่บังคับ)'}</label>
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
             rows={2}
-            placeholder="เช่น ลงยอดให้แล้วผ่านหน้าสัญญา"
+            placeholder={noteRequired ? 'เช่น แก้วันครบกำหนดในระบบให้ตรงกับ PJ ที่หน้าสัญญาแล้ว' : 'เช่น ลงยอดให้แล้วผ่านหน้าสัญญา'}
             className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
           />
         </div>
@@ -698,7 +837,7 @@ function ResolveModal({
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
-          <Button onClick={confirm} disabled={busy}>{busy ? 'กำลังบันทึก...' : `ยืนยัน${title}`}</Button>
+          <Button onClick={confirm} disabled={busy || !canConfirm}>{busy ? 'กำลังบันทึก...' : `ยืนยัน${title}`}</Button>
         </div>
       </div>
     </Modal>

@@ -615,7 +615,14 @@ export interface LetterOutcomeByRound {
  * sync กัน) ทำให้ auto-sync ลงใบแรกไปแล้วแต่ "ข้าม" ใบที่ตามมาทิ้งเงียบๆ (bug ยืนยันแล้ว 9 ก.ย. 2026 — 35
  * ราย ~8,000 บาทหาย) แถวนี้คือใบที่ตามมาที่ยังไม่ได้ลง — amount/penaltyAmount ของแถวนี้ = เฉพาะส่วนที่ยังไม่ได้
  * ลง (ไม่รวมใบแรกที่ลงไปแล้ว) ต่างจาก manual-only ตรงที่เป็นเงินจริงที่ยังไม่ถูกบันทึก จึง "กดลงเงินได้" เหมือน
- * PARTIAL/MULTI (isManualOnlyReason ห้ามคุมตัวนี้) */
+ * PARTIAL/MULTI (isManualOnlyReason ห้ามคุมตัวนี้)
+ * PLAN_CHANGE_REVIEW / PLAN_CHANGE_DRYRUN / PLAN_CHANGE_AUTO = ร้านเปลี่ยนแผนผ่อน/วันชำระใน PJ (21 ก.ย. 2026)
+ * ดู src/lib/pjPlanChange.ts (isPlanChangeReason) — รายละเอียดตารางเทียบงวด (our_due/pj_due ต่องวด) อยู่ใน
+ * raw_json ดึงแยกต่อแถวผ่าน getPjPlanChangeDetail (db.ts) เหมือน RECEIPT_MISSING/RECEIPT_CHANGED ไม่ join
+ * ทุกแถว:
+ *   PLAN_CHANGE_REVIEW = เคสซับซ้อน ระบบเลื่อนวันให้เองไม่ได้ ต้องคนตรวจ+ไปแก้ที่หน้าสัญญาเอง
+ *   PLAN_CHANGE_DRYRUN = โหมดทดลอง ระบบ "จะ" เลื่อนวันให้ แต่ยังไม่ได้แก้ข้อมูลจริง
+ *   PLAN_CHANGE_AUTO   = ระบบเลื่อนวันครบกำหนดในระบบเราให้ตรงกับ PJ แล้วอัตโนมัติ — แจ้งให้ตรวจทาน */
 export type PjSyncReviewReason =
   | 'MULTI'
   | 'PARTIAL'
@@ -628,6 +635,9 @@ export type PjSyncReviewReason =
   | 'RETURNED_CONTRACT_OVERAGE'
   | 'RETURNED_CONTRACT_OTHER_FEE'
   | 'RECEIPT_PARTIAL_APPLIED'
+  | 'PLAN_CHANGE_REVIEW'
+  | 'PLAN_CHANGE_DRYRUN'
+  | 'PLAN_CHANGE_AUTO'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'

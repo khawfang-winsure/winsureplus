@@ -95,6 +95,7 @@ import {
 } from './contractTransfer'
 import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from './deviceReturnByCollector'
 import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
+import { isPlanChangeReason, type PjPlanChangeSnapshot } from './pjPlanChange'
 import { LATE_BUCKETS, type LateBucket } from './collectorPeriod'
 
 export type OptionKind =
@@ -8452,6 +8453,58 @@ export async function getPjReceiptDriftDetail(reviewId: string): Promise<PjRecei
     ours: raw.ours,
     pj: raw.pj ?? null,
   }
+}
+
+/** raw_json shape ของ reason PLAN_CHANGE_* (21 ก.ย. 2026) — ร้านเปลี่ยนแผนผ่อน/วันชำระใน PJ กันพังทุก field
+ *  เพราะยังไม่ล็อกสัญญา 100% กับฝั่งที่เขียนแถวนี้ (pj-sync/index.ts น้องชีส) */
+interface PjPlanChangeComparisonRaw {
+  no?: number | string | null
+  our_due?: string | null
+  pj_due?: string | null
+  our_amount?: string | number | null
+  pj_amount?: string | number | null
+  status?: string | null
+}
+interface PjPlanChangeRawJson {
+  comparison?: PjPlanChangeComparisonRaw[] | null
+  proposed_due_day?: number | string | null
+  decision_reason?: string | null
+}
+
+/** ดึงรายละเอียด "ร้านเปลี่ยนแผนผ่อน/วันชำระ" (ตารางเทียบงวด) ของ 1 แถวในกล่องรอตรวจ — คืน null ถ้าแถวนี้
+ *  ไม่ใช่ reason PLAN_CHANGE_* เดียวกับ pattern getPjReceiptDriftDetail ด้านบน (query แยกเบาๆ ต่อแถวที่ต้อง
+ *  ดูรายละเอียด ไม่ join ทุกแถวใน getPjSyncReview เพราะแถวส่วนใหญ่ไม่ใช่ reason นี้) — parse แบบกันพังทุก
+ *  field (rawNote = fallback ข้อความดิบ เผื่อ raw_json ไม่มี field ที่คาดไว้เลย ไม่ให้หน้าจอพัง/ว่างเปล่า) */
+export async function getPjPlanChangeDetail(reviewId: string): Promise<PjPlanChangeSnapshot | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('pj_sync_review')
+    .select('reason, raw_json')
+    .eq('id', reviewId)
+    .maybeSingle()
+  if (error) throw error
+  const row = data as { reason: string; raw_json: unknown } | null
+  if (!row || !isPlanChangeReason(row.reason as PjSyncReviewRow['reason'])) return null
+
+  const raw = (row.raw_json ?? null) as PjPlanChangeRawJson | null
+  const comparisonRaw = raw && Array.isArray(raw.comparison) ? raw.comparison : []
+  const comparison: PjPlanChangeSnapshot['comparison'] = comparisonRaw.map((c, i) => ({
+    no: Number(c?.no ?? i + 1) || i + 1,
+    ourDue: c?.our_due ?? null,
+    pjDue: c?.pj_due ?? null,
+    ourAmount: c?.our_amount != null ? parsePjAmount(c.our_amount) : null,
+    pjAmount: c?.pj_amount != null ? parsePjAmount(c.pj_amount) : null,
+    status: c?.status ?? null,
+  }))
+  const proposedDueDayNum = raw?.proposed_due_day != null ? Number(raw.proposed_due_day) : null
+  const proposedDueDay = proposedDueDayNum != null && Number.isFinite(proposedDueDayNum) ? proposedDueDayNum : null
+  const decisionReason = raw?.decision_reason ?? null
+  const rawNote =
+    comparison.length === 0 && proposedDueDay == null && decisionReason == null && raw
+      ? JSON.stringify(raw)
+      : null
+
+  return { comparison, proposedDueDay, decisionReason, rawNote }
 }
 
 /** รอบการรัน auto-sync ล่าสุด (default 20 รอบ) — โชว์สถานะ + แจ้งเตือนเมื่อรอบล่าสุดพัง */
