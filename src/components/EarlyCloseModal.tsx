@@ -356,7 +356,10 @@ export default function EarlyCloseModal({
 
   // ตรงกับยอดที่ตารางแนะนำเป๊ะไหม (ไม่ใช่แค่ "เคยกดใช้ยอดนี้" — เผื่อเคสพิมพ์เลขตรงกับตารางเองโดยไม่กดปุ่ม)
   // ใช้ตัดสินว่าข้อความส่งลูกค้าควรโชว์ % ส่วนลดหรือไม่ (ข้อ 1 — กันโชว์ % ที่ไม่จริงตอนกรอกยอดเอง)
-  const matchesTableAmount = suggestedSettlementPaid != null && settlementPaid === suggestedSettlementPaid
+  // ต้อง settlementPreview.matched ด้วย — เคส term หลุดตาราง (matched=false) percent/discount เป็น 0 เสมอ
+  // ถ้ายอดที่กรอกบังเอิญตรงกับ remainingPrincipal (suggestedSettlementPaid) จะเข้าเงื่อนไขนี้ทั้งที่ไม่ใช่ % จริงจากตาราง
+  const matchesTableAmount =
+    suggestedSettlementPaid != null && settlementPaid === suggestedSettlementPaid && settlementPreview?.matched === true
 
   // ข้อความคัดลอกส่งลูกค้า — คำนวณจาก settlementPaid ที่กรอกจริง + ผล computeEarlyClose (result) เสมอ
   // ไม่ใช่จากตารางตรงๆ (แก้ 08 ก.ย. 2026, ดูรายละเอียดที่ comment ของ buildEarlyCloseMessage ด้านบน)
@@ -541,6 +544,10 @@ export default function EarlyCloseModal({
                     </p>
                   </div>
                 )}
+                {/* แก้ 21 ก.ย. 2026 (บั๊กเจ้าของเจอจริง — สัญญา 18 งวด): เดิม 3 คำเตือนแรกกับกล่องคัดลอกข้อความ
+                    อยู่ ternary chain เดียวกัน ทำให้เคสมีคำเตือน (ไม่มีตาราง/ปิดเดือนแรก/เหลืองวดเดียว) กล่อง
+                    คัดลอกข้อความส่งลูกค้าหายไปทั้งกล่อง คัดลอกไม่ได้เลย — แยกเป็น 2 ส่วนต่อกัน: คำเตือน (ถ้ามี)
+                    แล้วส่วนข้อความ (แสดงเสมอไม่ว่าจะมีคำเตือนด้านบนหรือไม่) */}
                 {!settlementPreview.matched ? (
                   <p className="flex items-start gap-1.5 text-amber-800">
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -556,19 +563,30 @@ export default function EarlyCloseModal({
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                     เหลืองวดสุดท้ายงวดเดียว — ตามตารางไม่มีส่วนลด (0%)
                   </p>
-                ) : result.errors.length > 0 ? (
-                  <p className="flex items-start gap-1.5 text-red-600">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    แก้ยอดให้ถูกต้องก่อน จึงจะสร้างข้อความส่งลูกค้าได้
-                  </p>
-                ) : earlyCloseMessage ? (
-                  <CopyBox title="ข้อความส่งลูกค้า" text={earlyCloseMessage} />
-                ) : (
-                  <p className="flex items-start gap-1.5 text-ink-soft">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    กรอกยอดจ่ายปิดก่อน ระบบจะสร้างข้อความให้คัดลอกส่งลูกค้า
-                  </p>
-                )}
+                ) : null}
+                <div
+                  className={
+                    !settlementPreview.matched ||
+                    settlementPreview.paidCount === 0 ||
+                    settlementPreview.remainingCount === 1
+                      ? 'mt-2'
+                      : undefined
+                  }
+                >
+                  {result.errors.length > 0 ? (
+                    <p className="flex items-start gap-1.5 text-red-600">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      แก้ยอดให้ถูกต้องก่อน จึงจะสร้างข้อความส่งลูกค้าได้
+                    </p>
+                  ) : earlyCloseMessage ? (
+                    <CopyBox title="ข้อความส่งลูกค้า" text={earlyCloseMessage} />
+                  ) : (
+                    <p className="flex items-start gap-1.5 text-ink-soft">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      กรอกยอดจ่ายปิดก่อน ระบบจะสร้างข้อความให้คัดลอกส่งลูกค้า
+                    </p>
+                  )}
+                </div>
                 <div className="mt-2 flex items-center gap-2">
                   <Button
                     type="button"
