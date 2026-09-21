@@ -40,11 +40,23 @@ export interface StaffMoneyFigure {
   penaltyPaid: number
 }
 
-/** จำนวนวันเต็มระหว่างวันที่สอง string (parse 10 อักษรแรกแบบ UTC-midnight เสมอ ตัด time-of-day ทิ้ง) */
+/** จำนวนวันเต็มระหว่างวันที่สอง string (parse 10 อักษรแรกแบบ UTC-midnight เสมอ ตัด time-of-day ทิ้ง) —
+ *  ⚠️ ใช้ได้เฉพาะกับ string ที่เป็น "วันที่ปฏิทิน" ที่ถูกต้องแล้วเท่านั้น (date-only 'YYYY-MM-DD' หรือ
+ *  ผ่าน isoToBangkokDate() มาแล้ว) ห้ามส่ง ISO timestamp เต็ม (มี time-of-day) เข้ามาตรงๆ — จะตัด
+ *  10 อักษรแรกเป็นวันที่ UTC ซึ่งคลาดเคลื่อนจากวันที่ไทยได้ถึง 1 วัน (ช่วงเที่ยงคืน–ตี 6 เวลาไทย) */
 function diffDaysUtc(aISO: string, bISO: string): number {
   const [ay, am, ad] = aISO.slice(0, 10).split('-').map(Number)
   const [by, bm, bd] = bISO.slice(0, 10).split('-').map(Number)
   return Math.floor((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86_400_000)
+}
+
+/** แปลง ISO timestamp (UTC) → วันที่ปฏิทินตามเวลาไทย 'YYYY-MM-DD' — ใช้ก่อนส่งเข้า diffDaysUtc ทุกครั้งที่
+ *  ค่าที่มี ต้นทางเป็น timestamptz (now ที่ inject เข้ามา, payment_log.created_at) ต่างจาก paidDate ที่เป็น
+ *  date-only 'YYYY-MM-DD' อยู่แล้ว (ไม่มี time-of-day ให้เพี้ยน ใช้ตรงๆ ได้เลยไม่ต้องผ่านฟังก์ชันนี้) —
+ *  pattern เดียวกับ todayISOBangkok() ใน nplHistory.ts แต่รับ ISO ใดก็ได้ ไม่ใช่แค่ "ตอนนี้" (ต้อง inject
+ *  ได้ ห้าม new Date() แบบไม่มีอากิวเมนต์ในไฟล์นี้) */
+function isoToBangkokDate(iso: string): string {
+  return new Date(iso).toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
 }
 
 /** วันที่ไทย dd/mm/yyyy จาก string ที่อาจเป็น 'YYYY-MM-DD' หรือ ISO timestamp เต็ม (ตัดเหลือ 10 อักษรแรกก่อน) */
@@ -165,7 +177,10 @@ export function buildPaymentModalWarning(
   penaltyEntered: number,
   now: string,
 ): PaymentModalWarning | null {
-  const windowed = recent.filter((r) => Math.abs(diffDaysUtc(now, r.paidDate)) <= OVERLAP_WINDOW_DAYS)
+  // now เป็น ISO timestamp เต็ม (มี time-of-day) ต้องแปลงเป็นวันที่ปฏิทินไทยก่อนเทียบกับ paidDate
+  // (date-only) เสมอ — ไม่งั้นช่วงเที่ยงคืน–ตี 6 เวลาไทยจะนับวันผิด 1 วัน (YELLOW 2, ติ๊ก review)
+  const nowBangkok = isoToBangkokDate(now)
+  const windowed = recent.filter((r) => Math.abs(diffDaysUtc(nowBangkok, r.paidDate)) <= OVERLAP_WINDOW_DAYS)
 
   if (principalEntered <= 0 && penaltyEntered <= 0) return null
 
@@ -183,7 +198,7 @@ export function buildPaymentModalWarning(
   matchable.sort((a, b) => {
     const rd = MATCH_KIND_RANK[a.kind] - MATCH_KIND_RANK[b.kind]
     if (rd !== 0) return rd
-    return Math.abs(diffDaysUtc(now, a.row.paidDate)) - Math.abs(diffDaysUtc(now, b.row.paidDate))
+    return Math.abs(diffDaysUtc(nowBangkok, a.row.paidDate)) - Math.abs(diffDaysUtc(nowBangkok, b.row.paidDate))
   })
   const best = matchable[0] ?? null
 
@@ -225,7 +240,7 @@ export function buildPaymentModalWarning(
 
   // เหลือกรณีเดียว: matchLevel === 'info' (windowed มีอย่างน้อย 1 แถว แต่ไม่มีตัวไหน match เข้าเกณฑ์เลย)
   const nearest = [...windowed].sort(
-    (a, b) => Math.abs(diffDaysUtc(now, a.paidDate)) - Math.abs(diffDaysUtc(now, b.paidDate)),
+    (a, b) => Math.abs(diffDaysUtc(nowBangkok, a.paidDate)) - Math.abs(diffDaysUtc(nowBangkok, b.paidDate)),
   )[0]
   return {
     level,
@@ -365,7 +380,10 @@ export function explainStaffOverlapRow(row: PjStaffOverlapRowLike): PjStaffOverl
   const candidates = row.overlapDetail?.candidates ?? []
   const paidDate = row.paidDate
 
-  const dayDiffFromRow = (createdAt: string): number => (paidDate ? Math.abs(diffDaysUtc(paidDate, createdAt)) : 0)
+  // createdAt เป็น ISO timestamptz เต็ม (payment_log.created_at) ต้องแปลงเป็นวันที่ไทยก่อนเทียบกับ
+  // paidDate (date-only) เหมือนกับ nowBangkok ใน buildPaymentModalWarning ด้านบน
+  const dayDiffFromRow = (createdAt: string): number =>
+    paidDate ? Math.abs(diffDaysUtc(paidDate, isoToBangkokDate(createdAt))) : 0
 
   const sorted = [...candidates].sort((a, b) => {
     const rd = MATCH_KIND_RANK[a.matchKind] - MATCH_KIND_RANK[b.matchKind]

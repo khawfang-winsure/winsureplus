@@ -149,6 +149,7 @@ function reasonLabel(reason: PjSyncReviewReason): string {
 }
 function reasonTone(reason: PjSyncReviewReason): 'neutral' | 'green' | 'amber' | 'red' {
   return (REASON_TONE as Partial<Record<string, 'neutral' | 'green' | 'amber' | 'red'>>)[reason] ?? 'neutral'
+}
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====
 const RUN_STATUS_LABEL: Record<PjSyncRunRow['status'], string> = {

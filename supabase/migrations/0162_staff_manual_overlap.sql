@@ -160,10 +160,17 @@ as $$
     pl.penalty_paid_amount,
     i.installment_no,
     cap.capacity_left,
+    -- ลำดับเช็คต้องตรงกับ classifyOverlapMatch (TS, pjStaffOverlap.ts) เป๊ะ: guard ยอด PJ <=0 → other ก่อน
+    -- (pl.amount การันตี > 0 อยู่แล้วจาก WHERE ด้านล่าง — ตรงกับ staffTotal<=0 ที่ TS เช็คคู่กัน) แล้วค่อย
+    -- exact_total → exact_principal → near (least ของ 2 diff เหมือน TS ไม่ใช่แค่ diff ยอดรวมอย่างเดียว)
     case
+      when coalesce(p_principal, 0) + coalesce(p_penalty, 0) <= 0 then 'other'
       when pl.amount = coalesce(p_principal, 0) + coalesce(p_penalty, 0) then 'exact_total'
       when pl.amount - coalesce(pl.penalty_paid_amount, 0) = coalesce(p_principal, 0) then 'exact_principal'
-      when abs(pl.amount - (coalesce(p_principal, 0) + coalesce(p_penalty, 0))) <= 20 then 'near'
+      when least(
+        abs(pl.amount - (coalesce(p_principal, 0) + coalesce(p_penalty, 0))),
+        abs((pl.amount - coalesce(pl.penalty_paid_amount, 0)) - coalesce(p_principal, 0))
+      ) <= 20 then 'near'
       else 'other'
     end
   from public.payment_log pl

@@ -2301,7 +2301,7 @@ export default {
           // ในสัญญาเดียวกัน ใกล้ยอด+วันที่ PJ รายงานมา (±10 วัน, capacity_left>20 กันจับของที่ผูกไปแล้ว)
           //
           // rpc error → fail-closed เหมือน db error อื่นในลูปนี้ (ห้ามลงเงินถ้าเช็คไม่ได้ว่าซ้ำหรือเปล่า)
-          const { data: overlapCandidates, error: overlapErr } = await db.rpc(
+          const { data: overlapCandidatesRaw, error: overlapErr } = await db.rpc(
             "find_staff_payment_overlap_engine",
             {
               p_contract_id: contract.id,
@@ -2318,6 +2318,20 @@ export default {
               500,
             );
           }
+          // ฟิลด์ของแต่ละแถวตรงกับ RETURNS TABLE ของ find_staff_payment_overlap_engine (migration 0162)
+          // เป๊ะทุกคอลัมน์ — cast ตรงนี้ทีเดียวแทนใส่ (c: any) ทุกจุดที่ใช้ overlapCandidates ด้านล่าง
+          interface StaffOverlapEngineRow {
+            log_id: string;
+            created_at: string;
+            bangkok_paid_date: string;
+            by_name: string;
+            amount: number;
+            penalty_paid_amount: number;
+            installment_no: number | null;
+            capacity_left: number;
+            match_kind: string;
+          }
+          const overlapCandidates = overlapCandidatesRaw as StaffOverlapEngineRow[] | null;
           if (overlapCandidates && overlapCandidates.length > 0) {
             // (ติ๊ก review fix 3 pattern เดิม) เคยตรวจ/ผูกไปแล้วรอบก่อน (admin กด "ผูกกับรายการที่
             // พนักงานลงมือ" ผ่าน link_pj_review_to_payment_log หรือกด skip) → ไม่ flag ซ้ำ ไม่ลงเงิน —
@@ -2340,7 +2354,7 @@ export default {
             // uuid ใบเสร็จไว้ → รอบ sync ถัดไปเห็นว่า "ยังไม่เคยลง" แล้วลงซ้ำอีกที — รายละเอียดผู้สมัคร
             // (candidates) ไปอยู่คอลัมน์ overlap_detail แยกต่างหาก (migration 0162) แทน
             const overlapDetail = {
-              candidates: overlapCandidates.map((c: any) => ({
+              candidates: overlapCandidates.map((c) => ({
                 payment_log_id: c.log_id,
                 created_at: c.created_at,
                 by_name: c.by_name,
@@ -2362,7 +2376,7 @@ export default {
                 contract_no: contractNo,
                 candidate_count: overlapCandidates.length,
                 match_kinds: Array.from(
-                  new Set(overlapCandidates.map((c: any) => String(c.match_kind))),
+                  new Set(overlapCandidates.map((c) => String(c.match_kind))),
                 ),
               });
               continue;
