@@ -32,6 +32,7 @@ import {
   type PjPlanChangeSnapshot,
 } from '../lib/pjPlanChange'
 import type { PjSyncReviewReason, PjSyncReviewRow, PjReviewContext, PjSyncRunRow } from '../lib/types'
+import { STAFF_OVERLAP_REASON_TEXT, STAFF_OVERLAP_REASON_TONE } from '../lib/pjStaffOverlap'
 import { useAuth } from '../lib/auth'
 
 /** reason ที่เกิดจากตรวจจับ "ใบเสร็จหาย/ถูกแก้ใน PJ" — ต้องซ่อนปุ่มลงเงินทุกปุ่ม (ดูตรวจ+รายงานเท่านั้น) */
@@ -86,9 +87,15 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   RETURNED_CONTRACT_OVERAGE: 'คืนเครื่อง — ยอดเราเกิน PJ',
   RETURNED_CONTRACT_OTHER_FEE: 'คืนเครื่อง — ค่าธรรมเนียมอื่นๆ ไม่ตรง',
   RECEIPT_PARTIAL_APPLIED: 'ใบเสร็จตามมาทีหลัง (ยังไม่ได้ลง)',
+  // ป้าย/สี placeholder เพิ่ม Wave 2A (21 ก.ย. 2026, น้องชีส) ให้ type-check ผ่านเท่านั้น — UI เต็มของ
+  // TRANSFER_CUTOVER/OLD_INV_AFTER_TRANSFER (การ์ดเปลี่ยนผู้ผ่อน) ยังไม่มี รอทำภายหลัง (Wave 2C ทำ UI
+  // เต็มให้ STAFF_MANUAL_OVERLAP แล้ว — การ์ดเลือกผูก/ปุ่ม "เงินก้อนเดียวกัน"/"คนละก้อน" ดูด้านล่าง)
+  TRANSFER_CUTOVER: 'เปลี่ยนผู้ผ่อน — ใบเสร็จเงินคนเดิม',
+  OLD_INV_AFTER_TRANSFER: 'เปลี่ยนผู้ผ่อน — ใบเสร็จคีย์เลขเดิม',
   PLAN_CHANGE_REVIEW: 'ร้านเปลี่ยนวันชำระ — ต้องตรวจ',
   PLAN_CHANGE_DRYRUN: 'ทดลอง: ระบบจะเลื่อนวันให้',
   PLAN_CHANGE_AUTO: 'ระบบเลื่อนวันให้แล้ว',
+  STAFF_MANUAL_OVERLAP: STAFF_OVERLAP_REASON_TEXT,
 }
 const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'red'> = {
   MULTI: 'amber',
@@ -109,12 +116,17 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'r
   RETURNED_CONTRACT_OTHER_FEE: 'green',
   // เหลืองเหมือน PARTIAL/MULTI — เป็นเงินจริงที่ต้องลงมือกดลง (มีปุ่ม "ลงตาม PJ") ไม่ใช่แค่รายงาน
   RECEIPT_PARTIAL_APPLIED: 'amber',
+  // โทนสี placeholder เพิ่ม Wave 2A (21 ก.ย. 2026) คู่กับ REASON_LABEL ด้านบน — TRANSFER_CUTOVER/
+  // OLD_INV_AFTER_TRANSFER รอ UI เต็มภายหลัง (STAFF_MANUAL_OVERLAP ได้ UI เต็มแล้วใน Wave 2C)
+  TRANSFER_CUTOVER: 'amber',
+  OLD_INV_AFTER_TRANSFER: 'amber',
   // เหลือง = ต้องลงมือไปแก้ที่หน้าสัญญาเอง ระบบเลื่อนวันให้ไม่ได้ (คล้าย manual-only แต่ไม่ใช่เงิน)
   PLAN_CHANGE_REVIEW: 'amber',
   // เทา = แค่โหมดทดลองให้ดูผลลัพธ์ก่อน ยังไม่มีอะไรเปลี่ยนจริงในระบบ ไม่ต้องรีบทำอะไร
   PLAN_CHANGE_DRYRUN: 'neutral',
   // เขียว = ระบบทำสำเร็จให้แล้วอัตโนมัติ เหลือแค่ตรวจทานว่าถูกต้อง
   PLAN_CHANGE_AUTO: 'green',
+  STAFF_MANUAL_OVERLAP: STAFF_OVERLAP_REASON_TONE,
 }
 
 /** ป้ายเหตุผลแบบกันพัง — เผื่อฝั่งระบบส่ง reason ใหม่มาก่อนหน้าเว็บรู้จัก (กัน badge ว่างเปล่าในอนาคต) */
@@ -123,7 +135,6 @@ function reasonLabel(reason: PjSyncReviewReason): string {
 }
 function reasonTone(reason: PjSyncReviewReason): 'neutral' | 'green' | 'amber' | 'red' {
   return (REASON_TONE as Partial<Record<string, 'neutral' | 'green' | 'amber' | 'red'>>)[reason] ?? 'neutral'
-}
 
 // ===== ป้ายสถานะการรัน (run.status → ไทย + โทนสี) =====
 const RUN_STATUS_LABEL: Record<PjSyncRunRow['status'], string> = {

@@ -5,6 +5,7 @@
 import type { LateBucket } from './collectorPeriod'
 import type { ReviewStatus } from './review'
 import type { PJContract } from './pjImport'
+import type { PjStaffOverlapDetail } from './pjStaffOverlap'
 
 /** สถานะหลัก (lifecycle) ของสัญญา — กลุ่มล่าช้าเป็นค่าที่ "คำนวณ" จากวันครบกำหนด ไม่ได้เก็บตรงนี้ */
 export type ContractStatus =
@@ -616,13 +617,22 @@ export interface LetterOutcomeByRound {
  * ราย ~8,000 บาทหาย) แถวนี้คือใบที่ตามมาที่ยังไม่ได้ลง — amount/penaltyAmount ของแถวนี้ = เฉพาะส่วนที่ยังไม่ได้
  * ลง (ไม่รวมใบแรกที่ลงไปแล้ว) ต่างจาก manual-only ตรงที่เป็นเงินจริงที่ยังไม่ถูกบันทึก จึง "กดลงเงินได้" เหมือน
  * PARTIAL/MULTI (isManualOnlyReason ห้ามคุมตัวนี้)
+ * TRANSFER_CUTOVER = ใบเสร็จ PJ ที่คีย์เข้าเลข invoice ใหม่ (new_inv_no) แต่วันที่จ่าย <= วัน cutover ของการ
+ * "เปลี่ยนผู้ผ่อน" (mig 0157/0158) — น่าจะเป็นเงินของคนเดิมที่ร้านคีย์ย้อนไว้ใต้เลขใหม่ ไม่ใช่เงินคนใหม่จริง
+ * ห้าม auto-apply เด็ดขาด ต้องตรวจมือว่าใช่เงินคนไหนกันแน่
+ * OLD_INV_AFTER_TRANSFER = ใบเสร็จ PJ คีย์เข้าเลข invoice เดิม (old_inv_no) หลัง cutover ไปแล้ว และไม่มี
+ * สัญญาอื่นชิงใช้เลขนี้ใหม่จริง — พนักงานร้านอาจคีย์เลขเก่าเข้าไปตามความเคยชิน ต้องตรวจมือว่ายังใช่สัญญาเดิมไหม
  * PLAN_CHANGE_REVIEW / PLAN_CHANGE_DRYRUN / PLAN_CHANGE_AUTO = ร้านเปลี่ยนแผนผ่อน/วันชำระใน PJ (21 ก.ย. 2026)
  * ดู src/lib/pjPlanChange.ts (isPlanChangeReason) — รายละเอียดตารางเทียบงวด (our_due/pj_due ต่องวด) อยู่ใน
  * raw_json ดึงแยกต่อแถวผ่าน getPjPlanChangeDetail (db.ts) เหมือน RECEIPT_MISSING/RECEIPT_CHANGED ไม่ join
  * ทุกแถว:
  *   PLAN_CHANGE_REVIEW = เคสซับซ้อน ระบบเลื่อนวันให้เองไม่ได้ ต้องคนตรวจ+ไปแก้ที่หน้าสัญญาเอง
  *   PLAN_CHANGE_DRYRUN = โหมดทดลอง ระบบ "จะ" เลื่อนวันให้ แต่ยังไม่ได้แก้ข้อมูลจริง
- *   PLAN_CHANGE_AUTO   = ระบบเลื่อนวันครบกำหนดในระบบเราให้ตรงกับ PJ แล้วอัตโนมัติ — แจ้งให้ตรวจทาน */
+ *   PLAN_CHANGE_AUTO   = ระบบเลื่อนวันครบกำหนดในระบบเราให้ตรงกับ PJ แล้วอัตโนมัติ — แจ้งให้ตรวจทาน
+ * STAFF_MANUAL_OVERLAP = pj-sync ตรวจเจอว่าใบเสร็จ PJ นี้ใกล้เคียง (สัญญา+ช่วงวัน+ยอด) กับ payment_log ที่
+ * พนักงานเคยลงมือรับชำระไว้แล้วโดยไม่ผ่านกล่องรอตรวจ (มิเกรชัน 0162, กันเงินซ้ำ) — overlapDetail.candidates
+ * เก็บรายการที่ต้องสงสัยไว้ ให้แอดมิน/staff เลือกผูก ("เงินก้อนเดียวกัน") แทนการลงเงินซ้ำ หรือเลือกลงเพิ่มปกติ
+ * ("คนละก้อน") ดู src/lib/pjStaffOverlap.ts (explainStaffOverlapRow) */
 export type PjSyncReviewReason =
   | 'MULTI'
   | 'PARTIAL'
@@ -635,9 +645,12 @@ export type PjSyncReviewReason =
   | 'RETURNED_CONTRACT_OVERAGE'
   | 'RETURNED_CONTRACT_OTHER_FEE'
   | 'RECEIPT_PARTIAL_APPLIED'
+  | 'TRANSFER_CUTOVER'
+  | 'OLD_INV_AFTER_TRANSFER'
   | 'PLAN_CHANGE_REVIEW'
   | 'PLAN_CHANGE_DRYRUN'
   | 'PLAN_CHANGE_AUTO'
+  | 'STAFF_MANUAL_OVERLAP'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'
@@ -662,6 +675,11 @@ export interface PjSyncReviewRow {
    *  ไม่ใช่ array — reason RETURNED_CONTRACT_PAYMENT/RETURNED_CONTRACT_OVERAGE) ไว้เปิดหน้า invoice ใน PJ
    *  ตรงๆ ให้พนักงานเทียบยอด — null = ไม่มี (แถวปกติจาก raw_json array ไม่มี invoice uuid ต่อแถว) */
   invUuid: string | null
+  /** รายละเอียด overlap (มิเกรชัน 0162, คอลัมน์ pj_sync_review.overlap_detail) — candidates: pj-sync เขียน
+   *  ตอนสร้างแถว reason='STAFF_MANUAL_OVERLAP' (รายการที่พนักงานลงมือใกล้เคียง ให้ explainStaffOverlapRow ใน
+   *  pjStaffOverlap.ts อธิบาย), link: link_pj_review_to_payment_log เขียนตอนผูกสำเร็จ (merge เข้าไปข้างๆ
+   *  candidates ไม่ทับ) — null = ยังไม่เคยผูก/ไม่ใช่ reason นี้/shape ไม่ตรง (ไม่ throw) */
+  overlapDetail: PjStaffOverlapDetail | null
 }
 
 /** บริบทประกอบการตัดสินใจในกล่องรอตรวจ — งวดถัดไป + ยอดรวม + ประวัติชำระล่าสุด */

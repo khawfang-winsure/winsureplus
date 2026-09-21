@@ -97,6 +97,7 @@ import { buildDeviceReturnByCollector, type DeviceReturnByCollectorResult } from
 import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
 import { isPlanChangeReason, type PjPlanChangeSnapshot } from './pjPlanChange'
 import { LATE_BUCKETS, type LateBucket } from './collectorPeriod'
+import type { OverlapMatchKind, PjStaffOverlapCandidate, PjStaffOverlapDetail, RecentPjMoney } from './pjStaffOverlap'
 
 export type OptionKind =
   | 'phone_model'
@@ -8252,7 +8253,45 @@ interface PjSyncReviewViewRow {
   reason: string
   status: string
   raw_json: PjRawJson
+  overlap_detail: unknown
   contracts: { contract_no: string | null; customer_name: string | null } | null
+}
+
+/** 1 candidate ดิบใน overlap_detail.candidates (jsonb, snake_case ตามที่ pj-sync เขียน — mig 0162) */
+interface PjOverlapCandidateRaw {
+  payment_log_id?: string | null
+  created_at?: string | null
+  by_name?: string | null
+  amount?: string | number | null
+  penalty_paid_amount?: string | number | null
+  installment_no?: number | string | null
+  capacity_left?: string | number | null
+  match_kind?: string | null
+}
+
+const OVERLAP_MATCH_KINDS: ReadonlySet<string> = new Set(['exact_total', 'exact_principal', 'near', 'other'])
+
+/** parse pj_sync_review.overlap_detail (jsonb) → PjStaffOverlapDetail | null — อ่านเฉพาะ field `candidates`
+ *  ที่ pj-sync เขียนตอนสร้างแถว reason='STAFF_MANUAL_OVERLAP' (mig 0162 SECTION 4.1, find_staff_payment_overlap_engine)
+ *  field `link` (เขียนตอนผูกสำเร็จ) ไม่ต้องใช้ฝั่ง UI ตอนนี้ — ข้ามไปเฉยๆ ไม่ throw
+ *  shape ไม่ตรง/ไม่มี candidates/ไม่ใช่ reason นี้ (overlap_detail เป็น null ปกติ) → null เสมอ (ห้าม throw) */
+function parseOverlapDetail(raw: unknown): PjStaffOverlapDetail | null {
+  if (!raw || typeof raw !== 'object') return null
+  const candidatesRaw = (raw as { candidates?: unknown }).candidates
+  if (!Array.isArray(candidatesRaw)) return null
+  const candidates: PjStaffOverlapCandidate[] = candidatesRaw
+    .filter((c): c is PjOverlapCandidateRaw => !!c && typeof c === 'object' && !!(c as PjOverlapCandidateRaw).payment_log_id)
+    .map(c => ({
+      paymentLogId: String(c.payment_log_id),
+      createdAt: c.created_at ?? '',
+      byName: c.by_name ?? '',
+      amount: parsePjAmount(c.amount),
+      penaltyPaidAmount: parsePjAmount(c.penalty_paid_amount),
+      installmentNo: c.installment_no == null ? null : Number(c.installment_no),
+      capacityLeft: parsePjAmount(c.capacity_left),
+      matchKind: (OVERLAP_MATCH_KINDS.has(String(c.match_kind)) ? c.match_kind : 'other') as OverlapMatchKind,
+    }))
+  return { candidates }
 }
 
 /** parse จำนวนเงินที่เก็บเป็น string ("4,115.00") → number; ว่าง/พังคืน 0 */
@@ -8394,7 +8433,7 @@ export async function getPjSyncReview(
   if (!supabase) return []
   const { data, error } = await supabase
     .from('pj_sync_review')
-    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, raw_json, contracts(contract_no, customer_name)')
+    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, raw_json, overlap_detail, contracts(contract_no, customer_name)')
     .eq('status', status)
     .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
@@ -8414,6 +8453,7 @@ export async function getPjSyncReview(
     penaltyAmount: sumPjPenalty(r.raw_json),
     receiptUuids: extractPjReceiptUuids(r.raw_json),
     invUuid: extractPjInvUuid(r.raw_json),
+    overlapDetail: parseOverlapDetail(r.overlap_detail),
   }))
 }
 
@@ -8955,6 +8995,90 @@ export async function applyPjReviewAsOtherIncome(params: {
     byName,
     note ? `ลงเป็นรายได้อื่นๆ (${category}): ${note}` : `ลงเป็นรายได้อื่นๆ (${category})`,
   )
+}
+
+/**
+ * ผูกแถวกล่องรอตรวจ PJ (reason='STAFF_MANUAL_OVERLAP') เข้ากับรายการที่พนักงานลงมือรับชำระไว้แล้ว แทนการ
+ * ลงเงินซ้ำ (RPC link_pj_review_to_payment_log, mig 0162) — server insert pj_applied_receipts
+ * (source='staff-link') กันคำนวณซ้ำของ pj-sync แล้ว resolve แถวในกล่องรอตรวจให้เอง
+ * error จาก server (raise exception, ภาษาไทยอยู่แล้ว) ส่งต่อขึ้นไปให้ UI แสดงตรงๆ ไม่ swallow
+ */
+export async function linkPjReviewToPaymentLog(
+  reviewId: string,
+  paymentLogId: string,
+  note?: string,
+): Promise<void> {
+  if (!supabase) throw new Error('ยังไม่ได้เชื่อมต่อระบบฐานข้อมูล')
+  const { error } = await supabase.rpc('link_pj_review_to_payment_log', {
+    p_review_id: reviewId,
+    p_payment_log_id: paymentLogId,
+    p_note: note ?? null,
+  })
+  if (error) throw new Error(error.message)
+}
+
+/** 1 ใบที่ลงไปแล้วจริง (pj_applied_receipts) จาก RPC get_contract_pj_money_recent */
+interface PjMoneyRecentAppliedRaw {
+  paid_date?: string | null
+  amount?: string | number | null
+  payment_type?: string | null
+  source?: string | null
+  applied_at?: string | null
+}
+
+/** 1 แถวกล่องรอตรวจที่ยังค้าง (pending) ของสัญญานี้ จาก RPC get_contract_pj_money_recent */
+interface PjMoneyRecentPendingRaw {
+  id?: string | null
+  reason?: string | null
+  pj_amount?: string | number | null
+  pj_paid_date?: string | null
+}
+
+interface PjMoneyRecentResult {
+  applied?: PjMoneyRecentAppliedRaw[]
+  pending?: PjMoneyRecentPendingRaw[]
+}
+
+/**
+ * สรุปเงิน PJ ล่าสุดของ 1 สัญญา (RPC get_contract_pj_money_recent, mig 0162) — ให้ PaymentModal เตือนก่อน
+ * พนักงานกดลงมือ (ป้อนเข้า buildPaymentModalWarning ใน pjStaffOverlap.ts) — group ใบที่ลงไปแล้วตาม paid_date
+ * (payment_type='installment' → principal, 'penalty' → penalty, ประเภทอื่นข้าม — installmentNo ไม่รู้ที่ระดับ
+ * นี้จึงเป็น null เสมอ) + เช็คว่ามีกล่องรอตรวจ PJ ค้างของสัญญานี้ไหม (pendingBox)
+ * fail-open เสมอ — ไม่มี supabase/error/ไม่มีสิทธิ์ (RPC คืน null) → คืน null ให้ UI ไม่เตือน (ไม่ throw/ไม่บล็อก)
+ */
+export async function getContractRecentPjMoney(
+  contractId: string,
+  days = 10,
+): Promise<{ recent: RecentPjMoney[]; pendingBox: boolean } | null> {
+  if (!supabase) return null
+  try {
+    const { data, error } = await supabase.rpc('get_contract_pj_money_recent', {
+      p_contract_id: contractId,
+      p_days: days,
+    })
+    if (error || !data) return null
+    const result = data as PjMoneyRecentResult
+    const applied = Array.isArray(result.applied) ? result.applied : []
+    const pending = Array.isArray(result.pending) ? result.pending : []
+
+    const byDate = new Map<string, { principal: number; penalty: number }>()
+    for (const r of applied) {
+      if (!r.paid_date || (r.payment_type !== 'installment' && r.payment_type !== 'penalty')) continue
+      const entry = byDate.get(r.paid_date) ?? { principal: 0, penalty: 0 }
+      const amt = parsePjAmount(r.amount)
+      if (r.payment_type === 'installment') entry.principal += amt
+      else entry.penalty += amt
+      byDate.set(r.paid_date, entry)
+    }
+
+    const recent: RecentPjMoney[] = [...byDate.entries()]
+      .map(([paidDate, v]) => ({ paidDate, principal: v.principal, penalty: v.penalty, installmentNo: null }))
+      .sort((a, b) => (a.paidDate < b.paidDate ? 1 : a.paidDate > b.paidDate ? -1 : 0))
+
+    return { recent, pendingBox: pending.length > 0 }
+  } catch {
+    return null
+  }
 }
 
 // ---------- Freelancer HR report (migration 0108) ----------

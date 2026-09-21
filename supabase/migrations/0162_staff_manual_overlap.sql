@@ -23,10 +23,12 @@
 --     (รันด้วยสิทธิ์เจ้าของฟังก์ชัน ไม่ใช่สิทธิ์ authenticated ของผู้เรียก — ตรงกับ pattern ที่ record_payment_spread
 --     0100 ใช้อยู่แล้วในการ insert ตารางนี้)
 --
--- Scope งานรอบนี้ (Wave 1) — เขียนแค่ "เครื่องมือ" (schema + RPC) เท่านั้น ไม่แตะ pj-sync/index.ts และไม่แตะ
--- UI/db.ts เลย (คนละ wave, คนละ specialist) — reason='STAFF_MANUAL_OVERLAP' บนแถว pj_sync_review เป็นสิ่งที่
--- Wave ถัดไปจะเป็นคน "ตั้ง" (เช่น admin กด flag จากผลของ find_staff_payment_overlap หรือ pj-sync เซ็ตเองตอน sync
--- ในอนาคต) — ฟังก์ชัน link_pj_review_to_payment_log ด้านล่างแค่ "เชื่อ" ว่าถ้าเจอ reason นี้ = ผ่านการตรวจแล้วจริง
+-- Scope งานรอบนี้ (Wave 1 + แก้ไข Wave 2A) — เขียน "เครื่องมือ" (schema + RPC) — Wave 2A (21 ก.ย. 2026)
+-- เพิ่ม engine แยกให้ pj-sync (service_role) เรียกได้ตรง (ไม่ผ่าน guard auth.uid()) เพราะ pj-sync เองเป็นคน
+-- "ตั้ง" reason='STAFF_MANUAL_OVERLAP' บนแถว pj_sync_review ตอน sync (เขียน overlap_detail.candidates ไว้ตั้งแต่
+-- ตอนสร้างแถว — ดู SECTION 1 ด้านล่าง) — ฟังก์ชัน link_pj_review_to_payment_log ด้านล่างแค่ "เชื่อ" ว่าถ้าเจอ
+-- reason นี้ = ผ่านการตรวจแล้วจริง ไม่แตะ pj-sync/index.ts ตรงๆ (คนละ wave, คนละ specialist — เขียนแค่ SQL ที่
+-- pj-sync จะมาเรียกเอง)
 --
 -- ห้ามแก้ record_payment_spread (0100/0113/0115) / record_payment_with_penalty (0040) เลย — งานนี้เป็นแค่
 -- "ชั้นดัก" คู่ขนาน ไม่ยุ่งกับ path ลงเงินเดิมทั้ง 2 เส้น (auto-sync กับ staff manual)
@@ -36,18 +38,21 @@
 -- PUBLIC อัตโนมัติตอน CREATE FUNCTION ถ้าไม่ revoke)
 
 -- ============================================================================
--- SECTION 1: pj_sync_review.overlap_detail — คอลัมน์เสริม เก็บรายละเอียดตอนผูก (audit)
+-- SECTION 1: pj_sync_review.overlap_detail — คอลัมน์เสริม เก็บรายละเอียดตอนสร้าง + ตอนผูก (audit)
 -- ⚠️ raw_json ยังคงเป็น array ใบเสร็จรูปแบบเดิมเป๊ะ (ห้ามเปลี่ยนรูป — extractPjPendingReceipts ใน
 -- src/lib/db.ts ~8271 อ่านได้แค่ 3 รูป: array ตรงๆ / object RECEIPT_PARTIAL_APPLIED / object returned_watch)
--- overlap_detail เป็นคอลัมน์แยกต่างหาก nullable ใช้เก็บผลลัพธ์ตอนกด "ผูกกับรายการที่พนักงานลงมือ" เท่านั้น
--- (เขียนจาก link_pj_review_to_payment_log ด้านล่าง SECTION 5) — ไม่กระทบใครที่อ่าน raw_json อยู่เดิม
+-- overlap_detail เป็นคอลัมน์แยกต่างหาก nullable มี 2 field ระดับบนสุดที่เขียนกันคนละจังหวะ (merge กัน ไม่ทับ):
+--   - candidates: pj-sync เขียนตอน "สร้าง" แถว reason=STAFF_MANUAL_OVERLAP (เรียก
+--     find_staff_payment_overlap_engine ด้านล่าง SECTION 3.1 เอง — service_role ไม่ผ่าน guard auth.uid())
+--   - link: link_pj_review_to_payment_log เขียนตอน "ผูก" (SECTION 5) — merge เข้าไปข้างๆ candidates เดิม
+--     ด้วย jsonb `||` ห้ามเขียนทับ candidates ทิ้ง (candidates เป็น audit ว่า ณ ตอนสร้างแถวเจออะไรบ้าง)
 -- ============================================================================
 
 alter table public.pj_sync_review
   add column if not exists overlap_detail jsonb;
 
 comment on column public.pj_sync_review.overlap_detail is
-  '(0162) รายละเอียดตอนผูกแถวนี้กับ payment_log ของพนักงาน (link_pj_review_to_payment_log เขียน) — {linked_payment_log_id, linked_receipts, linked_at, linked_by}; null = ยังไม่เคยผูก/ไม่เกี่ยวกับ overlap เลย';
+  '(0162) รายละเอียดของแถว reason=STAFF_MANUAL_OVERLAP — {candidates: [...]} เขียนโดย pj-sync ตอนสร้างแถว (รายการที่พนักงานลงมือใกล้เคียงตอนนั้น) และ {link: {linked_payment_log_id, linked_receipts, linked_receipt_count, linked_at, linked_by}} เขียนโดย link_pj_review_to_payment_log ตอนผูก (merge เข้าไปข้างๆ candidates ไม่ทับ) — null = ยังไม่เคยผูก/ไม่เกี่ยวกับ overlap เลย';
 
 -- ============================================================================
 -- SECTION 2: index กันซ้ำ/ค้นเร็ว — pj_applied_receipts.payment_log_id (เฉพาะแถวที่ผูกแล้ว)
@@ -66,6 +71,11 @@ create index if not exists pj_applied_receipts_payment_log_id_idx
 -- สูตร (จาก recon ด้านบน):
 --   - ถ้ามี pj_applied_receipts ของ contract เดียวกันที่ applied_at = L.created_at (ตรงเป๊ะ) → ถือว่า L
 --     ผูกใบไปแล้ว "โดยธรรมชาติ" (correlation 98.9%/99.9% จาก recon) → capacity_left = 0 กันผูกซ้ำอีกชั้น
+--     ⚠️ (Wave 2A แก้ 21 ก.ย. 2026) เช็ค correlation นี้ต้อง exclude source='staff-link' — ไม่งั้นตอน
+--     link_pj_review_to_payment_log insert แถวใหม่ (applied_at = now()) ให้ payment_log ตัวเดียวกันใน
+--     transaction เดียวกัน (now() เท่ากันเป๊ะทั้ง 2 ฝั่ง) จะ trip เงื่อนไขนี้เอง ทำ capacity_left = 0 ผิดๆ
+--     ทันทีหลัง link ครั้งแรก (พบใน dry-run เทสต์ผูกหลายรอบติดกัน — ของจริง log เกิดก่อน link เสมอ ไม่ชน
+--     แต่กันไว้ปลอดภัยกว่า) staff-link ใช้กฎที่สอง (sum ตาม payment_log_id) อยู่แล้วเป๊ะกว่า ไม่ต้องพึ่งข้อนี้
 --   - ไม่งั้น = L.amount − Σ(pj_applied_receipts.amount ที่ payment_log_id = L.id) — ส่วนที่ "ผูกไปแล้วจริง"
 --     ผ่าน staff-link (source นี้) เท่านั้น หักออกจากยอดเต็มของ L
 -- ⚠️ engine ภายใน ไม่ให้ authenticated เรียกตรง (grant service_role เท่านั้น — เรียกผ่าน 3 ฟังก์ชัน
@@ -85,6 +95,7 @@ as $$
         from public.pj_applied_receipts par
        where par.contract_id = pl.contract_id
          and par.applied_at = pl.created_at
+         and par.source <> 'staff-link'
     )
     then 0::numeric
     else pl.amount - coalesce((
@@ -101,13 +112,89 @@ revoke all on function public.pj_staff_log_capacity_left(uuid) from public, anon
 grant execute on function public.pj_staff_log_capacity_left(uuid) to service_role;
 
 comment on function public.pj_staff_log_capacity_left(uuid) is
-  '(0162) เงินคงเหลือของ payment_log แถว p_log_id ที่ยังผูกใบเสร็จ PJ ได้ — 0 ถ้ามีใบ pj_applied_receipts ที่ applied_at ตรงกับ payment_log.created_at เป๊ะ (ผูกไปแล้วโดย correlation ธรรมชาติ), ไม่งั้น = amount ลบยอดที่ผูกผ่าน staff-link ไปแล้ว; engine ภายใน service_role เท่านั้น เรียกผ่าน find_staff_payment_overlap/link_pj_review_to_payment_log/pj_staff_overlap_suspects';
+  '(0162, source exclude เพิ่ม Wave 2A) เงินคงเหลือของ payment_log แถว p_log_id ที่ยังผูกใบเสร็จ PJ ได้ — 0 ถ้ามีใบ pj_applied_receipts (source<>staff-link) ที่ applied_at ตรงกับ payment_log.created_at เป๊ะ (ผูกไปแล้วโดย correlation ธรรมชาติ — exclude staff-link กันชนกับแถวที่กำลัง insert เอง same-transaction), ไม่งั้น = amount ลบยอดที่ผูกผ่าน staff-link ไปแล้ว; engine ภายใน service_role เท่านั้น เรียกผ่าน find_staff_payment_overlap/find_staff_payment_overlap_engine/link_pj_review_to_payment_log/pj_staff_overlap_suspects';
 
 -- ============================================================================
 -- SECTION 4: find_staff_payment_overlap — หา payment_log ของพนักงานที่ "อาจจะ" เป็นก้อนเดียวกับ
 -- ใบเสร็จ PJ (สัญญา+ช่วงวัน+ยอด) ให้ PaymentModal เตือนก่อนพนักงานลงมือซ้ำ + ให้กล่องรอตรวจ PJ แนะนำคู่ที่
 -- น่าจะ match ให้แอดมิน/staff เลือกผูก
+--
+-- แยกเป็น 2 ชั้น (Wave 2A แก้ 21 ก.ย. 2026 — เดิมมีแค่ฟังก์ชันเดียวมี guard auth.uid() ในตัว ทำให้ pj-sync
+-- (เรียกด้วย service_role) ได้ auth.uid() = null เสมอ → guard คิดว่า "ไม่ผ่านสิทธิ์" → คืนว่างเงียบๆ ทั้งที่
+-- ตั้งใจให้ pj-sync ใช้ผลนี้ตัดสินใจตั้ง reason=STAFF_MANUAL_OVERLAP ตอน sync):
+--   4.1) find_staff_payment_overlap_engine — query ล้วน ไม่มี guard เลย, grant service_role เท่านั้น
+--        (pattern เดียวกับ pj_staff_log_capacity_left ด้านบน) — pj-sync เรียกตัวนี้ตรง
+--   4.2) find_staff_payment_overlap — wrapper เดิม มี guard admin/staff (active) เหมือนเดิมทุกประการ
+--        เรียก engine ต่อ — client (authenticated) ยังเรียกตัวนี้เหมือนเดิม signature/columns ไม่เปลี่ยน
 -- ============================================================================
+
+create or replace function public.find_staff_payment_overlap_engine(
+  p_contract_id  uuid,
+  p_paid_date    date,
+  p_principal    numeric,
+  p_penalty      numeric,
+  p_window_days  int default 10
+)
+returns table (
+  log_id              uuid,
+  created_at          timestamptz,
+  bangkok_paid_date   date,
+  by_name             text,
+  amount              numeric,
+  penalty_paid_amount numeric,
+  installment_no      int,
+  capacity_left       numeric,
+  match_kind          text
+)
+language sql
+stable
+security definer
+set search_path = public, pg_catalog
+as $$
+  select
+    pl.id,
+    pl.created_at,
+    (pl.created_at at time zone 'Asia/Bangkok')::date,
+    pl.by_name,
+    pl.amount,
+    pl.penalty_paid_amount,
+    i.installment_no,
+    cap.capacity_left,
+    case
+      when pl.amount = coalesce(p_principal, 0) + coalesce(p_penalty, 0) then 'exact_total'
+      when pl.amount - coalesce(pl.penalty_paid_amount, 0) = coalesce(p_principal, 0) then 'exact_principal'
+      when abs(pl.amount - (coalesce(p_principal, 0) + coalesce(p_penalty, 0))) <= 20 then 'near'
+      else 'other'
+    end
+  from public.payment_log pl
+  left join public.installments i on i.id = pl.installment_id
+  cross join lateral (select public.pj_staff_log_capacity_left(pl.id) as capacity_left) cap
+  where p_contract_id is not null
+    and p_paid_date is not null
+    and pl.contract_id = p_contract_id
+    and pl.action = 'pay'
+    and pl.amount > 0
+    and pl.acted_by is not null
+    and (pl.created_at at time zone 'Asia/Bangkok')::date
+        between (p_paid_date - p_window_days) and (p_paid_date + p_window_days)
+    -- ไม่ถูกยกเลิก: ไม่มี payment_log action='cancel' บน installment เดียวกันหลัง L.created_at
+    -- (pl.installment_id เป็น null ได้ถ้างวดถูกลบตอนขยายสัญญา — เทียบ null=null ไม่ true ใน SQL จึงถือว่า
+    -- "ไม่ถูกยกเลิก" โดย default กรณีนี้ เป็น known limitation เล็กน้อย ไม่บล็อกการมองเห็น)
+    and not exists (
+      select 1 from public.payment_log c
+      where c.installment_id = pl.installment_id
+        and c.action = 'cancel'
+        and c.created_at > pl.created_at
+    )
+    and cap.capacity_left > 20
+  order by pl.created_at desc;
+$$;
+
+revoke all on function public.find_staff_payment_overlap_engine(uuid, date, numeric, numeric, int) from public, anon, authenticated;
+grant execute on function public.find_staff_payment_overlap_engine(uuid, date, numeric, numeric, int) to service_role;
+
+comment on function public.find_staff_payment_overlap_engine(uuid, date, numeric, numeric, int) is
+  '(0162, Wave 2A) engine ของ find_staff_payment_overlap — query ล้วน ไม่มี guard สิทธิ์ (auth.uid() เป็น null เสมอเวลา service_role เรียก ใส่ guard ไว้จะคืนว่างผิดพลาด) — pj-sync (supabase/functions/pj-sync/index.ts, service_role) เรียกตัวนี้ตรงตอนสร้างแถว reason=STAFF_MANUAL_OVERLAP; grant service_role เท่านั้น ห้าม authenticated เรียกตรง (ไม่มี guard = เห็นข้ามสัญญาคนอื่นได้ถ้ารู้ contract_id) — client ต้องเรียก find_staff_payment_overlap (มี guard) แทนเสมอ';
 
 create or replace function public.find_staff_payment_overlap(
   p_contract_id  uuid,
@@ -135,7 +222,6 @@ as $$
 declare
   v_role   text;
   v_active boolean;
-  v_total  numeric := coalesce(p_principal, 0) + coalesce(p_penalty, 0);
 begin
   -- guard: admin หรือ staff (active) เท่านั้น — pattern เดียวกับ 0142/0143/0157/0158 (is_admin() ไม่เช็ค
   -- active, is_staff() บังคับ role='staff' เป๊ะ ไม่ครอบ admin — ใช้เช็คมือให้ตรงเจตนา "admin หรือ staff" ตรงตัว)
@@ -145,46 +231,8 @@ begin
     return;
   end if;
 
-  if p_contract_id is null or p_paid_date is null then
-    return;
-  end if;
-
   return query
-  select
-    pl.id,
-    pl.created_at,
-    (pl.created_at at time zone 'Asia/Bangkok')::date,
-    pl.by_name,
-    pl.amount,
-    pl.penalty_paid_amount,
-    i.installment_no,
-    cap.capacity_left,
-    case
-      when pl.amount = v_total then 'exact_total'
-      when pl.amount - coalesce(pl.penalty_paid_amount, 0) = coalesce(p_principal, 0) then 'exact_principal'
-      when abs(pl.amount - v_total) <= 20 then 'near'
-      else 'other'
-    end
-  from public.payment_log pl
-  left join public.installments i on i.id = pl.installment_id
-  cross join lateral (select public.pj_staff_log_capacity_left(pl.id) as capacity_left) cap
-  where pl.contract_id = p_contract_id
-    and pl.action = 'pay'
-    and pl.amount > 0
-    and pl.acted_by is not null
-    and (pl.created_at at time zone 'Asia/Bangkok')::date
-        between (p_paid_date - p_window_days) and (p_paid_date + p_window_days)
-    -- ไม่ถูกยกเลิก: ไม่มี payment_log action='cancel' บน installment เดียวกันหลัง L.created_at
-    -- (pl.installment_id เป็น null ได้ถ้างวดถูกลบตอนขยายสัญญา — เทียบ null=null ไม่ true ใน SQL จึงถือว่า
-    -- "ไม่ถูกยกเลิก" โดย default กรณีนี้ เป็น known limitation เล็กน้อย ไม่บล็อกการมองเห็น)
-    and not exists (
-      select 1 from public.payment_log c
-      where c.installment_id = pl.installment_id
-        and c.action = 'cancel'
-        and c.created_at > pl.created_at
-    )
-    and cap.capacity_left > 20
-  order by pl.created_at desc;
+  select * from public.find_staff_payment_overlap_engine(p_contract_id, p_paid_date, p_principal, p_penalty, p_window_days);
 end;
 $$;
 
@@ -192,7 +240,7 @@ revoke all on function public.find_staff_payment_overlap(uuid, date, numeric, nu
 grant execute on function public.find_staff_payment_overlap(uuid, date, numeric, numeric, int) to authenticated, service_role;
 
 comment on function public.find_staff_payment_overlap(uuid, date, numeric, numeric, int) is
-  '(0162) หา payment_log ของพนักงาน (acted_by ไม่ null, action=pay, ไม่ถูก cancel, capacity_left>20) ในสัญญาเดียวกัน ใกล้ p_paid_date ±p_window_days วัน — match_kind: exact_total (ยอดรวมตรงเป๊ะ) / exact_principal (หักค่าปรับแล้วตรงเงินต้น) / near (ต่างไม่เกิน 20 บาท) / other; admin/staff (active) เท่านั้น ไม่งั้นคืนว่าง';
+  '(0162) wrapper มี guard (admin/staff active) เรียก find_staff_payment_overlap_engine ต่อ — หา payment_log ของพนักงาน (acted_by ไม่ null, action=pay, ไม่ถูก cancel, capacity_left>20) ในสัญญาเดียวกัน ใกล้ p_paid_date ±p_window_days วัน — match_kind: exact_total (ยอดรวมตรงเป๊ะ) / exact_principal (หักค่าปรับแล้วตรงเงินต้น) / near (ต่างไม่เกิน 20 บาท) / other; admin/staff (active) เท่านั้น ไม่งั้นคืนว่าง; service_role เรียกได้แต่จะได้ว่างเสมอ (auth.uid() null) — ใช้ engine ตรงแทน';
 
 -- ============================================================================
 -- SECTION 5: link_pj_review_to_payment_log — ผูกแถวกล่องรอตรวจ (reason=STAFF_MANUAL_OVERLAP) เข้ากับ
@@ -371,7 +419,9 @@ begin
   v_linked_json := v_receipts;
 
   -- ---------------------------------------------------------------------
-  -- 6) resolve แถวกล่องรอตรวจ + เขียน overlap_detail (audit)
+  -- 6) resolve แถวกล่องรอตรวจ + merge overlap_detail.link (audit) — ⚠️ (Wave 2A) ห้ามเขียนทับ overlap_detail
+  -- ทั้งก้อน pj-sync เขียน {candidates:[...]} ไว้แล้วตอนสร้างแถว (SECTION 4.1) ต้อง merge ด้วย jsonb `||`
+  -- ให้ candidates เดิมอยู่ครบ ไม่งั้น audit ว่า "ตอนสร้างแถวเจอผู้ต้องสงสัยกี่คน" จะหายไปทันทีที่ผูกสำเร็จ
   -- ---------------------------------------------------------------------
   update public.pj_sync_review
      set status          = 'resolved',
@@ -385,12 +435,14 @@ begin
              case when p_note is not null and trim(p_note) <> '' then ' — ' || trim(p_note) else '' end
            )
          ),
-         overlap_detail  = jsonb_build_object(
-           'linked_payment_log_id', v_log.id,
-           'linked_receipts',       v_linked_json,
-           'linked_receipt_count',  v_inserted,
-           'linked_at',             now(),
-           'linked_by',             v_by_name
+         overlap_detail  = coalesce(overlap_detail, '{}'::jsonb) || jsonb_build_object(
+           'link', jsonb_build_object(
+             'linked_payment_log_id', v_log.id,
+             'linked_receipts',       v_linked_json,
+             'linked_receipt_count',  v_inserted,
+             'linked_at',             now(),
+             'linked_by',             v_by_name
+           )
          )
    where id = p_review_id;
 end;
@@ -400,7 +452,7 @@ revoke all on function public.link_pj_review_to_payment_log(uuid, uuid, text) fr
 grant execute on function public.link_pj_review_to_payment_log(uuid, uuid, text) to authenticated, service_role;
 
 comment on function public.link_pj_review_to_payment_log(uuid, uuid, text) is
-  '(0162) ผูกแถวกล่องรอตรวจ PJ (ต้อง status=pending, reason=STAFF_MANUAL_OVERLAP) เข้ากับ payment_log ที่พนักงานลงมือไปแล้ว — insert pj_applied_receipts (source=staff-link) กันคำนวณซ้ำของ pj-sync + resolve แถว ไม่แตะ pj_applied_ledger/payment_log เลย; admin/staff (active) เท่านั้น ผูกผิด → ลบแถว source=staff-link ออกจาก pj_applied_receipts มือ (ครีม/MCP) แล้วรอ deep-scan รอบถัดไปหยิบกลับ (ใช้ได้ใน ~30 วันจาก paid_date เท่านั้น)';
+  '(0162, merge overlap_detail.link แทนเขียนทับ Wave 2A) ผูกแถวกล่องรอตรวจ PJ (ต้อง status=pending, reason=STAFF_MANUAL_OVERLAP) เข้ากับ payment_log ที่พนักงานลงมือไปแล้ว — insert pj_applied_receipts (source=staff-link) กันคำนวณซ้ำของ pj-sync + resolve แถว + merge overlap_detail.link เข้าไปข้างๆ overlap_detail.candidates เดิม (ไม่ทับ) ไม่แตะ pj_applied_ledger/payment_log เลย; admin/staff (active) เท่านั้น ผูกผิด → ลบแถว source=staff-link ออกจาก pj_applied_receipts มือ (ครีม/MCP) แล้วรอ deep-scan รอบถัดไปหยิบกลับ (ใช้ได้ใน ~30 วันจาก paid_date เท่านั้น)';
 
 -- ============================================================================
 -- SECTION 6: get_contract_pj_money_recent — สรุปเงิน PJ ล่าสุดของสัญญาเดียว ให้ PaymentModal เตือนก่อนพนักงาน
@@ -617,11 +669,13 @@ comment on function public.pj_staff_overlap_suspects(int, int) is
 -- 8b) index ใหม่มีอยู่จริง:
 --   SELECT indexname FROM pg_indexes WHERE tablename='pj_applied_receipts' AND indexname='pj_applied_receipts_payment_log_id_idx';
 
--- 8c) service_role เรียก helper ภายในได้ (engine):
+-- 8c) service_role เรียก engine ภายในได้ตรง (authenticated ห้าม — เจตนา engine ภายในเท่านั้น):
 --   SELECT has_function_privilege('service_role', 'public.pj_staff_log_capacity_left(uuid)', 'execute'); -- true
---   SELECT has_function_privilege('authenticated', 'public.pj_staff_log_capacity_left(uuid)', 'execute'); -- false (เจตนา — engine ภายในเท่านั้น)
+--   SELECT has_function_privilege('authenticated', 'public.pj_staff_log_capacity_left(uuid)', 'execute'); -- false
+--   SELECT has_function_privilege('service_role', 'public.find_staff_payment_overlap_engine(uuid,date,numeric,numeric,int)', 'execute'); -- true (pj-sync เรียกตัวนี้)
+--   SELECT has_function_privilege('authenticated', 'public.find_staff_payment_overlap_engine(uuid,date,numeric,numeric,int)', 'execute'); -- false
 
--- 8d) authenticated เรียก 3 ฟังก์ชันหลักได้ (guard เช็คสิทธิ์เองข้างใน):
+-- 8d) authenticated เรียก 4 ฟังก์ชันหลักได้ (guard เช็คสิทธิ์เองข้างใน):
 --   SELECT has_function_privilege('authenticated', 'public.find_staff_payment_overlap(uuid,date,numeric,numeric,int)', 'execute'); -- true
 --   SELECT has_function_privilege('authenticated', 'public.link_pj_review_to_payment_log(uuid,uuid,text)', 'execute'); -- true
 --   SELECT has_function_privilege('authenticated', 'public.get_contract_pj_money_recent(uuid,int)', 'execute'); -- true
@@ -629,6 +683,7 @@ comment on function public.pj_staff_overlap_suspects(int, int) is
 
 -- 8e) anon ต้องไม่มีสิทธิ์อะไรเลยกับฟังก์ชันในไฟล์นี้ (ทุกตัว false):
 --   SELECT has_function_privilege('anon', 'public.find_staff_payment_overlap(uuid,date,numeric,numeric,int)', 'execute');
+--   SELECT has_function_privilege('anon', 'public.find_staff_payment_overlap_engine(uuid,date,numeric,numeric,int)', 'execute');
 --   SELECT has_function_privilege('anon', 'public.link_pj_review_to_payment_log(uuid,uuid,text)', 'execute');
 --   SELECT has_function_privilege('anon', 'public.get_contract_pj_money_recent(uuid,int)', 'execute');
 --   SELECT has_function_privilege('anon', 'public.pj_staff_overlap_suspects(int,int)', 'execute');
