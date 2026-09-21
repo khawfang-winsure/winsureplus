@@ -34,6 +34,7 @@ import type {
   OurInstallment as DueDayOurInstallment,
   PjScheduleRow as DueDayPjScheduleRow,
 } from "./dueDayShift.ts";
+import { mapPjScheduleRowsForDueDayShift } from "./pjScheduleMapper.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -400,12 +401,16 @@ async function fetchInvoicesPageForSync(
   };
 }
 
-// หา uuid ของ invoice จากเลข invoice_no (ไม่มี endpoint ค้นหาตรงจาก PJ — ต้อง scan รายการ)
-async function findPjInvoiceUuidByNo(
+// (21 ก.ย. 2026 รอบแก้ที่ 2 — ติ๊ก RED #5) ดึง invoice_no→uuid "ทั้งหมด" ครั้งเดียว (เหมือน invoiceMap
+// ของ mode=returned_watch) แทนการ scan invoices/all ใหม่ทุกครั้งที่เจอ candidate (ของเดิม
+// findPjInvoiceUuidByNo ยิง fetchInvoicesPageForSync ซ้ำต่อ 1 invoice — ถ้าเจอหลาย candidate ในรอบ
+// เดียวกันจะยิงซ้ำหลายรอบ กินงบเวลา 45s ของ loop หลักโดยไม่จำเป็น) — caller (fetch handler) cache ผลไว้
+// เอง ฟังก์ชันนี้แค่ "ดึงมาให้" ไม่รู้เรื่อง cache
+async function fetchAllPjInvoiceUuidMap(
   jar: Map<string, string>,
   token: string,
-  invoiceNo: string,
-): Promise<string | null> {
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
   const PAGE_LENGTH = 500;
   const MAX_PAGES = 20; // เหมือน INV_MAX_PAGES ของ returned_watch — กันวนไม่รู้จบ
   let offset = 0;
@@ -414,21 +419,19 @@ async function findPjInvoiceUuidByNo(
     try {
       result = await fetchInvoicesPageForSync(jar, token, offset, PAGE_LENGTH);
     } catch {
-      return null;
+      break; // เก็บเท่าที่ดึงได้ก่อนพัง — ดีกว่าทิ้งทั้งหมด (caller จะได้ map ว่าง/บางส่วน ไม่ throw)
     }
     for (const row of result.rows) {
       const invNoRaw = pick(row, ["invoice_no", "inv_no", "invoiceNo"]);
       const uuidRaw = pick(row, ["uuid"]);
-      if (invNoRaw && uuidRaw && String(invNoRaw).trim() === invoiceNo) {
-        return String(uuidRaw).trim();
-      }
+      if (invNoRaw && uuidRaw) map.set(String(invNoRaw).trim(), String(uuidRaw).trim());
     }
     const known = result.recordsFiltered || result.recordsTotal || 0;
     const gotFullPage = result.rows.length >= PAGE_LENGTH;
     if (!gotFullPage || (known > 0 && offset + result.rows.length >= known) || result.rows.length === 0) break;
     offset += PAGE_LENGTH;
   }
-  return null;
+  return map;
 }
 
 // ดึงตารางงวด (invoice-items) ของ 1 ใบ — เหมือน fetchInvoiceItems ของ returned_watch เป๊ะ (คนละฟังก์ชัน
@@ -507,39 +510,8 @@ async function fetchInvoiceItemsForSync(
   return { ok: false, rows: [] };
 }
 
-// map แถวดิบจาก invoice-items → PjScheduleRow (ตารางงวด PJ) สำหรับ decideDueDayShift เท่านั้น —
-// คนละอันกับ mapInvoiceItemRows ด้านบน (อันนั้นสรุปยอด "จ่ายแล้ว" ต่อประเภทให้ mode=returned_watch,
-// อันนี้เก็บทุกแถวพร้อมวันครบกำหนด+สถานะ Pending/Paid/Partial ไว้ใช้เทียบตารางงวด)
-//
-// ⚠️ field name ยังไม่ยืนยัน 100% จาก PJ จริง (เหมือนจุดอื่นในไฟล์นี้ที่ใช้ pick() แบบกว้างๆ) — ถ้า
-// PJ_AUTO_DUEDAY_MODE=dry_run แล้วเห็น dueDate เป็น null เต็มหน้าใน pj_sync_review.raw_json ให้ครีมมา
-// แก้ candidate list ของ pick() ตรงนี้จุดเดียว (เจตนาให้ dry_run เป็นเครื่องมือ debug field name ไปในตัว)
-function mapPjScheduleRowsForDueDayShift(rows: any[]): DueDayPjScheduleRow[] {
-  return rows.map((row) => {
-    const typeRaw = String(
-      pick(row, ["payment_type", "type", "item_type", "category", "paymentType"]) ?? "",
-    ).toLowerCase();
-    const statusRaw = String(pick(row, ["status", "payment_status", "state"]) ?? "").toLowerCase();
-    const amount = parseAmount(
-      pick(row, ["amount", "total", "installment_amount", "amountDue", "amount_due"]),
-    );
-    const dueDateRaw = pick(row, [
-      "due_date", "payment_due_date", "installment_due_date", "date_due", "dueDate",
-    ]);
-
-    let type: DueDayPjScheduleRow["type"] = "other";
-    if (typeRaw.includes("down") || typeRaw.includes("ดาวน์")) type = "down";
-    else if (typeRaw.includes("penalty") || typeRaw.includes("ปรับ")) type = "penalty";
-    else if (typeRaw.includes("installment") || typeRaw.includes("งวด")) type = "installment";
-
-    let status: DueDayPjScheduleRow["status"] = "unknown";
-    if (statusRaw.includes("partial")) status = "partial";
-    else if (statusRaw.includes("paid")) status = "paid";
-    else if (statusRaw.includes("pending")) status = "pending";
-
-    return { type, amount, dueDate: toIsoDate(dueDateRaw), status };
-  });
-}
+// map แถวดิบจาก invoice-items → PjScheduleRow ย้ายไปอยู่ pjScheduleMapper.ts แล้ว (21 ก.ย. 2026 รอบแก้
+// ที่ 2) — แยกไฟล์เพื่อทดสอบ field-name mapping อิสระจาก Deno/index.ts (ดู pjScheduleMapper.test.ts)
 
 export default {
   async fetch(req: Request): Promise<Response> {
@@ -1704,38 +1676,115 @@ export default {
       // secret เท่านั้น ครีมจะเปิด dry_run ก่อนเสมอเพื่อดู log จริงบน prod ก่อนเปิด on
       // ══════════════════════════════════════════════════════════════════════════════════════
 
-      // insert แถวกล่องรอตรวจ/log สำหรับ feature นี้โดยเฉพาะ — เขียนตรงทันที (ไม่รอ batch reviewRows
-      // ท้ายไฟล์) เพราะ caller (tryAutoDueDayShift) เรียกแค่ตอนเจอเคสจริงเท่านั้น (ไม่ใช่ hot path ที่
-      // ต้องกัง วล round-trip) เรียกได้ก็ต่อเมื่อ !dryRun (top-level) เท่านั้น — ดูจุดเรียกด้านล่าง
-      async function insertPlanChangeReview(
-        contractId: string | null,
-        invoiceNo: string,
-        paidDate: string | null,
-        amount: number,
-        note: string,
-        comparison: unknown,
-        reason: string,
-        status: "pending" | "auto_resolved" = "pending",
-      ) {
-        await db.from("pj_sync_review").insert({
-          run_id: runId,
-          pj_invoice_no: invoiceNo,
-          pj_payment_type: "other",
-          pj_amount: amount,
-          pj_paid_date: paidDate,
-          matched_contract_id: contractId,
-          reason,
-          raw_json: { note, comparison },
-          status,
-          resolved_by: status === "auto_resolved" ? SYNC_BY_NAME : null,
-          resolved_at: status === "auto_resolved" ? new Date().toISOString() : null,
-          resolution_note: status === "auto_resolved" ? note : null,
-        });
+      const DUEDAY_SHIFT_MAX_CANDIDATES = 10; // (RED #5) กันงบเวลา 45s ของ loop หลักบานปลาย
+      let dueDayShiftCandidatesUsed = 0;
+
+      // (RED #5) แคช invoice_no→uuid ของ PJ ไว้ "ครั้งเดียวต่อรอบ" (เหมือน invoiceMap ของ
+      // mode=returned_watch) — เรียก fetchAllPjInvoiceUuidMap ครั้งแรกที่ต้องใช้เท่านั้น ครั้งต่อไปคืน
+      // ค่าที่ cache ไว้ ไม่ scan invoices/all ซ้ำอีกแม้เจอ candidate หลายตัวในรอบเดียวกัน
+      let dueDayShiftInvoiceMapCache: Map<string, string> | null = null;
+      async function getDueDayShiftInvoiceMap(): Promise<Map<string, string>> {
+        if (!dueDayShiftInvoiceMapCache) {
+          dueDayShiftInvoiceMapCache = await fetchAllPjInvoiceUuidMap(jar, token);
+        }
+        return dueDayShiftInvoiceMapCache;
       }
 
-      // คืนค่า true = "จัดการเคสนี้แล้ว" (ไม่ว่าจะ auto-apply/queue review/dry-run log) — caller ต้อง
-      // ไม่ไป queueReview(a,"OTHER",...) ซ้ำอีก. คืนค่า false = ปล่อยให้ caller ทำ path OTHER เดิมต่อ
-      // (เช่น ไม่ active, ไม่มีงวดค้างให้เลื่อน (อาจเป็นค่าธรรมเนียมประเภทอื่นที่ไม่เกี่ยวกับวันชำระ))
+      // แปลง (งวดของเรา, แถว PJ) เป็นตาราง raw_json.comparison ที่ตกลงกับน้องวิว — 1 แถวต่องวด
+      // {no, our_due, pj_due, our_amount, pj_amount, status} — zip ตามตำแหน่ง (ทั้งสองฝั่ง sort ตาม
+      // วันครบกำหนดมาแล้วจากฝั่ง dueDayShift.ts) เผื่อจำนวนไม่เท่ากัน (เคส count mismatch) ก็ยังโชว์ได้
+      function buildDueDayComparisonRows(
+        ourRows: DueDayOurInstallment[],
+        pjRows: DueDayPjScheduleRow[],
+      ): Array<{
+        no: number | null; our_due: string | null; pj_due: string | null;
+        our_amount: number | null; pj_amount: number | null; status: string;
+      }> {
+        const len = Math.max(ourRows.length, pjRows.length);
+        const rows = [];
+        for (let i = 0; i < len; i++) {
+          const our = ourRows[i] ?? null;
+          const pj = pjRows[i] ?? null;
+          rows.push({
+            no: our ? our.installmentNo : null,
+            our_due: our ? our.dueDate : null,
+            pj_due: pj ? pj.dueDate : null,
+            our_amount: our ? our.amount : null,
+            pj_amount: pj ? pj.amount : null,
+            status: pj ? pj.status : "unknown",
+          });
+        }
+        return rows;
+      }
+
+      // (RED #3) insert/update แถว pj_sync_review ของ feature นี้ — dedup ด้วย natural key เดียวกับ
+      // queueReturnedWatchReview (pj_invoice_no + reason, status='pending') กันแถวซ้ำทุก 15 นาทีตอน
+      // ยังไม่มีคนตัดสินใจ (ต่างจาก queueReturnedWatchReview ตรงที่เรามี 3 reason ที่ "แทนกันได้" ต่อ
+      // invoice เดียว — PLAN_CHANGE_REVIEW/DRYRUN/AUTO ไม่มีทางเกิดพร้อมกันจริง ค้นด้วย .in() ครอบทั้ง 3)
+      //
+      // (RED #2) เขียนตรงทันที (ไม่รอ batch reviewRows ท้ายไฟล์) เพราะเรียกแค่ตอนเจอเคสจริงเท่านั้น
+      // (ไม่ใช่ hot path) — คืนค่า boolean "เขียนสำเร็จไหม" ให้ caller เช็คเสมอ ห้ามสมมติว่าสำเร็จ
+      // (ถ้าเขียนไม่สำเร็จ caller ต้องไม่ return true ให้ตกไป queueReview(a,"OTHER") เดิมแทน)
+      async function upsertPlanChangeReview(p: {
+        contractId: string | null;
+        invoiceNo: string;
+        paidDate: string | null;
+        amount: number;
+        reason: "PLAN_CHANGE_REVIEW" | "PLAN_CHANGE_DRYRUN" | "PLAN_CHANGE_AUTO";
+        status: "pending" | "auto_resolved";
+        decisionReason: string;
+        proposedDueDay: number | null;
+        comparison: ReturnType<typeof buildDueDayComparisonRows>;
+        note?: string;
+      }): Promise<boolean> {
+        const rawJson = {
+          comparison: p.comparison,
+          proposed_due_day: p.proposedDueDay,
+          decision_reason: p.decisionReason,
+          note: p.note ?? p.decisionReason,
+        };
+        const patch = {
+          pj_amount: p.amount,
+          pj_paid_date: p.paidDate,
+          matched_contract_id: p.contractId,
+          reason: p.reason,
+          raw_json: rawJson,
+          status: p.status,
+          resolved_by: p.status === "auto_resolved" ? SYNC_BY_NAME : null,
+          resolved_at: p.status === "auto_resolved" ? new Date().toISOString() : null,
+          resolution_note: p.status === "auto_resolved" ? p.decisionReason : null,
+        };
+
+        const { data: existingPending, error: findErr } = await db
+          .from("pj_sync_review")
+          .select("id")
+          .eq("pj_invoice_no", p.invoiceNo)
+          .in("reason", ["PLAN_CHANGE_REVIEW", "PLAN_CHANGE_DRYRUN", "PLAN_CHANGE_AUTO"])
+          .eq("status", "pending")
+          .limit(1);
+        if (findErr) return false;
+
+        if (existingPending && existingPending.length > 0) {
+          const { error: updErr } = await db
+            .from("pj_sync_review")
+            .update(patch)
+            .eq("id", existingPending[0].id);
+          return !updErr;
+        }
+
+        const { error: insErr } = await db.from("pj_sync_review").insert({
+          run_id: runId,
+          pj_invoice_no: p.invoiceNo,
+          pj_payment_type: "other",
+          ...patch,
+        });
+        return !insErr;
+      }
+
+      // คืนค่า true = "จัดการเคสนี้แล้ว" (ไม่ว่าจะ auto-apply/queue review/dry-run log/no-op) — caller
+      // ต้องไม่ไป queueReview(a,"OTHER",...) ซ้ำอีก. คืนค่า false = ปล่อยให้ caller ทำ path OTHER เดิม
+      // ต่อ (ไม่ active, ไม่มีงวดค้างให้เลื่อน, หรือเขียน DB ไม่สำเร็จ — RED #2: ห้าม return true เงียบๆ
+      // ถ้าเขียนอะไรไม่สำเร็จ ปล่อยให้คนยังเห็นเคสนี้ผ่านทาง OTHER เดิมดีกว่าหายไปเงียบๆ)
       async function tryAutoDueDayShift(params: {
         contractId: string;
         contractStatus: string | null;
@@ -1764,35 +1813,31 @@ export default {
           dueDate: toIsoDate(r.due_date) ?? String(r.due_date).slice(0, 10),
         }));
 
-        // 3) หา uuid ใบ PJ + ดึงตารางงวด PJ — หาไม่เจอ/อ่านไม่ได้ → เข้า review พร้อมเหตุผล (ไม่ fallback
-        //    ไป OTHER ทั่วไป เพราะรู้แล้วว่าเป็นสัญญา active มีใบ "อื่นๆ" จริง คนควรได้เห็นเหตุผลตรงๆ)
         const today = syncIsoDate ?? toIsoDate(ddmmyyyyToday())!;
-        const invUuid = await findPjInvoiceUuidByNo(jar, token, invoiceNo);
+        const isLive = PJ_AUTO_DUEDAY_MODE === "on";
+        const dryReason = isLive ? "PLAN_CHANGE_REVIEW" : "PLAN_CHANGE_DRYRUN";
+
+        // 3) หา uuid ใบ PJ จาก map ที่ cache ไว้ (RED #5 — ไม่ scan invoices/all ซ้ำต่อ candidate) +
+        //    ดึงตารางงวด PJ — หาไม่เจอ/อ่านไม่ได้ → เข้า review พร้อมเหตุผล (ไม่ fallback ไป OTHER
+        //    ทั่วไป เพราะรู้แล้วว่าเป็นสัญญา active มีใบ "อื่นๆ" จริง คนควรได้เห็นเหตุผลตรงๆ)
+        const invoiceMap = await getDueDayShiftInvoiceMap();
+        const invUuid = invoiceMap.get(invoiceNo) ?? null;
         if (!invUuid) {
-          if (PJ_AUTO_DUEDAY_MODE === "on") {
-            await insertPlanChangeReview(
-              contractId, invoiceNo, paidDate, otherAmount,
-              "หา invoice ของ PJ ไม่เจอในรายการ invoices/all (เลข inv อาจไม่ตรง หรือ PJ ยังไม่ sync)",
-              null, "PLAN_CHANGE_REVIEW",
-            );
-          } else {
-            await insertPlanChangeReview(
-              contractId, invoiceNo, paidDate, otherAmount,
-              "[DRY RUN] หา invoice ของ PJ ไม่เจอ — ถ้าเปิดจริงเคสนี้จะเข้ากล่องรอตรวจ",
-              null, "PLAN_CHANGE_DRYRUN",
-            );
-          }
-          return true;
+          return await upsertPlanChangeReview({
+            contractId, invoiceNo, paidDate, amount: otherAmount,
+            reason: dryReason, status: "pending",
+            decisionReason: "หา invoice ของ PJ ไม่เจอในรายการ invoices/all (เลข inv อาจไม่ตรง หรือ PJ ยังไม่ sync)",
+            proposedDueDay: null, comparison: [],
+          });
         }
         const itemsResult = await fetchInvoiceItemsForSync(jar, token, invUuid);
         if (!itemsResult.ok || itemsResult.rows.length === 0) {
-          const note = "อ่านตารางงวด PJ ไม่ได้ (invoice-items ว่างเปล่า/ไม่ใช่ JSON)";
-          await insertPlanChangeReview(
-            contractId, invoiceNo, paidDate, otherAmount,
-            PJ_AUTO_DUEDAY_MODE === "on" ? note : `[DRY RUN] ${note} — ถ้าเปิดจริงเคสนี้จะเข้ากล่องรอตรวจ`,
-            null, PJ_AUTO_DUEDAY_MODE === "on" ? "PLAN_CHANGE_REVIEW" : "PLAN_CHANGE_DRYRUN",
-          );
-          return true;
+          return await upsertPlanChangeReview({
+            contractId, invoiceNo, paidDate, amount: otherAmount,
+            reason: dryReason, status: "pending",
+            decisionReason: "อ่านตารางงวด PJ ไม่ได้ (invoice-items ว่างเปล่า/ไม่ใช่ JSON)",
+            proposedDueDay: null, comparison: [],
+          });
         }
         const pjSchedule = mapPjScheduleRowsForDueDayShift(itemsResult.rows);
 
@@ -1805,109 +1850,111 @@ export default {
           return false;
         }
 
+        if (decision.kind === "no_op") {
+          // (RED #3) วันตรงกับ PJ อยู่แล้วทุกงวด — ห้ามเลื่อนซ้ำ/ลงค่าธรรมเนียมซ้ำเด็ดขาด แค่ทำ marker
+          // กันประมวลผลซ้ำไว้เฉยๆ (auto_resolved เมื่อเปิดจริง, pending ตอน dry_run ให้ครีมเห็นว่า
+          // "เจอเคสนี้แต่ไม่มีอะไรต้องทำ")
+          return await upsertPlanChangeReview({
+            contractId, invoiceNo, paidDate, amount: otherAmount,
+            reason: isLive ? "PLAN_CHANGE_AUTO" : "PLAN_CHANGE_DRYRUN",
+            status: isLive ? "auto_resolved" : "pending",
+            decisionReason: decision.detail,
+            proposedDueDay: contractDueDay, comparison: [],
+          });
+        }
+
         if (decision.kind === "review") {
-          const reason = PJ_AUTO_DUEDAY_MODE === "on" ? "PLAN_CHANGE_REVIEW" : "PLAN_CHANGE_DRYRUN";
-          const note = PJ_AUTO_DUEDAY_MODE === "on"
+          const decisionReason = isLive
             ? decision.reasonDetail
             : `[DRY RUN] จะเข้ากล่องรอตรวจจริง: ${decision.reasonDetail}`;
-          await insertPlanChangeReview(contractId, invoiceNo, paidDate, otherAmount, note, decision.comparison, reason);
-          return true;
+          return await upsertPlanChangeReview({
+            contractId, invoiceNo, paidDate, amount: otherAmount,
+            reason: dryReason, status: "pending",
+            decisionReason, proposedDueDay: null,
+            comparison: buildDueDayComparisonRows(
+              decision.comparison.ourCandidates, decision.comparison.pjPendingInstallmentRows,
+            ),
+          });
         }
 
         // decision.kind === "auto_shift"
-        if (PJ_AUTO_DUEDAY_MODE !== "on") {
+        const comparisonRows = decision.updates.map((u) => ({
+          no: u.installmentNo, our_due: u.oldDueDate, pj_due: u.newDueDate,
+          our_amount: u.amount, pj_amount: u.amount, status: "pending",
+        }));
+
+        if (!isLive) {
           // dry_run — ไม่แก้อะไรเลย แค่บันทึกว่า "ถ้าเปิดจริงจะเกิดอะไรขึ้น"
-          await insertPlanChangeReview(
-            contractId, invoiceNo, paidDate, otherAmount,
-            `[DRY RUN] จะเลื่อนอัตโนมัติ: due_day ${contractDueDay ?? "?"} → ${decision.newDueDay} (${decision.updates.length} งวด)`,
-            { updates: decision.updates }, "PLAN_CHANGE_DRYRUN",
-          );
-          return true;
+          return await upsertPlanChangeReview({
+            contractId, invoiceNo, paidDate, amount: otherAmount,
+            reason: "PLAN_CHANGE_DRYRUN", status: "pending",
+            decisionReason: `[DRY RUN] จะเลื่อนอัตโนมัติ: due_day ${contractDueDay ?? "?"} → ${decision.newDueDay} (${decision.updates.length} งวด)`,
+            proposedDueDay: decision.newDueDay, comparison: comparisonRows,
+          });
         }
 
-        // ── mode="on" — แก้จริง ──────────────────────────────────────────────────────────────
-        const beforeSnapshot = decision.updates.map((u) => ({
-          installment_id: u.installmentId, installment_no: u.installmentNo, due_date: u.oldDueDate,
-        }));
-        const afterSnapshot = decision.updates.map((u) => ({
-          installment_id: u.installmentId, installment_no: u.installmentNo, due_date: u.newDueDate,
-        }));
-
-        for (const u of decision.updates) {
-          const { error: updErr } = await db
-            .from("installments")
-            .update({ due_date: u.newDueDate })
-            .eq("id", u.installmentId);
-          if (updErr) {
-            // แก้ไปครึ่งทาง — ต้องให้คนตามต่อ ไม่ตีความใหม่เป็น OTHER ทั่วไป (จะเสียบริบทว่าทำอะไรไปแล้ว)
-            await insertPlanChangeReview(
-              contractId, invoiceNo, paidDate, otherAmount,
-              `แก้ due_date งวดที่ ${u.installmentNo} ไม่สำเร็จ: ${updErr.message} — ต้องตรวจมือ (แก้ไปแล้วบางงวดก่อนหน้า)`,
-              { beforeSnapshot, afterSnapshot, failedAt: u }, "PLAN_CHANGE_REVIEW",
-            );
-            return true;
-          }
-        }
-
-        const { error: contractUpdErr } = await db
-          .from("contracts")
-          .update({ due_day: decision.newDueDay })
-          .eq("id", contractId);
-        if (contractUpdErr) {
-          await insertPlanChangeReview(
-            contractId, invoiceNo, paidDate, otherAmount,
-            `เลื่อน due_date งวดสำเร็จแล้วแต่แก้ contracts.due_day ไม่สำเร็จ: ${contractUpdErr.message} — ต้องตรวจมือ`,
-            { beforeSnapshot, afterSnapshot }, "PLAN_CHANGE_REVIEW",
-          );
-          return true;
-        }
-
-        // ลงค่าธรรมเนียมเป็น other_income (category/fee_kind ตามที่คุณเตยอนุมัติ — ตรงกับ convention
-        // เดียวกับที่แอดมินใช้เวลาลงมือผ่านหน้า /pj-sync-review) — best-effort: ถ้าล้มเหลว ไม่ rollback
-        // การเลื่อนวัน (ถูกต้องตามกติกาแล้ว) แค่บันทึก log ไว้ให้คนรู้ว่าต้องลงเงินเพิ่มเอง
-        let otherIncomeId: string | null = null;
-        try {
-          const { data: oiRow, error: oiErr } = await db
-            .from("other_income")
-            .insert({
-              contract_id: contractId,
-              amount: otherAmount,
-              category: "ค่าเปลี่ยนวันที่ชำระ",
-              note: `PJ Auto-Sync เลื่อนวันครบกำหนดอัตโนมัติ (inv ${invoiceNo})`,
-              received_at: paidDate ?? today,
-              recorded_by: SYNC_BY_NAME,
-              fee_kind: "due_day",
-            })
-            .select("id")
-            .single();
-          if (oiErr) throw oiErr;
-          otherIncomeId = oiRow?.id ?? null;
-        } catch { /* best-effort — log ด้านล่างจะไม่มี other_income_id แต่การเลื่อนวันสำเร็จแล้ว */ }
-
-        // บันทึกประวัติถาวร (ตาราง pj_auto_dueday_log, migration 0161) — ย้อนกลับได้เสมอ
-        await db.from("pj_auto_dueday_log").insert({
-          contract_id: contractId,
-          pj_invoice_no: invoiceNo,
-          pj_paid_date: paidDate,
-          old_due_day: contractDueDay,
-          new_due_day: decision.newDueDay,
-          installments_before: beforeSnapshot,
-          installments_after: afterSnapshot,
-          other_income_id: otherIncomeId,
-          mode: "live",
-          run_id: runId,
-          created_by: SYNC_BY_NAME,
+        // ── mode="on" — แก้จริงผ่าน RPC เดียว (RED #4 — atomic: งวดหลายงวด + due_day + other_income +
+        //    pj_auto_dueday_log อยู่ในทรานแซกชันเดียวกันทั้งหมด, migration 0161) ────────────────────
+        const { error: rpcErr } = await db.rpc("pj_auto_dueday_shift", {
+          p_contract_id: contractId,
+          p_old_due_day: contractDueDay,
+          p_new_due_day: decision.newDueDay,
+          p_installment_updates: decision.updates.map((u) => ({
+            installment_id: u.installmentId, new_due_date: u.newDueDate,
+          })),
+          p_fee_amount: otherAmount,
+          p_fee_category: "ค่าเปลี่ยนวันที่ชำระ",
+          p_fee_kind: "due_day",
+          p_fee_note: `PJ Auto-Sync เลื่อนวันครบกำหนดอัตโนมัติ (inv ${invoiceNo})`,
+          p_fee_received_at: paidDate ?? today,
+          p_pj_invoice_no: invoiceNo,
+          p_pj_paid_date: paidDate,
+          p_run_id: runId,
+          p_created_by: SYNC_BY_NAME,
         });
 
-        // กันประมวลผลซ้ำรอบ cron ถัดไป (ทุก 15 นาที) — ใช้ pj_sync_review + status=auto_resolved
-        // ตาม pattern เดียวกับจุดอื่นในไฟล์นี้ (reviewAlreadyHandled เช็ค status นี้อยู่แล้ว)
-        await insertPlanChangeReview(
-          contractId, invoiceNo, paidDate, otherAmount,
-          `เลื่อนวันครบกำหนดอัตโนมัติสำเร็จ: due_day ${contractDueDay ?? "?"} → ${decision.newDueDay} (${decision.updates.length} งวด)`,
-          { beforeSnapshot, afterSnapshot }, "PLAN_CHANGE_AUTO", "auto_resolved",
-        );
+        if (rpcErr) {
+          // (RED #6 / F) RPC rollback ตัวเองไปแล้วทั้งก้อน (atomic) — ไม่มีอะไรถูกเขียนจริง ต้องเขียน
+          // pj_auto_dueday_log แยกต่างหากเป็น status='failed' เอง (best-effort — ถ้าพลาดอีกไม่ throw)
+          try {
+            await db.from("pj_auto_dueday_log").insert({
+              contract_id: contractId,
+              pj_invoice_no: invoiceNo,
+              pj_paid_date: paidDate,
+              old_due_day: contractDueDay,
+              new_due_day: decision.newDueDay,
+              installments_before: decision.updates.map((u) => ({
+                installment_id: u.installmentId, installment_no: u.installmentNo, due_date: u.oldDueDate,
+              })),
+              installments_after: decision.updates.map((u) => ({
+                installment_id: u.installmentId, installment_no: u.installmentNo, due_date: u.newDueDate,
+              })),
+              other_income_id: null,
+              run_id: runId,
+              mode: "live",
+              status: "failed",
+              error: rpcErr.message,
+              created_by: SYNC_BY_NAME,
+            });
+          } catch { /* best-effort — review row ด้านล่างยังเตือนคนได้แม้ log พลาดด้วย */ }
 
-        return true;
+          return await upsertPlanChangeReview({
+            contractId, invoiceNo, paidDate, amount: otherAmount,
+            reason: "PLAN_CHANGE_REVIEW", status: "pending",
+            decisionReason: `เลื่อนวันครบกำหนดอัตโนมัติไม่สำเร็จ: ${rpcErr.message} — ต้องตรวจมือ`,
+            proposedDueDay: decision.newDueDay, comparison: comparisonRows,
+          });
+        }
+
+        // สำเร็จ — ทำ marker กันประมวลผลซ้ำรอบ cron ถัดไป (best-effort เจตนา: ถ้าพลาดตรงนี้ ข้อมูลจริง
+        // ก็ถูกต้องแล้วจาก RPC ที่สำเร็จไปแล้ว รอบหน้าจะเจอ decision.kind==="no_op" เองโดยอัตโนมัติ ไม่มี
+        // ทางเลื่อนซ้ำ/ลงเงินซ้ำ แม้ marker แถวนี้เขียนไม่ติด)
+        return await upsertPlanChangeReview({
+          contractId, invoiceNo, paidDate, amount: otherAmount,
+          reason: "PLAN_CHANGE_AUTO", status: "auto_resolved",
+          decisionReason: `เลื่อนวันครบกำหนดอัตโนมัติสำเร็จ: due_day ${contractDueDay ?? "?"} → ${decision.newDueDay} (${decision.updates.length} งวด)`,
+          proposedDueDay: decision.newDueDay, comparison: comparisonRows,
+        });
       }
 
       for (const a of aggEntries) {
@@ -2025,7 +2072,11 @@ export default {
             // ไม่ใช่รอบ dryRun (top-level) เท่านั้น ปิดสนิทด้วย default (PJ_AUTO_DUEDAY_MODE=off) จน
             // กว่าคุณเตยจะอนุมัติเปิด — false ทุกกรณีข้างล่างนี้ = พฤติกรรมเดิมเป๊ะ (path OTHER เดิม)
             let handledByDueDayShift = false;
-            if (PJ_AUTO_DUEDAY_MODE !== "off" && !dryRun && noInstContractId && noInstContractRow) {
+            if (
+              PJ_AUTO_DUEDAY_MODE !== "off" && !dryRun && noInstContractId && noInstContractRow &&
+              dueDayShiftCandidatesUsed < DUEDAY_SHIFT_MAX_CANDIDATES
+            ) {
+              dueDayShiftCandidatesUsed++; // นับตอน "พยายาม" เลย ไม่ใช่ตอนสำเร็จ — กันงบเวลาบานปลาย
               try {
                 handledByDueDayShift = await tryAutoDueDayShift({
                   contractId: noInstContractId,

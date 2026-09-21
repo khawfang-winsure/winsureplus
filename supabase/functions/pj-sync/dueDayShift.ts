@@ -49,6 +49,8 @@ export interface DueDayShiftUpdate {
   installmentNo: number;
   oldDueDate: string;
   newDueDate: string;
+  /** ยอดค่างวด (เท่ากันทั้งฝั่งเราและ PJ ณ จุดที่ auto_shift ตัดสินใจแล้ว) — ใช้ประกอบ raw_json ฝั่ง caller */
+  amount: number;
 }
 
 export type DueDayShiftDecision =
@@ -56,7 +58,11 @@ export type DueDayShiftDecision =
   // ไม่จำเป็นต้อง auto-shift แต่ผู้เรียกควรพิจารณาว่ายังต้อง flag ให้คนดูไหม (มีใบ "อื่นๆ" ที่ยังไม่รู้
   // ว่าคืออะไรอยู่ดี) — ฟังก์ชันนี้แค่รายงานสถานะ ไม่ตัดสินใจแทนผู้เรียก
   | { kind: "no_candidates"; detail: string }
-  // เข้าเงื่อนไข "ง่าย" ครบทุกข้อ — เลื่อนอัตโนมัติได้เลย
+  // (21 ก.ย. 2026 รอบแก้ที่ 2 — ติ๊ก RED #3) วันครบกำหนดของทุกงวดตรงกับ PJ อยู่แล้ว ไม่มีอะไรต้องแก้จริง
+  // (เช่น รอบก่อนเลื่อนไปแล้ว แต่ event "อื่นๆ" คนละใบมาซ้ำ) — caller ต้อง "ไม่" เลื่อน/ลงค่าธรรมเนียมซ้ำ
+  | { kind: "no_op"; detail: string }
+  // เข้าเงื่อนไข "ง่าย" ครบทุกข้อ — เลื่อนอัตโนมัติได้เลย (มีแต่งวดที่ "วันจริงต้องเปลี่ยน" เท่านั้น —
+  // งวดที่วันตรงกับ PJ อยู่แล้วถูกตัดออกจาก updates ไปแล้ว ดู no_op ด้านบนถ้าตัดออกจนว่างหมด)
   | { kind: "auto_shift"; newDueDay: number; updates: DueDayShiftUpdate[] }
   // ไม่เข้าเงื่อนไขง่าย — ต้องเข้ากล่องรอตรวจให้คนตัดสินใจเอง พร้อมเหตุผล + ตารางเทียบ
   | {
@@ -112,17 +118,8 @@ export function decideDueDayShift(params: {
     return { kind: "no_candidates", detail: "ไม่มีงวดค้างที่ยังไม่ถึงกำหนด (paid_amount=0 && due_date>today)" };
   }
 
-  // ── 2) มีงวดจ่ายบางส่วนใน PJ (ประเภทค่างวด) ปนอยู่ที่ไหนก็ตาม → ห้าม auto ทันที (กติกาข้อ 3) ──
-  const anyPartial = pjSchedule.some((r) => r.type === "installment" && r.status === "partial");
-  if (anyPartial) {
-    return {
-      kind: "review",
-      reasonDetail: "มีงวดจ่ายบางส่วน (Partial) ในตารางงวด PJ — ต้องให้คนตรวจ",
-      comparison: { ourCandidates, pjPendingInstallmentRows: [] },
-    };
-  }
-
-  // ── 3) งวด Pending ฝั่ง PJ (เฉพาะประเภทค่างวด) — เรียงตามวันครบกำหนดจากใกล้ไปไกลเหมือนกัน ────
+  // ── 2) งวด Pending ฝั่ง PJ (เฉพาะประเภทค่างวด) — เรียงตามวันครบกำหนดจากใกล้ไปไกลเหมือนกัน ────
+  //    (คำนวณก่อน anyPartial ด้านล่าง เพื่อให้แนบ comparison เต็มๆ ได้แม้เจอ partial)
   const pjPending = pjSchedule
     .filter((r) => r.type === "installment" && r.status === "pending")
     .slice()
@@ -132,6 +129,16 @@ export function decideDueDayShift(params: {
       if (b.dueDate == null) return -1;
       return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0;
     });
+
+  // ── 3) มีงวดจ่ายบางส่วนใน PJ (ประเภทค่างวด) ปนอยู่ที่ไหนก็ตาม → ห้าม auto ทันที (กติกาข้อ 3) ──
+  const anyPartial = pjSchedule.some((r) => r.type === "installment" && r.status === "partial");
+  if (anyPartial) {
+    return {
+      kind: "review",
+      reasonDetail: "มีงวดจ่ายบางส่วน (Partial) ในตารางงวด PJ — ต้องให้คนตรวจ",
+      comparison: { ourCandidates, pjPendingInstallmentRows: pjPending },
+    };
+  }
 
   if (pjPending.some((r) => r.dueDate == null)) {
     return {
@@ -200,25 +207,41 @@ export function decideDueDayShift(params: {
     }
   }
 
-  // ── 8) คำนวณ due_date ใหม่ของงวดเรา + เช็คว่าไม่มีงวดไหนกลายเป็นเลยกำหนดทันทีหลังเลื่อน (กติกาข้อ 2) ──
+  // ── 8) คำนวณ due_date ใหม่ของงวดเรา — เอาเฉพาะงวดที่ "วันจริงต้องเปลี่ยน" เท่านั้น (oldDueDate !==
+  //    newDueDate) งวดที่วันตรงกับ PJ อยู่แล้ว (เคยเลื่อนไปแล้วรอบก่อน หรือบังเอิญตรงพอดี) ข้ามไปเลย
+  //    ไม่ต้องแตะ ไม่ต้องนับเป็นการ "แก้" ──────────────────────────────────────────────────────
   const updates: DueDayShiftUpdate[] = [];
   for (const p of pairs) {
     const oldParsed = parseYmd(p.our.dueDate)!;
     const newDueDate = makeDateClamped(oldParsed.y, oldParsed.m, newDueDay);
-    if (!(newDueDate > today)) {
-      return {
-        kind: "review",
-        reasonDetail:
-          `งวดที่ ${p.our.installmentNo} ถ้าเลื่อนเป็นวันที่ ${newDueDate} จะกลายเป็นเลยกำหนดทันที (วันนี้ ${today}) — ต้องให้คนตรวจ`,
-        comparison: { ourCandidates, pjPendingInstallmentRows: pjPending },
-      };
-    }
+    if (newDueDate === p.our.dueDate) continue; // ตรงกับ PJ อยู่แล้ว — ไม่ต้องแก้งวดนี้
     updates.push({
       installmentId: p.our.id,
       installmentNo: p.our.installmentNo,
       oldDueDate: p.our.dueDate,
       newDueDate,
+      amount: p.our.amount,
     });
+  }
+
+  // (21 ก.ย. 2026 รอบแก้ที่ 2 — ติ๊ก RED #3) ไม่มีงวดไหนต้องแก้จริงเลย = วันตรงกับ PJ ครบทุกงวดอยู่แล้ว
+  // → no_op เด็ดขาด ห้าม caller เลื่อนซ้ำ/ลงค่าธรรมเนียมซ้ำ (กันเคส event "อื่นๆ" คนละใบมาซ้ำหลังจากที่
+  // เคยเลื่อนสำเร็จไปแล้วรอบก่อน — เช่น idempotency marker เขียนไม่สำเร็จ แล้วรอบหน้ามาเจอ invoice/
+  // paid_date ใหม่ที่ยังไม่เคยถูก mark แต่ข้อมูลจริงถูกต้องอยู่แล้ว)
+  if (updates.length === 0) {
+    return { kind: "no_op", detail: "วันครบกำหนดของทุกงวดตรงกับตารางงวด PJ อยู่แล้ว ไม่ต้องเลื่อน" };
+  }
+
+  // ── 9) เช็คว่าไม่มีงวดไหน (ที่ "จะแก้จริง") กลายเป็นเลยกำหนดทันทีหลังเลื่อน (กติกาข้อ 2) ─────────
+  for (const u of updates) {
+    if (!(u.newDueDate > today)) {
+      return {
+        kind: "review",
+        reasonDetail:
+          `งวดที่ ${u.installmentNo} ถ้าเลื่อนเป็นวันที่ ${u.newDueDate} จะกลายเป็นเลยกำหนดทันที (วันนี้ ${today}) — ต้องให้คนตรวจ`,
+        comparison: { ourCandidates, pjPendingInstallmentRows: pjPending },
+      };
+    }
   }
 
   return { kind: "auto_shift", newDueDay, updates };
