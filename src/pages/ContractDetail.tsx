@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock, Copy, Check, Repeat } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
@@ -26,6 +26,7 @@ import {
   deleteFeeWaiver,
   adjustPayment,
   cancelPayment,
+  getContractRecentPjMoney,
   restructureContract,
   closeReturnedContract,
   getCloseEvent,
@@ -108,6 +109,7 @@ import {
 } from '../lib/feeReconcile'
 import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment, netPenaltyDue } from '../lib/calc'
 import { COURIERS } from '../lib/returnWorkflow'
+import { buildPaymentModalWarning, type PaymentModalWarning, type RecentPjMoney } from '../lib/pjStaffOverlap'
 import { sumExtraCharges, totalOutstanding as calcTotalOutstanding, outstandingAfterReturn, type OutstandingAfterReturnResult } from '../lib/outstandingExtras'
 import { getComplianceErrorMessage } from '../lib/complianceErrors'
 import { boxRequired, DOC_BOX_RULE_CUTOFF, DOC_ITEM_KEYS, DOC_ITEM_LABELS, formatIncompleteItems } from '../lib/docTracking'
@@ -2693,6 +2695,7 @@ export default function ContractDetail() {
           ins={payTarget.ins}
           mode={payTarget.mode}
           alreadyPaidPenalty={payTarget.alreadyPaidPenalty}
+          contractId={contract.id}
           userName={userName ?? ''}
           onClose={() => setPayTarget(null)}
           onDone={async () => {
@@ -3617,6 +3620,7 @@ function PaymentModal({
   ins,
   mode,
   alreadyPaidPenalty,
+  contractId,
   userName,
   onClose,
   onDone,
@@ -3624,6 +3628,7 @@ function PaymentModal({
   ins: Installment
   mode: 'pay' | 'edit'
   alreadyPaidPenalty?: number
+  contractId: string
   userName: string
   onClose: () => void
   onDone: () => void
@@ -3659,7 +3664,36 @@ function PaymentModal({
     '⚠️ งวดนี้ระบบไม่มีค่าปรับค้าง (0 บาท) — ระบบดูดค่าปรับจาก PJ อัตโนมัติอยู่แล้ว การลงเองอาจทำให้ค่าปรับซ้ำ แน่ใจว่าต้องการลงหรือไม่?'
   const penaltyFullyPaidWarnMsg = `⚠️ งวดนี้เก็บค่าปรับครบแล้ว (${baht(alreadyPaidPenalty ?? 0)} ฿) การลงเพิ่มอีกอาจทำให้ค่าปรับซ้ำ แน่ใจว่าต้องการลงหรือไม่?`
 
+  // กันลงเงินซ้ำกับที่พนักงานลงมือไปแล้ว vs เงินที่ PJ ส่งเข้ามาให้เอง (เฉพาะโหมด 'pay' — แก้ไข/ยกเลิกไม่เกี่ยว)
+  // ดึงตอนเปิด modal แบบไม่บล็อก (ฟอร์มขึ้นได้เลยไม่ต้องรอ) — null = ดึงไม่สำเร็จ/ไม่มีอะไรน่าสงสัย → ไม่เตือน (fail-open)
+  const [pjMoney, setPjMoney] = useState<{ recent: RecentPjMoney[]; pendingBox: boolean } | null>(null)
+  useEffect(() => {
+    if (mode !== 'pay') return
+    let cancelled = false
+    getContractRecentPjMoney(contractId, 10).then((result) => {
+      if (!cancelled) setPjMoney(result)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [contractId, mode])
+
+  // ประเมินใหม่ทุกครั้งที่ยอดที่กรอก (amount/penaltyPaid) เปลี่ยน — ยังไม่ได้กรอกเงินเลย/ไม่มีอะไรน่าสงสัย = null (ไม่เตือน)
+  const pjWarning: PaymentModalWarning | null =
+    mode === 'pay' && pjMoney
+      ? buildPaymentModalWarning(pjMoney.recent, pjMoney.pendingBox, amount, penaltyPaid, new Date().toISOString())
+      : null
+
   async function save() {
+    // เช็คซ้ำกับเงินจาก PJ อีกรอบตอนกดบันทึกจริง (กันข้อมูลเก่าจากตอนเปิด modal ค้างไว้นาน) — เตือนอย่างเดียว
+    // ไม่บล็อก (เหมือน penaltyZeroWarn ด้านล่าง) ดึงไม่สำเร็จ = บันทึกได้ปกติ
+    if (mode === 'pay') {
+      const fresh = await getContractRecentPjMoney(contractId, 10)
+      if (fresh) {
+        const freshWarning = buildPaymentModalWarning(fresh.recent, fresh.pendingBox, amount, penaltyPaid, new Date().toISOString())
+        if (freshWarning?.requireConfirm && freshWarning.confirmMessage && !window.confirm(freshWarning.confirmMessage)) return
+      }
+    }
     // soft-warn: ไม่บล็อก แค่ให้ยืนยันซ้ำก่อนบันทึกจริง
     if (penaltyZeroWarn && !window.confirm(penaltyZeroWarnMsg)) return
     if (penaltyFullyPaidWarn && !window.confirm(penaltyFullyPaidWarnMsg)) return
@@ -3799,6 +3833,32 @@ function PaymentModal({
           <p className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
             <AlertCircle size={13} className="mt-0.5 shrink-0" />
             {penaltyFullyPaidWarnMsg}
+          </p>
+        )}
+
+        {/* กันลงเงินซ้ำกับที่พนักงานลงมือไปแล้ว/เงินจาก PJ — สีตามระดับ (info ฟ้าอ่อน / warn เหลือง / danger แดง) */}
+        {pjWarning && (
+          <p
+            className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ${
+              pjWarning.level === 'danger'
+                ? 'bg-red-50 text-red-700'
+                : pjWarning.level === 'warn'
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'bg-blue-50 text-blue-700'
+            }`}
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              {pjWarning.message}
+              {pjMoney?.pendingBox && (
+                <>
+                  {' '}
+                  <Link to="/pj-sync-review" className="font-semibold underline underline-offset-2">
+                    ไปหน้าตรวจเงิน PJ
+                  </Link>
+                </>
+              )}
+            </span>
           </p>
         )}
 

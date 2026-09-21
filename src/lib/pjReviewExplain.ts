@@ -10,6 +10,7 @@
 // ให้อ่านง่ายขึ้น เทสได้ตรงไปตรงมาเหมือน pjReviewDup.ts (ไม่แตะ supabase)
 
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow } from './types'
+import { explainStaffOverlapRow } from './pjStaffOverlap'
 
 /** reason ที่เป็น drift (ใบเสร็จหาย/ถูกแก้ใน PJ) — ตรวจ+รายงานเท่านั้น ไม่อยู่ใน flow ลงเงิน
  *  (คัดลอก guard เดียวกับ isDriftReason ใน PjSyncReview.tsx มาไว้ในไฟล์ pure fn นี้ด้วย กัน import วน) */
@@ -130,6 +131,10 @@ export function explainReviewRow(row: PjSyncReviewRow, ctx: PjReviewContext | nu
       return 'ร้านเปลี่ยนวันชำระของสัญญานี้ใน PJ — ตอนนี้ระบบแค่ทดลองว่าจะเลื่อนวันครบกำหนดให้เป็นวันไหน (ยังไม่ได้แก้ข้อมูลจริงในระบบ) ดูตารางเทียบงวดด้านล่างประกอบการตัดสินใจ'
     case 'PLAN_CHANGE_AUTO':
       return 'ร้านเปลี่ยนวันชำระของสัญญานี้ใน PJ — ระบบเลื่อนวันครบกำหนดในระบบเราให้ตรงกับ PJ ให้แล้วโดยอัตโนมัติ กรุณาตรวจทานตารางเทียบงวดด้านล่างว่าถูกต้อง'
+    case 'STAFF_MANUAL_OVERLAP':
+      // การ์ดเลือกผูก/ปุ่ม "เงินก้อนเดียวกัน"/"คนละก้อน" อยู่แยกในหน้า (ReviewLineItem) — ใช้ headline
+      // เดียวกับที่ explainStaffOverlapRow คำนวณให้ ไม่ต้องคำนวณซ้ำ
+      return explainStaffOverlapRow(row).headline
     default:
       return `ยอด ${th(row.amount)} ฿ รอตรวจสอบ`
   }

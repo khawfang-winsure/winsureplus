@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { AlertTriangle, CalendarClock, CheckCircle2, ExternalLink, Link2, Receipt, SkipForward, Wallet } from 'lucide-react'
+import { AlertTriangle, CalendarClock, CheckCircle2, ExternalLink, GitMerge, Link2, Receipt, SkipForward, Wallet } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, Loading, Modal, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
 import {
@@ -12,6 +12,7 @@ import {
   getPjReviewContext,
   getPjSyncReview,
   getPjSyncRuns,
+  linkPjReviewToPaymentLog,
   resolvePjReviewItem,
 } from '../lib/db'
 import { FEE_INCOME_PRESETS, FEE_INCOME_CUSTOM, type FeeKind } from '../lib/feeReconcile'
@@ -32,7 +33,14 @@ import {
   type PjPlanChangeSnapshot,
 } from '../lib/pjPlanChange'
 import type { PjSyncReviewReason, PjSyncReviewRow, PjReviewContext, PjSyncRunRow } from '../lib/types'
-import { STAFF_OVERLAP_REASON_TEXT, STAFF_OVERLAP_REASON_TONE } from '../lib/pjStaffOverlap'
+import {
+  buildStaffOverlapBindConfirm,
+  explainStaffOverlapRow,
+  STAFF_OVERLAP_ACTION_LABELS,
+  STAFF_OVERLAP_REASON_TEXT,
+  STAFF_OVERLAP_REASON_TONE,
+  type PjStaffOverlapCandidate,
+} from '../lib/pjStaffOverlap'
 import { useAuth } from '../lib/auth'
 
 /** reason ที่เกิดจากตรวจจับ "ใบเสร็จหาย/ถูกแก้ใน PJ" — ต้องซ่อนปุ่มลงเงินทุกปุ่ม (ดูตรวจ+รายงานเท่านั้น) */
@@ -51,6 +59,12 @@ function isManualOnlyReason(reason: PjSyncReviewReason): boolean {
     reason === 'RETURNED_CONTRACT_OVERAGE' ||
     reason === 'RETURNED_CONTRACT_OTHER_FEE'
   )
+}
+
+/** reason ที่พบว่าใบเสร็จ PJ นี้ใกล้เคียงกับเงินที่พนักงานเคยลงมือรับชำระไว้แล้ว (มิเกรชัน 0162, กันเงินซ้ำ) —
+ *  ต่างจาก isManualOnly ตรงที่ "มีปุ่มลงเงิน" แต่เป็นปุ่มพิเศษ (ผูก/แยกก้อน) แทนปุ่มลงเงินปกติ ดู explainStaffOverlapRow */
+function isStaffOverlapReason(reason: PjSyncReviewReason): boolean {
+  return reason === 'STAFF_MANUAL_OVERLAP'
 }
 
 /** ประเภทเงินที่จดไว้ (ทั้งฝั่งเราและฝั่ง PJ ใน snapshot) → ไทย */
@@ -235,6 +249,7 @@ export default function PjSyncReview() {
   const [target, setTarget] = useState<{ row: PjSyncReviewRow; action: 'resolved' | 'skipped' } | null>(null)
   const [applyTarget, setApplyTarget] = useState<PjSyncReviewRow | null>(null)
   const [otherIncomeTarget, setOtherIncomeTarget] = useState<PjSyncReviewRow | null>(null)
+  const [bindTarget, setBindTarget] = useState<{ row: PjSyncReviewRow; candidate: PjStaffOverlapCandidate } | null>(null)
 
   // แถวที่น่าจะซ้ำในกล่อง (contract เดียวกัน + วันจ่ายเดียวกัน + ยอดเท่ากัน) — คำนวณครั้งเดียวต่อการโหลด rows
   const dupMap = useMemo(() => detectDuplicatePjReviewRows(rows), [rows])
@@ -340,6 +355,7 @@ export default function PjSyncReview() {
               onApply={setApplyTarget}
               onOtherIncome={setOtherIncomeTarget}
               onResolve={(row, action) => setTarget({ row, action })}
+              onBind={(row, candidate) => setBindTarget({ row, candidate })}
             />
           ))}
 
@@ -428,6 +444,18 @@ export default function PjSyncReview() {
           }}
         />
       )}
+
+      {bindTarget && (
+        <StaffOverlapBindModal
+          row={bindTarget.row}
+          candidate={bindTarget.candidate}
+          onClose={() => setBindTarget(null)}
+          onDone={async () => {
+            setBindTarget(null)
+            await load()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -442,6 +470,7 @@ function ContractReviewCard({
   onApply,
   onOtherIncome,
   onResolve,
+  onBind,
 }: {
   group: PjReviewContractGroup
   ctx: PjReviewContext | null
@@ -451,6 +480,7 @@ function ContractReviewCard({
   onApply: (row: PjSyncReviewRow) => void
   onOtherIncome: (row: PjSyncReviewRow) => void
   onResolve: (row: PjSyncReviewRow, action: 'resolved' | 'skipped') => void
+  onBind: (row: PjSyncReviewRow, candidate: PjStaffOverlapCandidate) => void
 }) {
   const hasDup = group.rows.some((r) => dupMap.get(r.id)?.isDuplicate)
   const banner = explainContractGroupBanner(group.rows, ctx, hasDup)
@@ -499,6 +529,7 @@ function ContractReviewCard({
             onApply={() => onApply(row)}
             onOtherIncome={() => onOtherIncome(row)}
             onResolve={(action) => onResolve(row, action)}
+            onBind={(candidate) => onBind(row, candidate)}
           />
         ))}
       </div>
@@ -516,6 +547,7 @@ function ReviewLineItem({
   onApply,
   onOtherIncome,
   onResolve,
+  onBind,
 }: {
   row: PjSyncReviewRow
   ctx: PjReviewContext | null
@@ -525,11 +557,22 @@ function ReviewLineItem({
   onApply: () => void
   onOtherIncome: () => void
   onResolve: (action: 'resolved' | 'skipped') => void
+  onBind: (candidate: PjStaffOverlapCandidate) => void
 }) {
   const isDrift = isDriftReason(row.reason)
   const isManualOnly = isManualOnlyReason(row.reason)
   const isPlanChange = isPlanChangeReason(row.reason)
   const planChangeNeedsFix = isPlanChangeManualFixReason(row.reason)
+  const isStaffOverlap = isStaffOverlapReason(row.reason)
+  // อธิบาย + ตัวเลือกผูกเฉพาะ reason นี้ (headline เดียวกับที่ explainReviewRow แสดงด้านล่างอยู่แล้ว —
+  // ที่นี่ใช้แค่ candidateLines/recommendedCandidateId/primaryButtonHint ต่อ)
+  const overlapExplain = isStaffOverlap ? explainStaffOverlapRow(row) : null
+  // เริ่มต้นเลือกตัวที่ระบบแนะนำไว้ให้เลย (ยังกดเปลี่ยนเองได้) — คอมโพเนนต์ถูก key ด้วย row.id อยู่แล้วใน
+  // ContractReviewCard ดังนั้นย้ายไปแถวอื่น = mount ใหม่ ไม่ต้องซิงก์ state ซ้ำ
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(
+    overlapExplain?.recommendedCandidateId ?? null,
+  )
+  const selectedLine = overlapExplain?.candidateLines.find((l) => l.candidate.paymentLogId === selectedCandidateId) ?? null
   const chip = reviewRowTypeChip(row)
   // ค่าปรับล้วน (paymentType='penalty'): row.amount กับ row.penaltyAmount เป็นเลขเดียวกัน (ยอด PJ ใบเดียว)
   // ห้ามบวกกัน ไม่งั้นยอดเบิ้ล (เช่น 229 → โชว์ 458) — ใช้ตรรกะเดียวกับ isPenaltyOnly ใน ApplyPjModal
@@ -589,6 +632,45 @@ function ReviewLineItem({
         </div>
       )}
 
+      {/* ตัวเลือกผูกกับรายการที่พนักงานลงมือไว้แล้ว — เลือกได้ทีละ 1 ตัว ก่อนกด "เงินก้อนเดียวกัน" */}
+      {isStaffOverlap && overlapExplain && overlapExplain.candidateLines.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5">
+          {overlapExplain.candidateLines.map((line) => {
+            const checked = selectedCandidateId === line.candidate.paymentLogId
+            return (
+              <label
+                key={line.candidate.paymentLogId}
+                className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-sm transition ${
+                  line.disabled
+                    ? 'cursor-not-allowed border-peach/60 bg-peach-light/20 text-ink-soft/70'
+                    : checked
+                      ? 'cursor-pointer border-salmon-deep bg-peach-light/50 text-ink'
+                      : 'cursor-pointer border-peach bg-surface text-ink hover:bg-peach-light/30'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name={`overlap-candidate-${row.id}`}
+                  className="mt-0.5 shrink-0"
+                  checked={checked}
+                  disabled={line.disabled}
+                  onChange={() => setSelectedCandidateId(line.candidate.paymentLogId)}
+                />
+                <span className={line.caution ? 'text-amber-700' : ''}>{line.label}</span>
+              </label>
+            )
+          })}
+        </div>
+      )}
+
+      {isStaffOverlap && (
+        <p className="mt-2 text-xs text-ink-soft">
+          <b className="text-ink">{STAFF_OVERLAP_ACTION_LABELS.bind.label}</b> — {STAFF_OVERLAP_ACTION_LABELS.bind.caption}
+          {' · '}
+          <b className="text-ink">{STAFF_OVERLAP_ACTION_LABELS.separate.label}</b> — {STAFF_OVERLAP_ACTION_LABELS.separate.caption}
+        </p>
+      )}
+
       <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5 border-t border-peach/60 pt-2.5">
         {pjLinkHref && (
           <a href={pjLinkHref} target="_blank" rel="noreferrer">
@@ -621,6 +703,28 @@ function ReviewLineItem({
             <Button variant="ghost" onClick={() => onResolve('resolved')}>
               <CheckCircle2 size={13} />
               ทำเสร็จแล้ว
+            </Button>
+          </>
+        ) : isStaffOverlap ? (
+          // ชนกับรายการที่พนักงานลงมือไว้แล้ว — ไม่มี "ข้าม"/"ทำเสร็จแล้ว"/"รายได้อื่นๆ" ต้องเลือกอย่างใดอย่างหนึ่ง
+          // เสมอ: ผูก (ไม่ลงเงินเพิ่ม) หรือลงเพิ่มปกติ (คนละก้อน) ปุ่มไหนเน้นสีตาม primaryButtonHint ที่แนะนำมา
+          <>
+            <Button
+              variant={overlapExplain?.primaryButtonHint === 'separate' ? 'primary' : 'ghost'}
+              onClick={onApply}
+              title={STAFF_OVERLAP_ACTION_LABELS.separate.caption}
+            >
+              <Wallet size={13} />
+              {STAFF_OVERLAP_ACTION_LABELS.separate.label}
+            </Button>
+            <Button
+              variant={overlapExplain?.primaryButtonHint === 'bind' ? 'primary' : 'ghost'}
+              onClick={() => selectedLine && !selectedLine.disabled && onBind(selectedLine.candidate)}
+              disabled={!selectedLine || selectedLine.disabled}
+              title={STAFF_OVERLAP_ACTION_LABELS.bind.caption}
+            >
+              <GitMerge size={13} />
+              {STAFF_OVERLAP_ACTION_LABELS.bind.label}
             </Button>
           </>
         ) : (
@@ -742,6 +846,70 @@ function PlanChangeCompareBox({ detail }: { detail: PjPlanChangeSnapshot }) {
         <p className="text-xs text-ink-soft">ไม่มีตารางเทียบงวดสำหรับเคสนี้</p>
       )}
     </div>
+  )
+}
+
+// ===== Modal ยืนยันปุ่ม "เงินก้อนเดียวกัน" — ผูกใบเสร็จ PJ นี้กับรายการที่พนักงานลงมือรับชำระไว้แล้ว
+// (ไม่ลงเงินเพิ่ม) กันเงินซ้ำ ใช้เมื่อมั่นใจว่าเป็นเงินก้อนเดียวกันเท่านั้น — ยกเลิกได้ ยังไม่แก้อะไรจนกว่าจะกดยืนยัน =====
+function StaffOverlapBindModal({
+  row,
+  candidate,
+  onClose,
+  onDone,
+}: {
+  row: PjSyncReviewRow
+  candidate: PjStaffOverlapCandidate
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  // ปิดเมื่อกด Esc (ตาม pattern modal อื่นในโปรเจกต์)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const pjTotal = row.amount + row.penaltyAmount
+  const confirmText = buildStaffOverlapBindConfirm(candidate.byName, candidate.createdAt, candidate.amount, pjTotal)
+
+  async function confirm() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await linkPjReviewToPaymentLog(row.id, candidate.paymentLogId)
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={confirmText.title} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink">{confirmText.body}</p>
+
+        {err && (
+          <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">
+            <p>{err}</p>
+            {/* error จาก server (RPC) เป็นภาษาไทยอยู่แล้ว — เพิ่ม hint ให้รีเฟรชเผื่อกรณีมีคนผูก/ลงใบนี้ไปก่อนหน้าแล้ว */}
+            <p className="mt-1 text-xs text-red-500">
+              ถ้าใบเสร็จนี้ถูกลงหรือผูกไปแล้วก่อนหน้า ลองปิดหน้าต่างนี้แล้วกดรีเฟรชหน้ากล่องรอตรวจอีกครั้งนะคะ
+            </p>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>{confirmText.cancelLabel}</Button>
+          <Button onClick={confirm} disabled={busy}>{busy ? 'กำลังบันทึก...' : confirmText.confirmLabel}</Button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
