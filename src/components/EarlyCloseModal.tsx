@@ -131,7 +131,10 @@ function buildSuspiciousPayments(
  *  - isFromTable: true เฉพาะตอน settlementPaid ตรงกับยอดที่ตารางแนะนำ (suggestedSettlementPaid) เป๊ะ — โชว์ %
  *    เฉพาะตอนนั้น ถ้ากรอกเอง (ไม่ตรงตาราง) ไม่ใส่ % ที่ไม่จริง
  *  - ตัดคำว่า "เมื่อวันที่ ..." ออกทั้งหมด แทนด้วยบรรทัดปิดท้ายคงที่
- *  - settlementPaid ว่าง/≤0/ไม่ใช่ตัวเลข → คืน null (caller โชว่ข้อความ "กรอกยอดจ่ายปิดก่อน" แทนกล่องคัดลอก) */
+ *  - settlementPaid ว่าง/≤0/ไม่ใช่ตัวเลข → คืน null (caller โชว่ข้อความ "กรอกยอดจ่ายปิดก่อน" แทนกล่องคัดลอก)
+ *
+ *  แก้ 21 ก.ย. 2026 (เจ้าของเคาะ): settlementDiscount === 0 → ตัดบรรทัด "ส่วนลด ..." และ "ยอดหลังลด ..."
+ *  ออกทั้งคู่ (ยอดหลังลด = ยอดรวมเป๊ะ ไม่มีความหมายถ้าไม่มีส่วนลด) — settlementDiscount > 0 ยังโชว์ทั้ง 2 บรรทัดเหมือนเดิม */
 function buildEarlyCloseMessage(params: {
   installments: Installment[]
   preview: SettlementResult
@@ -168,15 +171,18 @@ function buildEarlyCloseMessage(params: {
       : `ยอดรวม ${baht(preview.remainingPrincipal)} (เหลือ ${preview.remainingCount} งวด)`,
   )
 
-  lines.push(
-    isFromTable
-      ? `ส่วนลด ${preview.percent}% = ${baht(settlementDiscount)} บาท`
-      : `ส่วนลด ${baht(settlementDiscount)} บาท`,
-  )
+  if (settlementDiscount > 0) {
+    lines.push(
+      isFromTable
+        ? `ส่วนลด ${preview.percent}% = ${baht(settlementDiscount)} บาท`
+        : `ส่วนลด ${baht(settlementDiscount)} บาท`,
+    )
 
-  // ยอดหลังลด = settlementRemaining − settlementDiscount = settlementPaid เป๊ะเสมอ (นิยาม settlementDiscount
-  // มาจาก settlementRemaining − settlementPaid) — ใส่บรรทัดนี้ให้ลูกค้าเห็นที่มาก่อนเจอค่าปรับ/ค่าธรรมเนียม
-  lines.push(`ยอดหลังลด ${baht(settlementPaid)} บาท`)
+    // ยอดหลังลด = settlementRemaining − settlementDiscount = settlementPaid เป๊ะเสมอ (นิยาม settlementDiscount
+    // มาจาก settlementRemaining − settlementPaid) — ใส่บรรทัดนี้ให้ลูกค้าเห็นที่มาก่อนเจอค่าปรับ/ค่าธรรมเนียม
+    // ไม่มีส่วนลด (=0) → ตัดบรรทัดนี้ทิ้ง เพราะเท่ากับยอดรวมเป๊ะ ไม่มีความหมายให้ลูกค้าเห็นซ้ำ
+    lines.push(`ยอดหลังลด ${baht(settlementPaid)} บาท`)
+  }
 
   if (penaltyReceived > 0) {
     lines.push(`ค่าปรับ ${baht(penaltyReceived)} บาท`)
@@ -305,6 +311,12 @@ export default function EarlyCloseModal({
       extension: extensionInfo,
     })
   }, [matrix, settlementInstallments, contract.termMonths, extensionInfo, closedAt])
+
+  // มีคำเตือน 1 ใน 3 แบบไหม (ไม่มีตาราง/ปิดเดือนแรก/เหลืองวดเดียว) — เดิมเงื่อนไขนี้เขียนซ้ำ 2 จุดใน JSX
+  // (ternary คำเตือน + className ของ div ครอบกล่องข้อความ) รวมเป็นตัวแปรเดียว กันเงื่อนไข 2 จุดวิ่งเพี้ยนกัน (แก้ 21 ก.ย. 2026)
+  const hasWarning = settlementPreview
+    ? !settlementPreview.matched || settlementPreview.paidCount === 0 || settlementPreview.remainingCount === 1
+    : false
 
   // ยอดจ่ายปิด (เฉพาะค่างวด ไม่รวมค่าปรับ — ค่าปรับกรอกแยกในช่องถัดไป) ที่ตารางแนะนำ
   const suggestedSettlementPaid = settlementPreview
@@ -548,31 +560,24 @@ export default function EarlyCloseModal({
                     อยู่ ternary chain เดียวกัน ทำให้เคสมีคำเตือน (ไม่มีตาราง/ปิดเดือนแรก/เหลืองวดเดียว) กล่อง
                     คัดลอกข้อความส่งลูกค้าหายไปทั้งกล่อง คัดลอกไม่ได้เลย — แยกเป็น 2 ส่วนต่อกัน: คำเตือน (ถ้ามี)
                     แล้วส่วนข้อความ (แสดงเสมอไม่ว่าจะมีคำเตือนด้านบนหรือไม่) */}
-                {!settlementPreview.matched ? (
-                  <p className="flex items-start gap-1.5 text-amber-800">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    ไม่มีตารางส่วนลดสำหรับสัญญางวด {settlementPreview.rowTerm} เดือน
-                  </p>
-                ) : settlementPreview.paidCount === 0 ? (
-                  <p className="flex items-start gap-1.5 text-amber-800">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    ยังไม่จ่ายงวดไหนเลย (ปิดเดือนแรก) — ตารางไม่มีส่วนลด ให้คิดเป็นค่าดำเนินการแทน
-                  </p>
-                ) : settlementPreview.remainingCount === 1 ? (
-                  <p className="flex items-start gap-1.5 text-amber-800">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    เหลืองวดสุดท้ายงวดเดียว — ตามตารางไม่มีส่วนลด (0%)
-                  </p>
-                ) : null}
-                <div
-                  className={
-                    !settlementPreview.matched ||
-                    settlementPreview.paidCount === 0 ||
-                    settlementPreview.remainingCount === 1
-                      ? 'mt-2'
-                      : undefined
-                  }
-                >
+                {hasWarning &&
+                  (!settlementPreview.matched ? (
+                    <p className="flex items-start gap-1.5 text-amber-800">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      ไม่มีตารางส่วนลดสำหรับสัญญางวด {settlementPreview.rowTerm} เดือน
+                    </p>
+                  ) : settlementPreview.paidCount === 0 ? (
+                    <p className="flex items-start gap-1.5 text-amber-800">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      ยังไม่จ่ายงวดไหนเลย (ปิดเดือนแรก) — ตารางไม่มีส่วนลด ให้คิดเป็นค่าดำเนินการแทน
+                    </p>
+                  ) : (
+                    <p className="flex items-start gap-1.5 text-amber-800">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      เหลืองวดสุดท้ายงวดเดียว — ตามตารางไม่มีส่วนลด (0%)
+                    </p>
+                  ))}
+                <div className={hasWarning ? 'mt-2' : undefined}>
                   {result.errors.length > 0 ? (
                     <p className="flex items-start gap-1.5 text-red-600">
                       <AlertTriangle size={14} className="mt-0.5 shrink-0" />
