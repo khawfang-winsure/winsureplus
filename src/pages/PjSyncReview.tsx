@@ -915,8 +915,10 @@ function StaffOverlapBindModal({
 }
 
 // ===== Modal ยืนยัน ทำเสร็จแล้ว / ข้าม / รับทราบ (drift) / แก้แล้ว-รับทราบ (plan change) =====
-// note ปกติไม่บังคับ ยกเว้นเคสร้านเปลี่ยนแผนผ่อน/วันชำระที่ต้องแก้เอง (PLAN_CHANGE_REVIEW/DRYRUN) —
-// บังคับกรอกว่าแก้อะไรไปบ้าง กันลืม/กันกดผ่านมั่วๆ เพราะเคสนี้ไม่มีระบบช่วยตรวจทานซ้ำเหมือนเงิน
+// บังคับกรอกหมายเหตุ (≥5 ตัวอักษร) ทุกเคสที่ "ไม่ได้ลงเงินผ่านระบบ" (ทำเสร็จแล้ว/ข้ามของแถวปกติ+manual-only+
+// หาสัญญาไม่เจอ) กันเคสพนักงานกดปิดโดยไม่ได้ลงเงินจริงแล้วลูกค้าขึ้นค้าง (เคสจริง 22 ก.ย. 2026) — ยกเว้น
+// drift (แค่รายงานเทียบข้อมูล ไม่มีเงินเกี่ยวข้อง) และ PLAN_CHANGE_AUTO (ระบบทำให้อัตโนมัติแล้ว ไม่ใช่เงิน)
+// ส่วน PLAN_CHANGE_REVIEW/DRYRUN บังคับหมายเหตุอยู่แล้วเดิม (ไม่ใช่เงินเช่นกัน แต่ต้องบันทึกว่าแก้อะไรไปบ้าง)
 function ResolveModal({
   row,
   action,
@@ -950,7 +952,11 @@ function ResolveModal({
   const isDrift = isDriftReason(row.reason)
   const isPlanChange = isPlanChangeReason(row.reason)
   const planChangeNeedsFix = isPlanChangeManualFixReason(row.reason)
-  const noteRequired = planChangeNeedsFix
+  // ปุ่ม "ทำเสร็จแล้ว"/"ข้าม" ปิดรายการโดยไม่ได้ลงเงินให้ผ่านระบบเลย (ต่างจาก "ลงตาม PJ"/"รายได้อื่นๆ") —
+  // ถ้าพนักงานกดโดยไม่ได้ลงเงินจริง ลูกค้าจะขึ้นค้างทั้งที่จ่ายแล้ว (เคสจริง 22 ก.ย. 2026) จึงบังคับกรอกหมายเหตุ
+  // ทุกเคสยกเว้น drift (แค่รายงานเทียบข้อมูล ไม่มีเงินเกี่ยวข้อง — มีคำอธิบายในตัวอยู่แล้ว)
+  const isMoneyAction = !isDrift && !isPlanChange
+  const noteRequired = planChangeNeedsFix || isMoneyAction
   const title = planChangeNeedsFix
     ? 'แก้แล้ว'
     : isDrift || isPlanChange
@@ -958,7 +964,7 @@ function ResolveModal({
       : action === 'resolved'
         ? 'ทำเสร็จแล้ว'
         : 'ข้ามเคสนี้'
-  const canConfirm = !noteRequired || note.trim().length > 0
+  const canConfirm = !noteRequired || note.trim().length >= 5
 
   async function confirm() {
     if (!canConfirm) return
@@ -1002,13 +1008,28 @@ function ResolveModal({
         {isDrift && driftDetail && <DriftCompareBox detail={driftDetail} />}
         {isPlanChange && planChangeDetail && <PlanChangeCompareBox detail={planChangeDetail} />}
 
+        {isMoneyAction && (
+          <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <p>ปุ่มนี้ไม่ได้ลงเงินให้ ถ้าลูกค้าจ่ายจริงแต่ยังไม่ได้ลง รายการนี้จะหายและลูกค้าจะขึ้นค้าง</p>
+          </div>
+        )}
+
         <div>
-          <label className="mb-1 block text-sm text-ink-soft">หมายเหตุ{noteRequired ? ' (บังคับกรอก)' : ' (ไม่บังคับ)'}</label>
+          <label className="mb-1 block text-sm text-ink-soft">
+            หมายเหตุ{noteRequired ? ' (บังคับกรอก อย่างน้อย 5 ตัวอักษร)' : ' (ไม่บังคับ)'}
+          </label>
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
             rows={2}
-            placeholder={noteRequired ? 'เช่น แก้วันครบกำหนดในระบบให้ตรงกับ PJ ที่หน้าสัญญาแล้ว' : 'เช่น ลงยอดให้แล้วผ่านหน้าสัญญา'}
+            placeholder={
+              planChangeNeedsFix
+                ? 'เช่น แก้วันครบกำหนดในระบบให้ตรงกับ PJ ที่หน้าสัญญาแล้ว'
+                : isMoneyAction
+                  ? 'ลงเงินไว้ที่ไหน / ทำไมไม่ต้องลง (เช่น ลงมือแล้วที่สัญญา S000..., เป็นใบซ้ำ, PJ ลบใบแล้ว)'
+                  : 'เช่น ลงยอดให้แล้วผ่านหน้าสัญญา'
+            }
             className="w-full rounded-xl border border-peach bg-cream px-3 py-2 text-sm text-ink outline-none focus:border-salmon"
           />
         </div>
