@@ -1619,6 +1619,11 @@ export default {
       // dryRun — ไว้ให้ครีมดูผลก่อนเปิดใช้งานจริงบน prod)
       let staffOverlapQueued = 0;
       let staffOverlapHandled = 0;
+      // (22 ก.ย. 2026 — อนุมัติคุณเตย) สัญญาที่ปิดแล้ว (contracts.status='closed') ห้าม auto-apply
+      // ใบเสร็จค่างวดเด็ดขาด — close_contract_early_preserve_schedule (migration 0131) ไม่แตะ
+      // installments เลย งวดที่เหลือยัง pending/late อยู่จริง ถ้าไม่กันตรงนี้ nextUnpaid ด้านล่างจะ
+      // เจอ "งวดค้าง" ของสัญญาที่ปิดไปแล้วแล้วลงเงินซ้ำ (double count รายได้) — นับจำนวนที่กันไว้ที่นี่
+      let closedContractHeld = 0;
       const staffOverlapDryRunQueue: {
         invoice_no: string;
         paid_date: string | null;
@@ -2125,9 +2130,11 @@ export default {
         }
 
         // หา contract ด้วย inv_no
+        // (22 ก.ย. 2026) เพิ่ม status เข้า select — ต้องใช้เช็ค gate CONTRACT_CLOSED ด้านล่าง (หลัง
+        // dedup) กันสัญญาที่ปิดแล้วโดน auto-apply ซ้ำ
         const { data: contracts, error: cErr } = await db
           .from("contracts")
-          .select("id, contract_no, inv_no")
+          .select("id, contract_no, inv_no, status")
           .eq("inv_no", a.invoice_no)
           .limit(2);
         if (cErr) {
@@ -2225,6 +2232,33 @@ export default {
           skippedAlreadySynced++;
           continue; // ไม่ลง ไม่ review
         }
+
+        // ══════════════════════════════════════════════════════════════════════════════
+        // (22 ก.ย. 2026 — อนุมัติคุณเตย) สัญญาที่ปิดแล้ว ห้าม auto-apply ใบเสร็จค่างวดเด็ดขาด — ต้องอยู่
+        // "หลัง" dedup ด้านบน (ใบที่เคยลงไปจริงก่อนปิดสัญญาต้องไม่ถูก flag ซ้ำ) และ "ก่อน" logic ที่ลงเงิน/
+        // แก้ข้อมูลอื่นทั้งหมดด้านล่างนี้ (RECEIPT_PARTIAL_APPLIED, STAFF_MANUAL_OVERLAP, nextUnpaid+spread)
+        //
+        // ต้นเหตุ: close_contract_early_preserve_schedule (migration 0131) ปิดสัญญาแบบคงตารางงวด — ไม่
+        // แตะ installments เลย งวดที่เหลือยัง status pending/late อยู่จริงทั้งที่ contracts.status='closed'
+        // (พบ 45 สัญญาที่เป็นแบบนี้ตอนสำรวจ 22 ก.ย. 2026) ถ้าไม่กันตรงนี้ nextUnpaid ด้านล่างจะเจอ "งวดค้าง"
+        // ของสัญญาที่ปิดไปแล้ว แล้ว record_payment_spread จะลงเงินซ้ำ = รายได้นับสองรอบ
+        //
+        // เข้ากล่องรอตรวจเสมอ (reason="CONTRACT_CLOSED" — ตกลงกับหน้า /pj-sync-review แล้ว ห้ามเปลี่ยนชื่อ)
+        // ให้คนตัดสินใจเอง (ปิดผิด/ต้องคืนเงิน/ใบเสร็จจริงมาจากไหน) — pj_amount = ค่างวดล้วนตาม convention
+        // เดียวกับ reason อื่นในไฟล์นี้ (ค่าปรับอยู่ใน raw_json ให้ sumPjPenalty ฝั่งหน้าเว็บบวกเพิ่มเอง)
+        //
+        // ไม่ต้องเช็ค reviewAlreadyHandled ก่อน — ตาม pattern เดียวกับ PARTIAL/AMOUNT_MISMATCH/UNMATCHED
+        // (ปล่อยให้ batch-level "seen" dedup ท้ายไฟล์ (บรรทัด ~2512) กันแถวเด้งซ้ำทุก 15 นาทีแทน — ครอบ
+        // ทุก reason ที่ไม่ใช่ RECEIPT_MISSING/RECEIPT_CHANGED อยู่แล้ว จึงครอบ CONTRACT_CLOSED ด้วย)
+        //
+        // dryRun: ไม่ต่าง — queueReview แค่ push เข้า array ในหน่วยความจำ ไม่ insert DB จริงตอน dryRun อยู่
+        // แล้ว (เหมือน queueReview ปกติทุกจุดในไฟล์นี้)
+        if (contract.status === "closed") {
+          queueReview(a, "CONTRACT_CLOSED", contract.id, "installment", a.inst_amt);
+          closedContractHeld++;
+          continue;
+        }
+        // ══════════════════════════════════════════════════════════════════════════════
 
         if (partiallyAppliedByUuid) {
           // ── Option B (9 ก.ย. 2026, อนุมัติคุณเตย) ────────────────────────────────────────
@@ -2567,6 +2601,9 @@ export default {
         transfer_cutover_queued: transferCutoverQueued,
         old_inv_after_transfer_queued: oldInvAfterTransferQueued,
         skipped_already_synced: skippedAlreadySynced,
+        // (22 ก.ย. 2026 — อนุมัติคุณเตย) จำนวนใบเสร็จค่างวดของสัญญา status='closed' ที่กันไว้ไม่ให้
+        // auto-apply — เข้ากล่องรอตรวจ reason="CONTRACT_CLOSED" ทั้งหมดแทน (ดู comment จุดเช็คด้านบน)
+        closed_contract_held: closedContractHeld,
         // (9 ก.ย. 2026) เคส uuid ตรงบางใบ (มีใบใหม่ปนอยู่) — เข้ากล่องรอตรวจ ไม่ auto-apply ไม่ skip เงียบ
         receipt_partial_applied: receiptPartialApplied,
         // (21 ก.ย. 2026, Wave 2B) กันลงเงินซ้ำกับที่พนักงานลงมือเอง — staff_overlap_queued = เข้ากล่อง
