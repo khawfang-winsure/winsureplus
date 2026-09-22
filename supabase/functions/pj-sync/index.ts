@@ -1623,7 +1623,13 @@ export default {
       // ใบเสร็จค่างวดเด็ดขาด — close_contract_early_preserve_schedule (migration 0131) ไม่แตะ
       // installments เลย งวดที่เหลือยัง pending/late อยู่จริง ถ้าไม่กันตรงนี้ nextUnpaid ด้านล่างจะ
       // เจอ "งวดค้าง" ของสัญญาที่ปิดไปแล้วแล้วลงเงินซ้ำ (double count รายได้) — นับจำนวนที่กันไว้ที่นี่
+      // closedContractHeld = คิวเข้ากล่องรอตรวจใหม่จริงรอบนี้ (ก้อนที่ยังไม่เคย resolved มาก่อน)
       let closedContractHeld = 0;
+      // (22 ก.ย. 2026, Wave 1 — แก้บั๊ก P1: แถว CONTRACT_CLOSED ที่พนักงาน resolve/skip ไปแล้ว เด้งกลับเข้า
+      // กล่องใหม่ทุกรอบ cron/deep-scan เพราะเดิมไม่เช็ค "เคยตรวจแล้วหรือยัง" เลย) closedContractAlreadyHandled
+      // = ก้อนที่ uuid ใบเสร็จทุกใบตรงกับแถว CONTRACT_CLOSED ที่ resolved/skipped/auto_resolved ไปแล้ว — ข้าม
+      // เงียบ ไม่คิวซ้ำ (ดู queueContractClosedReview ด้านล่าง คู่กับ reviewAlreadyHandled)
+      let closedContractAlreadyHandled = 0;
       const staffOverlapDryRunQueue: {
         invoice_no: string;
         paid_date: string | null;
@@ -1673,6 +1679,117 @@ export default {
         q = paidDate ? q.eq("pj_paid_date", paidDate) : q.is("pj_paid_date", null);
         const { data } = await q.limit(1);
         return !!(data && data.length > 0);
+      }
+
+      // ══════════════════════════════════════════════════════════════════════════════════════
+      // (22 ก.ย. 2026, Wave 1 — อนุมัติคุณเตย) helper กลางสำหรับ "ทุกจุด" ที่จะคิว reason="CONTRACT_CLOSED"
+      // (installment path เดิมตอนเช้า / mixed branch (has_other && has_installment) / other-only branch —
+      // 3 จุดเรียก helper นี้ตัวเดียวกันหมด กัน 3 branch เขียน dedup คนละแบบแล้วหลุดไม่ตรงกัน)
+      //
+      // ปัญหาที่แก้ (P1, ยืนยันจากข้อมูลจริง 22 ก.ย. 2026): เดิม gate ตอนเช้าไม่เช็ค "เคยตรวจแล้วหรือยัง"
+      // เลย (comment เก่าอ้างว่า batch-level "seen" dedup ท้ายไฟล์กันให้ — ผิด เพราะตัวนั้นดูแค่แถว
+      // status='pending' เท่านั้น) พอพนักงานกดข้าม/ทำเสร็จแล้ว (status → resolved/skipped) รอบ cron ถัดไป
+      // (ทุก 15 นาทีสำหรับใบวันนี้ / deep-scan jobid 8 ทุก 3 วันย้อน 30 วัน) ยังเห็นใบเสร็จชุดเดิมอยู่ใน
+      // หน้าต่างเดิม แล้วคิวเข้ากล่องใหม่อีกไม่มีที่สิ้นสุด
+      //
+      // วิธีแก้: เทียบ "uuid รายใบ" ของก้อนปัจจุบัน (a.receipts) กับ uuid ที่เคยอยู่ใน raw_json ของแถว
+      // CONTRACT_CLOSED ที่ resolved/skipped/auto_resolved ไปแล้ว — ละเอียดกว่า reviewAlreadyHandled/
+      // alreadyHandled ตัวอื่นในไฟล์นี้ (ที่เทียบแค่ invoice_no+paid_date เฉยๆ ไม่ดูใบเสร็จจริง) เพราะถ้า PJ
+      // มีใบเสร็จใหม่จริงๆ โผล่มาในวัน/invoice เดิม (เช่น ค่าปรับเพิ่มทีหลัง) ต้องคิวใหม่ให้คนเห็น ห้ามถูกกลืน
+      // หายไปเงียบๆ แค่เพราะ invoice_no+paid_date นี้ "เคย" ถูกจัดการไปแล้วครั้งหนึ่ง
+      //
+      // raw_json ของแถว CONTRACT_CLOSED ทุกจุด (installment/mixed/other-only) = a.raw ตรงๆ เหมือนกันหมด
+      // (ไม่มี branch ไหนส่ง rawJsonOverride ให้ queueReview) ต่างจาก RECEIPT_PARTIAL_APPLIED ที่ raw_json
+      // ถูก override เป็น shape อื่น {already_applied_receipts, unapplied_receipts, ...} — จึง extract uuid
+      // ด้วยฟังก์ชันเดียว (อ่าน field "uuid" ต่อแถวดิบ) ใช้ร่วมกันได้ทุกจุดที่คิว reason นี้
+      //
+      // fallback (ไม่พบ uuid ในแถวเก่าเลย — ในทางปฏิบัติไม่ควรเกิดเพราะ reason นี้เพิ่งมีวันนี้ 22 ก.ย. 2026
+      // ซึ่งเลย DEDUP_CUTOFF (13 ก.ค. 2026) มาไกลแล้ว ใบเสร็จทุกใบควรมี uuid ครบ — ใส่กันเหนียวเผื่อ raw_json
+      // เพี้ยน/ว่าง): เทียบ natural key invoice_no::paid_date::ยอดรวมทุกประเภท (คำนวณจาก raw_json แถวเก่าด้วย
+      // ตัวถอด amount เดียวกับตอน build aggMap ตอนต้นไฟล์) กับ key เดียวกันของก้อนปัจจุบัน
+      //
+      // งบเวลา: โหลดแถว resolved/skipped/auto_resolved ของ reason นี้ "ครั้งเดียวต่อรอบ" (cache ผ่าน
+      // closedContractResolvedCache) ไม่ query ต่อ aggEntry ไม่ query ต่อใบเสร็จ — เทียบใน memory ล้วนหลังจากนั้น
+      // ══════════════════════════════════════════════════════════════════════════════════════
+      let closedContractResolvedCache: { uuidSet: Set<string>; fallbackKeySet: Set<string> } | null = null;
+
+      // ถอด uuid รายใบจาก raw_json (array ของแถวดิบ PJ — field "uuid" เหมือนที่ build aggMap ต้นไฟล์ใช้)
+      function extractUuidsFromRawJson(rawJson: unknown): string[] {
+        if (!Array.isArray(rawJson)) return [];
+        const out: string[] = [];
+        for (const row of rawJson as any[]) {
+          const u = pick(row, ["uuid"]);
+          if (u) out.push(String(u).trim());
+        }
+        return out;
+      }
+
+      // รวมยอด (ทุกประเภท ไม่แยก inst/pen/other) จาก raw_json — ใช้เฉพาะ fallback key ตอนไม่มี uuid เลย
+      function sumAmountFromRawJson(rawJson: unknown): number {
+        if (!Array.isArray(rawJson)) return 0;
+        let sum = 0;
+        for (const row of rawJson as any[]) {
+          const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
+          if (typeRaw.includes("down")) continue; // กันเหนียว — ไม่ควรมีอยู่แล้ว (ตัดตอน build aggMap แล้ว)
+          sum += parseAmount(pick(row, ["amount", "paid_amount", "total"]));
+        }
+        return sum;
+      }
+
+      async function getClosedContractResolvedCache(): Promise<{ uuidSet: Set<string>; fallbackKeySet: Set<string> }> {
+        if (closedContractResolvedCache) return closedContractResolvedCache;
+        const uuidSet = new Set<string>();
+        const fallbackKeySet = new Set<string>();
+        const { data, error } = await db
+          .from("pj_sync_review")
+          .select("pj_invoice_no, pj_paid_date, raw_json")
+          .eq("reason", "CONTRACT_CLOSED")
+          .in("status", ["resolved", "skipped", "auto_resolved"]);
+        if (!error) {
+          for (const row of (data ?? []) as any[]) {
+            const uuids = extractUuidsFromRawJson(row.raw_json);
+            if (uuids.length > 0) {
+              for (const u of uuids) uuidSet.add(u);
+            } else {
+              const total = sumAmountFromRawJson(row.raw_json);
+              fallbackKeySet.add(`${row.pj_invoice_no}::${row.pj_paid_date ?? "unknown"}::${total}`);
+            }
+          }
+        }
+        // error → cache ว่างเปล่า (best-effort, ไม่ throw/ไม่ block ทั้งรอบ) — worst case คิวซ้ำเข้ากล่องรอตรวจ
+        // ให้คนดูอีกรอบ (แค่รำคาญ) ไม่ใช่ลงเงินซ้ำ (CONTRACT_CLOSED เป็น manual-only reason อยู่แล้ว ไม่มีทาง
+        // auto-apply เงินจากแถวซ้ำได้)
+        closedContractResolvedCache = { uuidSet, fallbackKeySet };
+        return closedContractResolvedCache;
+      }
+
+      async function isContractClosedGroupAlreadyHandled(a: Agg): Promise<boolean> {
+        const { uuidSet, fallbackKeySet } = await getClosedContractResolvedCache();
+        const groupUuids = a.receipts.map((r) => r.uuid).filter(Boolean);
+        if (groupUuids.length > 0) {
+          // ต้อง "ทุกใบ" ในก้อนนี้อยู่ในเซ็ตที่เคย resolved แล้ว — มีใบใหม่ปนแม้ใบเดียว = ยังไม่ handled
+          // (เงินใหม่จริง ต้องคิวให้คนเห็น)
+          return groupUuids.every((u) => uuidSet.has(u));
+        }
+        const total = a.inst_amt + a.pen_amt + a.other_amt;
+        return fallbackKeySet.has(`${a.invoice_no}::${a.paid_date ?? "unknown"}::${total}`);
+      }
+
+      // เรียกแทน queueReview ตรงๆ ทุกจุดที่จะ flag CONTRACT_CLOSED — เช็ค dedup ก่อนเสมอ ไม่ auto-apply
+      // เงินใดๆ ทั้งสิ้น (อ่าน DB อย่างเดียว ปลอดภัยเท่ากันไม่ว่า dryRun หรือรันจริง)
+      async function queueContractClosedReview(
+        a: Agg,
+        contractId: string,
+        pjType: "installment" | "penalty" | "other",
+        pjAmount: number,
+      ): Promise<void> {
+        if (await isContractClosedGroupAlreadyHandled(a)) {
+          closedContractAlreadyHandled++;
+          skippedAlreadySynced++; // นับรวม metric "จัดการแล้ว" ทั่วไปด้วย ให้ตรง convention alreadyHandled อื่น
+          return;
+        }
+        queueReview(a, "CONTRACT_CLOSED", contractId, pjType, pjAmount);
+        closedContractHeld++;
       }
 
       // ── time budget (14 ก.ค. 2026 เพิ่ม) — กัน gateway timeout ตอน window กว้าง (30 วัน) ────────
@@ -2055,6 +2172,24 @@ export default {
           const noInstContractRow =
             noInstContracts && noInstContracts.length > 0 ? noInstContracts[0] : null;
 
+          // (22 ก.ย. 2026, Wave 1 — อนุมัติคุณเตย) สัญญาปิดแล้ว → ห้ามไหลต่อไปทาง OTHER/AMOUNT_MISMATCH เดิม
+          // หรือ tryAutoDueDayShift เด็ดขาด เข้ากล่องรอตรวจ reason=CONTRACT_CLOSED เสมอแทน (เหมือน installment
+          // path เดิมตอนเช้า + mixed branch ด้านล่าง) ต้องเช็คตรงนี้ "ก่อน" generic alreadyHandled ถัดไป —
+          // ตัวนั้นเทียบแบบ any-reason หยาบเกินไป (เจอแถว resolved reason อื่นที่ไม่เกี่ยวกันก็ข้ามทิ้งได้) ใช้
+          // queueContractClosedReview (นิยามคู่กับ reviewAlreadyHandled ด้านบน) เช็ค uuid ละเอียดกว่าแทน
+          //
+          // tryAutoDueDayShift เองก็ guard contractStatus!=="active" อยู่แล้ว (return false ทันที) แต่ถ้าไม่
+          // gate ตรงนี้ก่อน จะ fallthrough ไป queueReview(..,"OTHER",..) เดิม ไม่ใช่ CONTRACT_CLOSED — กันสับสน
+          //
+          // active / ไม่เจอสัญญา (noInstContractRow ว่าง) = พฤติกรรมเดิมเป๊ะ ไหลลงไปทาง generic alreadyHandled
+          // + has_other/pen_amt branching (รวม due-day shift path) ตามปกติทุกประการ
+          if (noInstContractRow && noInstContractRow.status === "closed") {
+            const pjType: "other" | "penalty" = a.has_other ? "other" : "penalty";
+            const pjAmount = a.has_other ? a.other_amt : a.pen_amt;
+            await queueContractClosedReview(a, noInstContractRow.id, pjType, pjAmount);
+            continue;
+          }
+
           // ── กันลง review ซ้ำ (idempotency) — เคส penalty/other-only ที่เคย resolved/skipped/auto_resolved ไปแล้ว ─
           // Bug เดิม: batch-dedup ด้านล่าง (บรรทัด ~548) skip เฉพาะ pj_sync_review ที่ status='pending' ของ
           // pj_invoice_no เดียวกัน — ไม่ skip แถวที่ resolved/skipped ไปแล้ว → รอบ sync ถัดไปสร้าง pending ใหม่ซ้ำ
@@ -2123,8 +2258,34 @@ export default {
           }
           continue;
         }
-        // มี other ปนกับ installment → flag (ยอดผสม คนต้องดู)
+        // มี other ปนกับ installment → เช็คก่อนว่าสัญญาปิดไปแล้วหรือยัง (22 ก.ย. 2026, Wave 1 — อนุมัติคุณเตย)
+        // เดิม hard-code matched_contract_id=null + reason="OTHER" เสมอไม่ว่าสัญญา active/closed ก่อน dedup
+        // ใดๆ ทั้งสิ้น — สัญญา closed ที่ร้านคีย์เงินปิด (ค่างวดหลายใบ + ค่าปรับ + ค่าปิดด่วน "อื่นๆ" ใบเดียว
+        // วันเดียวกัน) โดน flag ซ้ำทุกรอบ deep-scan เพราะไม่เคยผูก contract ให้เทียบ status ได้เลย (P2, ยืนยัน
+        // จากข้อมูลจริง 5 เคส 22 ก.ย. 2026: S00003PNQ052/123/177/059, S00001PNQ043) — ผูก contract แค่ "พอเช็ค
+        // status" เท่านั้น ยังไม่ auto-apply เงินอะไรทั้งนั้น (mixed group ไม่เคย auto-apply อยู่แล้วเดิม)
         if (a.has_other) {
+          const { data: mixedContracts, error: mixedCErr } = await db
+            .from("contracts")
+            .select("id, status")
+            .eq("inv_no", a.invoice_no)
+            .limit(2);
+          if (mixedCErr) {
+            return await failRun("error", `db error (contracts, mixed branch): ${mixedCErr.message}`, 500);
+          }
+          // ผูก contract เฉพาะกรณี "เจอตัวเดียวชัดเจน" เท่านั้น (length===1) — inv_no ซ้ำ (>1, ผิดปกติ) หรือ
+          // หาไม่เจอ (0) ไม่ผูกให้ กันผูกผิดสัญญา ไหลลง OTHER เดิมด้านล่างเหมือนพฤติกรรมเดิมเป๊ะ
+          const mixedContract =
+            mixedContracts && mixedContracts.length === 1 ? mixedContracts[0] : null;
+          if (mixedContract && mixedContract.status === "closed") {
+            // has_installment ต้องเป็น true เสมอที่จุดนี้ (ผ่าน !a.has_installment branch ด้านบนมาแล้ว) —
+            // a.inst_amt จึงเป็นยอดค่างวดจริงของก้อนนี้ ตรง convention เดียวกับ CONTRACT_CLOSED จุดอื่นทั้งหมด
+            // (ค่าปรับ/ค่าอื่นๆ ที่ปนมาด้วยอยู่ใน raw_json ให้ sumPjPenalty ฝั่งหน้าเว็บบวกเพิ่มเอง)
+            await queueContractClosedReview(a, mixedContract.id, "installment", a.inst_amt);
+            continue;
+          }
+          // active / ไม่เจอ / เจอซ้ำ = พฤติกรรมเดิมเป๊ะ — ห้ามผูก contract ให้ mixed active เด็ดขาด (ถ้าผูก
+          // ปุ่ม "ลงตาม PJ" ของ reason=OTHER จะเข้าใจผิดว่าเป็นค่างวดแล้วลง other_amt เป็นค่างวด = เงินหาย)
           queueReview(a, "OTHER", null, "other", a.other_amt);
           continue;
         }
@@ -2153,9 +2314,11 @@ export default {
         const contractNo = contract.contract_no ?? contract.inv_no ?? a.invoice_no;
 
         // ดึง installments เรียง installment_no
+        // (22 ก.ย. 2026, Wave 1 — เตรียม Wave 2) เพิ่ม due_date เข้า select — ยังไม่ใช้ใน logic รอบนี้เลย
+        // (ไม่เปลี่ยนพฤติกรรมอะไรทั้งสิ้น) เผื่อ Wave ถัดไปต้องเทียบวันครบกำหนดจริงตอนตัดสินใจ CONTRACT_CLOSED
         const { data: insts, error: iErr } = await db
           .from("installments")
-          .select("id, installment_no, amount, paid_amount, status, paid_at")
+          .select("id, installment_no, amount, paid_amount, status, paid_at, due_date")
           .eq("contract_id", contract.id)
           .order("installment_no", { ascending: true });
         if (iErr) {
@@ -2247,15 +2410,18 @@ export default {
         // ให้คนตัดสินใจเอง (ปิดผิด/ต้องคืนเงิน/ใบเสร็จจริงมาจากไหน) — pj_amount = ค่างวดล้วนตาม convention
         // เดียวกับ reason อื่นในไฟล์นี้ (ค่าปรับอยู่ใน raw_json ให้ sumPjPenalty ฝั่งหน้าเว็บบวกเพิ่มเอง)
         //
-        // ไม่ต้องเช็ค reviewAlreadyHandled ก่อน — ตาม pattern เดียวกับ PARTIAL/AMOUNT_MISMATCH/UNMATCHED
-        // (ปล่อยให้ batch-level "seen" dedup ท้ายไฟล์ (บรรทัด ~2512) กันแถวเด้งซ้ำทุก 15 นาทีแทน — ครอบ
-        // ทุก reason ที่ไม่ใช่ RECEIPT_MISSING/RECEIPT_CHANGED อยู่แล้ว จึงครอบ CONTRACT_CLOSED ด้วย)
+        // (22 ก.ย. 2026, Wave 1 — แก้ P1) เดิม comment ตรงนี้อ้างว่า batch-level "seen" dedup ท้ายไฟล์
+        // (บรรทัด ~2512) กันแถวเด้งซ้ำได้ — ผิด: ตัวนั้นดูแค่แถว status='pending' เท่านั้น พอพนักงานกดข้าม/
+        // ทำเสร็จแล้ว (resolved/skipped) รอบ cron ถัดไป (โดยเฉพาะ deep-scan ทุก 3 วันย้อน 30 วัน ที่เห็น
+        // ใบเสร็จชุดเดิมซ้ำในหน้าต่างอยู่ตลอด) คิวเข้ากล่องใหม่ไม่รู้จบ — เปลี่ยนมาเรียก queueContractClosedReview
+        // (helper กลาง นิยามคู่กับ reviewAlreadyHandled ด้านบน) เช็ค uuid รายใบเทียบกับแถว resolved/skipped/
+        // auto_resolved เก่าก่อนคิวเสมอ (ยังใช้ร่วมกับ mixed branch + other-only branch ที่เพิ่มพร้อมกันวันนี้)
         //
         // dryRun: ไม่ต่าง — queueReview แค่ push เข้า array ในหน่วยความจำ ไม่ insert DB จริงตอน dryRun อยู่
-        // แล้ว (เหมือน queueReview ปกติทุกจุดในไฟล์นี้)
+        // แล้ว (เหมือน queueReview ปกติทุกจุดในไฟล์นี้) — helper ใหม่ก็เป็นแค่ query อ่าน (SELECT) เท่านั้น
+        // ไม่เขียน DB ไม่ว่า dryRun หรือรันจริง ปลอดภัยเหมือนเดิม
         if (contract.status === "closed") {
-          queueReview(a, "CONTRACT_CLOSED", contract.id, "installment", a.inst_amt);
-          closedContractHeld++;
+          await queueContractClosedReview(a, contract.id, "installment", a.inst_amt);
           continue;
         }
         // ══════════════════════════════════════════════════════════════════════════════
@@ -2503,11 +2669,18 @@ export default {
             // ถือว่า stale จริง (เงินลงสำเร็จไปแล้วโดยไม่ชนพนักงาน) ปิดด้วย auto_resolved ได้ตามปกติ
             // ต่างจาก RECEIPT_MISSING/RECEIPT_CHANGED/RECEIPT_PARTIAL_APPLIED ที่เป็น drift/ใบเสร็จใหม่
             // แยกก้อนกันเลย ปิดปนกันไม่ได้
+            //
+            // (22 ก.ย. 2026, Wave 1, 1d) เพิ่ม "CONTRACT_CLOSED" เข้า exclusion list ด้วย — reason นี้เป็น
+            // manual-only เสมอ (ห้ามมี flow ลงเงินอัตโนมัติ ดู comment types.ts ฝั่งหน้าเว็บ) การที่โค้ดวิ่งมา
+            // auto-apply สำเร็จตรงนี้ได้แปลว่า contract.status ไม่ใช่ "closed" ของรอบนี้ (gate ด้านบนกันไว้แล้ว)
+            // แต่ปิดปนกับแถว CONTRACT_CLOSED เก่าไม่ได้เด็ดขาด — คนต้องเข้ามาเทียบยอดกับการปิดสัญญาเองเสมอ ห้าม
+            // auto_resolved ปิดเงียบให้แม้ invoice_no+paid_date จะตรงกันก็ตาม (กันเคสแปลกที่ contract ถูกเปิด
+            // กลับมา active อีกครั้งแล้วมีเงินใหม่จริงเข้ามาปนวันเดียวกัน — ปล่อยให้คนตรวจเองดีกว่าเดากลบ)
             let cleanupQuery = db.from("pj_sync_review")
               .update({ status: "auto_resolved" })
               .eq("pj_invoice_no", a.invoice_no)
               .eq("status", "pending")
-              .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED","RECEIPT_PARTIAL_APPLIED")');
+              .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED","RECEIPT_PARTIAL_APPLIED","CONTRACT_CLOSED")');
             cleanupQuery = targetPaidDate
               ? cleanupQuery.eq("pj_paid_date", targetPaidDate)
               : cleanupQuery.is("pj_paid_date", null);
@@ -2602,8 +2775,13 @@ export default {
         old_inv_after_transfer_queued: oldInvAfterTransferQueued,
         skipped_already_synced: skippedAlreadySynced,
         // (22 ก.ย. 2026 — อนุมัติคุณเตย) จำนวนใบเสร็จค่างวดของสัญญา status='closed' ที่กันไว้ไม่ให้
-        // auto-apply — เข้ากล่องรอตรวจ reason="CONTRACT_CLOSED" ทั้งหมดแทน (ดู comment จุดเช็คด้านบน)
+        // auto-apply — เข้ากล่องรอตรวจ reason="CONTRACT_CLOSED" ใหม่จริงรอบนี้ (ดู comment จุดเช็คด้านบน)
+        // ครอบ 3 จุด: installment path เดิม + mixed branch (has_other && has_installment) + other-only
+        // branch (ทั้งคู่เพิ่มวันนี้ Wave 1)
         closed_contract_held: closedContractHeld,
+        // (22 ก.ย. 2026, Wave 1 — แก้ P1) ก้อนที่ uuid ใบเสร็จทุกใบตรงกับแถว CONTRACT_CLOSED ที่ resolved/
+        // skipped/auto_resolved ไปแล้ว — ข้ามเงียบ ไม่คิวซ้ำ (นับรวมใน skipped_already_synced ด้วย)
+        closed_contract_already_handled: closedContractAlreadyHandled,
         // (9 ก.ย. 2026) เคส uuid ตรงบางใบ (มีใบใหม่ปนอยู่) — เข้ากล่องรอตรวจ ไม่ auto-apply ไม่ skip เงียบ
         receipt_partial_applied: receiptPartialApplied,
         // (21 ก.ย. 2026, Wave 2B) กันลงเงินซ้ำกับที่พนักงานลงมือเอง — staff_overlap_queued = เข้ากล่อง
