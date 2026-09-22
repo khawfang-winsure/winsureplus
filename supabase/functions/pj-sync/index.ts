@@ -1740,11 +1740,34 @@ export default {
         if (closedContractResolvedCache) return closedContractResolvedCache;
         const uuidSet = new Set<string>();
         const fallbackKeySet = new Set<string>();
-        const { data, error } = await db
+        // (22 ก.ย. 2026, Wave 1 — ติ๊ก review fix) เดิม query ไม่มี filter วันที่ + ไม่มี limit เลย — ตาราง
+        // pj_sync_review ไม่เคย purge สะสมยาว ถ้า volume โต query นี้จะโดน PostgREST cap 1000 แถวเงียบๆ
+        // (ไม่ error แค่ตัดข้อมูลทิ้ง) แถวเก่าที่เคย resolved จะหลุดจาก cache แบบไม่รู้ตัว → บั๊กเด้งกลับ (P1)
+        // จะย้อนกลับมาเงียบๆ อีกครั้งพอ volume โตเกิน cap
+        //
+        // แก้ 2 ชั้น: (1) filter pj_paid_date >= วันนี้−100 วัน — sync จริงไม่เคยมองย้อนเกิน MAX_DAYS_BACK=90
+        // วันอยู่แล้ว (บรรทัด ~564) ใส่ margin เผื่อ 10 วันกันชนขอบของรอบ deep-scan/นาฬิกาเหลื่อม รวมแถวที่
+        // pj_paid_date เป็น null ด้วยเสมอ (ไม่ตัด NULL ทิ้งจาก .gte — SQL NULL>=x เป็น false ถ้าไม่ or.is.null
+        // ไว้คู่กัน แถว CONTRACT_CLOSED ที่ parse วันที่ไม่ได้จะหลุด cache ทันทีโดยไม่มีเหตุผลเรื่อง volume เลย)
+        // (2) order วันที่ล่าสุดก่อน + limit(5000) ชัดเจน — เลือกแบบนี้แทน full pagination เพราะปลอดภัยกว่า
+        // ในทางปฏิบัติ: reason นี้เพิ่งมีวันนี้ (22 ก.ย. 2026) ปริมาณแถวจริงภายใน 100 วันควรอยู่หลักสิบ-ร้อย
+        // เท่านั้น ไม่มีทางใกล้ 5000 — limit คงที่ทำให้งบเวลาของ query นี้ "รู้ล่วงหน้า" แน่นอน ไม่เสี่ยงกิน
+        // งบเวลา 45s ของทั้ง loop เกินจำเป็นหรือเจอบั๊ก loop ไม่รู้จบแบบ pagination เสี่ยงได้ ถ้าเกิด 5000 แถว
+        // จริง (ผิดปกติมาก) worst case = แถวเก่าสุดในช่วงหลุด cache ไปบ้าง ยังปลอดภัยเท่าเดิม (แค่คิวซ้ำให้คน
+        // ดูอีกรอบ ไม่ใช่ลงเงินซ้ำ — CONTRACT_CLOSED เป็น manual-only reason) จึง order desc ก่อน limit เก็บ
+        // แถวใกล้ "วันนี้" ไว้ก่อนเสมอถ้าเกิดชน cap จริง (มีโอกาสถูกเทียบซ้ำในรอบถัดไปสูงกว่าแถวเก่าไกลๆ)
+        const cutoffIso = toIsoDate(shiftDdMmYyyy(ddmmyyyyToday(), -100));
+        let closedCacheQuery = db
           .from("pj_sync_review")
           .select("pj_invoice_no, pj_paid_date, raw_json")
           .eq("reason", "CONTRACT_CLOSED")
           .in("status", ["resolved", "skipped", "auto_resolved"]);
+        closedCacheQuery = cutoffIso
+          ? closedCacheQuery.or(`pj_paid_date.gte.${cutoffIso},pj_paid_date.is.null`)
+          : closedCacheQuery; // defensive กันเหนียว — ไม่ควรเกิด (ddmmyyyyToday เสมอ valid) ถ้าเกิดจริง ไม่ filter วันที่เลย ปลอดภัยกว่าเสี่ยง query error
+        const { data, error } = await closedCacheQuery
+          .order("pj_paid_date", { ascending: false, nullsFirst: false })
+          .limit(5000);
         if (!error) {
           for (const row of (data ?? []) as any[]) {
             const uuids = extractUuidsFromRawJson(row.raw_json);
@@ -1783,6 +1806,15 @@ export default {
         pjType: "installment" | "penalty" | "other",
         pjAmount: number,
       ): Promise<void> {
+        // (22 ก.ย. 2026, Wave 1 — ติ๊ก review fix) ยอดรวมทั้งก้อน (ทุกประเภท inst+pen+other) = 0 บาท → ไม่มี
+        // อะไรจริงให้ตรวจ (เช่น PJ ส่งใบ "ค่าปรับ placeholder" ยอด 0 มาเดี่ยวๆ — ข้อมูลขยะที่รู้จักอยู่แล้วใน
+        // ระบบ) เดิม branch other-only (1b) มี guard นี้อยู่แล้วโดยปริยายก่อนวันนี้ (else if (a.pen_amt>0)
+        // เท่านั้นถึงจะคิว — ก้อน 0 บาทไม่เคยถูกคิวอะไรเลยมาก่อน) ยึดพฤติกรรม "ไม่คิว" เดิมนี้ไว้ให้
+        // CONTRACT_CLOSED ทุกจุดด้วย (installment/mixed/other-only) ไม่งั้น gate ใหม่ที่เพิ่มวันนี้จะคิวขยะ
+        // 0 บาทเข้ากล่องรอตรวจเงียบๆ — skip เงียบ ไม่นับ counter ใดๆ เลย (เหมือน "ไม่คิว" เดิมเป๊ะ ไม่ใช่
+        // "handled แล้ว" ซึ่งเป็นคนละความหมายกัน — ไม่ปนกับ closedContractAlreadyHandled)
+        const groupTotal = a.inst_amt + a.pen_amt + a.other_amt;
+        if (groupTotal <= 0) return;
         if (await isContractClosedGroupAlreadyHandled(a)) {
           closedContractAlreadyHandled++;
           skippedAlreadySynced++; // นับรวม metric "จัดการแล้ว" ทั่วไปด้วย ให้ตรง convention alreadyHandled อื่น
