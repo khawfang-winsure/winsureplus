@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useFilter } from '../lib/useFilter'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from 'lucide-react'
@@ -23,22 +23,31 @@ const STATUS_OPTS: ContractStatus[] = ['active', 'closed', 'returned', 'returned
 const BUCKET_OPTS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90', '91-120', '120+']
 
 // ป้ายสถานะสุขภาพสัญญา — ใช้ bucket จาก v_contract_status
+// "รอเอกสาร" ไม่ใช่สถานะที่มาแทนความล่าช้าอีกต่อไป (2026-09-22) — โชว์คู่กับป้ายสถานะปกติเสมอ
 function StatusPills({ contract, st }: { contract: Contract; st: ContractStatusRow | undefined }) {
-  if (contract.pendingDocuments) {
-    return <Badge tone="amber">รอเอกสาร</Badge>
-  }
+  let statusBadge: ReactNode
   if (contract.status !== 'active') {
-    return <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
+    statusBadge = <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
+  } else {
+    const bucket = st?.bucket ?? 'normal'
+    const daysLate = st?.daysLate ?? 0
+    if (bucket === '91-120' || bucket === '120+') {
+      statusBadge = <Badge tone="red">หนี้เสีย</Badge>
+    } else if (bucket !== 'normal') {
+      statusBadge = <Badge tone="amber">ล่าช้า {daysLate} วัน</Badge>
+    } else {
+      statusBadge = <Badge tone="green">ผ่อนปกติ</Badge>
+    }
   }
-  const bucket = st?.bucket ?? 'normal'
-  const daysLate = st?.daysLate ?? 0
-  if (bucket === '91-120' || bucket === '120+') {
-    return <Badge tone="red">หนี้เสีย</Badge>
-  }
-  if (bucket !== 'normal') {
-    return <Badge tone="amber">ล่าช้า {daysLate} วัน</Badge>
-  }
-  return <Badge tone="green">ผ่อนปกติ</Badge>
+
+  if (!contract.pendingDocuments) return statusBadge
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Badge tone="amber">รอเอกสาร</Badge>
+      {statusBadge}
+    </div>
+  )
 }
 
 export default function AllCustomers() {
