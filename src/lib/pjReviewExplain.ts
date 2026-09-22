@@ -135,6 +135,8 @@ export function explainReviewRow(row: PjSyncReviewRow, ctx: PjReviewContext | nu
       // การ์ดเลือกผูก/ปุ่ม "เงินก้อนเดียวกัน"/"คนละก้อน" อยู่แยกในหน้า (ReviewLineItem) — ใช้ headline
       // เดียวกับที่ explainStaffOverlapRow คำนวณให้ ไม่ต้องคำนวณซ้ำ
       return explainStaffOverlapRow(row).headline
+    case 'CONTRACT_CLOSED':
+      return `สัญญาถูกปิด (เช่นปิดก่อนกำหนด) ในเว็บไปแล้ว ใบเสร็จนี้ยอด ${th(row.amount + row.penaltyAmount)} ฿ น่าจะเป็นเงินปิดสัญญาที่บันทึกไว้แล้ว — ให้เทียบยอดกับการปิดสัญญา ถ้าตรงกันให้กดข้ามพร้อมหมายเหตุ ถ้าไม่ตรง แจ้งแอดมิน (ห้ามกดลงเงินซ้ำเด็ดขาด)`
     default:
       return `ยอด ${th(row.amount)} ฿ รอตรวจสอบ`
   }

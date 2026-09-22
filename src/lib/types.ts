@@ -632,7 +632,13 @@ export interface LetterOutcomeByRound {
  * STAFF_MANUAL_OVERLAP = pj-sync ตรวจเจอว่าใบเสร็จ PJ นี้ใกล้เคียง (สัญญา+ช่วงวัน+ยอด) กับ payment_log ที่
  * พนักงานเคยลงมือรับชำระไว้แล้วโดยไม่ผ่านกล่องรอตรวจ (มิเกรชัน 0162, กันเงินซ้ำ) — overlapDetail.candidates
  * เก็บรายการที่ต้องสงสัยไว้ ให้แอดมิน/staff เลือกผูก ("เงินก้อนเดียวกัน") แทนการลงเงินซ้ำ หรือเลือกลงเพิ่มปกติ
- * ("คนละก้อน") ดู src/lib/pjStaffOverlap.ts (explainStaffOverlapRow) */
+ * ("คนละก้อน") ดู src/lib/pjStaffOverlap.ts (explainStaffOverlapRow)
+ * CONTRACT_CLOSED = ใบเสร็จ PJ ของสัญญาที่ status='closed' ในระบบเรา (เช่นปิดก่อนกำหนด) แล้ว — pj-sync (22
+ * ก.ย. 2026, น้องชีส) เลิก auto-apply ให้เงียบๆ เปลี่ยนมาเข้ากล่องนี้แทน เพราะใบเสร็จที่ตามมาทีหลังส่วนใหญ่คือ
+ * เงินปิดสัญญาก้อนเดียวกับที่บันทึกไปแล้ว (ลงซ้ำ = รายได้ซ้ำ) — pj_payment_type='installment' เสมอ,
+ * pj_amount = ยอดค่างวด, ค่าปรับ (ถ้ามี) อยู่ใน raw_json ตาม convention เดียวกับ reason อื่น (penaltyAmount) —
+ * ห้ามมี flow ลงเงินอัตโนมัติเด็ดขาด (isManualOnlyReason ต้องคุมตัวนี้ด้วย ดู PjSyncReview.tsx) ต้องให้คนเทียบ
+ * ยอดกับการปิดสัญญาเองก่อนกดข้าม/ทำเสร็จแล้ว */
 export type PjSyncReviewReason =
   | 'MULTI'
   | 'PARTIAL'
@@ -651,6 +657,7 @@ export type PjSyncReviewReason =
   | 'PLAN_CHANGE_DRYRUN'
   | 'PLAN_CHANGE_AUTO'
   | 'STAFF_MANUAL_OVERLAP'
+  | 'CONTRACT_CLOSED'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'

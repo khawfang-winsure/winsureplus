@@ -52,12 +52,16 @@ function isDriftReason(reason: PjSyncReviewReason): boolean {
  *  ยังโชว์คำอธิบายปกติ (explainReviewRow) แต่ต้องซ่อนปุ่ม "ลงตาม PJ" / "รายได้อื่นๆ" เพราะ pj-sync ไม่ได้
  *  คำนวณยอดให้ลงอัตโนมัติ (แค่ตรวจพบส่วนต่าง) — คงไว้แค่ "ข้าม" / "ทำเสร็จแล้ว"
  *  RETURNED_CONTRACT_OTHER_FEE เข้ากลุ่มนี้ด้วย (ค่าธรรมเนียม/รายการอื่นๆ ของสัญญาคืนเครื่องที่ PJ มีมากกว่า
- *  ที่เราบันทึกเป็นรายได้อื่นๆ — ไม่ใช่ค่างวด ต้องคนเปิด PJ เทียบแล้วบันทึกเป็นรายได้อื่นๆ ที่หน้าสัญญาเอง) */
+ *  ที่เราบันทึกเป็นรายได้อื่นๆ — ไม่ใช่ค่างวด ต้องคนเปิด PJ เทียบแล้วบันทึกเป็นรายได้อื่นๆ ที่หน้าสัญญาเอง)
+ *  CONTRACT_CLOSED เข้ากลุ่มนี้ด้วย (22 ก.ย. 2026) — สัญญาปิดไปแล้ว ใบเสร็จที่ตามมาน่าจะเป็นเงินปิดสัญญา
+ *  ก้อนเดียวกับที่บันทึกไว้แล้ว ห้ามมีปุ่มลงเงินทุกชนิดเด็ดขาด (กันรายได้ซ้ำ) ต้องเทียบยอดกับการปิดสัญญาเอง
+ *  ก่อนกดข้าม/ทำเสร็จแล้ว (บังคับกรอกหมายเหตุอยู่แล้วจาก isMoneyAction ใน ResolveModal) */
 function isManualOnlyReason(reason: PjSyncReviewReason): boolean {
   return (
     reason === 'RETURNED_CONTRACT_PAYMENT' ||
     reason === 'RETURNED_CONTRACT_OVERAGE' ||
-    reason === 'RETURNED_CONTRACT_OTHER_FEE'
+    reason === 'RETURNED_CONTRACT_OTHER_FEE' ||
+    reason === 'CONTRACT_CLOSED'
   )
 }
 
@@ -110,6 +114,7 @@ const REASON_LABEL: Record<PjSyncReviewReason, string> = {
   PLAN_CHANGE_DRYRUN: 'ทดลอง: ระบบจะเลื่อนวันให้',
   PLAN_CHANGE_AUTO: 'ระบบเลื่อนวันให้แล้ว',
   STAFF_MANUAL_OVERLAP: STAFF_OVERLAP_REASON_TEXT,
+  CONTRACT_CLOSED: 'สัญญานี้ปิดแล้ว — อย่าลงเงินซ้ำ',
 }
 const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'red'> = {
   MULTI: 'amber',
@@ -141,6 +146,8 @@ const REASON_TONE: Record<PjSyncReviewReason, 'neutral' | 'green' | 'amber' | 'r
   // เขียว = ระบบทำสำเร็จให้แล้วอัตโนมัติ เหลือแค่ตรวจทานว่าถูกต้อง
   PLAN_CHANGE_AUTO: 'green',
   STAFF_MANUAL_OVERLAP: STAFF_OVERLAP_REASON_TONE,
+  // แดง = เตือนแรงสุด กันรายได้ซ้ำ — สัญญาปิดไปแล้ว ห้ามลงเงินซ้ำเด็ดขาด (isManualOnlyReason คุมปุ่มอยู่แล้ว)
+  CONTRACT_CLOSED: 'red',
 }
 
 /** ป้ายเหตุผลแบบกันพัง — เผื่อฝั่งระบบส่ง reason ใหม่มาก่อนหน้าเว็บรู้จัก (กัน badge ว่างเปล่าในอนาคต) */
@@ -565,6 +572,8 @@ function ReviewLineItem({
   const isPlanChange = isPlanChangeReason(row.reason)
   const planChangeNeedsFix = isPlanChangeManualFixReason(row.reason)
   const isStaffOverlap = isStaffOverlapReason(row.reason)
+  // สัญญาปิดไปแล้ว — เตือนแรงสุด (กันรายได้ซ้ำ) ใช้โทนแดงเดียวกับ drift ให้เด่นกว่า manual-only ปกติ
+  const isContractClosed = row.reason === 'CONTRACT_CLOSED'
   // อธิบาย + ตัวเลือกผูกเฉพาะ reason นี้ (headline เดียวกับที่ explainReviewRow แสดงด้านล่างอยู่แล้ว —
   // ที่นี่ใช้แค่ candidateLines/recommendedCandidateId/primaryButtonHint ต่อ)
   const overlapExplain = isStaffOverlap ? explainStaffOverlapRow(row) : null
@@ -590,7 +599,11 @@ function ReviewLineItem({
   return (
     <div
       className={`rounded-xl border px-4 py-3 ${
-        isDrift ? 'border-red-200 bg-red-50/40' : isPlanChange ? 'border-amber-200 bg-amber-50/30' : 'border-peach bg-cream'
+        isDrift || isContractClosed
+          ? 'border-red-200 bg-red-50/40'
+          : isPlanChange
+            ? 'border-amber-200 bg-amber-50/30'
+            : 'border-peach bg-cream'
       }`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
