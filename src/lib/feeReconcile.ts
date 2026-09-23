@@ -28,9 +28,16 @@ export interface FeeIncomePreset {
   feeKind: FeeKind | null   // tag สิทธิ์ค่าธรรมเนียม (null = รายได้ทั่วไป ไม่ผูก reconcile)
 }
 
-/** หมวดรายได้สำเร็จรูป + fee_kind (เรียงตามที่เจอบ่อย) */
+/** หมวดรายได้สำเร็จรูป + fee_kind — ชื่อ category ล็อกตามตารางมาตรฐานที่คุณเตยเคาะ 20 ก.ย. 2026
+ *  (memory: fee-categories-standard.md) ห้ามตั้งชื่อใหม่เอง/สะกดต่างจากนี้ ถ้าไม่ตรงให้ถามก่อน
+ *  กลุ่มบน (feeKind: null) = ค่าธรรมเนียมย่อยที่บันทึกเป็นรายได้ได้ แต่ไม่ผูก fee-reconcile (ไม่มี "สิทธิ์"
+ *  ให้ไล่ตรวจ action คู่แบบ due_day/months/settle/transfer) — กลุ่มล่างคือ 4 สิทธิ์เดิมที่ reconcile ไล่ตรวจ ห้ามแก้ */
 export const FEE_INCOME_PRESETS: FeeIncomePreset[] = [
-  { category: 'ค่าส่งกล่องพัสดุ', feeKind: null },
+  { category: 'ค่ากล่อง', feeKind: null }, // เดิมชื่อ 'ค่าส่งกล่องพัสดุ' — เปลี่ยนชื่อ 23 ก.ย. 2026 (ยอดคงเดิม 100)
+  { category: 'ค่าปิดด่วน', feeKind: null }, // 200 เป๊ะทุกครั้ง — คนละตัวกับ 'ค่าปิดสัญญาก่อนกำหนด' ด้านล่าง (feeKind:'settle') ห้ามตั้งเป็น 'settle' ซ้ำ ไม่งั้น reconcile จะปิดเคสเร็วเกินจริง
+  { category: 'ค่าปลดล็อก', feeKind: null }, // 500 — เก็บได้ระหว่างสัญญายัง active
+  { category: 'ค่าลงทะเบียนออกจากระบบ', feeKind: null }, // 500 — ถอนเครื่องออกจากระบบตอนปิด
+  { category: 'ค่าเอกสาร', feeKind: null }, // 100 — ทุกสัญญามีอัตโนมัติ (backfill mig 0129)
   { category: 'ค่าเปลี่ยนวันที่ชำระ', feeKind: 'due_day' },
   { category: 'ค่าขยายระยะเวลา', feeKind: 'months' },
   { category: 'ค่าขยายระยะเวลา + เปลี่ยนวันชำระ', feeKind: 'both' },

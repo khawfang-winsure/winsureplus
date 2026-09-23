@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { NAV, useReviewQueueBadgeCount, type NavChild, type NavItem } from './nav'
+import { NAV, useNavBadgeCounts, type NavBadgeCounts, type NavChild, type NavItem } from './nav'
 import { useAuth } from '../lib/auth'
 
 // สิทธิ์การมองเห็นของแต่ละ role (คำนวณครั้งเดียวใน Sidebar แล้วส่งลงไป)
@@ -44,9 +44,9 @@ interface NavContentProps {
   isMobile: boolean
   /** true = อุปกรณ์ touch (hover: none) — desktop sidebar กางถาวร + เปิด submenu ด้วยการแตะ ไม่พึ่ง hover */
   isTouch: boolean
-  /** จำนวน badge คิวตรวจเคส — คำนวณครั้งเดียวที่ Sidebar (ไม่ใช่ในนี้) กัน NavContent ที่ถูก render
-   *  2 รอบ (mobile+desktop) ยิง getReviewQueue() ซ้ำ 2 ครั้งต่อโหลดหน้าเดียว */
-  reviewQueueBadgeCount: number
+  /** ตัวเลข badge ทุกเมนู (คิวตรวจเคส/กล่องรอตรวจ PJ/กล่องรับงาน) — คำนวณครั้งเดียวที่ Sidebar (ไม่ใช่ในนี้)
+   *  กัน NavContent ที่ถูก render 2 รอบ (mobile+desktop) ยิง query นับ badge ซ้ำ 2 ชุดต่อโหลดหน้าเดียว */
+  badgeCounts: NavBadgeCounts
 }
 
 // label/chevron: โชว์เต็มใน mobile; desktop ซ่อนตอน rail → โผล่ตอน group-hover
@@ -61,14 +61,20 @@ function NavContent({
   pathname,
   isMobile,
   isTouch,
-  reviewQueueBadgeCount,
+  badgeCounts,
 }: NavContentProps) {
   const itemBase =
     'flex items-center rounded-xl px-3 py-3 text-sm font-medium transition-colors'
 
-  // badge แดงสด — ตอนนี้มีแค่คีย์ 'reviewQueue' รับมาจาก Sidebar (คำนวณครั้งเดียว ดู nav.ts useReviewQueueBadgeCount)
-  const badgeCountFor = (key: NavChild['badgeKey']) => (key === 'reviewQueue' ? reviewQueueBadgeCount : 0)
-  const badgeAriaSuffix = roles.isStaff ? 'เคสต้องแก้' : 'เคสรอตรวจ'
+  // badge แดงสด — รับ map มาจาก Sidebar (คำนวณครั้งเดียว ดู nav.ts useNavBadgeCounts) ไม่ผูกคีย์เดียวอีกต่อไป
+  const badgeCountFor = (key: NavChild['badgeKey']) => (key ? badgeCounts[key] : 0)
+  // ข้อความ aria-label ต่างกันตามคีย์ (คนละความหมาย คนละหน้า) — คงพฤติกรรมเดิมของ 'reviewQueue' ที่แยกตาม role
+  const badgeAriaLabel = (key: NavChild['badgeKey'], count: number) => {
+    if (key === 'reviewQueue') return `${count} ${roles.isStaff ? 'เคสต้องแก้' : 'เคสรอตรวจ'}`
+    if (key === 'pjSyncReview') return `${count} รายการรอตรวจ PJ`
+    if (key === 'inbox') return `${count} เคสในกล่องรับงาน`
+    return `${count}`
+  }
 
   return (
     <>
@@ -117,7 +123,7 @@ function NavContent({
                 </span>
                 {badgeCountFor(child.badgeKey) > 0 && (
                   <span
-                    aria-label={`${badgeCountFor(child.badgeKey)} ${badgeAriaSuffix}`}
+                    aria-label={badgeAriaLabel(child.badgeKey, badgeCountFor(child.badgeKey))}
                     className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold text-white"
                   >
                     {badgeCountFor(child.badgeKey)}
@@ -234,9 +240,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const isExecutive = configured && role === 'executive'
   const isAccounting = configured && role === 'accounting'
 
-  // badge คิวตรวจเคส — คำนวณครั้งเดียวที่นี่ (ไม่ใช่ใน NavContent ที่ถูก render 2 รอบ mobile+desktop
-  // ด้านล่าง) กัน getReviewQueue() ยิงซ้ำ 2 ครั้งทุกโหลดหน้าสำหรับ admin/staff ทุก session
-  const reviewQueueBadgeCount = useReviewQueueBadgeCount(isAdmin, isStaff, myName)
+  // badge ทุกเมนู (คิวตรวจเคส/กล่องรอตรวจ PJ/กล่องรับงาน) — คำนวณครั้งเดียวที่นี่ (ไม่ใช่ใน NavContent ที่ถูก
+  // render 2 รอบ mobile+desktop ด้านล่าง) กัน query นับ badge ยิงซ้ำ 2 ชุดทุกโหลดหน้าสำหรับ admin/staff ทุก session
+  const badgeCounts = useNavBadgeCounts(isAdmin, isStaff, myName)
 
   // state สำหรับ expand/collapse ของแต่ละ group บนมือถือ (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -271,7 +277,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
     items,
     roles,
     pathname,
-    reviewQueueBadgeCount,
+    badgeCounts,
   }
 
   return (
