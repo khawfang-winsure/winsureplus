@@ -46,6 +46,9 @@ export interface Shop {
   // --- ค่าคอมหาร้าน ---
   recruitedBy?: string | null // user id ของพนักงานที่หาร้านนี้
   recruitedAt?: string | null // วันที่หาร้าน (ISO yyyy-mm-dd)
+  // --- เช็คเครดิตเอง (migration 0164, Wave 2 2026-09-23) ---
+  creditCheckEnabled?: boolean // pilot gate — เปิดให้ร้านนี้เช็คเครดิตเองผ่านฟอร์มสาธารณะได้หรือยัง
+  creditLoginCode?: string | null // รหัสร้านสำหรับ login ฟอร์มเช็คเครดิต (ไม่ใช่ความลับ — เหมือน username)
 }
 
 /** ตัวเลือกที่ตั้งค่าได้ (รุ่น/ความจำ/อาชีพ/หลักฐาน/โปรโมชั่น) — ลบแล้วใช้ active=false ข้อมูลเก่าไม่หาย */
@@ -1027,4 +1030,69 @@ export interface NplHistoryPoint {
   overdueCount?: number | null        // สัญญาค้าง ≥1 วัน (รวม 60+) — null/undefined = ยังไม่มีข้อมูล
   overdueOutstanding?: number | null  // ยอดคงเหลือทั้งสัญญาของกลุ่มค้าง ≥1 วัน
   source: 'backfill' | 'daily' | 'live'
+}
+
+// ---------- ระบบร้านค้าเช็คเครดิตลูกค้าเอง (migration 0164, Edge Function 'credit-check', Wave 2 2026-09-23) ----------
+// ฝั่งร้าน (public form, anon) คุยกับ Edge Function ตรง ไม่ผ่าน db.ts เลย (ไม่มี Supabase session ให้ RLS ใช้)
+// ชนิดข้อมูลกลุ่มนี้เป็นฝั่ง "staff" เท่านั้น — อ่าน/ตัดสินใจคิวผ่าน v_credit_check_queue + credit_checks (RLS admin/staff)
+
+/** ผลเครื่องคำนวณเบื้องต้น (map จาก src/lib/creditCheck.ts CreditCheckLevel: fail/review/prelim_pass) */
+export type CreditCheckEngineLevel = 'fail' | 'needs_review' | 'passed_preliminary'
+export type CreditCheckBlacklistResult = 'not_checked' | 'clear' | 'found'
+export type CreditCheckFacebookResult = 'not_checked' | 'confirmed' | 'mismatch'
+export type CreditCheckDecision = 'approved' | 'rejected' | 'need_more_info'
+
+/** 1 แถวในคิว "คำขอเช็คเครดิต" (v_credit_check_queue) — national_id มาสก์แล้วเหลือ 4 ตัวท้าย */
+export interface CreditCheckQueueItem {
+  id: string
+  shopId: string
+  shopName: string
+  customerName: string
+  nationalIdMasked: string
+  idType: 'thai' | 'foreign'
+  engineLevel: CreditCheckEngineLevel | null
+  engineRatio: number | null
+  blacklistResult: CreditCheckBlacklistResult
+  facebookResult: CreditCheckFacebookResult
+  decision: CreditCheckDecision | null
+  decisionNote: string | null
+  contractId: string | null
+  createdAt: string
+  firstOpenedAt: string | null
+  decidedAt: string | null
+  minutesToFirstOpen: number
+  minutesToDecision: number
+}
+
+/** เหตุผลจากเอนจิ้น (engine_reasons jsonb) — โครงตรงกับ CreditCheckReason ของ src/lib/creditCheck.ts */
+export interface CreditCheckReasonRow {
+  code: string
+  severity: 'fail' | 'review'
+  shopText: string
+  staffText: string
+}
+
+export interface CreditCheckFile {
+  id: string
+  kind: 'payslip' | 'statement' | 'work_photo' | 'facebook_screenshot' | 'id_card' | 'other'
+  mime: string | null
+  size: number | null
+  createdAt: string
+}
+
+/** รายละเอียดเต็ม 1 คำขอ (เห็น national_id เต็ม — เฉพาะหน้านี้เท่านั้น ห้ามส่งกลับให้ฝั่งร้าน) */
+export interface CreditCheckDetail extends CreditCheckQueueItem {
+  nationalId: string
+  idExpiry: string | null
+  birthDate: string | null
+  occupationType: string | null
+  declaredIncome: number | null
+  devicePrice: number | null
+  deviceDown: number | null // % (0-100) ตรงกับ downPercent ของเอนจิ้น — ดูคอมเมนต์ credit-check/index.ts
+  termMonths: number | null
+  ourInstallment: number | null
+  pjInstallment: number | null
+  facebookUrl: string | null
+  engineReasons: CreditCheckReasonRow[]
+  files: CreditCheckFile[]
 }

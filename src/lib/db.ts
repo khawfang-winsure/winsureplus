@@ -3,6 +3,7 @@
 // หรือใช้ข้อมูลตัวอย่าง (mock) ตามว่าใส่กุญแจใน .env แล้วหรือยัง
 import { supabase } from './supabase'
 import type { PostgrestError } from '@supabase/supabase-js'
+import { maskNationalId } from './format'
 import type {
   AuditEvent,
   AuditEventType,
@@ -36,6 +37,13 @@ import type {
   OverdueBucket,
   OverduePromiseContract,
   CollectionMonthlyRow,
+  CreditCheckBlacklistResult,
+  CreditCheckDecision,
+  CreditCheckDetail,
+  CreditCheckFacebookResult,
+  CreditCheckFile,
+  CreditCheckQueueItem,
+  CreditCheckReasonRow,
   PjContractSnapshot,
   PjDaysLateBucket,
   PjImageRef,
@@ -430,6 +438,8 @@ export async function getShops(): Promise<Shop[]> {
     province: s.province ?? '',
     recruitedBy: s.recruited_by ?? null,
     recruitedAt: s.recruited_at ?? null,
+    creditCheckEnabled: s.credit_check_enabled ?? false,
+    creditLoginCode: s.credit_login_code ?? null,
   }))
 }
 
@@ -454,6 +464,8 @@ export async function getAllShops(): Promise<Shop[]> {
     province: s.province ?? '',
     recruitedBy: s.recruited_by ?? null,
     recruitedAt: s.recruited_at ?? null,
+    creditCheckEnabled: s.credit_check_enabled ?? false,
+    creditLoginCode: s.credit_login_code ?? null,
   }))
 }
 
@@ -10156,4 +10168,278 @@ export async function getPjImage(contractId: string, imageKey: string): Promise<
     return { ok: false, error: result?.error ?? 'ดึงรูปจาก PJ ไม่สำเร็จ' }
   }
   return { ok: true, base64: result.base64, mime: result.mime }
+}
+
+// ---------- ระบบร้านค้าเช็คเครดิตลูกค้าเอง (migration 0164, Edge Function 'credit-check', Wave 2 2026-09-23) ----------
+// ฝั่งร้าน (public form, anon) คุยกับ Edge Function 'credit-check' ตรงๆ เอง ไม่ผ่าน db.ts เลย (ไม่มี Supabase
+// session ให้ RLS ใช้ — auth ฝั่งร้านเป็น shop token ที่ Edge Function เซ็นเอง) ฟังก์ชันในหมวดนี้ทั้งหมดเป็น
+// ฝั่ง staff/admin ล้วน คุยผ่าน v_credit_check_queue + credit_checks/credit_check_files ตรงๆ (RLS
+// is_admin()/is_staff() คุมอยู่แล้วที่ 0164) ยกเว้น getFileUrl ที่ต้องผ่าน Edge Function (R2 presign)
+
+interface CreditCheckQueueRow {
+  id: string
+  shop_id: string
+  shop_name: string
+  customer_name: string
+  national_id_masked: string
+  id_type: 'thai' | 'foreign'
+  engine_level: CreditCheckQueueItem['engineLevel']
+  engine_ratio: number | null
+  blacklist_result: CreditCheckBlacklistResult
+  facebook_result: CreditCheckFacebookResult
+  decision: CreditCheckDecision | null
+  decision_note: string | null
+  contract_id: string | null
+  created_at: string
+  first_opened_at: string | null
+  decided_at: string | null
+  minutes_to_first_open: number | null
+  minutes_to_decision: number | null
+}
+
+function mapCreditCheckQueueRow(r: CreditCheckQueueRow): CreditCheckQueueItem {
+  return {
+    id: r.id,
+    shopId: r.shop_id,
+    shopName: r.shop_name,
+    customerName: r.customer_name,
+    nationalIdMasked: r.national_id_masked,
+    idType: r.id_type,
+    engineLevel: r.engine_level,
+    engineRatio: r.engine_ratio == null ? null : Number(r.engine_ratio),
+    blacklistResult: r.blacklist_result,
+    facebookResult: r.facebook_result,
+    decision: r.decision,
+    decisionNote: r.decision_note,
+    contractId: r.contract_id,
+    createdAt: r.created_at,
+    firstOpenedAt: r.first_opened_at,
+    decidedAt: r.decided_at,
+    minutesToFirstOpen: Number(r.minutes_to_first_open ?? 0),
+    minutesToDecision: Number(r.minutes_to_decision ?? 0),
+  }
+}
+
+/** คิว "คำขอเช็คเครดิต" (v_credit_check_queue — national_id มาสก์เหลือ 4 ตัวท้ายแล้วฝั่ง DB) ใหม่สุดก่อน
+ *  admin/staff เท่านั้น (RLS ผ่าน security_invoker ของ view — role อื่นจะได้ 0 แถวเงียบๆ ไม่ error) */
+export async function getCreditCheckQueue(): Promise<CreditCheckQueueItem[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('v_credit_check_queue')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .range(0, PAGE_CAP)
+  if (error) throw error
+  return ((data ?? []) as CreditCheckQueueRow[]).map(mapCreditCheckQueueRow)
+}
+
+/** จำนวนคำขอที่ยังไม่ตัดสินใจ (decision is null) — ใช้ทำเลขแจ้งเตือนสีแดงบนเมนู "คำขอเช็คเครดิต" */
+export async function countPendingCreditChecks(): Promise<number> {
+  if (!supabase) return 0
+  const { count, error } = await supabase
+    .from('credit_checks')
+    .select('id', { count: 'exact', head: true })
+    .is('decision', null)
+  if (error) throw error
+  return count ?? 0
+}
+
+interface CreditCheckFileRow {
+  id: string
+  kind: CreditCheckFile['kind']
+  mime: string | null
+  size: number | null
+  created_at: string
+}
+
+function mapCreditCheckFile(r: CreditCheckFileRow): CreditCheckFile {
+  return { id: r.id, kind: r.kind, mime: r.mime, size: r.size, createdAt: r.created_at }
+}
+
+interface CreditCheckDetailRow {
+  id: string
+  shop_id: string
+  customer_name: string
+  national_id: string
+  id_type: 'thai' | 'foreign'
+  id_expiry: string | null
+  birth_date: string | null
+  occupation_type: string | null
+  declared_income: number | null
+  device_price: number | null
+  device_down: number | null
+  term_months: number | null
+  our_installment: number | null
+  pj_installment: number | null
+  facebook_url: string | null
+  engine_level: CreditCheckQueueItem['engineLevel']
+  engine_reasons: CreditCheckReasonRow[] | null
+  engine_ratio: number | null
+  blacklist_result: CreditCheckBlacklistResult
+  facebook_result: CreditCheckFacebookResult
+  decision: CreditCheckDecision | null
+  decision_note: string | null
+  contract_id: string | null
+  created_at: string
+  first_opened_at: string | null
+  decided_at: string | null
+}
+
+/** รายละเอียดเต็ม 1 คำขอ (national_id เต็ม + ไฟล์แนบ) — เห็นได้เฉพาะหน้านี้ ห้ามส่งกลับให้ฝั่งร้านเด็ดขาด
+ *  admin/staff เท่านั้น (RLS credit_checks_select) — คืน null ถ้าไม่พบ/ไม่มีสิทธิ์ (แยกจาก throw เพราะ
+ *  RLS ปฏิเสธเงียบๆ ด้วย 0 แถว ไม่ใช่ error code) */
+export async function getCreditCheck(id: string): Promise<CreditCheckDetail | null> {
+  if (!supabase) return null
+  const [{ data: row, error }, { data: fileRows, error: fileErr }, shops] = await Promise.all([
+    supabase.from('credit_checks').select('*').eq('id', id).maybeSingle(),
+    supabase
+      .from('credit_check_files')
+      .select('id, kind, mime, size, created_at')
+      .eq('credit_check_id', id)
+      .order('created_at'),
+    getAllShops(),
+  ])
+  if (error) throw error
+  if (fileErr) throw fileErr
+  if (!row) return null
+
+  const r = row as CreditCheckDetailRow
+  const shopName = shops.find((s) => s.id === r.shop_id)?.name ?? ''
+
+  // minutes_to_first_open/minutes_to_decision ของ view คำนวณฝั่ง DB (coalesce กับ now()) — ที่นี่ query
+  // ตาราง credit_checks ตรงไม่ผ่าน view เลยคำนวณเองฝั่ง client ด้วยสูตรเดียวกัน (0164 SECTION 8)
+  const nowMs = Date.now()
+  const createdMs = new Date(r.created_at).getTime()
+  const minutesToFirstOpen =
+    Math.round((((r.first_opened_at ? new Date(r.first_opened_at).getTime() : nowMs) - createdMs) / 60000) * 10) / 10
+  const minutesToDecision =
+    Math.round((((r.decided_at ? new Date(r.decided_at).getTime() : nowMs) - createdMs) / 60000) * 10) / 10
+
+  return {
+    id: r.id,
+    shopId: r.shop_id,
+    shopName,
+    customerName: r.customer_name,
+    nationalIdMasked: maskNationalId(r.national_id),
+    idType: r.id_type,
+    engineLevel: r.engine_level,
+    engineRatio: r.engine_ratio == null ? null : Number(r.engine_ratio),
+    blacklistResult: r.blacklist_result,
+    facebookResult: r.facebook_result,
+    decision: r.decision,
+    decisionNote: r.decision_note,
+    contractId: r.contract_id,
+    createdAt: r.created_at,
+    firstOpenedAt: r.first_opened_at,
+    decidedAt: r.decided_at,
+    minutesToFirstOpen,
+    minutesToDecision,
+    nationalId: r.national_id,
+    idExpiry: r.id_expiry,
+    birthDate: r.birth_date,
+    occupationType: r.occupation_type,
+    declaredIncome: r.declared_income == null ? null : Number(r.declared_income),
+    devicePrice: r.device_price == null ? null : Number(r.device_price),
+    deviceDown: r.device_down == null ? null : Number(r.device_down),
+    termMonths: r.term_months,
+    ourInstallment: r.our_installment == null ? null : Number(r.our_installment),
+    pjInstallment: r.pj_installment == null ? null : Number(r.pj_installment),
+    facebookUrl: r.facebook_url,
+    engineReasons: Array.isArray(r.engine_reasons) ? r.engine_reasons : [],
+    files: ((fileRows ?? []) as CreditCheckFileRow[]).map(mapCreditCheckFile),
+  }
+}
+
+/** เปิดดูครั้งแรก — set first_opened_at/first_opened_by เฉพาะตอนยังเป็น null (กันเปิดซ้ำทับเวลาที่วัด
+ *  "ตอบสนอง 3 นาที" — คำตัดสินเจ้าของ 2026-09-23) ไม่มีแถวให้ set (เปิดไปแล้ว) ก็ไม่ error แค่ไม่มีอะไรเปลี่ยน */
+export async function markCreditCheckOpened(id: string): Promise<void> {
+  if (!supabase) return
+  const userId = (await supabase.auth.getUser()).data.user?.id
+  if (!userId) throw new Error('not signed in')
+  const { error } = await supabase
+    .from('credit_checks')
+    .update({ first_opened_at: new Date().toISOString(), first_opened_by: userId })
+    .eq('id', id)
+    .is('first_opened_at', null)
+  if (error) throw error
+}
+
+/** ผลตรวจ blacklistseller.com ด้วยตา (ปุ่ม [คัดลอกเลขบัตร] [เปิดเว็บ] ในหน้า UI — ไม่ scrape เอง ตาม
+ *  decisions: ToS ห้าม scrape, API เสียเงินรอเจ้าของถามราคา) */
+export async function setCreditCheckBlacklist(id: string, result: 'clear' | 'found'): Promise<void> {
+  if (!supabase) return
+  const userId = (await supabase.auth.getUser()).data.user?.id
+  if (!userId) throw new Error('not signed in')
+  const { error } = await supabase
+    .from('credit_checks')
+    .update({ blacklist_result: result, blacklist_checked_by: userId, blacklist_checked_at: new Date().toISOString() })
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** ผลตรวจ Facebook ด้วยตา (ลิงก์โปรไฟล์ + สกรีนช็อตที่ร้านแนบมา เทียบกับชื่อ/รูปลูกค้า) */
+export async function setCreditCheckFacebook(id: string, result: 'confirmed' | 'mismatch'): Promise<void> {
+  if (!supabase) return
+  const userId = (await supabase.auth.getUser()).data.user?.id
+  if (!userId) throw new Error('not signed in')
+  const { error } = await supabase
+    .from('credit_checks')
+    .update({ facebook_result: result, facebook_checked_by: userId, facebook_checked_at: new Date().toISOString() })
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** คำตัดสินสุดท้าย — ห้ามบอกร้านว่า "อนุมัติแล้ว" ตรงๆ เด็ดขาด (ใช้คำว่า "รอทีมยืนยัน" เสมอ ตาม decisions)
+ *  note: บันทึกเหตุผล/รายละเอียดเพิ่มเติม (โดยเฉพาะ need_more_info ต้องบอกร้านว่าขาดอะไร) */
+export async function decideCreditCheck(
+  id: string,
+  decision: CreditCheckDecision,
+  note?: string,
+): Promise<void> {
+  if (!supabase) return
+  const userId = (await supabase.auth.getUser()).data.user?.id
+  if (!userId) throw new Error('not signed in')
+  const { error } = await supabase
+    .from('credit_checks')
+    .update({
+      decision,
+      decision_note: note?.trim() || null,
+      decided_by: userId,
+      decided_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** แอดมินตั้ง/รีเซ็ต PIN เช็คเครดิตของร้าน — RPC คืน login_code+pin แบบ plaintext ครั้งเดียว (0164
+ *  admin_set_shop_credit_pin, SECURITY DEFINER, is_admin() คุมอีกชั้นในฟังก์ชัน) หน้า UI ต้องโชว์ครั้งเดียว
+ *  แล้วเตือนร้านจด — เรียกซ้ำ = รีเซ็ต PIN ใหม่ (ของเก่าใช้ไม่ได้ทันที) */
+export async function adminSetShopCreditPin(shopId: string): Promise<{ loginCode: string; pin: string }> {
+  if (!supabase) throw new Error('โหมดตัวอย่าง: ยังไม่เชื่อม Supabase')
+  const { data, error } = await supabase.rpc('admin_set_shop_credit_pin', { p_shop_id: shopId })
+  if (error) throw error
+  const row = (Array.isArray(data) ? data[0] : data) as { login_code?: string; pin?: string } | null
+  if (!row?.login_code || !row?.pin) throw new Error('ตั้ง PIN ไม่สำเร็จ')
+  return { loginCode: row.login_code, pin: row.pin }
+}
+
+/** เปิด/ปิดฟีเจอร์เช็คเครดิตเองให้ร้าน (pilot gate — shops.credit_check_enabled) */
+export async function setShopCreditCheckEnabled(shopId: string, enabled: boolean): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('shops').update({ credit_check_enabled: enabled }).eq('id', shopId)
+  if (error) throw error
+}
+
+/** URL ชั่วคราวเปิดดูไฟล์แนบคำขอเช็คเครดิต (300 วิ) — ผ่าน Edge Function credit-check action='staff_file_url'
+ *  (ต้อง admin/staff+active — function เช็คเองอีกชั้นนอกเหนือจาก RLS ของหน้าเว็บ เพราะไฟล์อยู่ R2 ไม่ใช่ Supabase
+ *  storage ไม่มี RLS ให้เกาะตรงๆ) */
+export async function getCreditCheckFileUrl(fileId: string): Promise<string> {
+  if (!supabase) throw new Error('โหมดตัวอย่าง: ยังไม่เชื่อม Supabase')
+  const { data, error } = await supabase.functions.invoke('credit-check', {
+    body: { action: 'staff_file_url', file_id: fileId },
+  })
+  if (error) throw new Error(await extractFunctionErrorMessage(error))
+  const url = (data as { url?: string; error?: string } | null)?.url
+  if (!url) throw new Error((data as { error?: string } | null)?.error ?? 'ขอลิงก์ไฟล์ไม่สำเร็จ')
+  return url
 }

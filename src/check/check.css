@@ -1,0 +1,7 @@
+/* สีข้อความรอง (muted) เฉพาะหน้าเช็คเครดิตสาธารณะ (check.html) เท่านั้น
+   --color-ink-soft ส่วนกลาง (#8a7355) contrast ไม่ถึง 4.5:1 ตาม WCAG AA บนพื้นหลังของหน้านี้
+   (axe-core color-contrast: 3.62 บนพื้นครีม #fde2c8, ~4.33 บนการ์ดครีมนวล #fffaf2 — ครีมตรวจ 2026-09-24)
+   ไม่แก้ที่ token กลาง (src/index.css --color-ink-soft) เพราะกระทบทั้งแอป staff — ขอบเขตแค่ check.html */
+.text-muted-check {
+  color: #6b5636;
+}
