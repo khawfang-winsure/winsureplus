@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
-import { Badge, Button, Card, EmptyState, Loading } from '../components/ui'
 import { thaiDate } from '../lib/format'
 import { ApiError, listRequests, type RequestListItem } from './api'
 import { LEVEL_DISPLAY } from './levelDisplay'
+import { Button, Card, EmptyState, Loading, Pill } from './ui'
 
 function decisionText(d: RequestListItem['decision']): string | null {
   if (d === 'approved') return 'ทีมยืนยันแล้ว — ดำเนินการต่อได้'
@@ -47,17 +46,16 @@ export default function RequestsList({
   return (
     <div className="mx-auto max-w-md px-4 py-6">
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-bold text-ink">คำขอของร้าน</h2>
-        <Button variant="ghost" onClick={() => void load()} disabled={loading} aria-label="รีเฟรชรายการ">
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          รีเฟรช
+        <h2 className="wsc-h2">คำขอของร้าน</h2>
+        <Button variant="ghost" onClick={() => void load()} disabled={loading} aria-label="รีเฟรชรายการ" className="!w-auto !min-h-0 px-3 py-1.5 text-xs">
+          {loading ? 'กำลังโหลด...' : 'รีเฟรช'}
         </Button>
       </div>
 
       {loading && !items && <Loading label="กำลังโหลดรายการ..." />}
 
       {error && (
-        <p role="alert" className="mb-3 rounded-xl bg-red-100 px-3 py-2 text-sm font-medium text-red-700">
+        <p role="alert" className="wsc-note bad mb-3">
           {error}
         </p>
       )}
@@ -72,26 +70,26 @@ export default function RequestsList({
             const levelDisplay = item.engineLevel ? LEVEL_DISPLAY[item.engineLevel] : null
             const decision = decisionText(item.decision)
             return (
-              <Card key={item.id} className="!p-4">
+              <Card key={item.id}>
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p className="font-medium text-ink">{item.customerName}</p>
-                    <p className="text-xs text-muted-check">
+                    <p className="font-medium">{item.customerName}</p>
+                    <p className="text-xs wsc-muted">
                       บัตร {item.nationalIdMasked} · {thaiDate(item.createdAt.slice(0, 10))}
                     </p>
                   </div>
                   {levelDisplay && (
-                    <Badge tone={levelDisplay.tone}>
+                    <Pill tone={levelDisplay.tone}>
                       {levelDisplay.emoji} {levelDisplay.title}
-                    </Badge>
+                    </Pill>
                   )}
                 </div>
                 {(item.engineLevel === 'passed_preliminary' || item.decision) && (
-                  <p className="mt-2 text-xs text-muted-check">
+                  <p className="mt-2 text-xs wsc-muted">
                     ตรวจแบล็กลิสต์: {item.blacklistDone ? 'ตรวจแล้ว' : 'รอตรวจ'} · Facebook: {item.facebookDone ? 'ตรวจแล้ว' : 'รอตรวจ'}
                   </p>
                 )}
-                {decision && <p className="mt-2 text-sm text-muted-check">{decision}</p>}
+                {decision && <p className="mt-2 text-sm wsc-muted">{decision}</p>}
               </Card>
             )
           })}

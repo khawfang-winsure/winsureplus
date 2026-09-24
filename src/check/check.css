@@ -1,7 +1,358 @@
-/* สีข้อความรอง (muted) เฉพาะหน้าเช็คเครดิตสาธารณะ (check.html) เท่านั้น
-   --color-ink-soft ส่วนกลาง (#8a7355) contrast ไม่ถึง 4.5:1 ตาม WCAG AA บนพื้นหลังของหน้านี้
-   (axe-core color-contrast: 3.62 บนพื้นครีม #fde2c8, ~4.33 บนการ์ดครีมนวล #fffaf2 — ครีมตรวจ 2026-09-24)
-   ไม่แก้ที่ token กลาง (src/index.css --color-ink-soft) เพราะกระทบทั้งแอป staff — ขอบเขตแค่ check.html */
-.text-muted-check {
-  color: #6b5636;
+/* ===== ธีมหน้าเช็คเครดิตสาธารณะ (check.html) — ให้ตรงกับคู่มือร้านค้า winsureplus-manual =====
+   อ้างอิง: D:\Web\Presentation\manual\index.html (อ่านอย่างเดียว ไม่แก้ repo นั้น)
+   สโคปเฉพาะ src/check/* — ไม่แตะ src/index.css / src/components/ui.tsx (โทเคน/ปุ่มของแอป staff)
+   คุณเตยขอ 2026-09-24: หน้านี้ต้องหน้าตาเหมือนคู่มือพาร์ทเนอร์ (กระดาษอุ่น + หมึกเข้ม + ส้มเป็นแค่ accent)
+
+   Contrast ที่ตรวจแล้ว (WCAG AA ≥4.5:1):
+   - ink #1e1e21 บนพื้น paper #f1efea → ผ่านสบายๆ (~15:1)
+   - paper #f1efea บนพื้น ink #1e1e21 (ปุ่ม/แถบ hero) → ผ่านสบายๆ (~15:1)
+   - white บน #FF7A00 (brand) FAIL (~2.9:1) — เลยไม่ใช้ brand เป็นพื้นปุ่ม/ตัวอักษร ใช้เป็น accent (ลูกศร/เลข/เส้นซ้าย) เท่านั้น
+   - muted rgba(30,30,33,.68) บน paper/card → ~5.9:1 ผ่าน
+*/
+
+:root {
+  --wsc-ink: #1e1e21;
+  --wsc-ink-rgb: 30, 30, 33;
+  --wsc-paper: #f1efea;
+  --wsc-paper-rgb: 241, 239, 234;
+  --wsc-card: #fbfaf7;
+  --wsc-brand: #ff7a00;
+  --wsc-brand-rgb: 255, 122, 0;
+  --wsc-brand-big: #d96200;
+  --wsc-brand-text: #b35500;
+  /* เข้มกว่า --ok ต้นฉบับคู่มือ (#1b7f47) เล็กน้อย — ตัวต้นฉบับใช้เป็น text บนพื้น tint ของตัวเองแล้วได้แค่ ~4.1-4.4:1
+     (ต่ำกว่า WCAG AA 4.5:1 สำหรับตัวหนังสือขนาดเล็ก) ปรับให้เข้มขึ้นเฉพาะที่ใช้เป็นสีตัวหนังสือในหน้านี้ */
+  --wsc-ok: #146e3c;
+  --wsc-bad: #b3261e;
+  --wsc-muted: rgba(30, 30, 33, 0.68);
+  --wsc-rule: rgba(30, 30, 33, 0.16);
+  --wsc-serif: 'Noto Serif Thai', Cambria, 'Times New Roman', serif;
+  --wsc-sans: 'IBM Plex Sans Thai', 'Noto Sans Thai', system-ui, sans-serif;
+  --wsc-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+
+.wsc-root {
+  background: var(--wsc-paper);
+  color: var(--wsc-ink);
+  font-family: var(--wsc-sans);
+  min-height: 100vh;
+}
+
+.wsc-root ::selection {
+  background: rgba(var(--wsc-brand-rgb), 0.3);
+}
+
+/* ---------- typography ---------- */
+.wsc-mono-label {
+  font-family: var(--wsc-mono);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+.wsc-h1 {
+  font-family: var(--wsc-serif);
+  font-weight: 800;
+  font-size: clamp(32px, 10.5vw, 46px);
+  line-height: 1.2;
+  margin: 6px 0 0;
+}
+.wsc-h2 {
+  font-family: var(--wsc-serif);
+  font-weight: 700;
+  font-size: clamp(20px, 6vw, 25px);
+  line-height: 1.35;
+  margin: 0;
+}
+.wsc-h3 {
+  font-family: var(--wsc-serif);
+  font-weight: 700;
+  font-size: 17px;
+  line-height: 1.4;
+  margin: 0 0 10px;
+}
+.wsc-lede {
+  font-size: 15px;
+  line-height: 1.6;
+  opacity: 0.85;
+}
+.wsc-muted {
+  color: var(--wsc-muted);
+}
+
+/* ---------- hero / dark ink band ---------- */
+.wsc-hero {
+  background: var(--wsc-ink);
+  color: var(--wsc-paper);
+}
+.wsc-hero .wsc-muted {
+  color: rgba(var(--wsc-paper-rgb), 0.75);
+}
+.wsc-hero .wsc-mascot {
+  width: clamp(72px, 22vw, 108px);
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.35));
+}
+
+/* ---------- card / box ---------- */
+.wsc-card {
+  background: var(--wsc-card);
+  border: 1px solid var(--wsc-rule);
+  border-radius: 6px;
+}
+.wsc-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px dashed var(--wsc-rule);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wsc-muted);
+}
+
+/* ---------- buttons ---------- */
+.wsc-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 18px;
+  border-radius: 4px;
+  background: var(--wsc-ink);
+  color: var(--wsc-paper);
+  border: 0;
+  font-family: var(--wsc-sans);
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.3;
+  cursor: pointer;
+  width: 100%;
+  transition: opacity 0.15s;
+}
+.wsc-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.wsc-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.wsc-btn.ghost {
+  background: transparent;
+  color: var(--wsc-ink);
+  box-shadow: inset 0 0 0 1.5px rgba(var(--wsc-ink-rgb), 0.8);
+}
+.wsc-btn.on-dark {
+  background: var(--wsc-paper);
+  color: var(--wsc-ink);
+}
+.wsc-btn.on-dark.ghost {
+  background: transparent;
+  color: var(--wsc-paper);
+  box-shadow: inset 0 0 0 1.5px rgba(var(--wsc-paper-rgb), 0.55);
+}
+.wsc-btn:focus-visible,
+.wsc-tab:focus-visible,
+.wsc-checkbox input:focus-visible,
+.wsc-input:focus-visible,
+.wsc-select:focus-visible,
+.wsc-textarea:focus-visible {
+  outline: 3px solid var(--wsc-brand);
+  outline-offset: 2px;
+}
+
+/* ---------- form fields ---------- */
+.wsc-label {
+  display: block;
+  font-family: var(--wsc-sans);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--wsc-ink);
+  margin-bottom: 6px;
+}
+.wsc-required {
+  color: var(--wsc-bad);
+}
+.wsc-input,
+.wsc-select,
+.wsc-textarea {
+  display: block;
+  width: 100%;
+  border-radius: 4px;
+  border: 1.5px solid var(--wsc-rule);
+  background: #fff;
+  color: var(--wsc-ink);
+  padding: 10px 12px;
+  font-family: var(--wsc-sans);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.wsc-input:focus,
+.wsc-select:focus,
+.wsc-textarea:focus {
+  border-color: var(--wsc-ink);
+}
+.wsc-input[aria-invalid='true'],
+.wsc-textarea[aria-invalid='true'] {
+  border-color: var(--wsc-bad);
+}
+.wsc-hint {
+  font-size: 12.5px;
+  color: var(--wsc-muted);
+  margin-top: 4px;
+}
+.wsc-error-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wsc-bad);
+}
+
+/* custom checkbox (ล้อ .check ของคู่มือ) */
+.wsc-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.wsc-checkbox input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 21px;
+  height: 21px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  border: 2px solid var(--wsc-ink);
+  border-radius: 3px;
+  background: #fff;
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+.wsc-checkbox input:checked {
+  background: var(--wsc-ink);
+}
+.wsc-checkbox input:checked::after {
+  content: '';
+  width: 6px;
+  height: 10px;
+  margin-top: -2px;
+  border: solid var(--wsc-paper);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+/* ---------- callout (note) ---------- */
+.wsc-note {
+  border-left: 3px solid var(--wsc-brand);
+  background: rgba(var(--wsc-ink-rgb), 0.045);
+  border-radius: 0 4px 4px 0;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.wsc-note.bad {
+  border-color: var(--wsc-bad);
+  background: rgba(179, 38, 30, 0.06);
+}
+.wsc-note.ok {
+  border-color: var(--wsc-ok);
+  background: rgba(27, 127, 71, 0.06);
+}
+
+/* ---------- status pill ---------- */
+.wsc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.wsc-pill.ok {
+  background: rgba(27, 127, 71, 0.12);
+  color: var(--wsc-ok);
+}
+.wsc-pill.warn {
+  /* ใช้ ink แทน --wsc-brand-text ตรงนี้ — brand-text บนพื้น tint ส้มอ่อนได้แค่ ~4.3:1 (ต่ำกว่า 4.5)
+     ink เข้มพอเสมอ ส่วนสีส้มยังอยู่ที่พื้นหลัง tint ให้เห็นความหมาย "รอตรวจ" ชัดอยู่ */
+  background: rgba(255, 122, 0, 0.16);
+  color: var(--wsc-ink);
+}
+.wsc-pill.bad {
+  background: rgba(179, 38, 30, 0.1);
+  color: var(--wsc-bad);
+}
+.wsc-pill.neutral {
+  background: rgba(var(--wsc-ink-rgb), 0.08);
+  color: var(--wsc-ink);
+}
+
+/* ---------- numbered section head (ล้อ .sec-head.num ของคู่มือ) ---------- */
+.wsc-sec-head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  align-items: start;
+  border-top: 2px solid var(--wsc-ink);
+  padding-top: 10px;
+}
+.wsc-sec-no {
+  font-family: var(--wsc-serif);
+  font-weight: 800;
+  font-size: 34px;
+  line-height: 1.1;
+  color: var(--wsc-brand-big);
+}
+
+/* ---------- ticks list ---------- */
+.wsc-ticks {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+.wsc-ticks li {
+  position: relative;
+  padding: 7px 0 7px 20px;
+  border-top: 1px solid var(--wsc-rule);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.wsc-ticks li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 1em;
+  width: 7px;
+  height: 7px;
+  background: var(--wsc-brand);
+}
+.wsc-ticks li:last-child {
+  border-bottom: 1px solid var(--wsc-rule);
+}
+
+/* ---------- tabs (nav ใต้ header) ---------- */
+.wsc-tab {
+  font-family: var(--wsc-sans);
+  font-size: 13.5px;
+  font-weight: 600;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 8px 2px;
+  color: rgba(var(--wsc-paper-rgb), 0.62);
+  cursor: pointer;
+}
+.wsc-tab.on {
+  color: var(--wsc-paper);
+  border-color: var(--wsc-brand);
+}
+
+/* ---------- link with arrow accent ---------- */
+.wsc-go {
+  color: var(--wsc-brand);
 }

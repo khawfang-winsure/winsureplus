@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from 'react'
 import { Paperclip, X } from 'lucide-react'
-import { Button } from '../components/ui'
+import { Button } from './ui'
 import { processSelectedFile } from './fileHelpers'
 import type { FileKind } from './api'
 
@@ -66,15 +66,15 @@ export default function FileUploader({
   }
 
   return (
-    <div className={`rounded-xl border p-3 ${highlight ? 'border-salmon-deep bg-peach-light/40' : 'border-peach'}`}>
+    <div className="wsc-card p-3" style={highlight ? { borderColor: 'var(--wsc-brand)', background: 'rgba(255,122,0,.05)' } : undefined}>
       <div className="flex items-center justify-between gap-2">
-        <label htmlFor={inputId} className="text-sm font-medium text-ink">
+        <label htmlFor={inputId} className="wsc-label !mb-0">
           {label}
         </label>
         <Button
           type="button"
           variant="ghost"
-          className="!px-3 !py-1.5 !text-xs"
+          className="!w-auto !min-h-0 px-3 py-1.5 text-xs"
           disabled={disabled || busy}
           onClick={() => inputRef.current?.click()}
         >
@@ -92,22 +92,22 @@ export default function FileUploader({
           onChange={(e) => void handleFiles(e.target.files)}
         />
       </div>
-      {hint && <p className="mt-1 text-xs text-muted-check">{hint}</p>}
+      {hint && <p className="wsc-hint">{hint}</p>}
       {error && (
-        <p id={errorId} role="alert" className="mt-1 text-xs font-medium text-red-600">
+        <p id={errorId} role="alert" className="wsc-error-text mt-1">
           {error}
         </p>
       )}
       {files.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1">
           {files.map((f) => (
-            <li key={f.id} className="flex items-center justify-between gap-2 rounded-lg bg-surface px-2.5 py-1.5 text-xs text-ink">
+            <li key={f.id} className="flex items-center justify-between gap-2 rounded bg-white px-2.5 py-1.5 text-xs" style={{ border: '1px solid var(--wsc-rule)' }}>
               <span className="truncate">{f.name}</span>
               <button
                 type="button"
                 aria-label={`ลบไฟล์ ${f.name}`}
                 onClick={() => onRemove(f.id)}
-                className="shrink-0 rounded p-0.5 text-muted-check hover:bg-peach-light hover:text-ink"
+                className="shrink-0 rounded p-0.5 wsc-muted hover:opacity-70"
               >
                 <X className="h-3.5 w-3.5" />
               </button>

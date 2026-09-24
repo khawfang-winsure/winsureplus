@@ -1,6 +1,4 @@
 import { useId, useMemo, useState } from 'react'
-import { Send } from 'lucide-react'
-import { Badge, Button, Card, Field, Input, Select } from '../components/ui'
 import {
   creditCheck,
   type AttachedFileKind,
@@ -23,6 +21,7 @@ import {
 import { CONSENT_TEXT } from './consent'
 import FileUploader, { type AttachedFile } from './FileUploader'
 import { MAX_FILES_PER_SUBMIT } from './fileHelpers'
+import { Button, Card, Field, Input, Pill, Select } from './ui'
 
 const CUSTOMER_TYPE_OPTIONS: Array<{ value: CustomerType; label: string }> = [
   { value: 'thai', label: 'คนไทย' },
@@ -42,10 +41,10 @@ const DEVICE_CONDITION_OPTIONS: Array<{ value: DeviceCondition; label: string }>
   { value: 'ipad', label: 'ไอแพด' },
 ]
 
-const PREVIEW_DISPLAY: Record<CreditCheckLevel, { emoji: string; text: string; tone: 'red' | 'amber' | 'green' }> = {
-  fail: { emoji: '❌', text: 'ไม่ผ่านเบื้องต้น', tone: 'red' },
-  review: { emoji: '🟡', text: 'รอทีมพิจารณา', tone: 'amber' },
-  prelim_pass: { emoji: '🟢', text: 'ผ่านเบื้องต้น — รอทีมยืนยัน', tone: 'green' },
+const PREVIEW_DISPLAY: Record<CreditCheckLevel, { emoji: string; text: string; tone: 'bad' | 'warn' | 'ok' }> = {
+  fail: { emoji: '❌', text: 'ไม่ผ่านเบื้องต้น', tone: 'bad' },
+  review: { emoji: '🟡', text: 'รอทีมพิจารณา', tone: 'warn' },
+  prelim_pass: { emoji: '🟢', text: 'ผ่านเบื้องต้น — รอทีมยืนยัน', tone: 'ok' },
 }
 
 const ENGINE_FILE_KINDS: readonly AttachedFileKind[] = ['payslip', 'statement', 'work_photo', 'other']
@@ -159,6 +158,18 @@ function toSubmitForm(input: CreditCheckInput, customerName: string): SubmitForm
   }
 }
 
+/** หัวข้อการ์ดแบบมีเลขลำดับ (ล้อ .sec-head.num ของคู่มือร้านค้า) */
+function SectionHead({ no, title }: { no: string; title: string }) {
+  return (
+    <div className="wsc-sec-head mb-3">
+      <span className="wsc-sec-no">{no}</span>
+      <h3 className="wsc-h3" style={{ marginTop: 4 }}>
+        {title}
+      </h3>
+    </div>
+  )
+}
+
 export default function FormScreen({
   token,
   onSubmitted,
@@ -249,11 +260,12 @@ export default function FormScreen({
 
   return (
     <div className="mx-auto max-w-md px-4 py-6">
-      <h2 className="mb-4 text-lg font-bold text-ink">ยื่นคำขอเช็คเครดิต</h2>
+      <p className="wsc-mono-label">WINSURE+ · CREDIT CHECK</p>
+      <h2 className="wsc-h2 mb-4 mt-1">ยื่นคำขอเช็คเครดิต</h2>
 
       <div className="flex flex-col gap-4">
         <Card>
-          <h3 className="mb-3 text-sm font-bold text-ink">ข้อมูลลูกค้า</h3>
+          <SectionHead no="01" title="ข้อมูลลูกค้า" />
           <div className="flex flex-col gap-3">
             <Field label="ชื่อ-นามสกุลลูกค้า" required>
               <Input value={form.customerName} onChange={(e) => set('customerName', e.target.value)} placeholder="เช่น สมชาย ใจดี" />
@@ -285,7 +297,7 @@ export default function FormScreen({
         </Card>
 
         <Card>
-          <h3 className="mb-3 text-sm font-bold text-ink">อาชีพและรายได้</h3>
+          <SectionHead no="02" title="อาชีพและรายได้" />
           <div className="flex flex-col gap-3">
             <Field label="อาชีพ" required>
               <Select value={form.occupationType} onChange={(e) => set('occupationType', e.target.value as OccupationType)}>
@@ -297,7 +309,7 @@ export default function FormScreen({
               </Select>
             </Field>
             {showWorkEvidenceCallout && (
-              <p className="rounded-lg bg-amber-100 px-3 py-2 text-xs text-amber-800">
+              <p className="wsc-note">
                 อาชีพอิสระ/เจ้าของกิจการ: แนบรูปหลักฐานการทำงาน หรือ Statement ย้อนหลัง 1 เดือน อย่างใดอย่างหนึ่ง จะช่วยให้ทีมพิจารณาไวขึ้น
               </p>
             )}
@@ -315,7 +327,7 @@ export default function FormScreen({
         </Card>
 
         <Card>
-          <h3 className="mb-3 text-sm font-bold text-ink">เครื่องและค่างวด</h3>
+          <SectionHead no="03" title="เครื่องและค่างวด" />
           <div className="flex flex-col gap-3">
             <Field label="ประเภทเครื่อง" required>
               <Select value={form.deviceCondition} onChange={(e) => set('deviceCondition', e.target.value as DeviceCondition)}>
@@ -345,15 +357,15 @@ export default function FormScreen({
         </Card>
 
         <Card>
-          <h3 className="mb-3 text-sm font-bold text-ink">Facebook ลูกค้า</h3>
+          <SectionHead no="04" title="Facebook ลูกค้า" />
           <Field label="ลิงก์โปรไฟล์ Facebook">
             <Input value={form.facebookUrl} onChange={(e) => set('facebookUrl', e.target.value)} placeholder="https://www.facebook.com/..." />
           </Field>
         </Card>
 
         <Card>
-          <h3 className="mb-1 text-sm font-bold text-ink">ไฟล์แนบ</h3>
-          <p className="mb-3 text-xs text-muted-check">
+          <h3 className="wsc-h3">ไฟล์แนบ</h3>
+          <p className="wsc-hint mb-3">
             แนบได้ไม่เกิน {MAX_FILES_PER_SUBMIT} ไฟล์ต่อคำขอ ({attachedFiles.length}/{MAX_FILES_PER_SUBMIT})
           </p>
           <div className="flex flex-col gap-3">
@@ -416,55 +428,52 @@ export default function FormScreen({
         </Card>
 
         {preview && (
-          <Card className="!bg-peach-light/40">
-            <p className="mb-1 text-xs font-semibold text-muted-check">ผลประเมินเบื้องต้น (ในเครื่องนี้)</p>
-            <div className="flex items-center gap-2">
+          <Card>
+            <p className="text-xs font-semibold wsc-muted">ผลประเมินเบื้องต้น (ในเครื่องนี้)</p>
+            <div className="mt-2 flex items-center gap-2">
               <span className="text-xl">{PREVIEW_DISPLAY[preview.level].emoji}</span>
-              <Badge tone={PREVIEW_DISPLAY[preview.level].tone}>{PREVIEW_DISPLAY[preview.level].text}</Badge>
+              <Pill tone={PREVIEW_DISPLAY[preview.level].tone}>{PREVIEW_DISPLAY[preview.level].text}</Pill>
             </div>
             {preview.reasons.length > 0 && (
-              <ul className="mt-2 space-y-1 text-xs text-muted-check">
+              <ul className="mt-3 flex flex-col gap-1.5">
                 {preview.reasons.map((r) => (
-                  <li key={r.code}>• {r.shopText}</li>
+                  <li key={r.code} className="wsc-note text-xs">
+                    {r.shopText}
+                  </li>
                 ))}
               </ul>
             )}
-            <p className="mt-2 text-xs italic text-muted-check">
-              ผลนี้เป็นแค่ตัวช่วยดูคร่าวๆ ผลจริงต้องรอส่งคำขอให้ทีมงานตรวจสอบเท่านั้น
-            </p>
+            <p className="mt-2 text-xs italic wsc-muted">ผลนี้เป็นแค่ตัวช่วยดูคร่าวๆ ผลจริงต้องรอส่งคำขอให้ทีมงานตรวจสอบเท่านั้น</p>
           </Card>
         )}
 
         <Card>
-          <div className="flex items-start gap-2">
-            <input
-              id={consentId}
-              type="checkbox"
-              checked={consentChecked}
-              onChange={(e) => setConsentChecked(e.target.checked)}
-              aria-describedby={consentTextId}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-peach text-salmon-deep focus:ring-salmon/40"
-            />
-            <label htmlFor={consentId} className="text-sm font-medium text-ink">
+          <div className="wsc-checkbox">
+            <input id={consentId} type="checkbox" checked={consentChecked} onChange={(e) => setConsentChecked(e.target.checked)} aria-describedby={consentTextId} />
+            <label htmlFor={consentId} className="text-sm font-medium">
               ข้าพเจ้าอ่านและยินยอมตามเงื่อนไขการเก็บข้อมูลด้านล่างนี้
             </label>
           </div>
-          <ul id={consentTextId} className="mt-3 space-y-1.5 text-xs text-muted-check">
+          <ul id={consentTextId} className="wsc-ticks">
             {CONSENT_TEXT.map((line, i) => (
-              <li key={i}>• {line}</li>
+              <li key={i}>{line}</li>
             ))}
           </ul>
         </Card>
 
         {submitError && (
-          <p id={submitErrorId} role="alert" className="rounded-xl bg-red-100 px-3 py-2 text-sm font-medium text-red-700">
+          <p id={submitErrorId} role="alert" className="wsc-note bad">
             {submitError}
           </p>
         )}
 
-        <Button onClick={() => void handleSubmit()} disabled={submitting} aria-describedby={submitError ? submitErrorId : undefined} className="w-full !bg-orange-700">
-          <Send className="h-4 w-4" />
-          {submitting ? stage ?? 'กำลังส่ง...' : 'ส่งคำขอเช็คเครดิต'}
+        <Button onClick={() => void handleSubmit()} disabled={submitting} aria-describedby={submitError ? submitErrorId : undefined}>
+          {submitting ? (stage ?? 'กำลังส่ง...') : 'ส่งคำขอเช็คเครดิต'}
+          {!submitting && (
+            <span className="wsc-go" aria-hidden="true">
+              →
+            </span>
+          )}
         </Button>
       </div>
     </div>

@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { LogOut } from 'lucide-react'
 import FormScreen from './FormScreen'
 import LoginScreen from './LoginScreen'
 import RequestsList from './RequestsList'
@@ -43,37 +42,23 @@ export default function CheckApp() {
   }
 
   return (
-    <div className="min-h-screen bg-cream pb-10">
-      <header className="sticky top-0 z-10 border-b border-peach bg-cream-deep">
+    <div className="wsc-root min-h-screen pb-10">
+      <header className="wsc-hero sticky top-0 z-10">
         <h1 className="sr-only">เช็คเครดิตเบื้องต้น — WIN SURE PLUS</h1>
-        <div className="mx-auto flex max-w-md items-center justify-between px-4 py-3">
+        <div className="mx-auto flex max-w-md items-center justify-between px-4 pt-3">
           <div>
-            <p className="text-sm font-bold text-ink">{session.shopName}</p>
-            <p className="text-xs text-muted-check">เช็คเครดิตเบื้องต้น WIN SURE PLUS</p>
+            <p className="wsc-mono-label">WINSURE+ · CREDIT CHECK</p>
+            <p className="text-sm font-semibold">{session.shopName}</p>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            aria-label="ออกจากระบบ"
-            className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-muted-check hover:bg-peach-light/60 hover:text-ink"
-          >
-            <LogOut className="h-4 w-4" />
+          <button type="button" onClick={handleLogout} className="wsc-btn ghost on-dark !w-auto !min-h-0 px-3 py-1.5 text-xs">
             ออกจากระบบ
           </button>
         </div>
-        <nav className="mx-auto flex max-w-md gap-2 px-4 pb-2">
-          <button
-            type="button"
-            onClick={() => setScreen('form')}
-            className={`rounded-full px-3 py-1 text-xs font-medium ${screen === 'form' || screen === 'result' ? 'bg-orange-700 text-white' : 'bg-surface text-muted-check'}`}
-          >
+        <nav className="mx-auto flex max-w-md gap-5 px-4 pt-3">
+          <button type="button" onClick={() => setScreen('form')} className={`wsc-tab ${screen === 'form' || screen === 'result' ? 'on' : ''}`}>
             ยื่นคำขอ
           </button>
-          <button
-            type="button"
-            onClick={() => setScreen('list')}
-            className={`rounded-full px-3 py-1 text-xs font-medium ${screen === 'list' ? 'bg-orange-700 text-white' : 'bg-surface text-muted-check'}`}
-          >
+          <button type="button" onClick={() => setScreen('list')} className={`wsc-tab ${screen === 'list' ? 'on' : ''}`}>
             คำขอของร้าน
           </button>
         </nav>

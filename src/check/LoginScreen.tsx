@@ -1,8 +1,8 @@
 import { useId, useState, type FormEvent } from 'react'
-import { LogIn } from 'lucide-react'
-import { Button, Card, Field, Input } from '../components/ui'
+import { Button, Card, Field, Input } from './ui'
 import { ApiError, loginShop } from './api'
 import { loadRememberedLoginCode, saveStoredSession, type StoredSession } from './storage'
+import mascotWai from './assets/mascot-wai.webp'
 
 export default function LoginScreen({
   notice,
@@ -46,61 +46,71 @@ export default function LoginScreen({
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-cream px-4 py-10">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 text-center">
-          <h1 className="text-xl font-bold text-ink">เช็คเครดิตเบื้องต้น</h1>
-          <p className="mt-1 text-sm text-muted-check">WIN SURE PLUS — สำหรับร้านค้าพาร์ทเนอร์</p>
+    <main className="wsc-root flex min-h-screen flex-col">
+      <div className="wsc-hero">
+        <div className="mx-auto max-w-sm px-4 pb-6 pt-7">
+          <p className="wsc-mono-label">WINSURE+ · CREDIT CHECK</p>
+          <h1 className="wsc-h1">
+            เช็คเครดิต
+            <br />
+            เบื้องต้น
+          </h1>
+          <div className="mt-3 flex items-end justify-between gap-3">
+            <p className="text-sm wsc-muted">สำหรับร้านค้าพาร์ทเนอร์</p>
+            <img src={mascotWai} alt="" width={265} height={480} className="wsc-mascot" />
+          </div>
         </div>
+      </div>
 
-        <Card>
-          {notice && (
-            <p className="mb-4 rounded-xl bg-amber-100 px-3 py-2 text-sm text-amber-800">{notice}</p>
-          )}
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
-            <Field label="รหัสร้าน" required>
-              <Input
-                id={codeId}
-                autoFocus
-                autoComplete="off"
-                autoCapitalize="characters"
-                value={loginCode}
-                onChange={(e) => setLoginCode(e.target.value.toUpperCase())}
-                aria-invalid={error ? true : undefined}
-                aria-describedby={error ? errorId : undefined}
-                placeholder="เช่น A1B2C3"
-              />
-            </Field>
-            <Field label="PIN 6 หลัก" required>
-              <Input
-                id={pinId}
-                inputMode="numeric"
-                autoComplete="off"
-                maxLength={6}
-                value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
-                aria-invalid={error ? true : undefined}
-                aria-describedby={error ? errorId : undefined}
-                placeholder="••••••"
-              />
-            </Field>
+      <div className="flex-1 px-4 py-6">
+        <div className="mx-auto w-full max-w-sm">
+          <Card>
+            {notice && <p className="wsc-note mb-4">{notice}</p>}
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
+              <Field label="รหัสร้าน" htmlFor={codeId} required>
+                <Input
+                  id={codeId}
+                  autoFocus
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  value={loginCode}
+                  onChange={(e) => setLoginCode(e.target.value.toUpperCase())}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                  placeholder="เช่น A1B2C3"
+                />
+              </Field>
+              <Field label="PIN 6 หลัก" htmlFor={pinId} required>
+                <Input
+                  id={pinId}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={6}
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                  placeholder="••••••"
+                />
+              </Field>
 
-            {error && (
-              <p id={errorId} role="alert" className="text-sm font-medium text-red-600">
-                {error}
-              </p>
-            )}
+              {error && (
+                <p id={errorId} role="alert" className="wsc-error-text">
+                  {error}
+                </p>
+              )}
 
-            <Button type="submit" disabled={submitting} className="mt-1 w-full !bg-orange-700">
-              <LogIn className="h-4 w-4" />
-              {submitting ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
-            </Button>
-          </form>
-        </Card>
+              <Button type="submit" disabled={submitting} className="mt-1">
+                {submitting ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
+                <span className="wsc-go" aria-hidden="true">
+                  →
+                </span>
+              </Button>
+            </form>
+          </Card>
 
-        <p className="mt-4 text-center text-xs text-muted-check">
-          ยังไม่มีรหัสร้าน/PIN ติดต่อแอดมิน WIN SURE PLUS
-        </p>
+          <p className="mt-4 text-center text-xs wsc-muted">ยังไม่มีรหัสร้าน/PIN ติดต่อแอดมิน WIN SURE PLUS</p>
+        </div>
       </div>
     </main>
   )

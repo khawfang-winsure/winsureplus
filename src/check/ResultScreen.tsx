@@ -1,4 +1,4 @@
-import { Button, Card } from '../components/ui'
+import { Button, Card, Pill } from './ui'
 import type { SubmitResult } from './api'
 import { LEVEL_DISPLAY } from './levelDisplay'
 
@@ -17,29 +17,34 @@ export default function ResultScreen({
     <div className="mx-auto max-w-md px-4 py-6">
       <Card className="text-center">
         <div className="text-5xl">{display.emoji}</div>
-        <h2 className="mt-3 text-lg font-bold text-ink">{display.title}</h2>
-        <p className="mt-1 text-xs text-muted-check">รหัสคำขอ {result.id.slice(0, 8)}</p>
+        <h2 className="wsc-h2 mt-3">{display.title}</h2>
+        <p className="mt-1 text-xs wsc-muted">
+          รหัสคำขอ <Pill tone="neutral">{result.id.slice(0, 8)}</Pill>
+        </p>
 
         {result.reasonsShop.length > 0 && (
-          <ul className="mt-4 space-y-1.5 text-left text-sm text-muted-check">
+          <ul className="mt-4 space-y-1.5 text-left text-sm">
             {result.reasonsShop.map((text, i) => (
-              <li key={i} className="rounded-lg bg-peach-light/50 px-3 py-2">
+              <li key={i} className="wsc-note">
                 {text}
               </li>
             ))}
           </ul>
         )}
 
-        <p className="mt-4 text-xs text-muted-check">
+        <p className="mt-4 text-xs wsc-muted">
           ผลนี้เป็นการตรวจเบื้องต้นเท่านั้น ทีมงาน WIN SURE PLUS จะตรวจสอบเพิ่มเติม (ประวัติเครดิต + Facebook)
           ก่อนยืนยันผลจริงอีกครั้ง
         </p>
 
         <div className="mt-6 flex flex-col gap-2">
-          <Button onClick={onNewRequest} className="w-full !bg-orange-700">
+          <Button onClick={onNewRequest}>
             ยื่นคำขอใหม่
+            <span className="wsc-go" aria-hidden="true">
+              →
+            </span>
           </Button>
-          <Button variant="ghost" onClick={onViewList} className="w-full">
+          <Button variant="ghost" onClick={onViewList}>
             ดูคำขอของร้าน
           </Button>
         </div>
