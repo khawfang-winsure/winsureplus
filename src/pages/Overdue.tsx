@@ -3,11 +3,12 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Download } from 'lucide-react'
 import { Badge, Button, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getOverdueByBucket } from '../lib/db'
+import { getOverdueByBucket, getPartialPaymentProgress } from '../lib/db'
 import { useFilter } from '../lib/useFilter'
-import type { ContractStatusRow, OverdueBucket } from '../lib/types'
+import type { ContractStatusRow, OverdueBucket, PartialPaymentProgress } from '../lib/types'
 import Pagination from '../components/Pagination'
 import { escCell, downloadCSV } from '../lib/csv'
+import { partialPaymentBadge, PARTIAL_PAYMENT_TOOLTIP } from '../lib/partialPayment'
 
 const todayISO = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
 
@@ -32,6 +33,37 @@ function isReturnedRow(status: string): boolean {
 function headlineDue(r: ContractStatusRow, dueTotal: number): number {
   if (isReturnedRow(r.status) && r.collectibleRemaining != null) return r.collectibleRemaining
   return dueTotal
+}
+
+// ===== ป้าย "ทยอยจ่าย / หยุดจ่าย" (Wave 3) — งวดค้างเก่าสุดมีเงินเข้าบางส่วน =====
+// พื้นที่แถวแคบ (ตารางกว้างมี min-w + scroll แนวนอนอยู่แล้ว) — ใช้ whitespace-normal + max-w กัน
+// ป้ายดันคอลัมน์กว้างขึ้นจนตารางเลื่อนแนวนอนเพิ่ม ยอมให้แถวสูงขึ้นแทน (align-top รองรับอยู่แล้ว)
+function PartialPaymentBadge({
+  row,
+  progress,
+}: {
+  row: ContractStatusRow
+  progress: PartialPaymentProgress | undefined
+}) {
+  if (!progress) return null
+  const badge = partialPaymentBadge({
+    status: row.status,
+    daysLate: row.daysLate,
+    amount: progress.amount,
+    paidAmount: progress.paidAmount,
+    lastPaidAt: progress.lastPaidAt,
+  })
+  if (badge.mode === 'none') return null
+  return (
+    <span
+      title={PARTIAL_PAYMENT_TOOLTIP}
+      className={`mt-1 inline-block max-w-[170px] whitespace-normal rounded-full px-2 py-0.5 text-[11px] font-medium leading-snug ${
+        badge.tone === 'green' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
+      }`}
+    >
+      {badge.label}
+    </span>
+  )
 }
 
 type StatusFilterValue = 'all' | 'active' | 'returned'
@@ -143,6 +175,23 @@ export default function Overdue() {
   useEffect(() => {
     load()
   }, [load])
+
+  // ป้ายทยอยจ่าย (Wave 3) — โหลดใน effect แยก หลัง rows โหลดเสร็จ ไม่บล็อกตารางหลัก
+  // fail-open: getPartialPaymentProgress คืน Map ว่างเองถ้าดึงไม่ได้ ไม่ throw
+  const [partialPaymentMap, setPartialPaymentMap] = useState<Map<string, PartialPaymentProgress>>(new Map())
+  useEffect(() => {
+    if (rows.length === 0) {
+      setPartialPaymentMap(new Map())
+      return
+    }
+    let cancelled = false
+    getPartialPaymentProgress(rows.map((r) => r.contractId)).then((map) => {
+      if (!cancelled) setPartialPaymentMap(map)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [rows])
 
   // เปลี่ยน bucket แล้วรีเซ็ตตัวกรองสถานะกลับ "ทั้งหมด" ด้วย — กันเลือก "เฉพาะคืนเครื่อง" ค้างข้ามช่วง แล้วเข้าใจผิดว่าไม่มีข้อมูล
   useEffect(() => { setStatusFilter('all') }, [bucket])
@@ -263,6 +312,7 @@ export default function Overdue() {
                       <td className="whitespace-nowrap px-3 py-2.5 align-top">
                         <p className="font-medium text-ink">{r.customerName}</p>
                         <p className="text-xs text-ink-soft">{r.contractNo}</p>
+                        <PartialPaymentBadge row={r} progress={partialPaymentMap.get(r.contractId)} />
                       </td>
                       <td className="whitespace-nowrap px-3 py-2.5 align-top">
                         <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>
@@ -310,6 +360,7 @@ export default function Overdue() {
                     <div>
                       <p className="font-medium text-ink">{r.customerName}</p>
                       <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
+                      <PartialPaymentBadge row={r} progress={partialPaymentMap.get(r.contractId)} />
                     </div>
                     <div className="flex flex-col items-end gap-1">
                       <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>

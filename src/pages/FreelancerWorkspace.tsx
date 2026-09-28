@@ -12,6 +12,7 @@ import {
   getMyAssignedGrades,
   getMyCases,
   getOverduePromiseContracts,
+  getPartialPaymentProgress,
   getPublicHolidays,
   markCaseSeen,
   releaseCase,
@@ -19,10 +20,11 @@ import {
   type FollowUpResult,
   type FreelancerQueueRow,
 } from '../lib/db'
-import type { OverdueBucket, OverduePromiseContract } from '../lib/types'
+import type { OverdueBucket, OverduePromiseContract, PartialPaymentProgress } from '../lib/types'
 import { useAuth } from '../lib/auth'
 import { isContactWindowOpen } from '../lib/contactHours'
 import { overdueBucket } from '../lib/calc'
+import { partialPaymentBadge, PARTIAL_PAYMENT_TOOLTIP } from '../lib/partialPayment'
 import {
   computePriorityScore,
   followUpStalenessLevel,
@@ -236,6 +238,38 @@ function ReturnedClosingBadge({ row }: { row: FreelancerQueueRow }) {
   )
 }
 
+// ===== ป้าย "ทยอยจ่าย / หยุดจ่าย" (Wave 3) — งวดค้างเก่าสุดมีเงินเข้าบางส่วน =====
+// ตั้งใจวางอยู่นอกเงื่อนไข promiseToPayDate/hasUnseen (คนละเงื่อนไข ต้องขึ้นได้เอง — ดูบั๊กเดิม commit a874452
+// ที่การ์ดคัดลอกข้อความหายเพราะไปแอบอยู่ใน ternary เดียวกับคำเตือนอื่น) progress มาจาก Map แยกต่างหากของหน้า
+// (คีย์ contractId) ไม่ใช่ field บน row — กัน optimistic patch แถวเดียว (getFreelancerQueueRow) ทำป้ายหาย
+function PartialPaymentBadgeView({
+  row,
+  progress,
+}: {
+  row: FreelancerQueueRow
+  progress: PartialPaymentProgress | undefined
+}) {
+  if (!progress) return null
+  const badge = partialPaymentBadge({
+    status: row.isReturned ? 'returned' : 'active',
+    daysLate: row.daysLate,
+    amount: progress.amount,
+    paidAmount: progress.paidAmount,
+    lastPaidAt: progress.lastPaidAt,
+  })
+  if (badge.mode === 'none') return null
+  return (
+    <span
+      title={PARTIAL_PAYMENT_TOOLTIP}
+      className={`mt-0.5 inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${
+        badge.tone === 'green' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
+      }`}
+    >
+      {badge.label}
+    </span>
+  )
+}
+
 // ===== ป้าย "ไม่ได้ติดตามมานาน" (req8) — ซ่อนถ้าสัญญาไม่ active (เคสคืนเครื่อง/ปิดเคสวันนี้ ไม่ต้องเตือน) =====
 function StalenessBadge({ row }: { row: FreelancerQueueRow }) {
   if (row.isReturned || row.caseClosedToday) return null
@@ -263,6 +297,7 @@ function QueueRow({
   enforceCallHours = true,
   actionMode = 'claim',
   claimingId = null,
+  partialPayment,
   onSelect,
   onClaim,
   onRelease,
@@ -274,6 +309,8 @@ function QueueRow({
   // ปุ่มที่สอง: claim = "ฉันดูแลเคสนี้" (แท็บโทร/คืนเครื่อง) · release = "ทิ้งงาน" (แท็บ mine)
   actionMode?: 'claim' | 'release'
   claimingId?: string | null
+  // ป้ายทยอยจ่าย (Wave 3) — undefined = ไม่มีข้อมูล/ยังโหลดไม่เสร็จ ไม่ขึ้นป้าย (fail-open)
+  partialPayment?: PartialPaymentProgress
   onSelect: (r: FreelancerQueueRow) => void
   onClaim: (r: FreelancerQueueRow) => void
   onRelease?: (r: FreelancerQueueRow) => void
@@ -392,6 +429,8 @@ function QueueRow({
           <ReturnedClosingBadge row={r} />
           {/* ป้ายไม่ได้ติดตามมานาน (req8) */}
           <StalenessBadge row={r} />
+          {/* ป้ายทยอยจ่าย/หยุดจ่าย (Wave 3) */}
+          <PartialPaymentBadgeView row={r} progress={partialPayment} />
         </div>
       </td>
       {/* ปุ่ม */}
@@ -443,6 +482,7 @@ function QueueCardMobile({
   enforceCallHours = true,
   actionMode = 'claim',
   claimingId = null,
+  partialPayment,
   onSelect,
   onClaim,
   onRelease,
@@ -452,6 +492,8 @@ function QueueCardMobile({
   enforceCallHours?: boolean
   actionMode?: 'claim' | 'release'
   claimingId?: string | null
+  // ป้ายทยอยจ่าย (Wave 3) — undefined = ไม่มีข้อมูล/ยังโหลดไม่เสร็จ ไม่ขึ้นป้าย (fail-open)
+  partialPayment?: PartialPaymentProgress
   onSelect: (r: FreelancerQueueRow) => void
   onClaim: (r: FreelancerQueueRow) => void
   onRelease?: (r: FreelancerQueueRow) => void
@@ -553,6 +595,8 @@ function QueueCardMobile({
         {/* ไม่โผล่ใน Tab นี้จริง เพราะ activeRows กรอง isReturned ออกแล้ว — คงไว้กันเคส edge */}
         <ReturnedClosingBadge row={r} />
         <StalenessBadge row={r} />
+        {/* ป้ายทยอยจ่าย/หยุดจ่าย (Wave 3) */}
+        <PartialPaymentBadgeView row={r} progress={partialPayment} />
       </div>
 
       {/* ปุ่มบันทึก + ฉันดูแลเคสนี้ */}
@@ -685,6 +729,29 @@ export default function FreelancerWorkspace() {
   useEffect(() => {
     void loadMyCases()
   }, [loadMyCases])
+
+  // ป้ายทยอยจ่าย (Wave 3) — Map แยกต่างหาก คีย์ contractId ไม่ใช่ field บน row/myCases
+  // โหลดหลัง rows+myCases มาแล้ว ในเอฟเฟกต์แยก ไม่บล็อกคิวหลัก; ล้มเหลว = ไม่มีป้าย (getPartialPaymentProgress fail-open อยู่แล้ว)
+  // idsKey กันรีเฟตช์ทุกครั้งที่ patch แถวเดียว (#4 applyRowPatch) — รีเฟตช์เฉพาะตอนชุด contractId เปลี่ยนจริง
+  // (มีเคส/หลุดจากคิว) ทำให้ตัว Map นี้ "รอด" จากการ patch แถวเดียวหลังบันทึกโน้ต/claim/release โดยอัตโนมัติ
+  const [partialPaymentMap, setPartialPaymentMap] = useState<Map<string, PartialPaymentProgress>>(new Map())
+  const partialPaymentIdsKey = useMemo(() => {
+    const ids = new Set<string>()
+    rows.forEach((r) => ids.add(r.contractId))
+    myCases.forEach((r) => ids.add(r.contractId))
+    return Array.from(ids).sort().join(',')
+  }, [rows, myCases])
+
+  useEffect(() => {
+    if (!partialPaymentIdsKey) return
+    let cancelled = false
+    getPartialPaymentProgress(partialPaymentIdsKey.split(',')).then((map) => {
+      if (!cancelled) setPartialPaymentMap(map)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [partialPaymentIdsKey])
 
   // req7 admin: โหลดสรุปใครถือกี่เคส
   useEffect(() => {
@@ -1291,6 +1358,7 @@ export default function FreelancerWorkspace() {
                               key={sr.row.contractId}
                               sr={sr}
                               outsideHours={outsideHours}
+                              partialPayment={partialPaymentMap.get(sr.row.contractId)}
                               onSelect={handleOpenCase}
                               onClaim={handleClaimCase}
                             />
@@ -1306,6 +1374,7 @@ export default function FreelancerWorkspace() {
                           key={sr.row.contractId}
                           sr={sr}
                           outsideHours={outsideHours}
+                          partialPayment={partialPaymentMap.get(sr.row.contractId)}
                           onSelect={handleOpenCase}
                           onClaim={handleClaimCase}
                         />
@@ -1413,6 +1482,7 @@ export default function FreelancerWorkspace() {
                             enforceCallHours={false}
                             actionMode="release"
                             claimingId={claimingId}
+                            partialPayment={partialPaymentMap.get(sr.row.contractId)}
                             onSelect={handleOpenCase}
                             onClaim={handleClaimCase}
                             onRelease={handleReleaseCase}
@@ -1432,6 +1502,7 @@ export default function FreelancerWorkspace() {
                         enforceCallHours={false}
                         actionMode="release"
                         claimingId={claimingId}
+                        partialPayment={partialPaymentMap.get(sr.row.contractId)}
                         onSelect={handleOpenCase}
                         onClaim={handleClaimCase}
                         onRelease={handleReleaseCase}
