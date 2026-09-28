@@ -1028,3 +1028,17 @@ export interface NplHistoryPoint {
   overdueOutstanding?: number | null  // ยอดคงเหลือทั้งสัญญาของกลุ่มค้าง ≥1 วัน
   source: 'backfill' | 'daily' | 'live'
 }
+
+// ---------- Partial payment progress — ป้าย "ทยอยจ่าย" (migration 0167, Wave 2) ----------
+// จาก view v_partial_payment_progress: 1 แถวต่อสัญญา เฉพาะที่งวดค้างเก่าสุดมีเงินเข้าบางส่วนแต่ยังไม่ครบ
+// แยก type ออกจาก ContractStatusRow/QueueStatusRow ตั้งใจ — ไม่ต้องแก้ select string เดิม 4 จุด
+
+export type PartialPaymentProgress = {
+  contractId: string
+  installmentId: string
+  installmentNo: number
+  dueDate: string
+  amount: number
+  paidAmount: number
+  lastPaidAt: string | null
+}

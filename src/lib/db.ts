@@ -52,6 +52,7 @@ import type {
   PjSyncReviewRow,
   PjSyncRunRow,
   PjSnapshotStatus,
+  PartialPaymentProgress,
   PrivateNote,
   RequestPjSnapshotResult,
   ReviewQueueItem,
@@ -10156,4 +10157,62 @@ export async function getPjImage(contractId: string, imageKey: string): Promise<
     return { ok: false, error: result?.error ?? 'ดึงรูปจาก PJ ไม่สำเร็จ' }
   }
   return { ok: true, base64: result.base64, mime: result.mime }
+}
+
+// ---------- Partial payment progress — ป้าย "ทยอยจ่าย" (migration 0167, Wave 2) ----------
+
+interface PartialPaymentProgressRow {
+  contract_id: string
+  installment_id: string
+  installment_no: number
+  due_date: string
+  amount: string | number
+  paid_amount: string | number
+  last_paid_at: string | null
+}
+
+function mapPartialPaymentProgress(r: PartialPaymentProgressRow): PartialPaymentProgress {
+  return {
+    contractId: r.contract_id,
+    installmentId: r.installment_id,
+    installmentNo: r.installment_no,
+    dueDate: r.due_date,
+    amount: Number(r.amount),
+    paidAmount: Number(r.paid_amount),
+    lastPaidAt: r.last_paid_at ?? null,
+  }
+}
+
+/** ป้ายทยอยจ่าย (src/lib/partialPayment.ts) จาก v_partial_payment_progress (0167) — เสริม ไม่ใช่ตัวหลัก
+ *  ดึงเป็น Map แยกต่างหาก ไม่ปนกับ getOverdueByBucket/getFreelancerQueue/getMyCases (4 จุด select เดิม)
+ *  ตั้งใจกันคนละไฟล์ ไม่ต้องแก้ select string เดิมเลย — chunk ละ 200 id กัน PostgREST .in() ยาวเกินหลุดเงียบ
+ *  (บทเรียน PAGE_CAP truncation 07-20) fail-open เสมอ: ป้ายนี้เป็นข้อมูลเสริม ดึงไม่ได้ต้องไม่ทำให้คิว
+ *  ติดตามทั้งหน้าพัง (ตาม pattern getContractRecentPjMoney) */
+export async function getPartialPaymentProgress(
+  contractIds: string[],
+): Promise<Map<string, PartialPaymentProgress>> {
+  if (!supabase) return new Map()
+  if (contractIds.length === 0) return new Map()
+
+  const CHUNK_SIZE = 200
+  const rows: PartialPaymentProgressRow[] = []
+  try {
+    for (let i = 0; i < contractIds.length; i += CHUNK_SIZE) {
+      const chunk = contractIds.slice(i, i + CHUNK_SIZE)
+      const { data, error } = await supabase
+        .from('v_partial_payment_progress')
+        .select('*')
+        .in('contract_id', chunk)
+      if (error) {
+        console.warn('[getPartialPaymentProgress] query error:', error.message)
+        return new Map()
+      }
+      rows.push(...((data ?? []) as PartialPaymentProgressRow[]))
+    }
+  } catch (e) {
+    console.warn('[getPartialPaymentProgress] unexpected error:', e instanceof Error ? e.message : String(e))
+    return new Map()
+  }
+
+  return new Map(rows.map((r) => [r.contract_id, mapPartialPaymentProgress(r)]))
 }
