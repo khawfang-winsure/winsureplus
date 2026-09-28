@@ -20,6 +20,13 @@
 -- contract_id ได้คำตอบถูกต้อง (สัญญานั้นเงียบมาหลายเดือนจริง ไม่ใช่ log ของงวดอื่นที่จ่ายแล้ว) — ใช้ LATERAL
 -- ประเมินเฉพาะแถวที่ผ่าน filter ของ view แล้ว (ไม่ group by ทั้งตาราง payment_log ซึ่งจะแพงและไม่จำเป็น)
 -- index รองรับ: payment_log_installment_idx (0011) + payment_log_contract_idx (0011) มีอยู่แล้วทั้งคู่
+--
+-- last_paid_at คืนค่าเป็น timestamptz ดิบ ไม่ cast/at time zone ที่ DB (ตาม precedent
+-- v_contract_aggregates.last_paid_at ใน 0039/0057) — PostgREST จึงส่งสตริงพร้อม offset/Z เสมอ
+-- (เช่น "2026-09-28T04:43:42.379+00:00") ให้ new Date() ฝั่งเว็บอ่านถูกไม่ว่าเบราว์เซอร์ตั้ง timezone
+-- อะไร แล้ว toThaiDateOnly() ใน src/lib/partialPayment.ts ค่อยแปลงเป็นเวลาไทยเองชั้นเดียว — ถ้าใส่
+-- at time zone 'Asia/Bangkok' ที่นี่จะได้ timestamp without time zone ไม่มี offset ทำให้แปลงซ้ำสองรอบ
+-- (เพี้ยนได้ถึง 7 ชม. ถ้าเครื่องไม่ได้ตั้ง UTC+7) เคยเป็นบั๊กมาก่อน ห้ามใส่กลับ
 -- ============================================================================
 
 create or replace view public.v_partial_payment_progress
@@ -45,7 +52,7 @@ select
         where pl2.contract_id = oldest_unpaid.contract_id
           and pl2.action = 'pay'
       )
-    ) at time zone 'Asia/Bangkok'
+    )
   ) as last_paid_at
 from (
   select distinct on (i.contract_id)
@@ -101,6 +108,12 @@ comment on view public.v_partial_payment_progress is
 -- 4) ห้ามมี last_paid_at เป็น null เลยสักแถว (ถ้ามี = fallback พลาด ต้องสืบก่อน apply จริงกับหน้าเว็บ):
 -- SELECT contract_id, installment_id FROM public.v_partial_payment_progress WHERE last_paid_at IS NULL;
 --   expected: 0 rows
+
+-- 4b) last_paid_at ที่ PostgREST ส่งออกมาต้องมี offset/Z ติดมาด้วยเสมอ (เช่น
+--   "2026-09-28T04:43:42.379+00:00") ไม่ใช่สตริงเปล่าไม่มี timezone (เช่น "2026-09-28T11:43:42.379")
+--   ถ้าเห็นแบบหลัง = มี cast/at time zone หลุดกลับเข้ามาที่ view นี้ ต้องแก้ก่อนปล่อย Wave 2:
+-- SELECT p.contract_id, p.last_paid_at FROM public.v_partial_payment_progress p LIMIT 5;
+--   -- เช็คด้วยตาว่าสตริงที่ REST คืนมาลงท้ายด้วย +00:00 หรือ Z ไม่ใช่ตัวเลขเฉยๆ
 
 -- 5) งวดที่เลือกต้องตรงกับ oldest_unpaid ของ v_contract_status ทุกสัญญา (กันอ้างคนละงวด):
 -- SELECT p.contract_id, p.due_date AS partial_due, vcs.next_due AS vcs_next_due
