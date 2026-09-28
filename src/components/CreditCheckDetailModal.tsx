@@ -1,17 +1,34 @@
 import { useEffect, useId, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, Copy, ExternalLink, FileText } from 'lucide-react'
+import { Check, Copy, ExternalLink, FileText, RefreshCw } from 'lucide-react'
 import { Badge, Button, Loading, Modal, Textarea } from './ui'
 import {
   decideCreditCheck,
   getCreditCheck,
   getCreditCheckFileUrl,
   markCreditCheckOpened,
+  recheckPjBlacklist,
   setCreditCheckBlacklist,
   setCreditCheckFacebook,
 } from '../lib/db'
 import type { CreditCheckDecision, CreditCheckDetail, CreditCheckFile } from '../lib/types'
 import { thaiDate } from '../lib/format'
+
+// ===== บัญชีดำ PJ (ค้นอัตโนมัติ) — Wave 3 2026-09-28 (contract: pj-blacklist-contract.md)
+// สถานะ/รายการ hit มาจาก credit_checks.pj_blacklist_* (น้องชีสกำลังเพิ่มใน types.ts/db.ts พร้อมกัน) =====
+const PJ_BLACKLIST_TONE: Record<string, 'green' | 'amber' | 'red' | 'neutral'> = {
+  not_checked: 'neutral',
+  clear: 'green',
+  found: 'red',
+  error: 'amber',
+}
+
+function pjBlacklistLabel(status: string, hitCount: number): string {
+  if (status === 'clear') return 'ไม่พบ'
+  if (status === 'found') return `พบ ${hitCount} รายการ`
+  if (status === 'error') return 'ค้นไม่สำเร็จ'
+  return 'ยังไม่ค้น'
+}
 
 // ===== label ไทยฝั่ง staff (คนละชุดกับ shopText ที่ร้านเห็น — engineReasons.staffText มาจาก DB ตรงๆ อยู่แล้ว
 // ตัวนี้ใช้แค่ label ระดับผลรวม (engine_level) + field อาชีพ/ประเภทเอกสารที่เก็บเป็น string ดิบ) =====
@@ -36,8 +53,27 @@ const FILE_KIND_LABEL: Record<CreditCheckFile['kind'], string> = {
   statement: 'รายการเดินบัญชี (Statement)',
   work_photo: 'รูปหลักฐานการทำงาน',
   facebook_screenshot: 'ภาพหน้าจอ Facebook',
+  thaid_name_history: 'ประวัติเปลี่ยนชื่อจากแอป ThaID',
   other: 'เอกสารอื่นๆ',
 }
+
+// ===== สัญญาณเตือน (fraud_flags) — anti-fraud layer 1, addendum 2026-09-28 =====
+const FRAUD_FLAG_LABEL: Record<string, string> = {
+  NAME_CHANGED: 'ชื่อเปลี่ยนจากประวัติเดิม',
+  DUP_FILE: 'ไฟล์แนบซ้ำกับคำขออื่น (คนละเลขบัตร)',
+  FB_SHARED: 'ลิงก์ Facebook ซ้ำกับคำขออื่น',
+  PDF_EDITED: 'ไฟล์ PDF มีร่องรอยถูกแก้ไข',
+  PDF_UNREADABLE: 'ไฟล์ PDF เปิดอ่านไม่ได้ (เข้ารหัส)',
+}
+function fraudFlagLabel(code: string): string {
+  return FRAUD_FLAG_LABEL[code] ?? code
+}
+
+const STATEMENT_CHECKLIST_ITEMS = [
+  'ยอดคงเหลือบวก/ลบตรงทุกบรรทัด',
+  'เงินเดือนเข้าตรงกับสลิป (ชื่อบริษัท/ยอด/วันที่)',
+  'บัตร: รูป/ฟอนต์/ลายน้ำปกติ',
+] as const
 
 const BLACKLISTSELLER_URL = 'https://www.blacklistseller.com'
 
@@ -133,12 +169,16 @@ export default function CreditCheckDetailModal({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [blacklistBusy, setBlacklistBusy] = useState(false)
+  const [pjRecheckBusy, setPjRecheckBusy] = useState(false)
+  const [pjRecheckErr, setPjRecheckErr] = useState<string | null>(null)
   const [facebookBusy, setFacebookBusy] = useState(false)
   const [decisionChoice, setDecisionChoice] = useState<CreditCheckDecision | null>(null)
   const [note, setNote] = useState('')
   const [decisionBusy, setDecisionBusy] = useState(false)
   const [decisionErr, setDecisionErr] = useState<string | null>(null)
   const decisionErrId = useId()
+  // เช็คลิสต์ตรวจเอกสารด้วยตา — เก็บแค่ session นี้ ไม่บันทึกลง DB (ตั้งใจง่ายตาม contract "your call, keep simple")
+  const [checklist, setChecklist] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -173,6 +213,22 @@ export default function CreditCheckDetailModal({
       setTimeout(() => setCopied(false), 1500)
     } catch {
       // clipboard ใช้ไม่ได้ (สิทธิ์เบราว์เซอร์) — ไม่ต้องบล็อกอะไร
+    }
+  }
+
+  async function handlePjRecheck() {
+    if (!detail) return
+    setPjRecheckBusy(true)
+    setPjRecheckErr(null)
+    try {
+      await recheckPjBlacklist(detail.id)
+      const fresh = await getCreditCheck(detail.id)
+      if (fresh) setDetail(fresh)
+      onChanged()
+    } catch (e) {
+      setPjRecheckErr(e instanceof Error ? e.message : 'ค้นซ้ำไม่สำเร็จ')
+    } finally {
+      setPjRecheckBusy(false)
     }
   }
 
@@ -232,6 +288,41 @@ export default function CreditCheckDetailModal({
 
       {!loading && detail && (
         <div className="flex flex-col gap-5">
+          {/* สัญญาณเตือน (fraud_flags) — โชว์บนสุดเสมอเมื่อมีสัญญาณ ไม่เคยโชว์รายละเอียดนี้ให้ร้านเห็น */}
+          {detail.fraudFlags.length > 0 && (
+            <div className="rounded-xl border-2 border-red-300 bg-red-50 p-4">
+              <h4 className="mb-2 text-sm font-bold text-red-800">⚠ สัญญาณเตือน ({detail.fraudFlags.length})</h4>
+              <ul className="flex flex-col gap-1.5">
+                {detail.fraudFlags.map((f, i) => (
+                  <li key={i} className={`rounded-lg px-3 py-1.5 text-xs ${f.severity === 'high' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                    <span className="font-semibold">{fraudFlagLabel(f.code)}</span>
+                    {f.detailStaff && <span> — {f.detailStaff}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* เช็คลิสต์ตรวจเอกสารด้วยตา — ไม่บังคับ ไม่บันทึก ใช้เตือนความจำเจ้าหน้าที่เฉยๆ */}
+          <div className="rounded-xl border border-peach p-4">
+            <h4 className="mb-2 text-sm font-semibold text-ink">เช็คลิสต์ตรวจเอกสารด้วยตา</h4>
+            <ul className="flex flex-col gap-1.5">
+              {STATEMENT_CHECKLIST_ITEMS.map((item) => (
+                <li key={item}>
+                  <label className="flex items-center gap-2 text-sm text-ink">
+                    <input
+                      type="checkbox"
+                      checked={!!checklist[item]}
+                      onChange={(e) => setChecklist((prev) => ({ ...prev, [item]: e.target.checked }))}
+                      className="h-4 w-4 rounded border-peach text-salmon-deep focus:ring-salmon/40"
+                    />
+                    {item}
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </div>
+
           {detail.contractId && (
             <div className="rounded-xl bg-green-50 px-3 py-2 text-sm text-green-800">
               ผูกกับสัญญาแล้ว —{' '}
@@ -282,6 +373,7 @@ export default function CreditCheckDetailModal({
             </div>
             <div><span className="text-ink-soft">ประเภท: </span>{ID_TYPE_LABEL[detail.idType] ?? detail.idType}</div>
             <div><span className="text-ink-soft">วันหมดอายุเอกสาร: </span>{detail.idExpiry ? thaiDate(detail.idExpiry) : 'ไม่ระบุ'}</div>
+            <div><span className="text-ink-soft">วันออกบัตร: </span>{detail.idIssueDate ? thaiDate(detail.idIssueDate) : 'ไม่ระบุ'}</div>
             <div><span className="text-ink-soft">วันเกิด: </span>{detail.birthDate ? thaiDate(detail.birthDate) : '-'}</div>
             <div><span className="text-ink-soft">อาชีพ: </span>{detail.occupationType ? (OCCUPATION_LABEL[detail.occupationType] ?? detail.occupationType) : '-'}</div>
             <div><span className="text-ink-soft">รายได้แจ้ง: </span>{money(detail.declaredIncome)}</div>
@@ -304,7 +396,54 @@ export default function CreditCheckDetailModal({
             </div>
           )}
 
-          {/* ตรวจ Blacklist */}
+          {/* บัญชีดำ PJ (ค้นอัตโนมัติ) — Wave 3 */}
+          <div className="rounded-xl border border-peach p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h4 className="text-sm font-semibold text-ink">บัญชีดำ PJ (ค้นอัตโนมัติ)</h4>
+              <Badge tone={PJ_BLACKLIST_TONE[detail.pjBlacklistStatus] ?? 'neutral'}>
+                {pjBlacklistLabel(detail.pjBlacklistStatus, detail.pjBlacklistHits.length)}
+              </Badge>
+            </div>
+            <p className="text-xs text-ink-soft">
+              ค้นล่าสุด: {detail.pjBlacklistCheckedAt ? thaiDateTime(detail.pjBlacklistCheckedAt) : 'ยังไม่เคยค้น'}
+            </p>
+            {detail.pjBlacklistStatus === 'error' && detail.pjBlacklistError && (
+              <p className="mt-1 text-xs text-red-600">เหตุผล: {detail.pjBlacklistError}</p>
+            )}
+            {detail.pjBlacklistHits.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-2">
+                {detail.pjBlacklistHits.map((h, i) => (
+                  <li key={i} className="rounded-lg border border-peach bg-cream-deep/40 p-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium text-ink">{h.invoiceNo}</span>
+                      <Badge tone="amber">{h.statusLabel}</Badge>
+                    </div>
+                    <p className="mt-1 text-ink-soft">
+                      ร้าน: {h.shopName}
+                      {h.shopContact ? ` · ${h.shopContact}` : ''}
+                    </p>
+                    <p className="text-ink-soft">
+                      รุ่น: {[h.brand, h.model].filter(Boolean).join(' ') || '-'}
+                      {h.imeiLast4 ? ` · IMEI ...${h.imeiLast4}` : ''}
+                    </p>
+                    <p className="text-ink-soft">
+                      งวด: จ่ายแล้ว {h.installmentsPaid ?? '-'} / ทั้งหมด {h.installmentsTotal ?? '-'} · ค้าง {h.installmentsOverdue ?? '-'}
+                    </p>
+                    <p className="text-ink-soft">จับคู่ด้วย: {h.matchedBy === 'imei' ? 'IMEI' : 'เลขบัตรประชาชน'}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {pjRecheckErr && <p className="mt-2 text-xs text-red-600">{pjRecheckErr}</p>}
+            <div className="mt-3">
+              <Button variant="ghost" onClick={() => void handlePjRecheck()} disabled={pjRecheckBusy} className="!text-xs">
+                <RefreshCw className={`h-3.5 w-3.5 ${pjRecheckBusy ? 'animate-spin' : ''}`} />
+                {pjRecheckBusy ? 'กำลังค้นซ้ำ...' : 'ค้นซ้ำ'}
+              </Button>
+            </div>
+          </div>
+
+          {/* ตรวจ Blacklist (blacklistseller.com — ด้วยตา) */}
           <div className="rounded-xl border border-peach p-4">
             <div className="mb-2 flex items-center justify-between">
               <h4 className="text-sm font-semibold text-ink">ตรวจแบล็กลิสต์</h4>

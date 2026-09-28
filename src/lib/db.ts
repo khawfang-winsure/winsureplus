@@ -42,6 +42,9 @@ import type {
   CreditCheckDetail,
   CreditCheckFacebookResult,
   CreditCheckFile,
+  CreditCheckFraudFlag,
+  CreditCheckPjBlacklistHit,
+  CreditCheckPjBlacklistStatus,
   CreditCheckQueueItem,
   CreditCheckReasonRow,
   PjContractSnapshot,
@@ -10195,6 +10198,9 @@ interface CreditCheckQueueRow {
   decided_at: string | null
   minutes_to_first_open: number | null
   minutes_to_decision: number | null
+  pj_blacklist_status: CreditCheckPjBlacklistStatus
+  pj_blacklist_hit_count: number | null
+  fraud_flag_count: number | null
 }
 
 function mapCreditCheckQueueRow(r: CreditCheckQueueRow): CreditCheckQueueItem {
@@ -10217,6 +10223,9 @@ function mapCreditCheckQueueRow(r: CreditCheckQueueRow): CreditCheckQueueItem {
     decidedAt: r.decided_at,
     minutesToFirstOpen: Number(r.minutes_to_first_open ?? 0),
     minutesToDecision: Number(r.minutes_to_decision ?? 0),
+    pjBlacklistStatus: r.pj_blacklist_status ?? 'not_checked',
+    pjBlacklistHitCount: Number(r.pj_blacklist_hit_count ?? 0),
+    fraudFlagCount: Number(r.fraud_flag_count ?? 0),
   }
 }
 
@@ -10252,6 +10261,56 @@ interface CreditCheckFileRow {
   created_at: string
 }
 
+interface CreditCheckPjBlacklistHitRow {
+  invoice_no: string
+  status_label: string
+  customer_name: string
+  shop_name: string
+  shop_contact: string
+  brand: string
+  model: string
+  imei_last4: string
+  down_payment_date: string
+  next_due_date: string
+  installments_total: number | null
+  installments_paid: number | null
+  installments_overdue: number | null
+  overdue_days?: number | null // (v2) แถวเก่าก่อนแก้ parser ไม่มีคีย์นี้ใน jsonb เลย — optional กันพัง
+  total_amount?: number | null
+  matched_by: 'national_id' | 'imei'
+}
+
+function mapCreditCheckPjBlacklistHit(r: CreditCheckPjBlacklistHitRow): CreditCheckPjBlacklistHit {
+  return {
+    invoiceNo: r.invoice_no,
+    statusLabel: r.status_label,
+    customerName: r.customer_name,
+    shopName: r.shop_name,
+    shopContact: r.shop_contact,
+    brand: r.brand,
+    model: r.model,
+    imeiLast4: r.imei_last4,
+    downPaymentDate: r.down_payment_date,
+    nextDueDate: r.next_due_date,
+    installmentsTotal: r.installments_total,
+    installmentsPaid: r.installments_paid,
+    installmentsOverdue: r.installments_overdue,
+    overdueDays: r.overdue_days ?? null,
+    totalAmount: r.total_amount ?? null,
+    matchedBy: r.matched_by,
+  }
+}
+
+interface CreditCheckFraudFlagRow {
+  code: CreditCheckFraudFlag['code']
+  severity: 'warn' | 'high'
+  detail_staff: string
+}
+
+function mapCreditCheckFraudFlag(r: CreditCheckFraudFlagRow): CreditCheckFraudFlag {
+  return { code: r.code, severity: r.severity, detailStaff: r.detail_staff }
+}
+
 function mapCreditCheckFile(r: CreditCheckFileRow): CreditCheckFile {
   return { id: r.id, kind: r.kind, mime: r.mime, size: r.size, createdAt: r.created_at }
 }
@@ -10283,6 +10342,13 @@ interface CreditCheckDetailRow {
   created_at: string
   first_opened_at: string | null
   decided_at: string | null
+  imei: string | null
+  pj_blacklist_status: CreditCheckPjBlacklistStatus
+  pj_blacklist_hits: CreditCheckPjBlacklistHitRow[] | null
+  pj_blacklist_checked_at: string | null
+  pj_blacklist_error: string | null
+  id_issue_date: string | null
+  fraud_flags: CreditCheckFraudFlagRow[] | null
 }
 
 /** รายละเอียดเต็ม 1 คำขอ (national_id เต็ม + ไฟล์แนบ) — เห็นได้เฉพาะหน้านี้ ห้ามส่งกลับให้ฝั่งร้านเด็ดขาด
@@ -10315,6 +10381,9 @@ export async function getCreditCheck(id: string): Promise<CreditCheckDetail | nu
   const minutesToDecision =
     Math.round((((r.decided_at ? new Date(r.decided_at).getTime() : nowMs) - createdMs) / 60000) * 10) / 10
 
+  const pjBlacklistHits = Array.isArray(r.pj_blacklist_hits) ? r.pj_blacklist_hits.map(mapCreditCheckPjBlacklistHit) : []
+  const fraudFlags = Array.isArray(r.fraud_flags) ? r.fraud_flags.map(mapCreditCheckFraudFlag) : []
+
   return {
     id: r.id,
     shopId: r.shop_id,
@@ -10332,6 +10401,9 @@ export async function getCreditCheck(id: string): Promise<CreditCheckDetail | nu
     createdAt: r.created_at,
     firstOpenedAt: r.first_opened_at,
     decidedAt: r.decided_at,
+    pjBlacklistStatus: r.pj_blacklist_status ?? 'not_checked',
+    pjBlacklistHitCount: pjBlacklistHits.length,
+    fraudFlagCount: fraudFlags.length,
     minutesToFirstOpen,
     minutesToDecision,
     nationalId: r.national_id,
@@ -10347,6 +10419,11 @@ export async function getCreditCheck(id: string): Promise<CreditCheckDetail | nu
     facebookUrl: r.facebook_url,
     engineReasons: Array.isArray(r.engine_reasons) ? r.engine_reasons : [],
     files: ((fileRows ?? []) as CreditCheckFileRow[]).map(mapCreditCheckFile),
+    pjBlacklistHits,
+    pjBlacklistCheckedAt: r.pj_blacklist_checked_at,
+    pjBlacklistError: r.pj_blacklist_error,
+    idIssueDate: r.id_issue_date,
+    fraudFlags,
   }
 }
 
@@ -10442,4 +10519,23 @@ export async function getCreditCheckFileUrl(fileId: string): Promise<string> {
   const url = (data as { url?: string; error?: string } | null)?.url
   if (!url) throw new Error((data as { error?: string } | null)?.error ?? 'ขอลิงก์ไฟล์ไม่สำเร็จ')
   return url
+}
+
+/** ปุ่ม "ค้นซ้ำ" บัญชีดำ PJ (Wave 3, 0167) — เรียก Edge Function action='staff_pj_recheck' ค้นใหม่ด้วย
+ *  เลขบัตร/IMEI ที่บันทึกไว้ตอน submit แล้ว update แถวเดิม คืนสถานะ+รายการที่เจอล่าสุด (UI เรียก
+ *  getCreditCheck(id) ซ้ำเองหลังจากนี้เพื่อรีเฟรชทั้งหน้า หรือจะใช้ผลตรงนี้ก็ได้) */
+export async function recheckPjBlacklist(
+  id: string,
+): Promise<{ status: CreditCheckPjBlacklistStatus; hits: CreditCheckPjBlacklistHit[] }> {
+  if (!supabase) throw new Error('โหมดตัวอย่าง: ยังไม่เชื่อม Supabase')
+  const { data, error } = await supabase.functions.invoke('credit-check', {
+    body: { action: 'staff_pj_recheck', credit_check_id: id },
+  })
+  if (error) throw new Error(await extractFunctionErrorMessage(error))
+  const result = data as { status?: CreditCheckPjBlacklistStatus; hits?: unknown[]; error?: string } | null
+  if (!result?.status) throw new Error(result?.error ?? 'ค้น PJ ซ้ำไม่สำเร็จ')
+  return {
+    status: result.status,
+    hits: Array.isArray(result.hits) ? (result.hits as any[]).map(mapCreditCheckPjBlacklistHit) : [],
+  }
 }

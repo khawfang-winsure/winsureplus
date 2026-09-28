@@ -2,6 +2,19 @@
 // อ้างอิง: scratchpad/credit-check-api-contract.md + credit-check-decisions.md, migration 0164 (prod แล้ว)
 // แก้ตามรีวิวติ๊ก (รอบ 1, 2026-09-23) — ดูรายละเอียดแต่ละจุดที่คอมเมนต์ inline ใกล้โค้ดที่แก้
 //
+// Wave 3 + addendum (ครีม 2026-09-28, ดู scratchpad/pj-blacklist-contract.md ทั้งไฟล์รวม ADDENDUM ท้าย):
+//   1) ค้นบัญชีดำ PJ อัตโนมัติใน submit (แทน staff ค้นมือ) — เอนจิ้น login/parse แยกไฟล์ที่
+//      pjBlacklistSearch.ts (network) + pjBlacklistParse.ts (pure parser, มี test fixture คู่กัน)
+//      session/concurrency decision: "login ใหม่ทุกครั้ง" ไม่ cache session — เหตุผลเต็มอยู่หัว
+//      pjBlacklistSearch.ts (สรุปสั้น: pj-sync เองก็ login ใหม่ทุก 15 นาทีมาหลายเดือนไม่เคยมีปัญหา
+//      "เตะ" เซสชันอื่น + ปริมาณ credit-check ต่ำมาก ไม่คุ้มความเสี่ยง/ความซับซ้อนของการ cache)
+//   2) สัญญาณเตือนทุจริตชั้นที่ 1 (NAME_CHANGED/DUP_FILE/FB_SHARED/PDF_EDITED/PDF_UNREADABLE) คำนวณใน
+//      fraudSignals.ts — best-effort, ไม่บล็อก submit, ร้าน "ห้ามรู้" ว่าสัญญาณไหนเจอ (engine ส่งแค่
+//      reason ทั่วไป FRAUD_SIGNAL) staff เห็นรายละเอียดเต็มผ่าน credit_checks.fraud_flags
+//   ทั้งสองส่วนมี hard timeout ของตัวเอง (runWithBudget) รันขนานกันด้วย Promise.all ก่อนเรียก
+//   creditCheck() "ครั้งเดียว" (ไม่ใช่รัน engine ก่อนค่อย patch ผลทีหลัง — engine ยังเป็น single source
+//   of truth ของ level+reasons ทั้งหมดเหมือนเดิม)
+//
 // verify_jwt: false ที่ gateway (deploy) — endpoint นี้ต้องรับ anon (ไม่มี login Supabase) จากร้านค้าได้
 // action ทุกตัวเช็คสิทธิ์เองในนี้:
 //   - login/sign_upload/submit/list: ไม่มี Supabase JWT เลย ยืนยันตัวด้วย "shop token" ที่เราเซ็นเอง (HMAC)
@@ -45,6 +58,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { AwsClient } from "npm:aws4fetch@1";
 import { creditCheck, type CreditCheckInput, type CreditCheckLevel } from "./creditCheck.ts";
+import { searchPjBlacklist, toStoredHit, type PjBlacklistSearchOutcome } from "./pjBlacklistSearch.ts";
+import { computeFraudSignals, type FraudFlag } from "./fraudSignals.ts";
 
 // ---------- CORS: allowlist จริง ไม่ใช่ "*" (ฟอร์มสาธารณะ แต่ไม่อยากให้เว็บอื่น embed เรียก endpoint นี้
 // ผ่าน browser fetch ได้ง่ายๆ — CORS กันแค่ฝั่ง browser, curl/server ยังยิงตรงได้เสมอ ไม่ใช่กำแพงความปลอดภัยหลัก
@@ -228,6 +243,7 @@ const ALLOWED_FILE_KINDS = [
   "work_photo",
   "facebook_screenshot",
   "id_card",
+  "thaid_name_history", // (0167 addendum) ภาพประวัติเปลี่ยนชื่อจากแอป ThaID
   "other",
 ] as readonly string[];
 const ALLOWED_IMAGE_MIME = ["image/jpeg", "image/png", "image/webp", "image/heic"] as readonly string[];
@@ -322,6 +338,25 @@ async function presignGet(aws: AwsClient, endpoint: string, bucket: string, key:
   return signed.url;
 }
 
+/** (รีวิวติ๊ก [YELLOW] #2) ขอ ETag จริงของอ็อบเจกต์บน R2 ด้วย Range GET 1 byte (bytes=0-0) — เบามาก ไม่ต้อง
+ *  presign ใหม่สำหรับ HEAD โดยเฉพาะ (SigV4 ผูก method ไว้กับลายเซ็น — URL ที่ presign ไว้สำหรับ GET จะใช้กับ
+ *  HEAD ไม่ได้ แต่ Range header ไม่ได้ถูกรวมในลายเซ็นของ presignGet ปัจจุบัน เลยแปะเพิ่มตอน fetch ได้เลย)
+ *  best-effort เสมอ — คืน null ถ้าพลาดไม่ว่าเหตุผลอะไร (ให้ fraudSignals.ts fallback ไป sha256 เอง) */
+async function fetchObjectEtag(url: string, signal: AbortSignal): Promise<string | null> {
+  try {
+    const res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal });
+    if (!res.ok && res.status !== 206) {
+      try { await res.body?.cancel(); } catch { /* ignore */ }
+      return null;
+    }
+    await res.arrayBuffer().catch(() => {}); // 1 byte เท่านั้น อ่านทิ้งเสมอกัน connection ค้าง
+    const etagRaw = res.headers.get("etag");
+    return etagRaw ? etagRaw.replace(/^"|"$/g, "") : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- แปลงระดับผลเอนจิ้น -> ค่า enum ฝั่ง DB (0164 engine_level check) ----------
 const ENGINE_LEVEL_TO_DB: Record<CreditCheckLevel, string> = {
   fail: "fail",
@@ -339,10 +374,33 @@ const MAX_LEN_FACEBOOK_URL = 500;
 const MAX_LEN_ID_NUMBER = 50;
 const MAX_LEN_FREE_TEXT = 200; // consent_version ฯลฯ (decision/notes เป็นฝั่ง staff db.ts ไม่เกี่ยวกับ endpoint นี้)
 const MAX_LEN_LOGIN_CODE = 50;
+const MAX_LEN_IMEI = 32; // (0167) IMEI จริงมี 15 หลัก — เผื่อพื้นที่ให้ serial ที่ไม่ใช่ตัวเลขล้วนได้บ้าง
 
 // (รีวิวติ๊ก [YELLOW] #5) เพดานขนาด body รวม กัน payload ใหญ่ผิดปกติ (ไฟล์จริงไม่ได้แนบมาใน JSON — มีแค่
 // metadata + base64 เล็กๆ ถ้ามี ไม่ควรเกินนี้เลยในการใช้งานจริง)
 const MAX_BODY_BYTES = 64 * 1024;
+
+// (0167) งบเวลาของ "การค้น PJ" + "คำนวณสัญญาณเตือน" ตอน submit — รันขนานกันด้วย Promise.all คนละ budget
+// ห้ามให้อันไหนบล็อก submit เกินนี้ (never block submit ตาม contract) — controller.abort() ตัดการเชื่อมต่อ
+// เครือข่ายค้างจริง ไม่ใช่แค่ "ทิ้ง" promise ไว้เฉยๆ
+const PJ_SEARCH_TIMEOUT_MS = 8000;
+const FRAUD_SIGNAL_TIMEOUT_MS = 6000;
+const ETAG_FETCH_TIMEOUT_MS = 3000; // (รีวิวติ๊ก [YELLOW] #2) ขอ ETag ทีละไฟล์ (≤10 ไฟล์) ก่อนคำนวณสัญญาณเตือน
+
+/** รัน fn ภายใต้ timeout budget — abort() ตัดการเชื่อมต่อเครือข่ายจริงถ้า fn รับ signal ไปใช้กับ fetch
+ *  ทุกจุด ไม่ throw ออกไป (catch แล้วคืน fallback) — ใช้กับงาน best-effort ที่ห้ามบล็อก flow หลักเด็ดขาด */
+async function runWithBudget<T>(fn: (signal: AbortSignal) => Promise<T>, ms: number, fallback: T): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fn(controller.signal);
+  } catch (e) {
+    console.error("[credit-check] runWithBudget fallback:", errMessage(e));
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 Deno.serve(async (req) => {
   const origin = req.headers.get("Origin");
@@ -506,6 +564,8 @@ Deno.serve(async (req) => {
         pjMonthlyPayment,
         declaredMonthlyIncome,
         facebookUrl,
+        imei,
+        idIssueDate,
       } = form;
 
       if (typeof customerName !== "string" || !customerName.trim() || customerName.length > MAX_LEN_CUSTOMER_NAME) {
@@ -529,6 +589,38 @@ Deno.serve(async (req) => {
       if (typeof facebookUrl === "string" && facebookUrl.length > MAX_LEN_FACEBOOK_URL) {
         return json({ error: `ลิงก์ Facebook ยาวเกินไป (ไม่เกิน ${MAX_LEN_FACEBOOK_URL} ตัวอักษร)` }, 400, origin);
       }
+      if (typeof imei === "string" && imei.length > MAX_LEN_IMEI) {
+        return json({ error: `IMEI/Serial ยาวเกินไป (ไม่เกิน ${MAX_LEN_IMEI} ตัวอักษร)` }, 400, origin);
+      }
+      // (0167 addendum) idIssueDate ไม่บังคับ (ต่างชาติไม่ต้องกรอก) — เช็คแค่รูปแบบคร่าวๆ ถ้ามีค่าส่งมา
+      if (idIssueDate !== undefined && idIssueDate !== null && idIssueDate !== "") {
+        if (typeof idIssueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(idIssueDate)) {
+          return json({ error: "วันออกบัตรไม่ถูกต้อง (รูปแบบ YYYY-MM-DD)" }, 400, origin);
+        }
+      }
+
+      // (รีวิวติ๊ก [YELLOW] #5) ตรวจตัวเลขทั้งหมด "ก่อน" ยิงค้น PJ/สัญญาณเตือน (เครือข่าย, มี timeout เป็นวิ)
+      // — ฟอร์มพังไม่ควรเสียเวลา/แบนด์วิดท์ไปกับ PJ เลยแม้แต่นิดเดียว reject เร็วที่สุดเท่าที่ทำได้ก่อน
+      const devicePriceNum = Number(devicePrice);
+      const downPercentNum = Number(downPercent);
+      const termMonthsNum = Number(termMonths);
+      const ourMonthlyPaymentNum = Number(ourMonthlyPayment);
+      const pjMonthlyPaymentNum = Number(pjMonthlyPayment);
+      const declaredMonthlyIncomeNum =
+        declaredMonthlyIncome === null || declaredMonthlyIncome === undefined || declaredMonthlyIncome === ""
+          ? null
+          : Number(declaredMonthlyIncome);
+
+      if (
+        !Number.isFinite(devicePriceNum) ||
+        !Number.isFinite(termMonthsNum) ||
+        !Number.isFinite(downPercentNum) ||
+        !Number.isFinite(ourMonthlyPaymentNum) ||
+        !Number.isFinite(pjMonthlyPaymentNum) ||
+        (declaredMonthlyIncomeNum !== null && !Number.isFinite(declaredMonthlyIncomeNum))
+      ) {
+        return json({ error: "ตัวเลขในฟอร์มไม่ถูกต้อง" }, 400, origin);
+      }
 
       if (!Array.isArray(files)) return json({ error: "ข้อมูลไฟล์แนบไม่ถูกต้อง" }, 400, origin);
       if (files.length > MAX_FILES_PER_REQUEST) {
@@ -548,6 +640,71 @@ Deno.serve(async (req) => {
         .map((f: any) => f.kind)
         .filter((k: string) => k === "payslip" || k === "statement" || k === "work_photo" || k === "other");
 
+      const nationalIdDigits = String(idNumber).replace(/\D/g, "");
+      const imeiDigits = typeof imei === "string" ? imei.replace(/\D/g, "") : "";
+      const facebookUrlStr = typeof facebookUrl === "string" ? facebookUrl : "";
+      const customerNameTrimmed = typeof customerName === "string" ? customerName.trim() : "";
+
+      // (รีวิวติ๊ก [YELLOW] #2) เก็บ ETag จริงจาก R2 ต่อไฟล์ (server ยืนยันเอง ไม่เชื่อ sha256 ที่ client
+      // แจ้งมาเฉยๆ) — ทำก่อนคำนวณสัญญาณเตือน เพราะ DUP_FILE ต้องใช้ etag เป็น input โดยตรง ขอแค่ 1 byte
+      // ต่อไฟล์ (Range: bytes=0-0) เร็ว/เบามาก ไม่ throw ถ้าพลาด (best-effort — ปล่อยเป็น null แล้ว
+      // fraudSignals.ts จะ fallback ไป sha256 เอง)
+      const r2ForEtag = readR2Config();
+      const etagByR2Key = new Map<string, string | null>();
+      if (r2ForEtag) {
+        const awsForEtag = makeAwsClient();
+        await runWithBudget<void>(
+          async (signal) => {
+            for (const f of files) {
+              const url = await presignGet(awsForEtag, r2ForEtag.endpoint, r2ForEtag.bucket, f.r2_key);
+              etagByR2Key.set(f.r2_key, await fetchObjectEtag(url, signal));
+            }
+          },
+          ETAG_FETCH_TIMEOUT_MS,
+          undefined,
+        );
+      }
+      const filesWithEtag = files.map((f: any) => ({ ...f, r2_etag: etagByR2Key.get(f.r2_key) ?? null }));
+
+      // ── ค้นบัญชีดำ PJ + คำนวณสัญญาณเตือน — ขนานกัน คนละ timeout budget, ไม่ throw เด็ดขาด (never block
+      // submit ตาม contract) ต้องรันก่อนเรียก creditCheck() เพราะผลทั้งคู่เป็น input ของ engine โดยตรง ──
+      const PJ_USERNAME = env("PJ_USERNAME");
+      const PJ_PASSWORD = env("PJ_PASSWORD");
+      const r2ForFraud = readR2Config();
+
+      const [pjResult, fraudFlags] = await Promise.all([
+        PJ_USERNAME && PJ_PASSWORD
+          ? runWithBudget<PjBlacklistSearchOutcome>(
+              (signal) =>
+                searchPjBlacklist({
+                  username: PJ_USERNAME,
+                  password: PJ_PASSWORD,
+                  nationalIdDigits,
+                  imeiDigits: imeiDigits || null,
+                  signal,
+                }),
+              PJ_SEARCH_TIMEOUT_MS,
+              { status: "error", hits: [], error: "หมดเวลาค้นหา PJ" },
+            )
+          : Promise.resolve<PjBlacklistSearchOutcome>({ status: "error", hits: [], error: "ยังไม่ได้ตั้งค่าบัญชี PJ" }),
+        runWithBudget<FraudFlag[]>(
+          (signal) =>
+            computeFraudSignals({
+              adminClient,
+              nationalIdDigits,
+              customerName: customerNameTrimmed,
+              facebookUrl: facebookUrlStr,
+              files: filesWithEtag,
+              r2: r2ForFraud,
+              aws: r2ForFraud ? makeAwsClient() : null,
+              presignGet,
+              signal,
+            }),
+          FRAUD_SIGNAL_TIMEOUT_MS,
+          [],
+        ),
+      ]);
+
       const engineInput: CreditCheckInput = {
         today: bangkokTodayISO(),
         customerType,
@@ -556,29 +713,18 @@ Deno.serve(async (req) => {
         birthDate: String(birthDate),
         occupationType,
         deviceCondition,
-        devicePrice: Number(devicePrice),
-        downPercent: Number(downPercent),
-        termMonths: Number(termMonths),
-        ourMonthlyPayment: Number(ourMonthlyPayment),
-        pjMonthlyPayment: Number(pjMonthlyPayment),
-        declaredMonthlyIncome:
-          declaredMonthlyIncome === null || declaredMonthlyIncome === undefined || declaredMonthlyIncome === ""
-            ? null
-            : Number(declaredMonthlyIncome),
+        devicePrice: devicePriceNum,
+        downPercent: downPercentNum,
+        termMonths: termMonthsNum,
+        ourMonthlyPayment: ourMonthlyPaymentNum,
+        pjMonthlyPayment: pjMonthlyPaymentNum,
+        declaredMonthlyIncome: declaredMonthlyIncomeNum,
         attachedFileKinds,
-        facebookUrl: typeof facebookUrl === "string" ? facebookUrl : "",
+        facebookUrl: facebookUrlStr,
+        pjBlacklistHits: pjResult.status === "found" ? pjResult.hits.length : 0,
+        idIssueDate: idIssueDate ? String(idIssueDate) : null,
+        fraudSignals: fraudFlags.map((f) => f.code),
       };
-
-      if (
-        !Number.isFinite(engineInput.devicePrice) ||
-        !Number.isFinite(engineInput.termMonths) ||
-        !Number.isFinite(engineInput.downPercent) ||
-        !Number.isFinite(engineInput.ourMonthlyPayment) ||
-        !Number.isFinite(engineInput.pjMonthlyPayment) ||
-        (engineInput.declaredMonthlyIncome !== null && !Number.isFinite(engineInput.declaredMonthlyIncome))
-      ) {
-        return json({ error: "ตัวเลขในฟอร์มไม่ถูกต้อง" }, 400, origin);
-      }
 
       const result = creditCheck(engineInput);
       const dbLevel = ENGINE_LEVEL_TO_DB[result.level];
@@ -587,7 +733,7 @@ Deno.serve(async (req) => {
         .from("credit_checks")
         .insert({
           shop_id: verified.shopId,
-          customer_name: customerName.trim(),
+          customer_name: customerNameTrimmed,
           national_id: engineInput.idNumber,
           id_type: customerType,
           id_expiry: engineInput.idExpiryDate,
@@ -609,6 +755,13 @@ Deno.serve(async (req) => {
           engine_level: dbLevel,
           engine_reasons: result.reasons,
           engine_ratio: result.incomeRatio,
+          imei: imeiDigits || null,
+          pj_blacklist_status: pjResult.status,
+          pj_blacklist_hits: pjResult.status === "found" ? pjResult.hits.map(toStoredHit) : [],
+          pj_blacklist_checked_at: new Date().toISOString(),
+          pj_blacklist_error: pjResult.status === "error" ? (pjResult.error ?? null) : null,
+          id_issue_date: engineInput.idIssueDate,
+          fraud_flags: fraudFlags.map((f) => ({ code: f.code, severity: f.severity, detail_staff: f.detailStaff })),
         })
         .select("id")
         .single();
@@ -617,13 +770,14 @@ Deno.serve(async (req) => {
       const creditCheckId = inserted.id as string;
 
       if (files.length > 0) {
-        const fileRows = files.map((f: any) => ({
+        const fileRows = filesWithEtag.map((f: any) => ({
           credit_check_id: creditCheckId,
           kind: f.kind,
           r2_key: f.r2_key,
           mime: f.mime,
           size: f.size,
           sha256: typeof f.sha256 === "string" ? f.sha256 : null,
+          r2_etag: f.r2_etag ?? null, // (รีวิวติ๊ก [YELLOW] #2)
         }));
         const { error: filesErr } = await adminClient.from("credit_check_files").insert(fileRows);
         if (filesErr) {
@@ -642,6 +796,7 @@ Deno.serve(async (req) => {
           reasons_shop: result.reasons.map((r) => r.shopText),
           installment_used: result.installmentUsed,
           ratio: result.incomeRatio,
+          pj_blacklist: pjResult.status,
         },
         200,
         origin,
@@ -727,6 +882,88 @@ Deno.serve(async (req) => {
       const aws = makeAwsClient();
       const url = await presignGet(aws, r2.endpoint, r2.bucket, fileRow.r2_key as string);
       return json({ url }, 200, origin);
+    }
+
+    // ================= action: staff_pj_recheck (Supabase JWT — admin/staff เท่านั้น) =================
+    // (0167) ปุ่ม "ค้นซ้ำ" ในหน้ารายละเอียด — ค้น PJ ใหม่ด้วยเลขบัตร/IMEI ที่บันทึกไว้ตอน submit แล้ว
+    // update แถวเดิม ไม่ insert ใหม่ — ใช้ auth pattern เดียวกับ staff_file_url เป๊ะ
+    if (action === "staff_pj_recheck") {
+      const authHeader = req.headers.get("Authorization") ?? "";
+      const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+        global: { headers: { Authorization: authHeader } },
+        auth: { persistSession: false },
+      });
+      const { data: { user }, error: userErr } = await userClient.auth.getUser();
+      if (userErr || !user) {
+        return json({ error: "ต้องล็อกอินก่อน" }, 401, origin);
+      }
+
+      const { data: profile, error: profileErr } = await adminClient
+        .from("profiles")
+        .select("role, active")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (profileErr) throw profileErr;
+      if (!profile || !STAFF_ROLES.includes(profile.role) || profile.active === false) {
+        return json({ error: "ไม่มีสิทธิ์ค้น PJ" }, 403, origin);
+      }
+
+      // (รีวิวติ๊ก [YELLOW] #3) rate limit ต่อ staff คนนี้ (ไม่ใช่ต่อร้าน/ต่อ IP เหมือน action อื่น) — reuse
+      // credit_check_rate_limit_ok เดิม โดยส่ง p_shop_id=null (ข้าม shop-count) แล้วยัด hash ของ user id
+      // เข้าไปที่ p_ip_hash แทน (คีย์คนละมิติจาก IP จริง แต่ฟังก์ชันเดิมนับ/ล็อกตาม string เฉยๆ ใช้ซ้ำได้)
+      // prefix "staff:" กัน hash ชนกับ ip_hash จริงโดยบังเอิญ (คนละ namespace กันชัดเจน)
+      const staffIdHash = await hashIp(`staff:${user.id}`, SERVICE_ROLE);
+      const { data: staffRateOk, error: staffRateErr } = await adminClient.rpc("credit_check_rate_limit_ok", {
+        p_shop_id: null,
+        p_ip_hash: staffIdHash,
+        p_ip_limit: 30,
+        p_window_minutes: 60,
+      });
+      if (staffRateErr) throw staffRateErr;
+      if (!staffRateOk) return json({ error: "ค้น PJ ถี่เกินไป กรุณาลองใหม่ภายหลัง" }, 429, origin);
+
+      const { credit_check_id } = body;
+      if (!credit_check_id) return json({ error: "credit_check_id required" }, 400, origin);
+
+      const { data: row, error: rowErr } = await adminClient
+        .from("credit_checks")
+        .select("national_id_digits, imei")
+        .eq("id", credit_check_id)
+        .maybeSingle();
+      if (rowErr) throw rowErr;
+      if (!row) return json({ error: "ไม่พบคำขอนี้" }, 404, origin);
+
+      const PJ_USERNAME = env("PJ_USERNAME");
+      const PJ_PASSWORD = env("PJ_PASSWORD");
+      if (!PJ_USERNAME || !PJ_PASSWORD) return json({ error: "ยังไม่ได้ตั้งค่าบัญชี PJ" }, 501, origin);
+
+      const imeiDigits = row.imei ? String(row.imei).replace(/\D/g, "") : "";
+      const pjResult = await runWithBudget<PjBlacklistSearchOutcome>(
+        (signal) =>
+          searchPjBlacklist({
+            username: PJ_USERNAME,
+            password: PJ_PASSWORD,
+            nationalIdDigits: row.national_id_digits as string,
+            imeiDigits: imeiDigits || null,
+            signal,
+          }),
+        PJ_SEARCH_TIMEOUT_MS,
+        { status: "error", hits: [], error: "หมดเวลาค้นหา PJ" },
+      );
+
+      const storedHits = pjResult.status === "found" ? pjResult.hits.map(toStoredHit) : [];
+      const { error: updErr } = await adminClient
+        .from("credit_checks")
+        .update({
+          pj_blacklist_status: pjResult.status,
+          pj_blacklist_hits: storedHits,
+          pj_blacklist_checked_at: new Date().toISOString(),
+          pj_blacklist_error: pjResult.status === "error" ? (pjResult.error ?? null) : null,
+        })
+        .eq("id", credit_check_id);
+      if (updErr) throw updErr;
+
+      return json({ status: pjResult.status, hits: storedHits }, 200, origin);
     }
 
     return json({ error: "unknown action" }, 400, origin);

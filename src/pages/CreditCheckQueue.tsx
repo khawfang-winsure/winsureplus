@@ -217,6 +217,10 @@ export default function CreditCheckQueue() {
                         <td className="px-4 py-3 align-top">
                           <p className="font-medium text-ink">{item.customerName}</p>
                           <p className="text-xs text-ink-soft">{item.shopName} · บัตร {item.nationalIdMasked}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {item.pjBlacklistStatus === 'found' && <Badge tone="red">บัญชีดำ PJ {item.pjBlacklistHitCount}</Badge>}
+                            {item.fraudFlagCount > 0 && <Badge tone="red">⚠ {item.fraudFlagCount} สัญญาณ</Badge>}
+                          </div>
                         </td>
                         <td className="px-4 py-3 align-top">
                           {item.engineLevel ? (
@@ -261,6 +265,10 @@ export default function CreditCheckQueue() {
                       <div>
                         <p className="font-semibold text-ink">{item.customerName}</p>
                         <p className="text-xs text-ink-soft">{item.shopName} · บัตร {item.nationalIdMasked}</p>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {item.pjBlacklistStatus === 'found' && <Badge tone="red">บัญชีดำ PJ {item.pjBlacklistHitCount}</Badge>}
+                          {item.fraudFlagCount > 0 && <Badge tone="red">⚠ {item.fraudFlagCount} สัญญาณ</Badge>}
+                        </div>
                       </div>
                       {item.decision === null ? (
                         <Badge tone={waitTone(item.minutesToFirstOpen)}>{minutesLabel(item.minutesToFirstOpen)}</Badge>

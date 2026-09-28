@@ -66,6 +66,7 @@ interface FormState {
   customerType: CustomerType
   idNumber: string
   idExpiryDate: string
+  idIssueDate: string
   birthDate: string
   occupationType: OccupationType
   deviceCondition: DeviceCondition
@@ -76,6 +77,7 @@ interface FormState {
   pjMonthlyPayment: string
   declaredMonthlyIncome: string
   facebookUrl: string
+  imei: string
 }
 
 const INITIAL_FORM: FormState = {
@@ -83,6 +85,7 @@ const INITIAL_FORM: FormState = {
   customerType: 'thai',
   idNumber: '',
   idExpiryDate: '',
+  idIssueDate: '',
   birthDate: '',
   occupationType: 'salaried',
   deviceCondition: 'iphone_new',
@@ -93,6 +96,25 @@ const INITIAL_FORM: FormState = {
   pjMonthlyPayment: '',
   declaredMonthlyIncome: '',
   facebookUrl: '',
+  imei: '',
+}
+
+/** IMEI ไม่บังคับ — กรอกแล้วต้องเป็นตัวเลข 15 หลักพอดี (ค้นบัญชีดำ PJ เพิ่มจากเลขบัตร, Wave 3 2026-09-28) */
+function imeiError(imei: string): string | undefined {
+  const trimmed = imei.trim()
+  if (trimmed === '') return undefined
+  return /^\d{15}$/.test(trimmed) ? undefined : 'IMEI ต้องเป็นตัวเลข 15 หลัก'
+}
+
+/** บัตรออกมาไม่ถึง 180 วัน (มาตรวัดเดียวกับ engine rule CARD_RECENTLY_ISSUED) — ใช้ไฮไลต์ช่องแนบรูปประวัติเปลี่ยนชื่อ ThaID
+ *  เทียบแบบวันที่ล้วน (ไม่ยุ่งเวลา/timezone) ผ่าน Date ธรรมดา ก็พอสำหรับ hint ฝั่ง client (server ตัดสินจริงอีกที) */
+function isRecentlyIssued(idIssueDate: string, todayIsoStr: string): boolean {
+  if (!idIssueDate) return false
+  const issued = new Date(idIssueDate + 'T00:00:00Z').getTime()
+  const today = new Date(todayIsoStr + 'T00:00:00Z').getTime()
+  if (Number.isNaN(issued) || Number.isNaN(today)) return false
+  const diffDays = (today - issued) / (1000 * 60 * 60 * 24)
+  return diffDays >= 0 && diffDays < 180
 }
 
 function buildEngineInput(form: FormState, attachedFileKinds: AttachedFileKind[]): CreditCheckInput | null {
@@ -106,6 +128,8 @@ function buildEngineInput(form: FormState, attachedFileKinds: AttachedFileKind[]
     form.ourMonthlyPayment,
     form.pjMonthlyPayment,
   ]
+  // วันออกบัตร: บังคับเฉพาะบัตรประชาชนไทย (ต่างชาติ/เอกสารอื่นไม่บังคับ ตาม contract "required-ish")
+  if (form.customerType === 'thai') requiredText.push(form.idIssueDate)
   if (requiredText.some((v) => v.trim() === '')) return null
 
   const devicePrice = Number(form.devicePrice)
@@ -124,6 +148,7 @@ function buildEngineInput(form: FormState, attachedFileKinds: AttachedFileKind[]
     customerType: form.customerType,
     idNumber: form.idNumber.trim(),
     idExpiryDate: form.idExpiryDate || null,
+    idIssueDate: form.idIssueDate || undefined,
     birthDate: form.birthDate,
     occupationType: form.occupationType,
     deviceCondition: form.deviceCondition,
@@ -138,12 +163,14 @@ function buildEngineInput(form: FormState, attachedFileKinds: AttachedFileKind[]
   }
 }
 
-function toSubmitForm(input: CreditCheckInput, customerName: string): SubmitFormInput {
+function toSubmitForm(input: CreditCheckInput, customerName: string, imei: string): SubmitFormInput {
+  const trimmedImei = imei.trim()
   return {
     customerName,
     customerType: input.customerType,
     idNumber: input.idNumber,
     idExpiryDate: input.idExpiryDate,
+    idIssueDate: input.idIssueDate ?? null,
     birthDate: input.birthDate,
     occupationType: input.occupationType,
     deviceCondition: input.deviceCondition,
@@ -155,6 +182,7 @@ function toSubmitForm(input: CreditCheckInput, customerName: string): SubmitForm
     declaredMonthlyIncome: input.declaredMonthlyIncome,
     attachedFileKinds: input.attachedFileKinds,
     facebookUrl: input.facebookUrl,
+    imei: trimmedImei === '' ? null : trimmedImei,
   }
 }
 
@@ -209,12 +237,18 @@ export default function FormScreen({
 
   const showWorkEvidenceCallout = form.occupationType === 'freelancer' || form.occupationType === 'business_owner'
   const atFileLimit = attachedFiles.length >= MAX_FILES_PER_SUBMIT
+  const imeiErrorText = useMemo(() => imeiError(form.imei), [form.imei])
+  const recentlyIssuedCard = useMemo(() => isRecentlyIssued(form.idIssueDate, todayIso()), [form.idIssueDate])
 
   async function handleSubmit() {
     setSubmitError(null)
 
     if (!engineInput) {
       setSubmitError('กรุณากรอกข้อมูลที่มี * ให้ครบก่อนส่งคำขอ')
+      return
+    }
+    if (imeiErrorText) {
+      setSubmitError(imeiErrorText)
       return
     }
     if (!consentChecked) {
@@ -243,7 +277,7 @@ export default function FormScreen({
       }
 
       setStage('กำลังส่งคำขอ...')
-      const submitForm = toSubmitForm(engineInput, form.customerName.trim())
+      const submitForm = toSubmitForm(engineInput, form.customerName.trim(), form.imei)
       const result = await submitCreditCheck(token, submitForm, submittedFiles)
       onSubmitted(result)
     } catch (e) {
@@ -289,6 +323,13 @@ export default function FormScreen({
             </Field>
             <Field label="วันหมดอายุเอกสาร">
               <Input type="date" value={form.idExpiryDate} onChange={(e) => set('idExpiryDate', e.target.value)} />
+            </Field>
+            <Field
+              label="วันออกบัตร"
+              required={form.customerType === 'thai'}
+              hint={form.customerType === 'thai' ? undefined : 'ไม่บังคับสำหรับเอกสารต่างชาติ'}
+            >
+              <Input type="date" value={form.idIssueDate} onChange={(e) => set('idIssueDate', e.target.value)} />
             </Field>
             <Field label="วันเกิด" required>
               <Input type="date" value={form.birthDate} onChange={(e) => set('birthDate', e.target.value)} />
@@ -338,6 +379,16 @@ export default function FormScreen({
                 ))}
               </Select>
             </Field>
+            <Field label="IMEI เครื่อง (ถ้ามี)" hint={imeiErrorText ? undefined : 'ตัวเลข 15 หลัก ใช้ช่วยค้นประวัติเพิ่มเติม'} error={imeiErrorText}>
+              <Input
+                inputMode="numeric"
+                maxLength={15}
+                value={form.imei}
+                onChange={(e) => set('imei', e.target.value.replace(/[^0-9]/g, ''))}
+                aria-invalid={imeiErrorText ? true : undefined}
+                placeholder="เช่น 356789012345678"
+              />
+            </Field>
             <Field label="ราคาเครื่อง (บาท)" required>
               <Input type="number" inputMode="numeric" min={0} value={form.devicePrice} onChange={(e) => set('devicePrice', e.target.value)} />
             </Field>
@@ -373,6 +424,20 @@ export default function FormScreen({
               kind="id_card"
               label="รูปบัตรประชาชน / เอกสารประจำตัว"
               files={filesOfKind('id_card')}
+              disabled={atFileLimit}
+              onAdd={addFile}
+              onRemove={removeFile}
+            />
+            <FileUploader
+              kind="thaid_name_history"
+              label="ภาพประวัติการเปลี่ยนชื่อจากแอป ThaID"
+              hint={
+                recentlyIssuedCard
+                  ? 'บัตรเพิ่งออกใหม่ กรุณาแนบภาพประวัติเปลี่ยนชื่อ-สกุลจากแอป ThaID ของลูกค้า'
+                  : 'ไม่บังคับ — แนบเพิ่มได้ถ้ามี'
+              }
+              highlight={recentlyIssuedCard}
+              files={filesOfKind('thaid_name_history')}
               disabled={atFileLimit}
               onAdd={addFile}
               onRemove={removeFile}

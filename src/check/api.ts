@@ -86,7 +86,7 @@ export async function loginShop(loginCode: string, pin: string): Promise<LoginRe
 // sign_upload
 // ---------------------------------------------------------------------------
 
-export type FileKind = 'id_card' | 'payslip' | 'statement' | 'work_photo' | 'facebook_screenshot' | 'other'
+export type FileKind = 'id_card' | 'payslip' | 'statement' | 'work_photo' | 'facebook_screenshot' | 'thaid_name_history' | 'other'
 
 export interface FileToSign {
   kind: FileKind
@@ -131,6 +131,8 @@ export interface SubmitFormInput {
   customerType: CustomerType
   idNumber: string
   idExpiryDate: string | null
+  /** วันออกบัตร — บังคับเฉพาะบัตรประชาชนไทย (ต่างชาติ/เอกสารอื่น optional), Wave 3 addendum 2026-09-28 */
+  idIssueDate: string | null
   birthDate: string
   occupationType: OccupationType
   deviceCondition: DeviceCondition
@@ -142,6 +144,8 @@ export interface SubmitFormInput {
   declaredMonthlyIncome: number | null
   attachedFileKinds: AttachedFileKind[]
   facebookUrl: string
+  /** IMEI เครื่อง (ถ้ามี) — 15 หลัก ใช้ค้นบัญชีดำ PJ เพิ่มเติมจากเลขบัตร (Wave 3, 2026-09-28) */
+  imei: string | null
 }
 
 export interface SubmittedFile {
@@ -161,6 +165,10 @@ export interface SubmitResult {
   reasonsShop: string[]
   installmentUsed: number
   ratio: number | null
+  /** ผลค้นบัญชีดำ PJ อัตโนมัติ (Wave 3) — server ค้นเสร็จก่อนตอบกลับเสมอ ไม่มีค่า 'not_checked' ในจุดนี้
+   *  'found' เอนจิ้นบังคับ level อย่างน้อย 'needs_review' ไปแล้ว (ดู reasonsShop ที่มีข้อความทั่วไปกำกับ) —
+   *  'error' ไม่ต้องโชว์อะไรพิเศษที่ฝั่งร้าน (เจ้าหน้าที่ตามที่คิวแทน) */
+  pjBlacklist: 'clear' | 'found' | 'error'
 }
 
 export async function submitCreditCheck(
@@ -174,6 +182,7 @@ export async function submitCreditCheck(
     reasons_shop: string[]
     installment_used: number
     ratio: number | null
+    pj_blacklist: 'clear' | 'found' | 'error'
   }>({
     action: 'submit',
     token,
@@ -188,6 +197,7 @@ export async function submitCreditCheck(
     reasonsShop: json.reasons_shop,
     installmentUsed: json.installment_used,
     ratio: json.ratio,
+    pjBlacklist: json.pj_blacklist,
   }
 }
 

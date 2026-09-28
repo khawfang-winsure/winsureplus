@@ -28,6 +28,16 @@ export interface CreditCheckInput {
   declaredMonthlyIncome: number | null // รายได้/เดือนที่ลูกค้าแจ้ง; null หรือ <=0 = ไม่ได้กรอก
   attachedFileKinds: AttachedFileKind[]
   facebookUrl: string
+
+  // จำนวนรายการที่เจอจากค้นบัญชีดำ PJ อัตโนมัติ (Wave 3, PJ blacklist auto-check, คำตัดสินเจ้าของ 2026-09-28)
+  // — undefined/0 = ยังไม่ค้น/ค้นแล้วไม่เจอ/ค้นไม่สำเร็จ (ผู้เรียกต้อง "ค้นก่อนแล้วค่อยเรียก creditCheck()
+  // ครั้งเดียว" ไม่ใช่ patch ผลลัพธ์ทีหลัง — engine เป็น single source of truth ของ level+reasons ทั้งหมด)
+  pjBlacklistHits?: number
+
+  // --- anti-fraud layer 1 (addendum, คำตัดสินเจ้าของ 2026-09-28) ---
+  idIssueDate?: string | null // ISO date วันออกบัตร ปชช. (ต่างชาติไม่บังคับ) — undefined/null = ไม่ได้กรอก ข้ามกฎนี้
+  fraudSignals?: string[] // รหัสสัญญาณจากระบบฝั่ง server (NAME_CHANGED/DUP_FILE/FB_SHARED/PDF_EDITED/PDF_UNREADABLE)
+  // engine ไม่สนใจว่าอันไหน/กี่อัน แค่ length>0 = ต้อง review — ห้ามบอกร้านว่าสัญญาณคืออะไร (ดู FRAUD_SIGNAL.shopText)
 }
 
 export type CreditCheckSeverity = 'fail' | 'review'
@@ -113,6 +123,21 @@ const REASON_TEXT: Record<string, { shopText: string; staffText: string }> = {
     shopText: 'ลิงก์ Facebook ยังไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง',
     staffText: 'Facebook URL รูปแบบผิดหรือว่าง ต้องยืนยันด้วยตา',
   },
+  PJ_BLACKLIST_FOUND: {
+    // ข้อความฝั่งร้าน = คำเป๊ะจาก contract (pj-blacklist-contract.md) — ห้ามใส่รายละเอียด invoice/ร้านอื่น
+    // เด็ดขาด (PDPA — ร้านที่ส่งคำขอไม่ใช่ร้านที่เป็นเจ้าของประวัติที่เจอ)
+    shopText: 'พบประวัติในระบบ ต้องรอทีมพิจารณา',
+    staffText: 'พบประวัติในบัญชีดำ PJ จากการค้นอัตโนมัติ (ดูรายละเอียดที่รายการที่เจอ)',
+  },
+  CARD_RECENTLY_ISSUED: {
+    shopText: 'บัตรประชาชนเพิ่งออกใหม่ กรุณาแนบภาพประวัติการเปลี่ยนชื่อ-สกุลจากแอป ThaID ของลูกค้าเพิ่มเติม',
+    staffText: 'บัตรออกภายใน 180 วัน (เสี่ยงเปลี่ยนชื่อหนีประวัติ) ตรวจภาพ ThaID ที่แนบ',
+  },
+  FRAUD_SIGNAL: {
+    // ห้ามบอกร้านว่าสัญญาณคืออะไร (addendum คำตัดสินเจ้าของ 2026-09-28) — ข้อความทั่วไปเสมอไม่ว่าจะเจอกี่สัญญาณ
+    shopText: 'ข้อมูลบางส่วนต้องให้ทีมตรวจเพิ่ม',
+    staffText: 'พบสัญญาณเตือนจากระบบ — ดูรายละเอียดที่บล็อก "สัญญาณเตือน" ในหน้ารายละเอียด ห้ามบอกร้านว่าสัญญาณคืออะไร',
+  },
 }
 
 /** label ตามระดับผล — ห้ามใช้คำว่า "อนุมัติ"/"ปฏิเสธ" เด็ดขาด แม้แต่ fail ก็ใช้โทน "รอทีม" */
@@ -175,6 +200,13 @@ export function calcAge(birthDate: string, today: string): number {
     age -= 1
   }
   return age
+}
+
+/** จำนวนวันจาก a ถึง b (ISO date, UTC midnight ทั้งคู่) — ใช้กับ R10 (บัตรเพิ่งออกใหม่) */
+function daysBetweenIso(a: string, b: string): number {
+  const ta = new Date(a + 'T00:00:00Z').getTime()
+  const tb = new Date(b + 'T00:00:00Z').getTime()
+  return Math.round((tb - ta) / (24 * 60 * 60 * 1000))
 }
 
 /** ดาวน์ขั้นต่ำตามประเภทเครื่อง ก่อนรวมกฎต่างชาติ */
@@ -266,6 +298,28 @@ export function creditCheck(input: CreditCheckInput): CreditCheckResult {
   const fb = input.facebookUrl.trim()
   if (fb === '' || !/^https?:\/\/(www\.)?(facebook|fb)\.com\//i.test(fb)) {
     reasons.push(makeReason('FACEBOOK_UNVERIFIED', 'review'))
+  }
+
+  // R9 — ประวัติบัญชีดำ PJ (ค้นอัตโนมัติตอน submit, Wave 3 2026-09-28) — เจอ = ต้อง review เสมอ ไม่ fail
+  // อัตโนมัติเด็ดขาด (คำตัดสินเจ้าของ: ระบบอาจ false positive จากเลขบัตรพิมพ์ผิด/ชนกันได้ ต้องให้คนตัดสิน)
+  if (input.pjBlacklistHits && input.pjBlacklistHits > 0) {
+    reasons.push(makeReason('PJ_BLACKLIST_FOUND', 'review'))
+  }
+
+  // R10 — บัตรเพิ่งออกใหม่ (addendum anti-fraud layer 1, คำตัดสินเจ้าของ 2026-09-28) — ออกภายใน 180 วัน
+  // เสี่ยงเปลี่ยนชื่อหนีประวัติเสีย ให้ร้านแนบภาพประวัติเปลี่ยนชื่อจาก ThaID เพิ่ม ไม่มี idIssueDate = ข้ามกฎนี้
+  if (input.idIssueDate) {
+    const daysSinceIssue = daysBetweenIso(input.idIssueDate, input.today)
+    if (daysSinceIssue >= 0 && daysSinceIssue <= 180) {
+      reasons.push(makeReason('CARD_RECENTLY_ISSUED', 'review'))
+    }
+  }
+
+  // R11 — สัญญาณเตือนจากระบบ (NAME_CHANGED/DUP_FILE/FB_SHARED/PDF_EDITED/PDF_UNREADABLE ฯลฯ คำนวณฝั่ง
+  // Edge Function ก่อนเรียกฟังก์ชันนี้) มีสัญญาณใดก็ตามอย่างน้อย 1 ตัว = review เสมอ ไม่ fail อัตโนมัติ —
+  // engine ไม่สนใจว่าสัญญาณไหน แค่ >0 ตัว (ห้ามบอกร้านว่าสัญญาณคืออะไร ตาม FRAUD_SIGNAL.shopText)
+  if (input.fraudSignals && input.fraudSignals.length > 0) {
+    reasons.push(makeReason('FRAUD_SIGNAL', 'review'))
   }
 
   const level: CreditCheckLevel = reasons.some((r) => r.severity === 'fail')

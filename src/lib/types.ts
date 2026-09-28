@@ -1042,6 +1042,9 @@ export type CreditCheckBlacklistResult = 'not_checked' | 'clear' | 'found'
 export type CreditCheckFacebookResult = 'not_checked' | 'confirmed' | 'mismatch'
 export type CreditCheckDecision = 'approved' | 'rejected' | 'need_more_info'
 
+/** ผลค้นบัญชีดำ PJ อัตโนมัติ (Wave 3, migration 0167) — not_checked = แถวเก่าก่อน 0167 ที่ยังไม่เคยค้น */
+export type CreditCheckPjBlacklistStatus = 'not_checked' | 'clear' | 'found' | 'error'
+
 /** 1 แถวในคิว "คำขอเช็คเครดิต" (v_credit_check_queue) — national_id มาสก์แล้วเหลือ 4 ตัวท้าย */
 export interface CreditCheckQueueItem {
   id: string
@@ -1062,6 +1065,10 @@ export interface CreditCheckQueueItem {
   decidedAt: string | null
   minutesToFirstOpen: number
   minutesToDecision: number
+  // --- Wave 3 (0167) — แค่จำนวน ไม่มีรายละเอียด (รายละเอียดเต็มอยู่ที่ CreditCheckDetail เท่านั้น) ---
+  pjBlacklistStatus: CreditCheckPjBlacklistStatus
+  pjBlacklistHitCount: number
+  fraudFlagCount: number
 }
 
 /** เหตุผลจากเอนจิ้น (engine_reasons jsonb) — โครงตรงกับ CreditCheckReason ของ src/lib/creditCheck.ts */
@@ -1074,10 +1081,44 @@ export interface CreditCheckReasonRow {
 
 export interface CreditCheckFile {
   id: string
-  kind: 'payslip' | 'statement' | 'work_photo' | 'facebook_screenshot' | 'id_card' | 'other'
+  kind:
+    | 'payslip'
+    | 'statement'
+    | 'work_photo'
+    | 'facebook_screenshot'
+    | 'id_card'
+    | 'thaid_name_history' // (0167 addendum) ภาพประวัติเปลี่ยนชื่อจากแอป ThaID
+    | 'other'
   mime: string | null
   size: number | null
   createdAt: string
+}
+
+/** 1 รายการที่เจอจากค้นบัญชีดำ PJ (Wave 3, 0167) — staff เห็นเต็ม ร้านห้ามเห็นเด็ดขาด (PDPA) */
+export interface CreditCheckPjBlacklistHit {
+  invoiceNo: string
+  statusLabel: string
+  customerName: string
+  shopName: string
+  shopContact: string
+  brand: string
+  model: string
+  imeiLast4: string
+  downPaymentDate: string
+  nextDueDate: string
+  installmentsTotal: number | null
+  installmentsPaid: number | null
+  installmentsOverdue: number | null
+  overdueDays: number | null // (v2, ตาม HTML จริงของ PJ) จำนวนวันค้างจาก ".payment-status" เช่น "540 days overdue"
+  totalAmount: number | null // (v2) ยอดเงินรวม (บาท) — PJ ตั้ง label "จำนวนงวดทั้งหมด" ผิด ค่าจริงคือยอดเงิน ไม่ใช่จำนวนงวด
+  matchedBy: 'national_id' | 'imei'
+}
+
+/** สัญญาณเตือนทุจริต 1 รายการ (addendum, 0167) — staff เห็นเต็ม ร้านห้ามรู้ว่าสัญญาณคืออะไรเด็ดขาด */
+export interface CreditCheckFraudFlag {
+  code: 'NAME_CHANGED' | 'DUP_FILE' | 'FB_SHARED' | 'PDF_EDITED' | 'PDF_UNREADABLE'
+  severity: 'warn' | 'high'
+  detailStaff: string
 }
 
 /** รายละเอียดเต็ม 1 คำขอ (เห็น national_id เต็ม — เฉพาะหน้านี้เท่านั้น ห้ามส่งกลับให้ฝั่งร้าน) */
@@ -1095,4 +1136,11 @@ export interface CreditCheckDetail extends CreditCheckQueueItem {
   facebookUrl: string | null
   engineReasons: CreditCheckReasonRow[]
   files: CreditCheckFile[]
+  // --- Wave 3 (0167) ---
+  pjBlacklistHits: CreditCheckPjBlacklistHit[]
+  pjBlacklistCheckedAt: string | null
+  pjBlacklistError: string | null
+  // --- addendum anti-fraud layer 1 (0167) ---
+  idIssueDate: string | null
+  fraudFlags: CreditCheckFraudFlag[]
 }
