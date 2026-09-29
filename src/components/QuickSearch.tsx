@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, FileText, Loader2, Search } from 'lucide-react'
-import { getContracts, getShops } from '../lib/db'
+import { getContractsForSearch, getShops } from '../lib/db'
+import type { ContractSearchRow } from '../lib/db'
 import { useAuth } from '../lib/auth'
-import type { Contract, Shop } from '../lib/types'
+import type { Shop } from '../lib/types'
 
 // ---------- ชนิดแถวผลลัพธ์ ----------
 
@@ -25,7 +26,7 @@ type SearchResult = ContractResult | ShopResult
 
 // ---------- helper filter ----------
 
-function filterContracts(contracts: Contract[], q: string): ContractResult[] {
+function filterContracts(contracts: ContractSearchRow[], q: string): ContractResult[] {
   const lower = q.toLowerCase()
   return contracts
     .filter(
@@ -80,7 +81,7 @@ function QuickSearchModal({ navigate, isAdmin }: { navigate: ReturnType<typeof u
   const [selectedIndex, setSelectedIndex] = useState(0)
 
   // cache ข้อมูลหลังโหลดครั้งแรก
-  const contractsCache = useRef<Contract[] | null>(null)
+  const contractsCache = useRef<ContractSearchRow[] | null>(null)
   const shopsCache = useRef<Shop[] | null>(null)
 
   // ผลลัพธ์ที่ filter แล้ว
@@ -100,7 +101,7 @@ function QuickSearchModal({ navigate, isAdmin }: { navigate: ReturnType<typeof u
     if (contractsCache.current === null || shopsCache.current === null) {
       setLoading(true)
       try {
-        const [contracts, shops] = await Promise.all([getContracts(), getShops()])
+        const [contracts, shops] = await Promise.all([getContractsForSearch(), getShops()])
         contractsCache.current = contracts
         shopsCache.current = shops
       } catch {

@@ -5,8 +5,9 @@ import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
-import { getAllStatuses, getContractAggregates, getContracts, getShops } from '../lib/db'
-import type { Contract, ContractStatus, ContractStatusRow, OverdueBucket } from '../lib/types'
+import { getAllStatuses, getContractAggregates, getContractsForAllCustomers, getShops } from '../lib/db'
+import type { ContractAggregate, ContractAllCustomersRow } from '../lib/db'
+import type { Contract, ContractStatus, ContractStatusRow, OverdueBucket, Shop } from '../lib/types'
 import { useAsync } from '../lib/useAsync'
 
 // ป้ายกลุ่มความล่าช้า (ใช้ในดรอปดาวน์ + badge)
@@ -24,7 +25,7 @@ const BUCKET_OPTS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90
 
 // ป้ายสถานะสุขภาพสัญญา — ใช้ bucket จาก v_contract_status
 // "รอเอกสาร" ไม่ใช่สถานะที่มาแทนความล่าช้าอีกต่อไป (2026-09-22) — โชว์คู่กับป้ายสถานะปกติเสมอ
-function StatusPills({ contract, st }: { contract: Contract; st: ContractStatusRow | undefined }) {
+function StatusPills({ contract, st }: { contract: Pick<Contract, 'status' | 'pendingDocuments'>; st: ContractStatusRow | undefined }) {
   let statusBadge: ReactNode
   if (contract.status !== 'active') {
     statusBadge = <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
@@ -50,11 +51,19 @@ function StatusPills({ contract, st }: { contract: Contract; st: ContractStatusR
   )
 }
 
+// ระบุ type ชัด (ห้ามให้ TS อนุมานเป็น Contract[]) — สัญญาที่ดึงมาเป็นแบบตัดคอลัมน์ 20 ช่อง
+interface AllCustomersData {
+  contracts: ContractAllCustomersRow[]
+  shops: Shop[]
+  statuses: ContractStatusRow[]
+  aggregates: Map<string, ContractAggregate>
+}
+
 export default function AllCustomers() {
-  const { data, loading } = useAsync(
+  const { data, loading } = useAsync<AllCustomersData>(
     async () => {
       const [contracts, shops, statuses, aggregates] = await Promise.all([
-        getContracts(),
+        getContractsForAllCustomers(),
         getShops(),
         getAllStatuses(),
         getContractAggregates(),

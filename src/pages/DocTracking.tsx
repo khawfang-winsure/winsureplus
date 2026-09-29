@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import { FileBox, FileCheck, AlertTriangle } from 'lucide-react'
 import { Badge, Button, EmptyState, Input, Loading, PageTitle, Select } from '../components/ui'
 import { thaiDate } from '../lib/format'
-import { getContracts, getShops, markDocsReceived, markBoxReceived } from '../lib/db'
+import { getContractsForDocTracking, getShops, markDocsReceived, markBoxReceived } from '../lib/db'
+import type { ContractDocTrackingRow } from '../lib/db'
 import { boxRequired, isDocComplete, shopDocStats, formatIncompleteItems } from '../lib/docTracking'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
-import type { Contract, Shop } from '../lib/types'
+import type { Shop } from '../lib/types'
 
 // ===== แปลง YYYY-MM → ชื่อเดือนไทย + ปี พ.ศ. =====
 function thaiMonthLabel(ym: string): string {
@@ -34,10 +35,10 @@ function DocRow({
   userName,
   onUpdated,
 }: {
-  contract: Contract
+  contract: ContractDocTrackingRow
   refDate: Date
   userName: string | null
-  onUpdated: (updated: Partial<Contract> & { id: string }) => void
+  onUpdated: (updated: Partial<ContractDocTrackingRow> & { id: string }) => void
 }) {
   const days = contract.transactionDate ? daysOpen(contract.transactionDate, refDate) : null
 
@@ -48,7 +49,6 @@ function DocRow({
       id: contract.id,
       originalDocsReceived: true,
       originalDocsReceivedAt: now,
-      originalDocsReceivedBy: userName ?? null,
     })
   }
 
@@ -59,7 +59,6 @@ function DocRow({
       id: contract.id,
       phoneBoxReceived: true,
       phoneBoxReceivedAt: now,
-      phoneBoxReceivedBy: userName ?? null,
     })
   }
 
@@ -134,16 +133,16 @@ export default function DocTracking() {
 
   const { data, loading } = useAsync(
     async () => {
-      const [contracts, shops] = await Promise.all([getContracts(), getShops()])
+      const [contracts, shops] = await Promise.all([getContractsForDocTracking(), getShops()])
       return { contracts, shops }
     },
-    { contracts: [] as Contract[], shops: [] as Shop[] },
+    { contracts: [] as ContractDocTrackingRow[], shops: [] as Shop[] },
   )
 
   // optimistic update — แก้ contract ใน local state โดยไม่ต้อง refetch
-  const [overrides, setOverrides] = useState<Map<string, Partial<Contract>>>(new Map())
+  const [overrides, setOverrides] = useState<Map<string, Partial<ContractDocTrackingRow>>>(new Map())
 
-  function handleUpdated(patch: Partial<Contract> & { id: string }) {
+  function handleUpdated(patch: Partial<ContractDocTrackingRow> & { id: string }) {
     setOverrides((prev) => {
       const next = new Map(prev)
       next.set(patch.id, { ...(next.get(patch.id) ?? {}), ...patch })
@@ -152,7 +151,7 @@ export default function DocTracking() {
   }
 
   // รวม overrides เข้ากับ contracts จาก DB
-  const merged = useMemo<Contract[]>(
+  const merged = useMemo<ContractDocTrackingRow[]>(
     () =>
       data.contracts.map((c) => {
         const ov = overrides.get(c.id)
@@ -181,7 +180,7 @@ export default function DocTracking() {
   // จัดกลุ่มตามร้าน เรียงร้านที่มีเคสมาก→น้อย
   const incompleteGroups = useMemo(() => {
     const flagged = activeOnline.filter((c) => c.docsIncomplete === true)
-    const map = new Map<string, Contract[]>()
+    const map = new Map<string, ContractDocTrackingRow[]>()
     flagged.forEach((c) => {
       if (!map.has(c.shopId)) map.set(c.shopId, [])
       map.get(c.shopId)!.push(c)
@@ -247,7 +246,7 @@ export default function DocTracking() {
 
   // จัดกลุ่มตาม shopId เรียงตาม totalPendingCount มาก→น้อย
   const groups = useMemo(() => {
-    const map = new Map<string, Contract[]>()
+    const map = new Map<string, ContractDocTrackingRow[]>()
     filtered.forEach((c) => {
       if (!map.has(c.shopId)) map.set(c.shopId, [])
       map.get(c.shopId)!.push(c)

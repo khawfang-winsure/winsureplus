@@ -34,6 +34,15 @@ export function formatIncompleteItems(items: string[]): string {
     .join(', ')
 }
 
+/** ฟิลด์ที่ boxRequired อ่านจริง */
+export type BoxRequiredInput = Pick<Contract, 'condition' | 'createdAt' | 'hasPhoneBox'>
+
+/** ฟิลด์ที่ isDocComplete อ่านจริง (รวมของ boxRequired) */
+export type DocCompleteInput = BoxRequiredInput & Pick<Contract, 'originalDocsReceived' | 'phoneBoxReceived'>
+
+/** ฟิลด์ที่ shopDocStats อ่านจริง (รวมของ isDocComplete + shopId/transactionDate) */
+export type ShopDocStatsInput = DocCompleteInput & Pick<Contract, 'shopId' | 'transactionDate'>
+
 export interface ShopDocStats {
   shopId: string
   pendingDocsCount: number   // สัญญาที่ originalDocsReceived=false
@@ -55,7 +64,7 @@ export interface ShopDocStats {
  * Note: createdAt missing (undefined/'') → '' < CUTOFF → grandfathered (ตั้งใจ)
  *       ใช้งานได้ใน mock dev mode ที่ไม่มี createdAt
  */
-export function boxRequired(c: Contract): boolean {
+export function boxRequired(c: BoxRequiredInput): boolean {
   const isNewDevice = c.condition === 'new'
   // slice(0,10) กัน 'T' timezone suffix — compare date-only string กับ CUTOFF
   const isAfterCutoff = (c.createdAt ?? '').slice(0, 10) >= DOC_BOX_RULE_CUTOFF
@@ -90,7 +99,7 @@ export function boxRequired(c: Contract): boolean {
  *     boxRequired = true (new && >= cutoff)
  *     complete = true && (true → true) = true  ✓ ครบ (รับกล่องแล้ว)
  */
-export function isDocComplete(c: Contract): boolean {
+export function isDocComplete(c: DocCompleteInput): boolean {
   const required = boxRequired(c)
   return (
     c.originalDocsReceived === true &&
@@ -121,7 +130,7 @@ export function isDocComplete(c: Contract): boolean {
  * // ผล: pendingDocs=1, pendingBox=2, totalPending=2, completed=2
  */
 export function shopDocStats(
-  contracts: Contract[],
+  contracts: ShopDocStatsInput[],
   shopId: string,
   referenceDate: Date = new Date(),
 ): ShopDocStats {
@@ -130,7 +139,7 @@ export function shopDocStats(
   const refMs = referenceDate.getTime()
 
   // วันค้าง (วันนี้ - transactionDate) ปัดลง — skip ถ้าไม่มี date
-  function daysOpen(c: Contract): number | null {
+  function daysOpen(c: Pick<Contract, 'transactionDate'>): number | null {
     if (!c.transactionDate) return null
     const txMs = new Date(c.transactionDate).getTime()
     if (isNaN(txMs)) return null

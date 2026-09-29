@@ -10,7 +10,7 @@ import { buildBulkSummary, buildRejectionBanner, REJECTION_REASON_LABEL } from '
 import {
   clearNeedsFix,
   forceMarkSummaryShopSent,
-  getContracts,
+  getContractsForWaitingSummary,
   getMediaGateFrom,
   getMediaSlots,
   getMediaStatuses,
@@ -20,11 +20,12 @@ import {
   markSummaryAccountingSent,
   updateSummaryNote,
 } from '../lib/db'
+import type { ContractWaitingSummaryRow } from '../lib/db'
 import { DEFAULT_MEDIA_SLOTS, isGated, type MediaSlot } from '../lib/media'
 import { canMarkSummary, summaryBlockReason } from '../lib/review'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
-import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
+import type { ContractMediaStatus, Shop } from '../lib/types'
 
 type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
 type SortDir = 'asc' | 'desc'
@@ -38,7 +39,7 @@ const SORT_OPTS: { value: `${SortKey}_${SortDir}`; label: string }[] = [
   { value: 'createdAt_asc',        label: 'วันที่เพิ่มข้อมูล (เก่า→ใหม่)' },
 ]
 
-function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[] {
+function sortContracts(list: ContractWaitingSummaryRow[], key: SortKey, dir: SortDir): ContractWaitingSummaryRow[] {
   return [...list].sort((a, b) => {
     let cmp = 0
     if (key === 'contractNo') {
@@ -63,7 +64,7 @@ function SummaryNoteModal({
   onClose,
   onDone,
 }: {
-  contract: Contract
+  contract: ContractWaitingSummaryRow
   byName: string
   onClose: () => void
   onDone: (note: string | null, byName: string) => void
@@ -139,7 +140,7 @@ function ForceSummaryModal({
   onClose,
   onDone,
 }: {
-  contract: Contract
+  contract: ContractWaitingSummaryRow
   dateISO: string
   onClose: () => void
   onDone: (contractId: string) => void
@@ -225,7 +226,7 @@ function ForceSummaryModal({
 const today = new Date().toISOString().slice(0, 10)
 const SEL_KEY = 'waiting-summary:selected'
 const DATE_KEY = 'waiting-summary:date'
-const netOf = (c: Contract) =>
+const netOf = (c: ContractWaitingSummaryRow) =>
   calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee).net
 
 export default function WaitingSummary() {
@@ -238,10 +239,10 @@ export default function WaitingSummary() {
   const byName = name ?? 'ไม่ระบุชื่อ'
   const { data, loading } = useAsync(
     async () => {
-      const [contracts, shops] = await Promise.all([getContracts(), getShops()])
+      const [contracts, shops] = await Promise.all([getContractsForWaitingSummary(), getShops()])
       return { contracts, shops }
     },
-    { contracts: [] as Contract[], shops: [] as Shop[] },
+    { contracts: [] as ContractWaitingSummaryRow[], shops: [] as Shop[] },
   )
 
   // 2 ด่าน: locallyShopSent = กดส่งร้านรอบนี้ (เด้งไปคอลัมน์ขวา), locallyAccountingSent = กดส่งบัญชี (จบ)
@@ -252,9 +253,9 @@ export default function WaitingSummary() {
   const [clearingId, setClearingId] = useState<string | null>(null)
   // หมายเหตุเคสติดปัญหา — เก็บ override ในเครื่องหลังบันทึก (ทั้งข้อความ+คนเขียน) กันต้อง reload ทั้งหน้า
   const [noteOverride, setNoteOverride] = useState<Map<string, { note: string | null; by: string }>>(new Map())
-  const [noteTarget, setNoteTarget] = useState<Contract | null>(null)
+  const [noteTarget, setNoteTarget] = useState<ContractWaitingSummaryRow | null>(null)
   // ปุ่มฉุกเฉิน "สรุปยอดโดยไม่ผ่านตรวจ" — เฉพาะแอดมิน, เฉพาะเคสที่ canSummarizeCase() เป็น false (คุณเตยเคาะ 2026-09-12)
-  const [forceTarget, setForceTarget] = useState<Contract | null>(null)
+  const [forceTarget, setForceTarget] = useState<ContractWaitingSummaryRow | null>(null)
   const [selected, setSelected] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(SEL_KEY)
@@ -296,10 +297,10 @@ export default function WaitingSummary() {
 
   const shopOf = (id: string) => data.shops.find((s) => s.id === id)
   // หมายเหตุที่ใช้แสดงจริง — ถ้ามี override (เพิ่งบันทึกรอบนี้) ใช้ override ก่อน ไม่งั้นใช้ค่าจาก DB
-  const noteOf = (c: Contract) =>
+  const noteOf = (c: ContractWaitingSummaryRow) =>
     noteOverride.has(c.id) ? noteOverride.get(c.id)!.note : c.summaryNote ?? null
   // ป้ายชื่อคนโน้ต — ต้องมาจากแหล่งเดียวกับ noteOf กันข้อความ/ชื่อไม่ตรงกันระหว่างรอ reload
-  const noteByOf = (c: Contract) =>
+  const noteByOf = (c: ContractWaitingSummaryRow) =>
     noteOverride.has(c.id) ? noteOverride.get(c.id)!.by : c.summaryNoteBy ?? null
 
   // จำสิ่งที่ติ๊กไว้ (ฝั่งร้าน) + วันที่สรุป ข้าม reload
@@ -366,14 +367,14 @@ export default function WaitingSummary() {
 
   // กดสรุปยอดส่งร้านของเคสนี้ได้ไหม — เกทเดียวกับ canSendEmail (ห้ามโอนเงินก่อนตรวจผ่าน, ล็อกคุณเตย 2026-09-12)
   // fail closed: ยังไม่รู้ gateFrom (กำลังโหลด/โหลดพัง) -> false เสมอ ไม่ว่าเคสจะเก่าหรือใหม่
-  function canSummarizeCase(c: Contract): boolean {
+  function canSummarizeCase(c: ContractWaitingSummaryRow): boolean {
     if (!gateFromLoaded) return false
     return canMarkSummary(c.reviewStatus ?? null, isGated(c, gateFrom))
   }
 
   // ข้อความอธิบายว่าทำไมกดสรุปยอดไม่ได้ — ใช้ summaryBlockReason() ที่ล็อกคำไว้แล้ว (ห้ามพิมพ์เอง)
   // ยกเว้นช่วงกำลังโหลด/โหลดพัง ซึ่งเป็นสถานะ "ยังไม่รู้" ไม่ใช่กฎทางธุรกิจ เลยมีข้อความของตัวเอง
-  function summaryReasonFor(c: Contract): string | null {
+  function summaryReasonFor(c: ContractWaitingSummaryRow): string | null {
     if (!gateFromLoaded) {
       return gateFromError
         ? 'ตรวจสอบเงื่อนไขก่อนสรุปยอดไม่สำเร็จ (เน็ตอาจสะดุด) กดลองใหม่ด้านบนก่อนนะคะ'
@@ -404,7 +405,7 @@ export default function WaitingSummary() {
   }, [trackedShopIds])
 
   // ประเมินสถานะรูปของเคส (null = ยังไม่โหลดเสร็จ/ไม่เข้าเกณฑ์ติดตาม)
-  function mediaEvaluationFor(c: Contract) {
+  function mediaEvaluationFor(c: ContractWaitingSummaryRow) {
     const status = mediaStatuses.get(c.id)
     if (!status) return null
     return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, emailSentAt: c.emailSentAt })
@@ -451,7 +452,7 @@ export default function WaitingSummary() {
 
   // ร้านที่เลือกได้ = ร้านที่มีเคสค้างใน "ทั้ง 2 base" (union) หลังกรองช่วงวันที่ — จะได้ไม่หายตอนกรอง
   const shopOptions = useMemo(() => {
-    const inRange = (c: Contract) => {
+    const inRange = (c: ContractWaitingSummaryRow) => {
       if (fromDate && c.transactionDate < fromDate) return false
       if (toDate && c.transactionDate > toDate) return false
       return true
@@ -472,7 +473,7 @@ export default function WaitingSummary() {
   }
 
   // ตัวกรอง+sort ใช้ร่วมทั้ง 2 คอลัมน์
-  const applyFilterSort = (list: Contract[]) => {
+  const applyFilterSort = (list: ContractWaitingSummaryRow[]) => {
     const [key, dir] = sortOpt.split('_') as [SortKey, SortDir]
     const filtered = list.filter((c) => {
       if (fromDate && c.transactionDate < fromDate) return false
@@ -538,7 +539,7 @@ export default function WaitingSummary() {
 
   // จัดกลุ่มเคสที่เลือกตามร้าน เพื่อป้อนตัวสร้างข้อความรวม — ฝั่งร้าน
   const groups = useMemo(() => {
-    const map = new Map<string, { shop: Shop; items: Contract[] }>()
+    const map = new Map<string, { shop: Shop; items: ContractWaitingSummaryRow[] }>()
     pendingShop
       .filter((c) => selected.has(c.id))
       .forEach((c) => {
@@ -559,7 +560,7 @@ export default function WaitingSummary() {
 
   // จัดกลุ่มเคสที่เลือกฝั่งบัญชีตามร้าน
   const accountingGroups = useMemo(() => {
-    const map = new Map<string, { shop: Shop; items: Contract[] }>()
+    const map = new Map<string, { shop: Shop; items: ContractWaitingSummaryRow[] }>()
     pendingAccounting
       .filter((c) => selectedAccounting.has(c.id))
       .forEach((c) => {

@@ -7,7 +7,7 @@ import { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractM
 import { thaiDate } from '../lib/format'
 import { buildEmailText } from '../lib/messages'
 import {
-  getContracts,
+  getContractsForWaitingEmail,
   getMediaGateFrom,
   getMediaSlots,
   getMediaStatuses,
@@ -17,11 +17,12 @@ import {
   markEmailSent,
   sendCompanyEmail,
 } from '../lib/db'
+import type { ContractWaitingEmailRow } from '../lib/db'
 import { DEFAULT_MEDIA_SLOTS, isGated, missingSummary, type MediaSlot } from '../lib/media'
 import { canSendEmail, reviewStatusLabel, REVIEW_BADGE_DRAFT } from '../lib/review'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
-import type { Contract, ContractMediaStatus, Shop } from '../lib/types'
+import type { ContractMediaStatus, Shop } from '../lib/types'
 
 type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
 type SortDir = 'asc' | 'desc'
@@ -35,7 +36,7 @@ const SORT_OPTS: { value: `${SortKey}_${SortDir}`; label: string }[] = [
   { value: 'createdAt_asc',        label: 'วันที่เพิ่มข้อมูล (เก่า→ใหม่)' },
 ]
 
-function sortContracts(list: Contract[], key: SortKey, dir: SortDir): Contract[] {
+function sortContracts(list: ContractWaitingEmailRow[], key: SortKey, dir: SortDir): ContractWaitingEmailRow[] {
   return [...list].sort((a, b) => {
     let cmp = 0
     if (key === 'contractNo') {
@@ -66,14 +67,14 @@ export default function WaitingEmail() {
   const isAdmin = role === 'admin'
   const { data, loading } = useAsync(
     async () => {
-      const [contracts, shops] = await Promise.all([getContracts(), getShops()])
+      const [contracts, shops] = await Promise.all([getContractsForWaitingEmail(), getShops()])
       return { contracts, shops }
     },
-    { contracts: [] as Contract[], shops: [] as Shop[] },
+    { contracts: [] as ContractWaitingEmailRow[], shops: [] as Shop[] },
   )
 
   const [sentIds, setSentIds] = useState<Set<string>>(new Set())
-  const [view, setView] = useState<Contract | null>(null)
+  const [view, setView] = useState<ContractWaitingEmailRow | null>(null)
   const [sortOpt, setSortOpt] = useState<`${SortKey}_${SortDir}`>('transactionDate_desc')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
@@ -170,13 +171,13 @@ export default function WaitingEmail() {
     setMediaRetryNonce((n) => n + 1)
   }
 
-  function evaluationFor(c: Contract) {
+  function evaluationFor(c: ContractWaitingEmailRow) {
     const status = mediaStatuses.get(c.id)
     if (!status) return null
     return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, emailSentAt: c.emailSentAt })
   }
 
-  function renderMediaPill(c: Contract) {
+  function renderMediaPill(c: ContractWaitingEmailRow) {
     const status = mediaStatuses.get(c.id)
     const hasFiles = !!status && Object.values(status.counts).some((n) => n > 0)
     if (!hasFiles) return <Badge tone="neutral">ไม่มีข้อมูล</Badge>
@@ -217,13 +218,13 @@ export default function WaitingEmail() {
     return sortContracts(filtered, key, dir)
   }, [base, sortOpt, fromDate, toDate, shopFilter])
 
-  async function doMarkSent(c: Contract) {
+  async function doMarkSent(c: ContractWaitingEmailRow) {
     await markEmailSent(c.id, name ?? undefined)
     setSentIds((prev) => new Set([...prev, c.id]))
     setView(null)
   }
 
-  function openView(c: Contract) {
+  function openView(c: ContractWaitingEmailRow) {
     setView(c)
     setSending(false)
     setSendError(null)

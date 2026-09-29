@@ -6,6 +6,20 @@ import type { Contract, Shop } from './types'
 
 const LINE = '⸻'
 
+/** ฟิลด์ของสัญญาที่ตัวสร้างข้อความ "สรุปยอดโอน" อ่านจริง (itemBlock / buildShopSummary / buildBulkSummary)
+ *  ใช้ Pick แทน Contract เต็ม เพื่อให้หน้าที่ดึงสัญญาแบบตัดคอลัมน์เรียกใช้ได้ */
+export type SummaryItemInput = Pick<
+  Contract,
+  'contractNo' | 'invNo' | 'customerName' | 'model' | 'storage' | 'sn' | 'devicePrice' | 'downPercent' | 'commissionPercent' | 'docFee'
+>
+
+/** ฟิลด์ของสัญญาที่ buildEmailText อ่านจริง */
+export type EmailTextInput = Pick<
+  Contract,
+  | 'contractNo' | 'invNo' | 'customerName' | 'model' | 'storage' | 'sn' | 'devicePrice' | 'downPercent'
+  | 'monthlyPayment' | 'termMonths' | 'financeAmount' | 'dueDay' | 'phone' | 'phoneAlt1' | 'phoneAlt2' | 'facebookLink'
+>
+
 /** หัวข้อมูลร้าน (ใช้ทั้งสรุปเดี่ยวและรวมหลายร้าน) */
 function shopHeader(shop: Shop): string {
   return [
@@ -17,7 +31,7 @@ function shopHeader(shop: Shop): string {
 }
 
 /** บล็อก "▶️ รายการที่ N" ของ 1 เครื่อง + คืนค่ายอดสุทธิไว้รวม */
-function itemBlock(c: Contract, index: number): { text: string; net: number } {
+function itemBlock(c: SummaryItemInput, index: number): { text: string; net: number } {
   const s = calcSummary(c.devicePrice, c.downPercent, c.commissionPercent, c.docFee)
   const text = [
     `▶️ รายการที่ ${index}`,
@@ -36,7 +50,7 @@ function itemBlock(c: Contract, index: number): { text: string; net: number } {
 }
 
 /** สรุปยอดของ "หนึ่งร้าน" (อาจมีหลายเครื่อง) */
-export function buildShopSummary(shop: Shop, items: Contract[], dateISO: string): string {
+export function buildShopSummary(shop: Shop, items: SummaryItemInput[], dateISO: string): string {
   const blocks = items.map((c, i) => itemBlock(c, i + 1))
   const total = blocks.reduce((sum, b) => sum + b.net, 0)
   return [
@@ -59,7 +73,7 @@ export function buildSingleSummary(c: Contract, shop: Shop, dateISO: string): st
 
 /** สรุปยอดรวมหลายร้านในวันเดียว (ใช้หน้า "รอสรุปยอด") */
 export function buildBulkSummary(
-  groups: { shop: Shop; items: Contract[] }[],
+  groups: { shop: Shop; items: SummaryItemInput[] }[],
   dateISO: string,
 ): string {
   const parts: string[] = [`วันที่: ${thaiDate(dateISO)}`, `ทั้งหมด ${groups.length} ร้านค้า`, '']
@@ -111,7 +125,7 @@ export function buildPendingDocMessage(
 }
 
 /** ข้อความอีเมลส่งพาร์ทเนอร์ (1 เคส) */
-export function buildEmailText(c: Contract, shop: Shop): string {
+export function buildEmailText(c: EmailTextInput, shop: Shop): string {
   const downAmount = Math.round(c.devicePrice * (c.downPercent / 100))
   const rentTotal = c.monthlyPayment * c.termMonths
   return [
