@@ -91,3 +91,11 @@ test('alias iPhone 17 Air → iPhone Air · ไม่สนตัวพิมพ
 test('ok: ข้อความบอกเรท', () => {
   assert.equal(evaluatePrice(input({}), table).message, 'ราคาอยู่ในเรท (เรท 43,900)')
 })
+
+test('ราคาเครื่องไม่ใช่ตัวเลขจริง (NaN/Infinity) → info ไม่หลุดเป็นเขียว', () => {
+  for (const v of [NaN, Infinity, -Infinity]) {
+    const r = evaluatePrice(input({ devicePrice: v }), table)
+    assert.equal(r.level, 'info')
+    assert.equal(r.message, 'ไม่มีราคาเครื่องให้เช็ก')
+  }
+})

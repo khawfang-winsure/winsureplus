@@ -16,8 +16,12 @@ const RATE_URL = `${RATE_SUPABASE_URL}/rest/v1/admin_config?select=value&key=eq.
 const TIMEOUT_MS = 8000
 const FAIL_COOLDOWN_MS = 60_000
 
+const FRESH_MS = 10 * 60_000 // ผลที่ดึงสำเร็จถือว่าเก่าเมื่อเกิน 10 นาที → ดึงใหม่ครั้งถัดไปที่ component mount (ไม่มี polling)
+
 let cached: Promise<RateTable | null> | null = null
-let failedAt = 0
+let settledAt = 0 // 0 = ยังโหลดอยู่ (ใช้ผลเดียวกัน ไม่ยิงซ้ำ)
+let settledOk = false // รอบล่าสุดดึงสำเร็จไหม (กำหนดอายุแคช: สำเร็จ 10 นาที / ล้มเหลว 60 วินาที)
+let lastGood: RateTable | null = null
 
 async function load(): Promise<RateTable | null> {
   const ctrl = new AbortController()
@@ -38,13 +42,19 @@ async function load(): Promise<RateTable | null> {
   }
 }
 
-/** คืนตารางเรท iPhone หรือ null ถ้าดึงไม่ได้/รูปแบบผิด — ไม่ throw */
+/** คืนตารางเรท iPhone หรือ null ถ้าดึงไม่ได้/รูปแบบผิด — ไม่ throw
+ *  ใช้ผลที่จำไว้ถ้ายังสด (สำเร็จ < 10 นาที · ล้มเหลว < 60 วินาที) · รีเฟรชแล้วล้มเหลวแต่เคยได้ตารางมาก่อน → ใช้ตารางเดิมต่อ */
 export function fetchPriceRates(): Promise<RateTable | null> {
-  if (cached && (failedAt === 0 || Date.now() - failedAt < FAIL_COOLDOWN_MS)) return cached
-  failedAt = 0 // เริ่มโหลดใหม่ — ระหว่างรอถือว่ากำลังใช้ผลเดียวกัน ไม่ยิงซ้ำ
+  if (cached) {
+    if (settledAt === 0) return cached
+    if (Date.now() - settledAt < (settledOk ? FRESH_MS : FAIL_COOLDOWN_MS)) return cached
+  }
+  settledAt = 0
   const p = load().then((t) => {
-    failedAt = t ? 0 : Date.now()
-    return t
+    settledOk = t !== null
+    settledAt = Date.now()
+    if (t) lastGood = t
+    return t ?? lastGood
   })
   cached = p
   return p

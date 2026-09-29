@@ -127,6 +127,7 @@ export function evaluatePrice(input: PriceCheckInput, table: RateTable | null): 
   if (rate <= 0) return { level: 'info', message: 'เว็บเรทยังไม่มีราคาช่องนี้', kind }
 
   const price = input.devicePrice
+  if (!Number.isFinite(price)) return { level: 'info', message: 'ไม่มีราคาเครื่องให้เช็ก', rate, kind }
   const allowance = kind === 'imported' ? 0 : THAI_OVER_RATE_ALLOWANCE
 
   if (price > rate + allowance) {
