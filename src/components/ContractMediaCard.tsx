@@ -83,6 +83,8 @@ import type { PJContract } from '../lib/pjImport'
 import { buildReviewFields, type ReviewField, type ReviewFieldGroup } from '../lib/reviewFields'
 import { applyPjComparison, countPjFlags, type PjSnapshot } from '../lib/pjCompare'
 import { reviewAgeDays, reviewAgeLabel, REVIEW_BADGE_PENDING } from '../lib/review'
+import { evaluatePrice, RATE_WEB_URL, type PriceCheck, type RateTable } from '../lib/priceRate'
+import { fetchPriceRates } from '../lib/priceRateApi'
 
 // ===== ยูทิลิตี้ใช้ร่วมกับ WaitingEmail.tsx (แคสต์/ประเมินสถานะรูปจาก view สรุป ไม่ต้องดึงไฟล์จริงทีละสัญญา) =====
 
@@ -628,6 +630,64 @@ function PjLineInfoBar({ data }: { data: Partial<PJContract> | null }) {
   )
 }
 
+/** ป้ายเตือนราคาเครื่องเทียบ "เว็บเรท" — เตือนอย่างเดียว ไม่บล็อกปุ่มอนุมัติ/ส่งเมล
+ *  โหลดเรทครั้งเดียวต่อ page load (cache ใน priceRateApi) · ยังโหลดไม่เสร็จ/ไม่ใช่ iPhone → ไม่แสดงอะไร กันแถบกระพริบ */
+const PRICE_BAR_TONE: Record<Exclude<PriceCheck['level'], 'none'>, string> = {
+  red: 'bg-red-50 font-semibold text-red-700',
+  yellow: 'bg-amber-50 font-semibold text-amber-700',
+  info: 'text-ink-soft',
+  ok: 'text-green-700',
+}
+
+function PriceRateBar({ contract }: { contract: Contract }) {
+  // undefined = ยังโหลดอยู่ · null = ดึงเรทไม่ได้
+  const [table, setTable] = useState<RateTable | null | undefined>(undefined)
+
+  useEffect(() => {
+    let alive = true
+    void fetchPriceRates().then((t) => {
+      if (alive) setTable(t)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const check = useMemo(
+    () =>
+      table === undefined
+        ? null
+        : evaluatePrice(
+            {
+              model: contract.model,
+              storage: contract.storage,
+              condition: contract.condition,
+              origin: contract.origin,
+              devicePrice: contract.devicePrice,
+            },
+            table,
+          ),
+    [table, contract.model, contract.storage, contract.condition, contract.origin, contract.devicePrice],
+  )
+
+  if (!check || check.level === 'none') return null
+
+  return (
+    <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-peach px-4 py-1.5 text-xs ${PRICE_BAR_TONE[check.level]}`}>
+      {(check.level === 'red' || check.level === 'yellow') && <AlertTriangle size={13} className="shrink-0" aria-hidden="true" />}
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{check.message}</span>
+      <a
+        href={RATE_WEB_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="shrink-0 font-normal underline hover:no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
+      >
+        ดูเว็บเรท
+      </a>
+    </div>
+  )
+}
+
 /** กองรูปที่ scrape มาจาก PJ — แสดงรวมกัน ไม่พยายามจับคู่กับ 15 ช่องของเรา (PJ ไม่ติดป้ายว่ารูปไหนคืออะไร)
  *  lazy-load ต่อรูปผ่าน MediaThumb (useInView ในตัว) กัน 11 รูป x 3-8 วิ ยิงพร้อมกันจนหน้าค้าง */
 function PjPhotoGallery({ contractId, imageRefs }: { contractId: string; imageRefs: PjImageRef[] }) {
@@ -764,6 +824,9 @@ function ReviewPanel({
           <PjLineInfoBar data={pjLineData} />
         </>
       )}
+
+      {/* ป้ายราคาไม่ผูกกับ PJ — แสดงเสมอ แม้ปิดฟีเจอร์เทียบ PJ หรือยุบแผง */}
+      <PriceRateBar contract={contract} />
 
       {open && (
         <>
