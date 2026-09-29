@@ -1702,110 +1702,6 @@ export async function getContractAggregates(): Promise<Map<string, ContractAggre
   return map
 }
 
-/** ยอดรับชำระต่อสัญญา — คืนจาก view v_payment_summary */
-export interface PaymentSummary {
-  contractId: string
-  payCount: number
-  totalPay: number
-  lastPayAt: string | null
-}
-
-interface PaymentSummaryRow {
-  contract_id: string
-  pay_count: number | null
-  total_pay: number | null
-  last_pay_at: string | null
-}
-
-function mapPaymentSummary(r: PaymentSummaryRow): PaymentSummary {
-  return {
-    contractId: r.contract_id,
-    payCount: Number(r.pay_count ?? 0),
-    totalPay: Number(r.total_pay ?? 0),
-    lastPayAt: r.last_pay_at ?? null,
-  }
-}
-
-/**
- * ดึงยอดรับชำระต่อสัญญาจาก v_payment_summary (1 query แทน scan payment_log ทั้งหมด)
- * คืน Map<contractId, PaymentSummary> สำหรับ cashflow forecast / กราฟเก็บเงิน
- * รองรับ payment_log หลายหมื่นแถวโดยไม่ติด PAGE_CAP — แต่ view เองคืน 1 แถว/สัญญา (2,464 ที่ 29 ก.ค. 2569
- * = 49% ของ PAGE_CAP แล้ว) ใช้ fetchAllPaged กันเงียบๆ ตัดทิ้งเมื่อสัญญาทะลุ 5,000 (audit 29 ก.ค. 2569)
- */
-export async function getPaymentSummaries(): Promise<Map<string, PaymentSummary>> {
-  if (!supabase) return new Map()
-  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
-  const rows = await fetchAllPaged<PaymentSummaryRow>(
-    (from, to, orderBy) => client.from('v_payment_summary').select('*').order(orderBy).range(from, to),
-    'contract_id',
-  )
-  const map = new Map<string, PaymentSummary>()
-  for (const r of rows) {
-    map.set(r.contract_id, mapPaymentSummary(r))
-  }
-  return map
-}
-
-/** ที่อยู่ปัจจุบันต่อสัญญา — คืนจาก view v_contract_current_address */
-export interface CurrentAddress {
-  contractId: string
-  houseNo: string | null
-  moo: string | null
-  soi: string | null
-  road: string | null
-  subdistrict: string | null
-  district: string | null
-  province: string | null
-  postalCode: string | null
-}
-
-interface CurrentAddressRow {
-  contract_id: string
-  house_no: string | null
-  moo: string | null
-  soi: string | null
-  road: string | null
-  subdistrict: string | null
-  district: string | null
-  province: string | null
-  postal_code: string | null
-}
-
-function mapCurrentAddress(r: CurrentAddressRow): CurrentAddress {
-  return {
-    contractId: r.contract_id,
-    houseNo: r.house_no,
-    moo: r.moo,
-    soi: r.soi,
-    road: r.road,
-    subdistrict: r.subdistrict,
-    district: r.district,
-    province: r.province,
-    postalCode: r.postal_code,
-  }
-}
-
-/**
- * ดึงที่อยู่ปัจจุบันของทุกสัญญาจาก v_contract_current_address (1 query ไม่ซ้ำ)
- * คืน Map<contractId, CurrentAddress> สำหรับหน้าส่งจดหมาย
- * แทน getAllAddresses() ที่ดึง kind ทั้งหมดแล้ว filter ฝั่ง client
- * view คืน 1 แถว/สัญญา (2,464 ที่ 29 ก.ค. 2569 = 49% ของ PAGE_CAP แล้ว) — ใช้ fetchAllPaged กันเงียบๆ
- * ตัดทิ้งเมื่อสัญญาทะลุ 5,000 (audit 29 ก.ค. 2569 — เคสเดียวกับที่ getAllAddresses เคยพลาดมาแล้ว)
- */
-export async function getCurrentAddresses(): Promise<Map<string, CurrentAddress>> {
-  if (!supabase) return new Map()
-  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
-  const rows = await fetchAllPaged<CurrentAddressRow>(
-    (from, to, orderBy) => client.from('v_contract_current_address').select('*').order(orderBy).range(from, to),
-    'contract_id',
-  )
-  const map = new Map<string, CurrentAddress>()
-  for (const r of rows) {
-    map.set(r.contract_id, mapCurrentAddress(r))
-  }
-  return map
-}
-
 /** บันทึกชำระ (เพิ่มยอดสะสม — จ่ายบางส่วนได้ งวดจะปิดเมื่อยอดสะสม >= ค่างวด) */
 export async function recordPayment(installmentId: string, amount: number, note?: string): Promise<void> {
   if (!supabase) return
@@ -2505,6 +2401,60 @@ export async function getAllStatuses(): Promise<ContractStatusRow[]> {
     'contract_id',
   )
   return rows.map(mapStatus)
+}
+
+/** ตัวเลข 4 การ์ดหน้าภาพรวม (Dashboard) */
+export interface DashboardCounts {
+  total: number
+  pendingSummary: number
+  pendingEmail: number
+  overdue: number
+}
+
+/**
+ * นับ 4 ตัวเลขของหน้าภาพรวมที่ฝั่งฐานข้อมูลเลย (HEAD + count=exact — ไม่ส่งแถวมาที่เบราว์เซอร์)
+ * แทนการดึง getContracts() ทั้งตาราง (~8 MB) + getAllStatuses() (~1.6 MB) มานับเองฝั่ง client
+ * (ต้นเหตุเว็บช้า/ขึ้น 0 ตอน request เกิน statement_timeout 29 ก.ย. 2569)
+ *
+ * ต้องได้ผลเท่ากับตรรกะเดิมใน Dashboard.tsx เป๊ะ:
+ *  - total          = contracts ทุกแถว (ไม่กรองสถานะ)
+ *  - pendingSummary = !summarySentAt  -> summary_sent_at IS NULL (คอลัมน์ timestamptz เก็บ '' ไม่ได้ เลย null คือ falsy ทั้งหมด)
+ *  - pendingEmail   = !emailSentAt    -> email_sent_at IS NULL (เหตุผลเดียวกัน)
+ *  - overdue        = bucket !== 'normal' -> ต้องนับ NULL ด้วย (.neq อย่างเดียวจะตัด NULL ทิ้งเงียบๆ) จึงใช้ .or(is.null, neq.normal)
+ *    ตัวนี้อ่านจาก v_contract_status ซึ่งไม่มีคอลัมน์ id — ต้อง select 'contract_id' (select 'id' จะ error 42703)
+ *
+ * error ต้อง throw เสมอ ห้ามคืน 0 เงียบๆ (ต้นเรื่องคือหน้าเว็บโชว์ 0 ตอนพัง) — count ที่ไม่ได้กลับมา (null) ก็ถือว่าพัง
+ * RLS ใช้ชุดเดียวกับ select ปกติ (view เป็น security_invoker) จึงได้จำนวนเท่ากับที่เห็นตอนดึงแถวมานับ
+ */
+export async function getDashboardCounts(): Promise<DashboardCounts> {
+  if (!supabase) {
+    const cs = mock.contracts
+    return {
+      total: cs.length,
+      pendingSummary: cs.filter((c) => !c.summarySentAt).length,
+      pendingEmail: cs.filter((c) => !c.emailSentAt).length,
+      overdue: 0, // ตรรกะเดิมนับจาก getAllStatuses() ซึ่งคืน [] ตอนไม่มี Supabase
+    }
+  }
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้
+  const head = { count: 'exact', head: true } as const
+  const [total, pendingSummary, pendingEmail, overdue] = await Promise.all([
+    client.from('contracts').select('id', head),
+    client.from('contracts').select('id', head).is('summary_sent_at', null),
+    client.from('contracts').select('id', head).is('email_sent_at', null),
+    client.from('v_contract_status').select('contract_id', head).or('bucket.is.null,bucket.neq.normal'),
+  ])
+  const countOf = (name: string, r: { count: number | null; error: PostgrestError | null }): number => {
+    if (r.error) throw r.error
+    if (r.count == null) throw new Error(`นับจำนวน "${name}" ไม่สำเร็จ (ฐานข้อมูลไม่ส่ง count กลับมา)`)
+    return r.count
+  }
+  return {
+    total: countOf('total', total),
+    pendingSummary: countOf('pendingSummary', pendingSummary),
+    pendingEmail: countOf('pendingEmail', pendingEmail),
+    overdue: countOf('overdue', overdue),
+  }
 }
 
 // ---------- คืนเครื่อง (Phase 5) ----------
