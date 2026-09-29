@@ -492,6 +492,115 @@ export async function getContracts(): Promise<Contract[]> {
   return rows.map(mapContract)
 }
 
+// ---------- สัญญาแบบ "ตัดคอลัมน์" รายหน้า (perf/lite-fetch, 29 ก.ย. 2569) ----------
+// getContracts() = select('*') 92 คอลัมน์ x ~3,000 แถว ≈ 8 MB ต่อครั้ง — 5 จุดนี้ใช้แค่ 4-25 คอลัมน์
+// กติกา: ลำดับ/การแบ่งหน้า/จำนวนแถวเหมือน getContracts เป๊ะ (ตัดเฉพาะคอลัมน์ ไม่มี filter)
+// ค่าของแต่ละฟิลด์มาจาก mapContract ตัวเดียวกัน (ไม่ copy ตรรกะ default/แปลงตัวเลข) แล้วหยิบเฉพาะคีย์ที่ขอ
+// type ของผลลัพธ์ = Pick<Contract, ...> — ไม่ใช่ Contract เต็ม จึงอ่านฟิลด์นอกลิสต์ไม่ได้ (TS จับตอน compile)
+// ห้ามส่งผลลัพธ์พวกนี้เข้าฟังก์ชันที่รับ Contract เต็ม (helper ใน src/lib ต้องแคบ param เป็น Pick ก่อน)
+
+/** snake_case ของคีย์ camelCase ในระดับ type — ให้ TS ตรวจว่าคอลัมน์ที่ select มีจริงใน ContractRow */
+type SnakeCase<S extends string> = S extends `${infer H}${infer T}`
+  ? `${H extends Lowercase<H> ? H : `_${Lowercase<H>}`}${SnakeCase<T>}`
+  : S
+
+/** คีย์ของ Contract ที่อนุญาตให้ใช้ในตัวตัดคอลัมน์ — ทุกตัวต้องเป็นกฎ camel->snake ล้วนๆ กับคอลัมน์ใน DB
+ *  (ตั้งใจไม่รวม recordedBy/recordedById: mapContract อ่านจาก recorded_by_name/recorded_by ไม่ตรงกฎ) */
+type ContractPickKey =
+  | 'id' | 'contractNo' | 'invNo' | 'sn' | 'imei' | 'customerName' | 'nationalId' | 'phone' | 'phoneAlt1' | 'phoneAlt2'
+  | 'facebookLink' | 'shopId' | 'model' | 'storage' | 'condition' | 'devicePrice' | 'downPercent' | 'commissionPercent'
+  | 'docFee' | 'financeAmount' | 'monthlyPayment' | 'termMonths' | 'dueDay' | 'status' | 'transactionDate' | 'createdAt'
+  | 'summarySentAt' | 'summarySentBy' | 'summaryShopSentAt' | 'summaryAccountingSentAt' | 'summaryNote' | 'summaryNoteBy'
+  | 'emailSentAt' | 'emailSentBy' | 'pendingDocuments' | 'reviewStatus'
+  | 'needsFixReason' | 'needsFixDetail' | 'needsFixBy' | 'needsFixAt'
+  | 'hasPhoneBox' | 'originalDocsReceived' | 'originalDocsReceivedAt' | 'phoneBoxReceived' | 'phoneBoxReceivedAt'
+  | 'docsIncomplete' | 'docsIncompleteItems' | 'docsIncompleteAt' | 'docsIncompleteBy'
+
+/** compile-time check: ทุก ContractPickKey ต้องมีคอลัมน์ snake_case ตรงตัวใน ContractRow (export กัน noUnusedLocals — ไม่ได้ใช้งานจริง) */
+export type AssertContractPickColumns = SnakeCase<ContractPickKey> extends keyof ContractRow ? true : never
+
+const toColumn = (k: string): string => k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)
+
+/** ดึงสัญญาทุกแถวเฉพาะคอลัมน์ที่ขอ — ลำดับ/แบ่งหน้าเหมือน getContracts (transaction_date ใหม่→เก่า, id tiebreaker) */
+async function getContractsPicked<K extends ContractPickKey>(keys: readonly K[]): Promise<Pick<Contract, K>[]> {
+  if (!supabase) return mock.contracts // Contract เต็มใช้แทน Pick ได้ (เหมือน getContracts ตอน mock)
+  const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
+  const cols = keys.map(toColumn).join(',')
+  const rows = await fetchAllPaged<Partial<ContractRow>>((from, to) =>
+    client
+      .from('contracts')
+      .select(cols)
+      .order('transaction_date', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)
+      .returns<Partial<ContractRow>[]>(), // select ด้วย string ที่ต่อเอง supabase-js อนุมานชนิดแถวไม่ได้ — ระบุเอง
+  )
+  return rows.map((r) => {
+    // mapContract ทำงานกับแถวไม่ครบได้ (ทุกฟิลด์อ่านแบบ ?? / Number — ไม่มีตัวไหน throw) แล้วเราหยิบเฉพาะคีย์ที่ select มา
+    // ฟิลด์นอกลิสต์ไม่ถูกหยิบ จึงไม่รั่วค่า default ปลอม (เช่น Number(undefined) = NaN) ออกไป
+    const full = mapContract(r as ContractRow)
+    const out = {} as Pick<Contract, K>
+    for (const k of keys) out[k] = full[k]
+    return out
+  })
+}
+
+const CONTRACT_SEARCH_KEYS = ['id', 'customerName', 'contractNo', 'invNo'] as const satisfies readonly ContractPickKey[]
+/** QuickSearch (Ctrl+K) — 4 คอลัมน์ */
+export type ContractSearchRow = Pick<Contract, (typeof CONTRACT_SEARCH_KEYS)[number]>
+export function getContractsForSearch(): Promise<ContractSearchRow[]> {
+  return getContractsPicked(CONTRACT_SEARCH_KEYS)
+}
+
+const CONTRACT_ALL_CUSTOMERS_KEYS = [
+  'id', 'contractNo', 'invNo', 'customerName', 'shopId', 'status', 'model', 'storage', 'sn', 'imei', 'nationalId', 'phone',
+  'transactionDate', 'monthlyPayment', 'termMonths', 'emailSentAt', 'emailSentBy', 'summarySentAt', 'summarySentBy',
+  'pendingDocuments',
+] as const satisfies readonly ContractPickKey[]
+/** AllCustomers — 20 คอลัมน์ (imei/nationalId/phone ต้องมี เพราะช่องค้นหารวมไว้) */
+export type ContractAllCustomersRow = Pick<Contract, (typeof CONTRACT_ALL_CUSTOMERS_KEYS)[number]>
+export function getContractsForAllCustomers(): Promise<ContractAllCustomersRow[]> {
+  return getContractsPicked(CONTRACT_ALL_CUSTOMERS_KEYS)
+}
+
+const CONTRACT_DOC_TRACKING_KEYS = [
+  'id', 'contractNo', 'customerName', 'shopId', 'status', 'transactionDate',
+  // boxRequired / isDocComplete / shopDocStats (lib/docTracking.ts)
+  'condition', 'createdAt', 'hasPhoneBox', 'originalDocsReceived', 'phoneBoxReceived',
+  'originalDocsReceivedAt', 'phoneBoxReceivedAt',
+  'docsIncomplete', 'docsIncompleteItems', 'docsIncompleteAt', 'docsIncompleteBy',
+] as const satisfies readonly ContractPickKey[]
+/** DocTracking — 17 คอลัมน์ */
+export type ContractDocTrackingRow = Pick<Contract, (typeof CONTRACT_DOC_TRACKING_KEYS)[number]>
+export function getContractsForDocTracking(): Promise<ContractDocTrackingRow[]> {
+  return getContractsPicked(CONTRACT_DOC_TRACKING_KEYS)
+}
+
+const CONTRACT_WAITING_EMAIL_KEYS = [
+  'id', 'contractNo', 'customerName', 'shopId', 'transactionDate', 'createdAt', 'pendingDocuments', 'emailSentAt', 'reviewStatus',
+  // buildEmailText (lib/messages.ts)
+  'invNo', 'sn', 'model', 'storage', 'devicePrice', 'downPercent', 'monthlyPayment', 'termMonths', 'financeAmount', 'dueDay',
+  'phone', 'phoneAlt1', 'phoneAlt2', 'facebookLink',
+] as const satisfies readonly ContractPickKey[]
+/** WaitingEmail — 23 คอลัมน์ */
+export type ContractWaitingEmailRow = Pick<Contract, (typeof CONTRACT_WAITING_EMAIL_KEYS)[number]>
+export function getContractsForWaitingEmail(): Promise<ContractWaitingEmailRow[]> {
+  return getContractsPicked(CONTRACT_WAITING_EMAIL_KEYS)
+}
+
+const CONTRACT_WAITING_SUMMARY_KEYS = [
+  'id', 'contractNo', 'customerName', 'shopId', 'transactionDate', 'createdAt', 'pendingDocuments', 'emailSentAt', 'reviewStatus',
+  'summaryShopSentAt', 'summaryAccountingSentAt', 'summaryNote', 'summaryNoteBy',
+  'needsFixReason', 'needsFixDetail', 'needsFixBy', 'needsFixAt',
+  // buildBulkSummary / itemBlock / calcSummary (lib/messages.ts, lib/calc.ts)
+  'invNo', 'sn', 'model', 'storage', 'devicePrice', 'downPercent', 'commissionPercent', 'docFee',
+] as const satisfies readonly ContractPickKey[]
+/** WaitingSummary — 25 คอลัมน์ */
+export type ContractWaitingSummaryRow = Pick<Contract, (typeof CONTRACT_WAITING_SUMMARY_KEYS)[number]>
+export function getContractsForWaitingSummary(): Promise<ContractWaitingSummaryRow[]> {
+  return getContractsPicked(CONTRACT_WAITING_SUMMARY_KEYS)
+}
+
 export async function getSettings(): Promise<AppSettings> {
   if (!supabase) return DEFAULT_SETTINGS
   const { data, error } = await supabase.from('app_settings').select('key, value')
