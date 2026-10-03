@@ -136,7 +136,7 @@ export const NAV: NavItem[] = [
  *  จังหวะรีเฟรช:
  *  - สายเบา (reviewQueue + pjSyncReview): ทุก 60 วิ (ข้ามตอนแท็บซ่อน) + กลับมาที่แท็บ + เปลี่ยนหน้า + mount
  *  - สาย inbox: กลับมาที่แท็บ + เปลี่ยนหน้า + mount เท่านั้น
- *  กันยิงรัว: แต่ละสายเว้นอย่างน้อย BADGE_MIN_GAP_MS ระหว่างการยิงสองครั้ง · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
+ *  กันยิงรัว: สายนับเบาเว้นอย่างน้อย BADGE_MIN_GAP_MS (5 วิ) · สาย inbox เว้น INBOX_BADGE_MIN_GAP_MS (60 วิ) · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
 export interface NavBadgeCounts {
   reviewQueue: number
   pjSyncReview: number
@@ -146,7 +146,8 @@ export interface NavBadgeCounts {
 const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inbox: 0 }
 
 const BADGE_POLL_MS = 60_000
-const BADGE_MIN_GAP_MS = 5_000
+const BADGE_MIN_GAP_MS = 5_000 // สายนับเบา (review + กล่อง PJ)
+const INBOX_BADGE_MIN_GAP_MS = 60_000 // สาย inbox ดึงแถวเต็ม (หนัก) — เว้นนานกว่า กันเปลี่ยนหน้าบ่อยแล้วยิงทุก 5 วิ
 
 /** สถานะกันยิงรัว/ทิ้งผลเก่าของ 1 สายโหลด: req = เลขรอบล่าสุด, start = เวลาเริ่มรอบล่าสุด (ms) */
 interface LoadGuard {
@@ -155,9 +156,9 @@ interface LoadGuard {
 }
 
 /** เริ่มรอบใหม่ถ้าพ้นช่วงเว้น — คืนเลขรอบ หรือ null ถ้าถูกกัน (ยิงเร็วเกินไป) */
-function beginLoad(g: LoadGuard): number | null {
+function beginLoad(g: LoadGuard, minGapMs: number): number | null {
   const now = Date.now()
-  if (now - g.start < BADGE_MIN_GAP_MS) return null
+  if (now - g.start < minGapMs) return null
   g.start = now
   g.req += 1
   return g.req
@@ -173,7 +174,7 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
   const loadCounts = useCallback(() => {
     if (!isAdmin && !isStaff) return
     const guard = countsGuardRef.current
-    const req = beginLoad(guard)
+    const req = beginLoad(guard, BADGE_MIN_GAP_MS)
     if (req === null) return
     const reviewStatus = isAdmin ? 'pending_review' : 'needs_fix'
     void Promise.allSettled([getReviewBadgeCount(reviewStatus), getPjSyncReviewPendingCount()]).then(
@@ -192,7 +193,7 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
   const loadInbox = useCallback(() => {
     if (!isAdmin && !isStaff) return
     const guard = inboxGuardRef.current
-    const req = beginLoad(guard)
+    const req = beginLoad(guard, INBOX_BADGE_MIN_GAP_MS)
     if (req === null) return
     void getInboxCases()
       .then((rows) => {
