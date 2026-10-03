@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
-import { getInboxCases, getPjSyncReview, getReviewQueue } from '../lib/db'
+import { getInboxCases, getPjSyncReviewPendingCount, getReviewBadgeCount } from '../lib/db'
 
 export interface NavChild {
   to: string
@@ -118,23 +118,25 @@ export const NAV: NavItem[] = [
   },
 ]
 
-/** ตัวเลข badge สีแดงบนเมนู — รวมทุกคีย์ไว้ hook เดียว (กัน copy-paste useState+useEffect+cancelled flag
- *  ซ้ำ 3 ชุด) ยิง 3 query ขนานกันด้วย Promise.allSettled — แหล่งไหนพังก็ไม่ลากอีก 2 แหล่งให้ล้มตาม
- *  (fallback 0 เฉพาะตัวที่พัง ตัวอื่นขึ้นเลขปกติ)
+/** ตัวเลข badge สีแดงบนเมนู — รวมทุกคีย์ไว้ hook เดียว แยกสายโหลดเป็น 2 สาย (เบา/หนัก) แต่ละแหล่งพังไม่ลากตัวอื่น
+ *  และถ้าแหล่งไหนพัง "คงเลขเดิมไว้" (ไม่รีเซ็ตเป็น 0 — กันเลขแดงหายเงียบตอนเน็ตสะดุด)
  *
  *  - 'reviewQueue' "ตรวจเคสก่อนส่งบริษัท" / "งานที่ต้องแก้" (spec-review-flow.md §2/§5) หน้าเดียวกัน
  *    แยกความหมายตาม role: admin = จำนวนเคส "รอตรวจ" (pending_review) ทั้งหมด (needs_fix อยู่ในมือ
  *    พนักงานแล้ว ไม่ใช่งานค้างของแอดมินอีกต่อไป) · staff (role='staff' เท่านั้น ไม่รวม
  *    freelancer/executive/accounting) = จำนวนเคส "ต้องแก้ไข" (needs_fix) ของ "ทั้งทีม" ไม่กรอง operator
  *    (คุณเตยเคาะ 3 ต.ค. 2026 — ตรงกับรายการที่หน้า /review-queue มุมมอง staff โชว์)
- *  - 'pjSyncReview' "กล่องรอตรวจ PJ" — จำนวนแถวสถานะ 'pending' ทั้งหมดจาก getPjSyncReview('pending')
- *    เท่ากับ rows.length ที่หน้า /pj-sync-review โชว์เป๊ะ (รวมแถว "ใบเสร็จหาย/ถูกแก้" อยู่แล้ว เพราะเป็น
- *    subset ของ rows ชุดเดียวกัน ไม่ได้แยกนับต่างหาก) — admin/staff เห็นเลขเดียวกัน (หน้าไม่กรองตาม role)
+ *    นับด้วย getReviewBadgeCount (HEAD + count เบา ไม่ดึงแถว)
+ *  - 'pjSyncReview' "กล่องรอตรวจ PJ" — จำนวนแถวสถานะ 'pending' ทั้งหมด นับด้วย getPjSyncReviewPendingCount
+ *    (HEAD + count เบา) เท่ากับ rows.length ที่หน้า /pj-sync-review โชว์ — admin/staff เห็นเลขเดียวกัน
  *  - 'inbox' "กล่องรับงาน" — จำนวนเคสทั้งหมดในกล่องจาก getInboxCases() เท่ากับ cases.length ที่หน้า
  *    /inbox ก่อนกรองค้นหา — หน้านั้นไม่ได้กรองตาม role เลย ทุก role ที่เห็นเมนูนี้เห็นเลขเดียวกัน
+ *    ⚠️ ฟังก์ชันนี้ดึงแถวเต็ม (หนัก) จึง "ไม่ยิงตาม timer 60 วิ" ยิงเฉพาะ mount / เปลี่ยนหน้า / กลับมาที่แท็บ
  *
- *  รีเฟรชเอง: ทุก 60 วิ (ข้ามตอนแท็บซ่อน) + ทันทีตอนกลับมาที่แท็บ + ทุกครั้งที่เปลี่ยนหน้า (pathname)
- *  กันยิงรัว: เว้นอย่างน้อย BADGE_MIN_GAP_MS ระหว่างการยิงสองครั้ง · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
+ *  จังหวะรีเฟรช:
+ *  - สายเบา (reviewQueue + pjSyncReview): ทุก 60 วิ (ข้ามตอนแท็บซ่อน) + กลับมาที่แท็บ + เปลี่ยนหน้า + mount
+ *  - สาย inbox: กลับมาที่แท็บ + เปลี่ยนหน้า + mount เท่านั้น
+ *  กันยิงรัว: แต่ละสายเว้นอย่างน้อย BADGE_MIN_GAP_MS ระหว่างการยิงสองครั้ง · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
 export interface NavBadgeCounts {
   reviewQueue: number
   pjSyncReview: number
@@ -146,58 +148,95 @@ const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inb
 const BADGE_POLL_MS = 60_000
 const BADGE_MIN_GAP_MS = 5_000
 
+/** สถานะกันยิงรัว/ทิ้งผลเก่าของ 1 สายโหลด: req = เลขรอบล่าสุด, start = เวลาเริ่มรอบล่าสุด (ms) */
+interface LoadGuard {
+  req: number
+  start: number
+}
+
+/** เริ่มรอบใหม่ถ้าพ้นช่วงเว้น — คืนเลขรอบ หรือ null ถ้าถูกกัน (ยิงเร็วเกินไป) */
+function beginLoad(g: LoadGuard): number | null {
+  const now = Date.now()
+  if (now - g.start < BADGE_MIN_GAP_MS) return null
+  g.start = now
+  g.req += 1
+  return g.req
+}
+
 export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeCounts {
   const { pathname } = useLocation()
   const [counts, setCounts] = useState<NavBadgeCounts>(ZERO_BADGE_COUNTS)
-  // เลขรอบล่าสุดที่ยิง — ผลของรอบเก่า (ถูกรอบใหม่แทน / unmount / เปลี่ยน role) เทียบเลขไม่ตรงแล้วทิ้ง
-  const requestRef = useRef(0)
-  const lastStartRef = useRef(0)
+  const countsGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
+  const inboxGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
 
-  const load = useCallback(() => {
+  // สายเบา: นับ HEAD 2 ตัวขนานกัน (review + กล่อง PJ) — ตัวที่พังคงเลขเดิม
+  const loadCounts = useCallback(() => {
     if (!isAdmin && !isStaff) return
-    const now = Date.now()
-    if (now - lastStartRef.current < BADGE_MIN_GAP_MS) return
-    lastStartRef.current = now
-    const request = ++requestRef.current
-    void Promise.allSettled([getReviewQueue(), getPjSyncReview('pending'), getInboxCases()]).then(
-      ([reviewResult, pjResult, inboxResult]) => {
-        if (request !== requestRef.current) return
-        const reviewRows = reviewResult.status === 'fulfilled' ? reviewResult.value : []
-        const pjRows = pjResult.status === 'fulfilled' ? pjResult.value : []
-        const inboxRows = inboxResult.status === 'fulfilled' ? inboxResult.value : []
-        const reviewQueue = reviewRows.filter(
-          (r) => r.reviewStatus === (isAdmin ? 'pending_review' : 'needs_fix'),
-        ).length
-        setCounts({ reviewQueue, pjSyncReview: pjRows.length, inbox: inboxRows.length })
+    const guard = countsGuardRef.current
+    const req = beginLoad(guard)
+    if (req === null) return
+    const reviewStatus = isAdmin ? 'pending_review' : 'needs_fix'
+    void Promise.allSettled([getReviewBadgeCount(reviewStatus), getPjSyncReviewPendingCount()]).then(
+      ([reviewResult, pjResult]) => {
+        if (req !== guard.req) return
+        setCounts((prev) => ({
+          ...prev,
+          reviewQueue: reviewResult.status === 'fulfilled' ? reviewResult.value : prev.reviewQueue,
+          pjSyncReview: pjResult.status === 'fulfilled' ? pjResult.value : prev.pjSyncReview,
+        }))
       },
     )
   }, [isAdmin, isStaff])
 
-  // ตั้งเวลา + ฟังตอนกลับมาที่แท็บ (ผูกกับ load เพื่อให้ cleanup ล้างรอบเก่าเมื่อ role เปลี่ยน/unmount)
+  // สาย inbox: ดึงแถวเต็ม (หนัก) — ไม่ผูก timer
+  const loadInbox = useCallback(() => {
+    if (!isAdmin && !isStaff) return
+    const guard = inboxGuardRef.current
+    const req = beginLoad(guard)
+    if (req === null) return
+    void getInboxCases()
+      .then((rows) => {
+        if (req !== guard.req) return
+        setCounts((prev) => ({ ...prev, inbox: rows.length }))
+      })
+      .catch(() => {
+        /* พัง = คงเลขเดิม ไม่รีเซ็ตเป็น 0 */
+      })
+  }, [isAdmin, isStaff])
+
+  // ตั้งเวลา (เฉพาะสายเบา) + ฟังตอนกลับมาที่แท็บ (ทั้ง 2 สาย)
+  // cleanup ล้างรอบเก่า: role เปลี่ยน/unmount → ผลที่ยังค้างถูกทิ้ง (กัน setState หลัง unmount) + รีเซ็ตช่วงเว้น
   useEffect(() => {
     if (!isAdmin && !isStaff) {
       setCounts(ZERO_BADGE_COUNTS)
       return
     }
+    const countsGuard = countsGuardRef.current
+    const inboxGuard = inboxGuardRef.current
     const timer = setInterval(() => {
-      if (!document.hidden) load()
+      if (!document.hidden) loadCounts()
     }, BADGE_POLL_MS)
     function handleVisibility() {
-      if (!document.hidden) load()
+      if (document.hidden) return
+      loadCounts()
+      loadInbox()
     }
     document.addEventListener('visibilitychange', handleVisibility)
     return () => {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibility)
-      requestRef.current += 1 // ทิ้งผลที่ยังค้างอยู่ (กัน setState หลัง unmount)
-      lastStartRef.current = 0 // รอบถัดไปหลัง role เปลี่ยนต้องยิงได้ทันที ไม่ติดช่วงเว้น
+      countsGuard.req += 1
+      countsGuard.start = 0
+      inboxGuard.req += 1
+      inboxGuard.start = 0
     }
-  }, [isAdmin, isStaff, load])
+  }, [isAdmin, isStaff, loadCounts, loadInbox])
 
   // โหลดตอน mount + ทุกครั้งที่เปลี่ยนหน้า (พนักงานกดย้ายเมนู เลขจะสดตาม)
   useEffect(() => {
-    load()
-  }, [load, pathname])
+    loadCounts()
+    loadInbox()
+  }, [loadCounts, loadInbox, pathname])
 
   return counts
 }

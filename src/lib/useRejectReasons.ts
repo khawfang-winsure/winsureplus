@@ -1,23 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getReviewLog } from './db'
-import type { ContractReviewLogEntry } from './types'
+import { getLatestRejectReasons } from './db'
 
 /** contractId -> เหตุผลที่แอดมินตีกลับล่าสุด
  *  - ไม่มี key = ยังโหลดไม่เสร็จ
  *  - null      = โหลดเสร็จแล้วแต่ไม่พบเหตุผล (หรือโหลดไม่สำเร็จ) */
 export type RejectReasonMap = Partial<Record<string, string | null>>
 
-/** log เรียงล่าสุดก่อน (getReviewLog) — หยิบแถวตีกลับล่าสุด (reject = ตีกลับจากรอตรวจ, cancel_approval = ยกเลิกการตรวจ)
- *  ข้ามแถวอื่น เช่น submit / force_summary_shop_sent ที่อาจเขียนทีหลังแต่ไม่ใช่เหตุผลที่ต้องแก้ */
-function latestRejectReason(log: ContractReviewLogEntry[]): string | null {
-  const entry = log.find((l) => l.action === 'reject' || l.action === 'cancel_approval')
-  const reason = entry?.reason?.trim()
-  return reason ? reason : null
-}
-
-/** ดึงเหตุผลตีกลับของเคส needs_fix "ครั้งเดียวต่อชุดเคส" (ไม่ยิงทีละแถวตอน render)
- *  ใช้ getReviewLog เดิมของ db.ts — ยิงขนานด้วย Promise.all ครั้งเดียวเมื่อชุด id เปลี่ยน
+/** ดึงเหตุผลตีกลับของเคส needs_fix "ครั้งเดียวต่อชุดเคส" (getLatestRejectReasons = query เดียวต่อ chunk ไม่ยิงทีละสัญญา)
  *  ใช้ร่วมกันที่หน้า "งานที่ต้องแก้" (/review-queue) และ "รอสรุปยอด" (/waiting-summary)
+ *  id ที่ไม่มีแถวตีกลับใน DB = null · query พัง = ทุก id เป็น null (หน้าโชว์ "ไม่พบเหตุผลที่บันทึกไว้")
  *  ส่ง [] = ไม่ยิง query เลย */
 export function useRejectReasons(contractIds: string[]): RejectReasonMap {
   const [reasons, setReasons] = useState<RejectReasonMap>({})
@@ -29,16 +20,13 @@ export function useRejectReasons(contractIds: string[]): RejectReasonMap {
     if (key === '') return
     const ids = key.split(',')
     let cancelled = false
-    Promise.all(
-      ids.map((id) =>
-        getReviewLog(id)
-          .then(latestRejectReason)
-          .catch((): string | null => null),
-      ),
-    ).then((list) => {
-      if (cancelled) return
-      setReasons(Object.fromEntries(ids.map((id, i): [string, string | null] => [id, list[i]])))
-    })
+    getLatestRejectReasons(ids)
+      .then((found) => ids.map((id): [string, string | null] => [id, found.get(id)?.reason ?? null]))
+      .catch(() => ids.map((id): [string, string | null] => [id, null]))
+      .then((entries) => {
+        if (cancelled) return
+        setReasons(Object.fromEntries(entries))
+      })
     return () => {
       cancelled = true
     }
