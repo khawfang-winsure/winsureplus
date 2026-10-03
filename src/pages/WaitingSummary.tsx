@@ -22,9 +22,10 @@ import {
 } from '../lib/db'
 import type { ContractWaitingSummaryRow } from '../lib/db'
 import { DEFAULT_MEDIA_SLOTS, isGated, type MediaSlot } from '../lib/media'
-import { canMarkSummary, summaryBlockReason } from '../lib/review'
+import { canMarkSummary, REVIEW_BADGE_DRAFT, REVIEW_BADGE_NEEDS_FIX, summaryBlockReason } from '../lib/review'
 import { useAuth } from '../lib/auth'
 import { useAsync } from '../lib/useAsync'
+import { useRejectReasons } from '../lib/useRejectReasons'
 import type { ContractMediaStatus, Shop } from '../lib/types'
 
 type SortKey = 'transactionDate' | 'contractNo' | 'createdAt'
@@ -364,6 +365,17 @@ export default function WaitingSummary() {
     () => (gateFromLoaded ? shopBase.filter((c) => isGated(c, gateFrom)).map((c) => c.id) : []),
     [shopBase, gateFromLoaded, gateFrom],
   )
+
+  // เหตุผลตีกลับของเคส needs_fix ในคอลัมน์ "รอส่งร้าน" (เฉพาะที่เข้าเกณฑ์ตรวจ = ที่ขึ้นป้าย "ต้องแก้ไข" จริง)
+  // ดึงครั้งเดียวทั้งชุดผ่าน useRejectReasons (ไม่ยิงทีละแถว) — ไม่ใช่ระบบ needs_fix_* ของบัญชีตีกลับยอดสรุป
+  const needsFixIds = useMemo(
+    () =>
+      gateFromLoaded
+        ? shopBase.filter((c) => c.reviewStatus === 'needs_fix' && isGated(c, gateFrom)).map((c) => c.id)
+        : [],
+    [shopBase, gateFromLoaded, gateFrom],
+  )
+  const rejectReasons = useRejectReasons(needsFixIds)
 
   // กดสรุปยอดส่งร้านของเคสนี้ได้ไหม — เกทเดียวกับ canSendEmail (ห้ามโอนเงินก่อนตรวจผ่าน, ล็อกคุณเตย 2026-09-12)
   // fail closed: ยังไม่รู้ gateFrom (กำลังโหลด/โหลดพัง) -> false เสมอ ไม่ว่าเคสจะเก่าหรือใหม่
@@ -800,8 +812,14 @@ export default function WaitingSummary() {
                                   <Badge tone="amber">{`รูป ขาด ${ev.missing.length}`}</Badge>
                                 ) : null
                               })()}
-                              {showsGateBadges && (c.reviewStatus ?? null) !== 'approved' && (
-                                <Badge tone="amber">ยังไม่ผ่านตรวจ</Badge>
+                              {showsGateBadges && c.reviewStatus === 'needs_fix' && (
+                                <Badge tone="red">{REVIEW_BADGE_NEEDS_FIX}</Badge>
+                              )}
+                              {showsGateBadges && c.reviewStatus === 'pending_review' && (
+                                <Badge tone="amber">รอคุณเตยตรวจ</Badge>
+                              )}
+                              {showsGateBadges && (c.reviewStatus ?? null) === null && (
+                                <Badge tone="amber">{REVIEW_BADGE_DRAFT}</Badge>
                               )}
                               {canEditNote && (
                                 <button
@@ -827,10 +845,33 @@ export default function WaitingSummary() {
                           </div>
                           <span className="font-semibold text-salmon-deep whitespace-nowrap">{baht(netOf(c))} ฿</span>
                         </div>
-                        {blockReason && (
+                        {/* needs_fix: กล่องแดงด้านล่างบอกเหตุผล + ลิงก์ไปแก้แทนข้อความเทาทั่วไป (ข้อความเทายังอยู่ใน tooltip ของแถว) */}
+                        {blockReason && !(showsGateBadges && c.reviewStatus === 'needs_fix') && (
                           <p className="rounded-lg bg-peach-light/50 px-3 py-2 text-xs font-medium text-ink-soft">
                             {blockReason}
                           </p>
+                        )}
+                        {showsGateBadges && c.reviewStatus === 'needs_fix' && (
+                          <div className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                            <p className="min-w-0 flex-1 text-xs text-red-800" title={rejectReasons[c.id] ?? undefined}>
+                              <span className="font-semibold">คุณเตยตีกลับให้แก้ไข: </span>
+                              {rejectReasons[c.id] === undefined ? (
+                                <span className="text-ink-soft">กำลังโหลดเหตุผล...</span>
+                              ) : rejectReasons[c.id] === null ? (
+                                <span className="text-ink-soft">ไม่พบเหตุผลที่บันทึกไว้ — กด &quot;ไปแก้&quot; เพื่อดูประวัติในสัญญา</span>
+                              ) : (
+                                <span className="line-clamp-3 break-words">{rejectReasons[c.id]}</span>
+                              )}
+                            </p>
+                            <Link
+                              to={`/contract/${c.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label={`ไปแก้เคส ${c.contractNo} ของ ${c.customerName}`}
+                              className="inline-flex shrink-0 items-center whitespace-nowrap rounded-lg border border-red-300 bg-white px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                            >
+                              ไปแก้
+                            </Link>
+                          </div>
                         )}
                         {/* ปุ่มฉุกเฉิน — เฉพาะแอดมิน + เฉพาะเคสที่กดสรุปยอดปกติไม่ได้ + รู้ผลเกทแล้วจริงๆ (ไม่ใช่กำลังโหลด) */}
                         {gateFromLoaded && !canPick && isAdminOrMock && (

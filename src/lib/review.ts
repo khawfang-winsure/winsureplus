@@ -327,7 +327,7 @@ export const REVIEW_CONFIRM_UNAPPROVE =
 export const REVIEW_LABEL_UNAPPROVE_REASON = 'เหตุผลที่ยกเลิกการตรวจ (บังคับกรอก)'
 export const REVIEW_WARNING_EMAIL_ALREADY_SENT = 'เมลออกไปแล้ว แก้เสร็จต้องส่งใหม่'
 export const REVIEW_MENU_BADGE_STAFF =
-  'งานที่ต้องแก้ — ตัวเลขสีแดง คือจำนวนเคสของตัวเองที่เป็นต้องแก้ไข'
+  'งานที่ต้องแก้ — ตัวเลขสีแดง คือจำนวนเคสของทั้งทีมที่ต้องแก้ไข'
 export const REVIEW_MENU_BADGE_ADMIN =
   'ตรวจเคสก่อนส่งบริษัท — ตัวเลขสีแดง คือจำนวนเคสรอตรวจทั้งหมด'
 export const REVIEW_BADGE_DRAFT = 'ยังไม่ส่งตรวจ'

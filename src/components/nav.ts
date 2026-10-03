@@ -3,7 +3,8 @@
 // 3 กลุ่มใหญ่ พับได้ — ไม่มี gate ระดับกลุ่ม. สิทธิ์การมองเห็นย้ายลงไปที่ child ทุกอัน
 // (adminOnly / freelancerOnly / executiveVisible / accountingOnly). กลุ่มโชว์ก็ต่อเมื่อมี child
 // ที่ role นั้นเห็นอย่างน้อย 1 อัน (Sidebar คำนวณให้). ห้ามแตะ route/path ใน App.tsx — path เดิมทุกอัน
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
 import { getInboxCases, getPjSyncReview, getReviewQueue } from '../lib/db'
 
@@ -124,13 +125,16 @@ export const NAV: NavItem[] = [
  *  - 'reviewQueue' "ตรวจเคสก่อนส่งบริษัท" / "งานที่ต้องแก้" (spec-review-flow.md §2/§5) หน้าเดียวกัน
  *    แยกความหมายตาม role: admin = จำนวนเคส "รอตรวจ" (pending_review) ทั้งหมด (needs_fix อยู่ในมือ
  *    พนักงานแล้ว ไม่ใช่งานค้างของแอดมินอีกต่อไป) · staff (role='staff' เท่านั้น ไม่รวม
- *    freelancer/executive/accounting) = จำนวนเคส "ต้องแก้ไข" (needs_fix) ของตัวเอง
- *    (operator === myName เหมือนหน้า /review-queue)
+ *    freelancer/executive/accounting) = จำนวนเคส "ต้องแก้ไข" (needs_fix) ของ "ทั้งทีม" ไม่กรอง operator
+ *    (คุณเตยเคาะ 3 ต.ค. 2026 — ตรงกับรายการที่หน้า /review-queue มุมมอง staff โชว์)
  *  - 'pjSyncReview' "กล่องรอตรวจ PJ" — จำนวนแถวสถานะ 'pending' ทั้งหมดจาก getPjSyncReview('pending')
  *    เท่ากับ rows.length ที่หน้า /pj-sync-review โชว์เป๊ะ (รวมแถว "ใบเสร็จหาย/ถูกแก้" อยู่แล้ว เพราะเป็น
  *    subset ของ rows ชุดเดียวกัน ไม่ได้แยกนับต่างหาก) — admin/staff เห็นเลขเดียวกัน (หน้าไม่กรองตาม role)
  *  - 'inbox' "กล่องรับงาน" — จำนวนเคสทั้งหมดในกล่องจาก getInboxCases() เท่ากับ cases.length ที่หน้า
- *    /inbox ก่อนกรองค้นหา — หน้านั้นไม่ได้กรองตาม role เลย ทุก role ที่เห็นเมนูนี้เห็นเลขเดียวกัน */
+ *    /inbox ก่อนกรองค้นหา — หน้านั้นไม่ได้กรองตาม role เลย ทุก role ที่เห็นเมนูนี้เห็นเลขเดียวกัน
+ *
+ *  รีเฟรชเอง: ทุก 60 วิ (ข้ามตอนแท็บซ่อน) + ทันทีตอนกลับมาที่แท็บ + ทุกครั้งที่เปลี่ยนหน้า (pathname)
+ *  กันยิงรัว: เว้นอย่างน้อย BADGE_MIN_GAP_MS ระหว่างการยิงสองครั้ง · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
 export interface NavBadgeCounts {
   reviewQueue: number
   pjSyncReview: number
@@ -139,30 +143,62 @@ export interface NavBadgeCounts {
 
 const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inbox: 0 }
 
-export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean, myName: string | null): NavBadgeCounts {
+const BADGE_POLL_MS = 60_000
+const BADGE_MIN_GAP_MS = 5_000
+
+export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeCounts {
+  const { pathname } = useLocation()
   const [counts, setCounts] = useState<NavBadgeCounts>(ZERO_BADGE_COUNTS)
+  // เลขรอบล่าสุดที่ยิง — ผลของรอบเก่า (ถูกรอบใหม่แทน / unmount / เปลี่ยน role) เทียบเลขไม่ตรงแล้วทิ้ง
+  const requestRef = useRef(0)
+  const lastStartRef = useRef(0)
+
+  const load = useCallback(() => {
+    if (!isAdmin && !isStaff) return
+    const now = Date.now()
+    if (now - lastStartRef.current < BADGE_MIN_GAP_MS) return
+    lastStartRef.current = now
+    const request = ++requestRef.current
+    void Promise.allSettled([getReviewQueue(), getPjSyncReview('pending'), getInboxCases()]).then(
+      ([reviewResult, pjResult, inboxResult]) => {
+        if (request !== requestRef.current) return
+        const reviewRows = reviewResult.status === 'fulfilled' ? reviewResult.value : []
+        const pjRows = pjResult.status === 'fulfilled' ? pjResult.value : []
+        const inboxRows = inboxResult.status === 'fulfilled' ? inboxResult.value : []
+        const reviewQueue = reviewRows.filter(
+          (r) => r.reviewStatus === (isAdmin ? 'pending_review' : 'needs_fix'),
+        ).length
+        setCounts({ reviewQueue, pjSyncReview: pjRows.length, inbox: inboxRows.length })
+      },
+    )
+  }, [isAdmin, isStaff])
+
+  // ตั้งเวลา + ฟังตอนกลับมาที่แท็บ (ผูกกับ load เพื่อให้ cleanup ล้างรอบเก่าเมื่อ role เปลี่ยน/unmount)
   useEffect(() => {
     if (!isAdmin && !isStaff) {
       setCounts(ZERO_BADGE_COUNTS)
       return
     }
-    let cancelled = false
-    Promise.allSettled([getReviewQueue(), getPjSyncReview('pending'), getInboxCases()]).then(
-      ([reviewResult, pjResult, inboxResult]) => {
-        if (cancelled) return
-        const reviewRows = reviewResult.status === 'fulfilled' ? reviewResult.value : []
-        const pjRows = pjResult.status === 'fulfilled' ? pjResult.value : []
-        const inboxRows = inboxResult.status === 'fulfilled' ? inboxResult.value : []
-        const reviewQueue = isAdmin
-          ? reviewRows.filter((r) => r.reviewStatus === 'pending_review').length
-          : reviewRows.filter((r) => r.reviewStatus === 'needs_fix' && sameOperator(r.operator, myName)).length
-        setCounts({ reviewQueue, pjSyncReview: pjRows.length, inbox: inboxRows.length })
-      },
-    )
-    return () => {
-      cancelled = true
+    const timer = setInterval(() => {
+      if (!document.hidden) load()
+    }, BADGE_POLL_MS)
+    function handleVisibility() {
+      if (!document.hidden) load()
     }
-  }, [isAdmin, isStaff, myName])
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibility)
+      requestRef.current += 1 // ทิ้งผลที่ยังค้างอยู่ (กัน setState หลัง unmount)
+      lastStartRef.current = 0 // รอบถัดไปหลัง role เปลี่ยนต้องยิงได้ทันที ไม่ติดช่วงเว้น
+    }
+  }, [isAdmin, isStaff, load])
+
+  // โหลดตอน mount + ทุกครั้งที่เปลี่ยนหน้า (พนักงานกดย้ายเมนู เลขจะสดตาม)
+  useEffect(() => {
+    load()
+  }, [load, pathname])
+
   return counts
 }
 

@@ -70,7 +70,7 @@ function NavContent({
   const badgeCountFor = (key: NavChild['badgeKey']) => (key ? badgeCounts[key] : 0)
   // ข้อความ aria-label ต่างกันตามคีย์ (คนละความหมาย คนละหน้า) — คงพฤติกรรมเดิมของ 'reviewQueue' ที่แยกตาม role
   const badgeAriaLabel = (key: NavChild['badgeKey'], count: number) => {
-    if (key === 'reviewQueue') return `${count} ${roles.isStaff ? 'เคสต้องแก้' : 'เคสรอตรวจ'}`
+    if (key === 'reviewQueue') return `${count} ${roles.isStaff ? 'เคสต้องแก้ของทีม' : 'เคสรอตรวจ'}`
     if (key === 'pjSyncReview') return `${count} รายการรอตรวจ PJ`
     if (key === 'inbox') return `${count} เคสในกล่องรับงาน`
     return `${count}`
@@ -92,6 +92,13 @@ function NavContent({
           const groupActive = visibleChildren.some(({ child }) => pathname === child.to)
           // mobile: accordion — open ถ้า active หรือ expanded; desktop: click-toggle เท่านั้น
           const open = !!expanded[item.label] || (isMobile && groupActive)
+          // ผลรวม badge ของลูกในกลุ่ม — โชว์ที่หัวกลุ่มตอนพับอยู่ (เห็นโดยไม่ต้องกาง) เฉพาะลูกที่ role นี้เห็นจริง
+          const groupBadgeTotal = visibleChildren.reduce((sum, { child }) => sum + badgeCountFor(child.badgeKey), 0)
+          // desktop แบบเมาส์: rail ย่อ (ไม่ hover) ซ่อนลูกเสมอแม้กดกางไว้ → ต้องโชว์ badge รวมด้วย แล้วซ่อนตอน hover กาง
+          // (ตอนนั้นเห็นเลขของลูกแต่ละตัวแล้ว) · มือถือ/touch: โชว์เฉพาะตอนกลุ่มพับ
+          const railHidesChildren = !isMobile && !isTouch
+          const showGroupBadge = groupBadgeTotal > 0 && (!open || railHidesChildren)
+          const groupBadgeHideOnHover = open && railHidesChildren ? 'md:group-hover:hidden' : ''
 
           const childLinks = visibleChildren.map(({ child, section }, idx) => {
             const prevSection = idx > 0 ? visibleChildren[idx - 1].section : undefined
@@ -145,7 +152,19 @@ function NavContent({
                   groupActive ? 'text-salmon-deep' : 'text-ink'
                 } hover:bg-peach-light hover:text-ink`}
               >
-                <item.icon size={20} className="shrink-0 text-salmon-deep" />
+                {/* ไอคอนกลุ่ม + badge รวมวางทับมุมขวาบน (ใช้ได้ทั้งตอน rail ย่อ/กาง/มือถือ ไม่ดันเลย์เอาต์) */}
+                <span className="relative shrink-0">
+                  <item.icon size={20} className="text-salmon-deep" />
+                  {showGroupBadge && (
+                    <span
+                      role="img"
+                      aria-label={`${groupBadgeTotal} รายการรอดำเนินการในกลุ่มนี้`}
+                      className={`absolute -right-2 -top-2 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ${groupBadgeHideOnHover}`}
+                    >
+                      {groupBadgeTotal}
+                    </span>
+                  )}
+                </span>
                 <span className={isMobile || isTouch ? 'whitespace-nowrap' : labelCls}>{item.label}</span>
                 {/* chevron: desktop ซ่อนตอน rail โผล่ตอน hover กาง (touch = โชว์เสมอ) */}
                 <span
@@ -233,7 +252,7 @@ function NavContent({
 
 export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const { pathname } = useLocation()
-  const { role, configured, name: myName } = useAuth()
+  const { role, configured } = useAuth()
   const isAdmin = !configured || role === 'admin'
   const isStaff = configured && role === 'staff'
   const isFreelancer = configured && role === 'freelancer'
@@ -242,7 +261,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
   // badge ทุกเมนู (คิวตรวจเคส/กล่องรอตรวจ PJ/กล่องรับงาน) — คำนวณครั้งเดียวที่นี่ (ไม่ใช่ใน NavContent ที่ถูก
   // render 2 รอบ mobile+desktop ด้านล่าง) กัน query นับ badge ยิงซ้ำ 2 ชุดทุกโหลดหน้าสำหรับ admin/staff ทุก session
-  const badgeCounts = useNavBadgeCounts(isAdmin, isStaff, myName)
+  const badgeCounts = useNavBadgeCounts(isAdmin, isStaff)
 
   // state สำหรับ expand/collapse ของแต่ละ group บนมือถือ (key = label)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})

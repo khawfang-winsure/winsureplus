@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Image as ImageIcon } from 'lucide-react'
+import { ArrowRight, Image as ImageIcon } from 'lucide-react'
 import { Badge, EmptyState, Loading, PageTitle, Select } from '../components/ui'
-import { getAllShops, getMediaGateFrom, getReviewLog, getReviewQueue, getSummaryReviewSnapshot } from '../lib/db'
+import { getAllShops, getMediaGateFrom, getReviewQueue, getSummaryReviewSnapshot } from '../lib/db'
 import { useAuth } from '../lib/auth'
 import {
   buildTonightSummary,
@@ -17,13 +17,16 @@ import {
   type TonightSummaryRow,
 } from '../lib/review'
 import { useAsync } from '../lib/useAsync'
+import { useRejectReasons } from '../lib/useRejectReasons'
 import { sameOperator } from '../components/nav'
 import type { ReviewQueueItem } from '../lib/types'
 
 // spec-review-flow.md §5 — เพจเดียว "/review-queue" 2 หน้าตาตาม role (ไม่ใช่ 2 route):
 //  - admin  ("ตรวจเคสก่อนส่งบริษัท"): เห็นทั้งคิว pending_review + needs_fix ทุกเคส — พฤติกรรมเดิมทั้งหมด
-//  - staff  ("งานที่ต้องแก้"): เห็นเฉพาะ needs_fix ที่ operator === ตัวเอง (เคสของฉันเท่านั้น — ห้าม leak
-//    เคสรอตรวจ/เคสของคนอื่น) พร้อมเหตุผลที่แอดมินตีกลับล่าสุด (จาก contract_review_log ผ่าน getReviewLog)
+//  - staff  ("งานที่ต้องแก้"): เห็น needs_fix "ของทั้งทีม" ไม่กรองตาม operator (คุณเตยเคาะ 3 ต.ค. 2026 —
+//    แทนกติกาเดิมที่เห็นเฉพาะเคสตัวเอง เพราะพนักงานไม่รู้ว่าเคสโดนตีกลับจนไปเจอเองที่หน้ารอสรุปยอด)
+//    แต่ละแถวบอก "คนคีย์" + ป้าย "เคสของฉัน" เมื่อ operator ตรงกับผู้ล็อกอิน พร้อมเหตุผลที่แอดมินตีกลับล่าสุด
+//    (จาก contract_review_log ผ่าน useRejectReasons) — เคสรอตรวจ (pending_review) ยังไม่โชว์ฝั่ง staff
 //    กดแถวแล้วไปหน้า /contract/:id ที่การ์ดแก้ไข/ส่งตรวจใหม่มีอยู่แล้ว
 
 type SortKey = 'age' | 'contractNo'
@@ -42,6 +45,14 @@ function badgeToneOf(t: ReviewTone): 'green' | 'amber' | 'red' | 'neutral' {
   if (t === 'fix') return 'red'
   if (t === 'ok') return 'green'
   return 'neutral'
+}
+
+/** วันที่ตีกลับ dd/mm/yyyy (ค.ศ. เหมือน thaiDate ที่อื่นในเว็บ) จาก timestamp ISO */
+function rejectedDateLabel(iso: string | null): string {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '-'
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
 function sortItems(list: ReviewQueueItem[], key: SortKey, dir: SortDir): ReviewQueueItem[] {
@@ -173,50 +184,46 @@ export default function ReviewQueue() {
     return sortItems(rows, key, dir)
   }, [items, sortOpt, shopFilter])
 
-  // ── staff: "งานที่ต้องแก้" — เฉพาะ needs_fix ของตัวเอง (operator เทียบแบบ trim+lowercase ผ่าน
-  // sameOperator กัน noise ปกติของช่องกรอกมือ — ⚠️ ถ้าแอดมินเปลี่ยนชื่อผู้ใช้ใน /settings/users
-  // เคสเก่าที่เก็บชื่อเดิมจะไม่ match อีก แอดมินยังเห็นทุกเคสในคิวเดียวกันเสมออยู่แล้ว) ──────────
+  // ── staff: "งานที่ต้องแก้" — needs_fix ของทั้งทีม เรียงเก่าสุดก่อน (ค้างนานสุดอยู่บน) ไม่กรอง operator
+  // (คุณเตยเคาะ 3 ต.ค. 2026) — sameOperator (trim+lowercase) ใช้แค่ติดป้าย "เคสของฉัน" ไม่ใช่ตัวกรองแล้ว
+  // ⚠️ ถ้าแอดมินเปลี่ยนชื่อผู้ใช้ใน /settings/users เคสเก่าที่เก็บชื่อเดิมจะไม่ได้ป้าย "เคสของฉัน"
+  // (แต่ยังขึ้นในรายการครบ ไม่หลุด) ──────────
   const staffItems = useMemo(
-    () => sortItems(items.filter((i) => i.reviewStatus === 'needs_fix' && sameOperator(i.operator, myName)), 'age', 'asc'),
-    [items, myName],
+    () => sortItems(items.filter((i) => i.reviewStatus === 'needs_fix'), 'age', 'asc'),
+    [items],
+  )
+  const myFixCount = useMemo(
+    () => staffItems.filter((i) => sameOperator(i.operator, myName)).length,
+    [staffItems, myName],
   )
 
-  // เหตุผลตีกลับล่าสุดต่อเคส (contract_review_log แถวล่าสุด — ครอบทั้งตีกลับจาก reject และ cancel_approval)
-  const [reasons, setReasons] = useState<Record<string, string | null>>({})
-  useEffect(() => {
-    if (isAdmin || staffItems.length === 0) return
-    let cancelled = false
-    Promise.all(
-      staffItems.map((i) =>
-        getReviewLog(i.contractId)
-          .then((log) => log[0]?.reason ?? null)
-          .catch(() => null),
-      ),
-    ).then((list) => {
-      if (cancelled) return
-      const map: Record<string, string | null> = {}
-      staffItems.forEach((i, idx) => {
-        map[i.contractId] = list[idx]
-      })
-      setReasons(map)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [isAdmin, staffItems])
+  // เหตุผลตีกลับล่าสุดต่อเคส — ดึงครั้งเดียวทั้งชุด; admin ส่ง [] = ไม่ยิง query
+  const staffFixIds = useMemo(
+    () => (isAdmin ? [] : staffItems.map((i) => i.contractId)),
+    [isAdmin, staffItems],
+  )
+  const reasons = useRejectReasons(staffFixIds)
 
   // ================= staff view =================
   if (!isAdmin) {
     return (
       <div>
-        <PageTitle sub={`${REVIEW_BADGE_NEEDS_FIX} ${staffItems.length}`}>งานที่ต้องแก้</PageTitle>
+        <PageTitle sub={`${REVIEW_BADGE_NEEDS_FIX} ${staffItems.length} เคส · เคสของฉัน ${myFixCount}`}>
+          งานที่ต้องแก้ของทีม
+        </PageTitle>
+        <p className="-mt-2 mb-4 text-sm text-ink-soft">
+          เคสที่คุณเตยตีกลับให้แก้ไข ของทุกคนในทีม — เคสของคุณจะมีป้าย &quot;เคสของฉัน&quot; กำกับ
+        </p>
 
         {loading ? (
           <Loading />
         ) : error ? (
           <EmptyState title="โหลดงานที่ต้องแก้ไม่สำเร็จ" hint={error} />
         ) : staffItems.length === 0 ? (
-          <EmptyState title="ไม่มีงานที่ต้องแก้" hint="เคสที่แอดมินตีกลับให้แก้ไขจะขึ้นที่นี่" />
+          <EmptyState
+            title="ตอนนี้ทีมไม่มีงานที่ต้องแก้"
+            hint="เคสที่คุณเตยตีกลับให้แก้ไขจะขึ้นที่นี่ให้ทั้งทีมเห็น"
+          />
         ) : (
           <ul className="flex flex-col gap-2">
             {staffItems.map((item) => {
@@ -224,27 +231,41 @@ export default function ReviewQueue() {
                 ? reviewAgeLabel(reviewAgeDays(item.reviewUpdatedAt, nowISO))
                 : '-'
               const reason = reasons[item.contractId]
+              const mine = sameOperator(item.operator, myName)
               return (
                 <li key={item.contractId}>
                   <Link
                     to={`/contract/${item.contractId}`}
                     className="flex flex-col gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 transition hover:border-salmon-deep"
                   >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <p className="font-medium text-ink">
                           {item.contractNo} <span className="text-ink-soft">— {item.customerName}</span>
                         </p>
-                        <p className="text-sm text-ink">{item.shopCode || '-'}</p>
+                        <p className="text-sm text-ink">
+                          {item.shopCode || '-'} · คนคีย์: {item.operator || '-'}
+                        </p>
+                        <p className="text-xs text-ink-soft">ตีกลับเมื่อ {rejectedDateLabel(item.reviewUpdatedAt)}</p>
                       </div>
-                      <Badge tone="red">{age}</Badge>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {mine && <Badge tone="green">เคสของฉัน</Badge>}
+                        <Badge tone="red">{age}</Badge>
+                      </div>
                     </div>
-                    {reason && (
-                      <p className="rounded-lg border border-dashed border-red-300 bg-white px-3 py-2 text-sm text-ink">
-                        <span className="font-medium">เหตุผลที่ต้องแก้ไข: </span>
-                        {reason}
-                      </p>
-                    )}
+                    <p className="rounded-lg border border-dashed border-red-300 bg-white px-3 py-2 text-sm text-ink">
+                      <span className="font-medium">เหตุผลที่ต้องแก้ไข: </span>
+                      {reason === undefined ? (
+                        <span className="text-ink-soft">กำลังโหลดเหตุผล...</span>
+                      ) : reason === null ? (
+                        <span className="text-ink-soft">ไม่พบเหตุผลที่บันทึกไว้ — เปิดสัญญาเพื่อดูประวัติ</span>
+                      ) : (
+                        reason
+                      )}
+                    </p>
+                    <span className="inline-flex items-center gap-1 self-end text-sm font-medium text-salmon-deep">
+                      ไปแก้ไขเคสนี้ <ArrowRight size={14} aria-hidden="true" />
+                    </span>
                   </Link>
                 </li>
               )
