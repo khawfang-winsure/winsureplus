@@ -8517,6 +8517,21 @@ export async function getPjSyncReview(
   }))
 }
 
+/** นับกล่องรอตรวจ PJ (status='pending') แบบเบา (HEAD + count exact) สำหรับเลขแดงบนเมนู
+ *  เท่ากับ getPjSyncReview('pending').length — ฟังก์ชันเดิมกรองแค่ .eq('status', 'pending')
+ *  และ join contracts แบบ embed (left join ไม่ตัดแถว) จึงไม่มี filter อื่นต้องใส่
+ *  (ข้อต่างเดียว: เดิมถูกตัดที่ .range(0, PAGE_CAP) = 5,000 แถว — กล่องจริงอยู่ระดับสิบ ไม่ถึง)
+ *  error → throw (ห้ามคืน 0 เงียบ) */
+export async function getPjSyncReviewPendingCount(): Promise<number> {
+  if (!supabase) return 0
+  const { count, error } = await supabase
+    .from('pj_sync_review')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'pending')
+  if (error) throw error
+  return count ?? 0
+}
+
 /** 1 แถวดิบเฉพาะที่ต้องใช้ parse drift snapshot (reason + raw_json เท่านั้น) */
 interface PjSyncReviewDriftViewRow {
   reason: string
@@ -10074,6 +10089,62 @@ export async function getReviewQueue(): Promise<ReviewQueueItem[]> {
   })
 
   return items.sort((a, b) => (a.reviewUpdatedAt ?? '').localeCompare(b.reviewUpdatedAt ?? ''))
+}
+
+/** นับเคสในคิวตรวจแบบเบา (HEAD + count exact — ไม่ดึงแถว/ร้าน/สถานะรูป) สำหรับเลขแดงบนเมนูที่รีเฟรชทุก 60 วิ
+ *  ต้องได้เลขเท่า getReviewQueue().filter(r => r.reviewStatus === status).length เป๊ะ — getReviewQueue กรองแค่
+ *  contracts.review_status in ('pending_review','needs_fix') ไม่มี filter สถานะสัญญา/วันที่/gate อื่น
+ *  (RLS ฝั่ง DB ใช้กับทั้งสองทางเหมือนกัน) จึงใส่เงื่อนไขเดียว .eq('review_status', status)
+ *  error → throw (ห้ามคืน 0 เงียบ ไม่งั้นเลขแดงหายโดยไม่มีใครรู้) */
+export async function getReviewBadgeCount(status: 'pending_review' | 'needs_fix'): Promise<number> {
+  if (!supabase) return 0
+  const { count, error } = await supabase
+    .from('contracts')
+    .select('id', { count: 'exact', head: true })
+    .eq('review_status', status)
+  if (error) throw error
+  return count ?? 0
+}
+
+/** เหตุผลตีกลับล่าสุดของหลายสัญญาในคิวรี่เดียวต่อ chunk (แทนการยิง getReviewLog ทีละสัญญา)
+ *  เหมือน latestRejectReason ใน useRejectReasons.ts: เอาเฉพาะ action reject/cancel_approval แถวล่าสุด
+ *  (created_at ใหม่สุด) ต่อสัญญา ข้าม submit/approve ที่อาจเขียนทีหลัง
+ *  - reason: trim แล้ว; ว่าง/null → null (มีแถวตีกลับแต่ไม่ได้ใส่เหตุผล)
+ *  - at: created_at ของแถวตีกลับล่าสุด
+ *  - สัญญาที่ไม่เคยถูกตีกลับ = ไม่มี key ใน Map (ผู้เรียกตีเป็น null เอง)
+ *  ids ว่าง → Map ว่าง ไม่ยิง query · แบ่ง chunk 100 กัน URL ยาวเกิน · error → throw */
+export async function getLatestRejectReasons(
+  contractIds: string[],
+): Promise<Map<string, { reason: string | null; at: string }>> {
+  const result = new Map<string, { reason: string | null; at: string }>()
+  const ids = [...new Set(contractIds)]
+  if (!supabase || ids.length === 0) return result
+  const client = supabase
+  const CHUNK_SIZE = 100
+  const chunks: string[][] = []
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) chunks.push(ids.slice(i, i + CHUNK_SIZE))
+
+  const responses = await Promise.all(
+    chunks.map((chunk) =>
+      client
+        .from('contract_review_log')
+        .select('contract_id, reason, created_at')
+        .in('contract_id', chunk)
+        .in('action', ['reject', 'cancel_approval'])
+        .order('created_at', { ascending: false })
+        .range(0, PAGE_CAP),
+    ),
+  )
+  for (const { data, error } of responses) {
+    if (error) throw error
+    // เรียงใหม่สุดก่อน → แถวแรกที่เจอของแต่ละสัญญาคือล่าสุด
+    for (const r of (data ?? []) as { contract_id: string; reason: string | null; created_at: string }[]) {
+      if (result.has(r.contract_id)) continue
+      const reason = r.reason?.trim()
+      result.set(r.contract_id, { reason: reason ? reason : null, at: r.created_at })
+    }
+  }
+  return result
 }
 
 interface SummaryReviewSnapshotRow {
