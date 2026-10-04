@@ -7587,6 +7587,23 @@ export async function getInboxCases(): Promise<InboxCase[]> {
   }).filter((x): x is InboxCase => x !== null)
 }
 
+/**
+ * สัญญานี้ถูกหยิบเข้ากล่องรับงาน (pin) อยู่หรือไม่ — ใช้แทน getInboxCases() ที่ ContractDetail เรียกเพื่อดู isPinned อย่างเดียว
+ * semantics เดิม: pinned = มี row ใน inbox_pins (pin เป็นของส่วนกลาง ไม่แยกรายคน) และสัญญา status='active'
+ * (getInboxCases กรองเฉพาะ active) → ดึง 2 แถวเล็กๆ แทนทั้งกล่อง
+ */
+export async function isContractPinned(contractId: string): Promise<boolean> {
+  if (!supabase) return false
+  const [pinRes, statusRes] = await Promise.all([
+    supabase.from('inbox_pins').select('contract_id').eq('contract_id', contractId).maybeSingle(),
+    supabase.from('contracts').select('status').eq('id', contractId).maybeSingle(),
+  ])
+  if (pinRes.error) throw pinRes.error
+  if (statusRes.error) throw statusRes.error
+  if (!pinRes.data) return false
+  return (statusRes.data as { status: string } | null)?.status === 'active'
+}
+
 // ---------- pinToInbox / unpinFromInbox ----------
 
 /**

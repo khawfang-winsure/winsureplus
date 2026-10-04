@@ -41,7 +41,7 @@ import {
   deletePrivateNote,
   pinToInbox,
   unpinFromInbox,
-  getInboxCases,
+  isContractPinned,
   getShops,
   markDocsReceived,
   markBoxReceived,
@@ -639,10 +639,8 @@ export default function ContractDetail() {
   // โหลดสถานะ pin ของสัญญานี้
   useEffect(() => {
     if (!id) return
-    getInboxCases()
-      .then((cases) => {
-        setIsPinned(cases.some((c) => c.contractId === id && c.pinned))
-      })
+    isContractPinned(id)
+      .then(setIsPinned)
       .catch(() => {/* ไม่มี inbox_pins table ใน mock mode — ข้ามเงียบๆ */})
   }, [id])
 
