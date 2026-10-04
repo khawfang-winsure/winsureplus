@@ -7503,16 +7503,16 @@ export async function getInboxCases(): Promise<InboxCase[]> {
   )
 
   // Step 5: ดึง follow_up ล่าสุด 1 แถวต่อ contract (สำหรับ latestNote/latestNoteAt/latestNoteByName)
-  // ใช้ order desc + range — PostgREST ไม่รองรับ DISTINCT ON ดังนั้น client-side dedupe
+  // ใช้ view v_follow_up_latest (mig 0168: DISTINCT ON contract_id, security_invoker → RLS follow_ups ยังใช้)
+  // เดิมดึงประวัติ follow_ups ทั้งหมดของ ~80 เคสแล้ว dedupe ฝั่งเว็บ → ลดข้อมูลที่ส่งลง ~99%
   const { data: fuData, error: fuErr } = await supabase
-    .from('follow_ups')
+    .from('v_follow_up_latest')
     .select('contract_id, note_text, created_at, author_name')
     .in('contract_id', activeIds)
-    .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
   if (fuErr) throw fuErr
 
-  // Client-side dedupe: เก็บเฉพาะแถวแรก (latest) ต่อ contract_id
+  // view คืน 1 แถวต่อ contract อยู่แล้ว — map ไว้เผื่อ (เก็บแถวแรกต่อ contract_id)
   const latestNoteMap = new Map<
     string,
     { note_text: string; created_at: string; author_name: string }
