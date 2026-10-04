@@ -445,6 +445,7 @@ function invalidateOptionsCache(): void {
 export function clearReferenceCaches(): void {
   shopsCache.clear()
   optionsCache.clear()
+  invalidateContractCaches()
 }
 
 function cloneShops(rows: Shop[]): Shop[] {
@@ -452,6 +453,36 @@ function cloneShops(rows: Shop[]): Shop[] {
 }
 function cloneOptions(rows: Option[]): Option[] {
   return rows.map((r) => ({ ...r }))
+}
+
+// ---------- cache สถานะ/ยอดรวมสัญญา (v_contract_status / v_contract_aggregates) ----------
+// TTL 3 นาที — ~9 หน้าเรียกซ้ำทุกครั้งที่เปิดหน้า. ทุก mutator ที่กระทบสัญญา/งวด/การชำระ/คืนเครื่อง/ค่าปรับ
+// ถูกห่อด้วย writesContracts() → ล้าง cache ก่อนเริ่มและหลังจบ (แม้ error) · ส่ง { force: true } เพื่อข้าม cache
+// (ข้อมูลที่เปลี่ยนจากเครื่องอื่น/งานเบื้องหลัง เช่น PJ auto-sync, cron ค่าปรับ จะเห็นภายใน ≤3 นาที)
+const CONTRACT_CACHE_TTL_MS = 3 * 60_000
+let statusesCache: RefCacheEntry<ContractStatusRow[]> | null = null
+let aggregatesCache: RefCacheEntry<Map<string, ContractAggregate>> | null = null
+
+/** ล้าง cache สถานะ/ยอดรวมสัญญา — เรียกจาก mutator (ผ่าน writesContracts) และตอนล็อกอิน/ล็อกเอาต์ */
+export function invalidateContractCaches(): void {
+  statusesCache = null
+  aggregatesCache = null
+}
+
+/** ห่อ mutator ที่แก้สัญญา/งวด/การชำระ ฯลฯ ให้ล้าง cache ก่อนเริ่ม + หลังจบ (finally — ครอบกรณีเขียนสำเร็จบางส่วนแล้ว throw) */
+function writesContracts<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return async (...args: A): Promise<R> => {
+    invalidateContractCaches()
+    try {
+      return await fn(...args)
+    } finally {
+      invalidateContractCaches()
+    }
+  }
+}
+
+function isFresh(entry: RefCacheEntry<unknown> | null): entry is RefCacheEntry<unknown> {
+  return entry !== null && Date.now() - entry.at < CONTRACT_CACHE_TTL_MS
 }
 
 // ---------- API ที่หน้าเว็บเรียกใช้ ----------
@@ -864,7 +895,7 @@ export async function saveSettlementMatrix(matrix: SettlementMatrix): Promise<vo
  *  @param contractId  id ของสัญญา
  *  @param payload     ยอดที่คิดจาก computeSettlement (remaining/discount/paid/penalty)
  *  @param byName      ชื่อผู้กดปิด (useAuth().name) */
-export async function settleContractEarly(
+export const settleContractEarly = writesContracts(async function settleContractEarly(
   contractId: string,
   payload: { remaining: number; discount: number; paid: number; penalty: number },
   byName: string,
@@ -879,7 +910,7 @@ export async function settleContractEarly(
     p_by: byName,
   })
   if (error) throw error
-}
+})
 
 export interface SettlementReportRow {
   contractId: string
@@ -949,7 +980,7 @@ export interface CloseContractEarlyFee {
  *  = Σ max(0, penalty_amount − penalty_paid_for_installment) ของงวดที่ยังไม่จ่าย (หักส่วนที่เคยเก็บไปแล้ว
  *  ก่อน กันเรียกซ้ำ) — ตรวจซ้ำจาก computeEarlyClose ฝั่ง client อีกชั้น
  *  @returns id ของ contract_close_events (เก็บไว้ใช้ยกเลิกทีหลังถ้าจำเป็น) */
-export async function closeContractEarlyPreserve(
+export const closeContractEarlyPreserve = writesContracts(async function closeContractEarlyPreserve(
   contractId: string,
   payload: {
     settlementPaid: number
@@ -970,18 +1001,18 @@ export async function closeContractEarlyPreserve(
   })
   if (error) throw error
   return data as string
-}
+})
 
 /** ยกเลิกการปิดสัญญาก่อนกำหนด (RPC undo_close_contract_early, mig 0131) — admin เท่านั้น (guard ฝั่ง DB)
  *  ลบ payment_log/other_income ที่ event สร้างไว้ + คืนสัญญาเป็น active; ยกเลิกซ้ำจะโดน DB reject (idempotent) */
-export async function undoCloseContractEarly(eventId: string, reason: string): Promise<void> {
+export const undoCloseContractEarly = writesContracts(async function undoCloseContractEarly(eventId: string, reason: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('undo_close_contract_early', {
     p_event_id: eventId,
     p_reason: reason,
   })
   if (error) throw error
-}
+})
 
 export interface ContractCloseEvent {
   id: string
@@ -1149,7 +1180,7 @@ export async function getCompanySmsSettings(): Promise<{
   }
 }
 
-export async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
+export const insertContract = writesContracts(async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
   if (!supabase) {
     // โหมด mock — ยังไม่บันทึกจริง
     return ''
@@ -1157,7 +1188,7 @@ export async function insertContract(c: Omit<Contract, 'id'>): Promise<string> {
   const { data, error } = await supabase.from('contracts').insert(toInsert(c)).select('id').single()
   if (error) throw error
   return (data?.id as string) ?? ''
-}
+})
 
 /** ทำเครื่องหมายว่าสรุปยอดแล้ว (กันส่งซ้ำ) — บันทึกลง DB จริง
  *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
@@ -1300,14 +1331,14 @@ export async function sendSummaryBackToStaff(contractIds: string[], note: string
  *     1 ใบ "ย้ายสลิปตามไม่ได้" — RPC ไม่บล็อกแม้ร้านนั้นจะยืนยันโอน/แนบสลิปแล้ว (transferred=true) ในวันต้นทาง/ปลายทาง
  *     ก็แก้ได้ปกติ (Pete ตัดสินใจ 2026-07-10: ยอมรับความเสี่ยงยอดไม่ตรงสลิปเดิม เพื่อความยืดหยุ่นแก้ย้อนหลัง)
  *  admin-only (guard ซ้ำใน RPC เอง กัน staff เรียกตรง แม้ RLS contracts_write จะกว้างกว่า) */
-export async function updateContractTransferDate(contractId: string, newDateISO: string): Promise<void> {
+export const updateContractTransferDate = writesContracts(async function updateContractTransferDate(contractId: string, newDateISO: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('update_contract_transfer_date', {
     p_contract_id: contractId,
     p_new_date: newDateISO,
   })
   if (error) throw error
-}
+})
 
 /** ทำเครื่องหมายว่าส่งอีเมลแล้ว (กันส่งซ้ำ)
  *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
@@ -1450,14 +1481,14 @@ export async function getDocRejectLog(contractId: string): Promise<DocRejectEntr
  *  RPC guard: admin/staff เท่านั้น + flip เฉพาะสัญญาที่ยังเป็น 'returned'
  *  @param contractId  id ของสัญญา
  *  @param byName      ชื่อผู้กดปิด (useAuth().name) */
-export async function closeReturnedContract(contractId: string, byName: string): Promise<void> {
+export const closeReturnedContract = writesContracts(async function closeReturnedContract(contractId: string, byName: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('close_returned_contract', {
     p_contract_id: contractId,
     p_by: byName,
   })
   if (error) throw error
-}
+})
 
 export interface ContractReturnInfo {
   returnDate: string | null  // yyyy-mm-dd Bangkok, null = ไม่มีแถวคืนเครื่อง
@@ -1530,7 +1561,7 @@ export async function getContractDeleteGuardInfo(contractId: string): Promise<Co
  *  @param contractId  id ของสัญญาที่จะลบ
  *  @param byName      ชื่อผู้กดลบ (useAuth().name) — บันทึกลง archive.deleted_by (บังคับ ห้ามว่าง)
  *  @returns           contractNo ที่เพิ่งปลดออกมา (ใช้โชว์ toast ยืนยัน) */
-export async function deleteContract(contractId: string, byName: string): Promise<{ contractNo: string }> {
+export const deleteContract = writesContracts(async function deleteContract(contractId: string, byName: string): Promise<{ contractNo: string }> {
   if (!supabase) return { contractNo: '' }
   const { data, error } = await supabase.rpc('delete_contract', {
     p_contract_id: contractId,
@@ -1538,7 +1569,7 @@ export async function deleteContract(contractId: string, byName: string): Promis
   })
   if (error) throw error
   return { contractNo: (data as string) ?? '' }
-}
+})
 
 export async function getContract(id: string): Promise<Contract | null> {
   if (!supabase) return mock.contracts.find((c) => c.id === id) ?? null
@@ -1697,11 +1728,11 @@ function toUpdate(c: Omit<Contract, 'id'>) {
   }
 }
 
-export async function updateContract(id: string, c: Omit<Contract, 'id'>): Promise<void> {
+export const updateContract = writesContracts(async function updateContract(id: string, c: Omit<Contract, 'id'>): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('contracts').update(toUpdate(c)).eq('id', id)
   if (error) throw error
-}
+})
 
 // ---------- งวดผ่อน + สถานะล่าช้า (Phase 3/4) ----------
 interface InstallmentRow {
@@ -1880,7 +1911,22 @@ function mapContractAggregate(r: ContractAggregateRow): ContractAggregate {
  * คืน Map<contractId, ContractAggregate> สำหรับ dashboard/ค่าคอม/outstanding
  * รองรับถึง 10,000 สัญญา — range(0, 9999) เพราะ view คืน 1 แถว/สัญญา
  */
-export async function getContractAggregates(): Promise<Map<string, ContractAggregate>> {
+export async function getContractAggregates(opts?: { force?: boolean }): Promise<Map<string, ContractAggregate>> {
+  if (!supabase) return new Map()
+  if (!opts?.force && isFresh(aggregatesCache)) {
+    const cached = await aggregatesCache.promise
+    return new Map([...cached].map(([k, v]) => [k, { ...v }]))
+  }
+  const entry: RefCacheEntry<Map<string, ContractAggregate>> = { at: Date.now(), promise: fetchContractAggregates() }
+  aggregatesCache = entry
+  entry.promise.catch(() => {
+    if (aggregatesCache === entry) aggregatesCache = null
+  })
+  const fresh = await entry.promise
+  return new Map([...fresh].map(([k, v]) => [k, { ...v }]))
+}
+
+async function fetchContractAggregates(): Promise<Map<string, ContractAggregate>> {
   if (!supabase) return new Map()
   const { data, error } = await supabase
     .from('v_contract_aggregates')
@@ -1895,7 +1941,7 @@ export async function getContractAggregates(): Promise<Map<string, ContractAggre
 }
 
 /** บันทึกชำระ (เพิ่มยอดสะสม — จ่ายบางส่วนได้ งวดจะปิดเมื่อยอดสะสม >= ค่างวด) */
-export async function recordPayment(installmentId: string, amount: number, note?: string): Promise<void> {
+export const recordPayment = writesContracts(async function recordPayment(installmentId: string, amount: number, note?: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('record_payment', {
     p_installment_id: installmentId,
@@ -1903,10 +1949,10 @@ export async function recordPayment(installmentId: string, amount: number, note?
     p_note: note ?? null,
   })
   if (error) throw error
-}
+})
 
 /** แก้ไขยอดสะสมใหม่ทั้งก้อน (กรณีพนักงานกรอกผิด) */
-export async function adjustPayment(installmentId: string, newTotal: number, note?: string): Promise<void> {
+export const adjustPayment = writesContracts(async function adjustPayment(installmentId: string, newTotal: number, note?: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('adjust_payment', {
     p_installment_id: installmentId,
@@ -1914,17 +1960,17 @@ export async function adjustPayment(installmentId: string, newTotal: number, not
     p_note: note ?? null,
   })
   if (error) throw error
-}
+})
 
 /** ยกเลิกการชำระทั้งงวด (คืนเป็นค้างชำระ) */
-export async function cancelPayment(installmentId: string, note?: string): Promise<void> {
+export const cancelPayment = writesContracts(async function cancelPayment(installmentId: string, note?: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('cancel_payment', {
     p_installment_id: installmentId,
     p_note: note ?? null,
   })
   if (error) throw error
-}
+})
 
 /** 1 แถวในประวัติการชำระ */
 export interface PaymentLogEntry {
@@ -2195,7 +2241,7 @@ export interface RestructureInput {
 }
 
 /** ขยายระยะเวลา (atomic RPC): ลบงวดที่ยังไม่จ่าย → สร้างงวดใหม่ + เก็บประวัติ */
-export async function restructureContract(contractId: string, input: RestructureInput): Promise<void> {
+export const restructureContract = writesContracts(async function restructureContract(contractId: string, input: RestructureInput): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('restructure_contract', {
     p_contract_id: contractId,
@@ -2206,7 +2252,7 @@ export async function restructureContract(contractId: string, input: Restructure
     p_note: input.note ?? null,
   })
   if (error) throw error
-}
+})
 
 /** 1 แถวประวัติการขยายระยะเวลา */
 export interface ExtensionRecord {
@@ -2410,7 +2456,7 @@ export async function getContractTransfers(contractId: string): Promise<Contract
  * สัญญาต้อง status='active', เอกสารแนบครบตาม transferMediaSlots(nextTransferNo(history)) ก่อนเรียก
  * (DB validate ซ้ำอีกชั้น — error message เป็นภาษาไทยพร้อมใช้โชว์ผู้ใช้ตรงๆ)
  */
-export async function transferContractOwner(
+export const transferContractOwner = writesContracts(async function transferContractOwner(
   contractId: string,
   person: TransferNewPerson,
   addresses: TransferAddresses,
@@ -2438,7 +2484,7 @@ export async function transferContractOwner(
   if (error) throw new Error(error.message)
   const result = data as { transfer_id: string; transfer_no: number }
   return { transferId: result.transfer_id, transferNo: result.transfer_no }
-}
+})
 
 /**
  * ดึงรายการใบเสร็จจริงของเลขที่ใบ PJ ใหม่ (Edge Function pj-snapshot mode='invoice_receipts', mig 0158) —
@@ -2482,7 +2528,7 @@ export async function fetchPjInvoiceReceipts(
  * ผูกเลขที่ใบ PJ ใหม่เข้าสัญญาจริง (RPC cutover_transfer_invoice, mig 0158 SECTION 3) — ต้องมี precheckId
  * จาก fetchPjInvoiceReceipts มาก่อน (ยังไม่เกิน 30 นาที); ยอดไม่ตรง staff ทำต่อไม่ได้ ต้อง admin + overrideReason
  */
-export async function cutoverTransferInvoice(
+export const cutoverTransferInvoice = writesContracts(async function cutoverTransferInvoice(
   transferId: string,
   precheckId: string,
   newInvNo?: string | null,
@@ -2504,17 +2550,17 @@ export async function cutoverTransferInvoice(
     ourTotal: Number(r.our_total),
     pjTotal: Number(r.pj_total),
   }
-}
+})
 
 /** admin เท่านั้น ยกเลิกรายการเปลี่ยนผู้ผ่อนล่าสุดของสัญญา (RPC undo_contract_transfer, mig 0157/0158) — reason บังคับ */
-export async function undoContractTransfer(transferId: string, reason: string): Promise<void> {
+export const undoContractTransfer = writesContracts(async function undoContractTransfer(transferId: string, reason: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('undo_contract_transfer', {
     p_transfer_id: transferId,
     p_reason: reason,
   })
   if (error) throw new Error(error.message)
-}
+})
 
 interface StatusRow {
   contract_id: string
@@ -2582,7 +2628,18 @@ export async function getOverdueByBucket(bucket: OverdueBucket): Promise<Contrac
 }
 
 /** สถานะของทุกสัญญา (สำหรับหน้าภาพรวม) */
-export async function getAllStatuses(): Promise<ContractStatusRow[]> {
+export async function getAllStatuses(opts?: { force?: boolean }): Promise<ContractStatusRow[]> {
+  if (!supabase) return []
+  if (!opts?.force && isFresh(statusesCache)) return (await statusesCache.promise).map((r) => ({ ...r }))
+  const entry: RefCacheEntry<ContractStatusRow[]> = { at: Date.now(), promise: fetchAllStatuses() }
+  statusesCache = entry
+  entry.promise.catch(() => {
+    if (statusesCache === entry) statusesCache = null
+  })
+  return (await entry.promise).map((r) => ({ ...r }))
+}
+
+async function fetchAllStatuses(): Promise<ContractStatusRow[]> {
   if (!supabase) return []
   const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
   // v_contract_status = 1 แถวต่อสัญญา (left join agg/oldest_unpaid/latest_return ทุกอันเป็น 1:1 ต่อ contract_id
@@ -2663,7 +2720,7 @@ export interface ReturnInput {
   deviceStatus?: string                 // override device_status ตอน insert (ถ้าไม่ส่ง → derive จาก returnMethod)
 }
 
-export async function submitReturn(contractId: string, input: ReturnInput): Promise<void> {
+export const submitReturn = writesContracts(async function submitReturn(contractId: string, input: ReturnInput): Promise<void> {
   if (!supabase) return
   // กรณี 3 = ชำระครบ+ค่าซ่อมแล้ว -> ปิดสัญญาสมบูรณ์, อื่นๆ = คืนเครื่อง (รอ)
   const newStatus = input.caseNo === 3 ? 'returned_closed' : 'returned'
@@ -2702,7 +2759,7 @@ export async function submitReturn(contractId: string, input: ReturnInput): Prom
   if (e1) throw e1
   const { error: e2 } = await supabase.from('contracts').update({ status: newStatus }).eq('id', contractId)
   if (e2) throw e2
-}
+})
 
 /**
  * ยกเลิกการบันทึกคืนเครื่อง (undo submitReturn)
@@ -2713,7 +2770,7 @@ export async function submitReturn(contractId: string, input: ReturnInput): Prom
  *     ('checked' ขึ้นไปถือว่าดำเนินการลึกเกินแล้ว)
  * ถ้าผ่าน guard: ลบ device_returns ทั้งหมดของ contractId + revert contracts.status → 'active'
  */
-export async function cancelReturn(contractId: string): Promise<void> {
+export const cancelReturn = writesContracts(async function cancelReturn(contractId: string): Promise<void> {
   if (!supabase) return
 
   // ดึงสถานะสัญญา
@@ -2766,17 +2823,17 @@ export async function cancelReturn(contractId: string): Promise<void> {
     .update({ status: 'active' })
     .eq('id', contractId)
   if (updateErr) throw updateErr
-}
+})
 
 /** ใส่/แก้ค่าซ่อมของรายการคืนเครื่องภายหลัง (หลังเช็คเครื่อง) */
-export async function updateReturnRepairFee(returnId: string, repairFee: number): Promise<void> {
+export const updateReturnRepairFee = writesContracts(async function updateReturnRepairFee(returnId: string, repairFee: number): Promise<void> {
   if (!supabase) return
   const { error } = await supabase
     .from('device_returns')
     .update({ repair_fee: repairFee, checked_at: new Date().toISOString() })
     .eq('id', returnId)
   if (error) throw error
-}
+})
 
 interface ReturnRow {
   id: string
@@ -2862,7 +2919,7 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
 /** อัปเดตสถานะ Device Pipeline (เปลี่ยนสถานะ + timestamp + tracking + ราคา)
  *  @param updatedBy ชื่อผู้ดำเนินการ (useAuth().name) — optional เพื่อ backward compat
  */
-export async function updateReturnWorkflow(
+export const updateReturnWorkflow = writesContracts(async function updateReturnWorkflow(
   returnId: string,
   patch: {
     deviceStatus?: DeviceStatus
@@ -2900,7 +2957,7 @@ export async function updateReturnWorkflow(
     .update(update)
     .eq('id', returnId)
   if (error) throw error
-}
+})
 
 // ---------- แจ้งเตือน ----------
 interface NotifRow {
@@ -4575,31 +4632,31 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
 // ---------- ระบบจองเคส claim/release (0086) — กันสองคนโทรชนกันในคิวเดียวกัน ----------
 
 /** จองเคส — atomic ผ่าน RPC claim_case (0086); มีคนถืออยู่แล้ว → throw error message 'CASE_ALREADY_CLAIMED' (UI จับเอง) */
-export async function claimCase(contractId: string): Promise<void> {
+export const claimCase = writesContracts(async function claimCase(contractId: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('claim_case', { p_contract_id: contractId })
   if (error) throw error
-}
+})
 
 /** ปล่อยเคส — atomic ผ่าน RPC release_case (0086); ไม่ใช่เจ้าของ/ไม่ใช่ admin → throw error message 'NOT_CASE_OWNER' */
-export async function releaseCase(contractId: string): Promise<void> {
+export const releaseCase = writesContracts(async function releaseCase(contractId: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('release_case', { p_contract_id: contractId })
   if (error) throw error
-}
+})
 
 /** มอบหมายเคสให้ freelancer เจาะจง — ผ่าน RPC assign_case (0099, admin+staff เท่านั้น)
  *  ต่างจาก claimCase: ข้ามเกรดได้ + reassign/steal ได้ (ไม่เช็ค assigned_to is null)
  *  ผู้รับมอบหมายต้องเป็น freelancer ที่ active — ไม่ตรง → throw 'ASSIGNEE_NOT_ACTIVE_FREELANCER'
  *  ไม่พบสัญญา → throw 'CONTRACT_NOT_FOUND' */
-export async function assignCase(contractId: string, assigneeId: string): Promise<void> {
+export const assignCase = writesContracts(async function assignCase(contractId: string, assigneeId: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('assign_case', {
     p_contract_id: contractId,
     p_assignee_id: assigneeId,
   })
   if (error) throw error
-}
+})
 
 /** เคสที่ตัวเอง (ผู้ใช้ปัจจุบัน) ถือครองอยู่ — reuse getFreelancerQueue shape (FreelancerQueueRow)
  *
@@ -4689,7 +4746,7 @@ export async function getCaseOwnershipSummary(): Promise<{ ownerId: string; owne
  *  เคสจะออกจากแท็บ "ที่ต้องโทร" (caseClosedToday=true) จนถึงเที่ยงคืน Bangkok แล้วกลับมาถ้ายังไม่จ่าย
  *  @param contractId  id ของสัญญาที่จะปิดเคส
  *  @param closerName  ชื่อพนักงาน (useAuth().name = full_name) — ส่งมาจาก UI */
-export async function closeCase(contractId: string, closerName?: string): Promise<void> {
+export const closeCase = writesContracts(async function closeCase(contractId: string, closerName?: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase
     .from('contracts')
@@ -4699,7 +4756,7 @@ export async function closeCase(contractId: string, closerName?: string): Promis
     })
     .eq('id', contractId)
   if (error) throw error
-}
+})
 
 // ---------- Compliance flags ----------
 
@@ -4718,7 +4775,7 @@ export type ContractFlagPatch = {
 }
 
 /** ตั้ง/ปลด compliance flags บนสัญญา (admin+staff ผ่าน RLS contracts_write; trigger กัน staff ปลด) */
-export async function setContractFlags(
+export const setContractFlags = writesContracts(async function setContractFlags(
   contractId: string,
   patch: ContractFlagPatch,
 ): Promise<void> {
@@ -4763,7 +4820,7 @@ export async function setContractFlags(
   if (Object.keys(upd).length === 0) return // ไม่มีอะไรให้อัปเดต
   const { error } = await supabase.from('contracts').update(upd).eq('id', contractId)
   if (error) throw error
-}
+})
 
 /** ดึงวันหยุดราชการทั้งหมดจาก public_holidays → Set<'YYYY-MM-DD'>
  *  mock mode: return empty Set (UI treat ทุกวันเป็น weekday — acceptable degrade)
@@ -6601,7 +6658,7 @@ export async function getOverduePromiseContracts(): Promise<OverduePromiseContra
  * @param penalty        ยอดค่าปรับที่ชำระ
  * @param byName         ชื่อผู้ทำรายการ (useAuth().name)
  */
-export async function recordPaymentWithPenalty(
+export const recordPaymentWithPenalty = writesContracts(async function recordPaymentWithPenalty(
   installmentId: string,
   principal: number,
   penalty: number,
@@ -6616,7 +6673,7 @@ export async function recordPaymentWithPenalty(
     p_penalty_paid_amount: penalty,
   })
   if (error) throw error
-}
+})
 
 // ---------- helper 1b: recordPenaltyOnlyPayment (migration 0147) ----------
 // แก้บั๊กที่ติ๊กเจอ: ปุ่ม "เก็บค่าปรับ" (งวดที่ค่างวดจ่ายครบแล้วแต่ค่าปรับยังค้าง) เดิมเรียก
@@ -6635,7 +6692,7 @@ export async function recordPaymentWithPenalty(
  * @param penaltyPaid    ยอดค่าปรับที่เก็บครั้งนี้ (ต้อง > 0)
  * @param byName         ชื่อผู้ทำรายการ (useAuth().name)
  */
-export async function recordPenaltyOnlyPayment(
+export const recordPenaltyOnlyPayment = writesContracts(async function recordPenaltyOnlyPayment(
   installmentId: string,
   penaltyPaid: number,
   byName: string,
@@ -6648,7 +6705,7 @@ export async function recordPenaltyOnlyPayment(
     p_paid_at:        new Date().toISOString(),
   })
   if (error) throw error
-}
+})
 
 // ---------- helper 2: overridePenalty ----------
 
@@ -6668,7 +6725,7 @@ export interface PenaltyOverrideHistoryEntry {
  * เซ็ต penalty_overridden = true กัน cron daily update reset ค่าที่ override ไว้
  * พร้อม INSERT audit row ลง penalty_override_history
  */
-export async function overridePenalty(
+export const overridePenalty = writesContracts(async function overridePenalty(
   installmentId: string,
   newAmount: number,
   reason: string,
@@ -6706,7 +6763,7 @@ export async function overridePenalty(
       by_name: byName || null,
     })
   if (histErr) throw histErr
-}
+})
 
 /**
  * แก้/ลบค่าปรับของงวดผ่าน RPC staff_set_installment_penalty (admin+staff — เปิดสิทธิ์ staff 24 ก.ค. 2026
@@ -6717,7 +6774,7 @@ export async function overridePenalty(
  * ทางนี้ guard เข้มกว่า + คำนวณ penalty_days ให้เอง + validate ช่วงยอด + ผูกชื่อผู้แก้จาก profiles ฝั่ง server
  * "ลบค่าปรับ" = เรียกด้วย penaltyAmount = 0
  */
-export async function setInstallmentPenalty(
+export const setInstallmentPenalty = writesContracts(async function setInstallmentPenalty(
   installmentId: string,
   penaltyAmount: number,
   reason: string,
@@ -6729,7 +6786,7 @@ export async function setInstallmentPenalty(
     p_reason: reason || null,
   })
   if (error) throw error
-}
+})
 
 /**
  * ดึงประวัติการแก้ค่าปรับของสัญญา (admin+staff)
@@ -6797,7 +6854,7 @@ export async function getExtraCharges(contractId: string): Promise<ExtraCharge[]
  * @param byName ชื่อผู้บันทึก (useAuth().name) — เก็บเป็น text snapshot
  * @returns id ของแถวที่สร้าง
  */
-export async function insertExtraCharge(
+export const insertExtraCharge = writesContracts(async function insertExtraCharge(
   contractId: string,
   amount: number,
   reason: string,
@@ -6816,16 +6873,16 @@ export async function insertExtraCharge(
     .single()
   if (error) throw error
   return (data as { id: string }).id
-}
+})
 
 // ---------- helper 5: deleteExtraCharge ----------
 
 /** ลบค่าใช้จ่ายพิเศษ (admin only ตาม RLS migration 0032) */
-export async function deleteExtraCharge(id: string): Promise<void> {
+export const deleteExtraCharge = writesContracts(async function deleteExtraCharge(id: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('extra_charges').delete().eq('id', id)
   if (error) throw error
-}
+})
 
 // ---------- helper 6+: other_income (migration 0054) ----------
 
@@ -6960,7 +7017,7 @@ export async function getTransferFeeWaivers(
  * เสมอ (unique(contract_id, transfer_id) partial index กันซ้ำต่อรอบแทน) — plain insert เหมือนเดิม ไม่ใช้ upsert
  * (partial unique index ใช้กับ PostgREST on_conflict ไม่ได้ — พึ่ง error 23505 เหมือนเดิมทุกประการ)
  */
-export async function insertFeeWaiver(
+export const insertFeeWaiver = writesContracts(async function insertFeeWaiver(
   contractId: string,
   right: FeeRight,
   byName?: string,
@@ -6979,11 +7036,11 @@ export async function insertFeeWaiver(
     transfer_id: right === 'transfer' ? transferId : null,
   })
   if (error) throw error
-}
+})
 
 /** ยกเลิกการยกเว้น (DELETE — admin only ตาม RLS 0106) — right='transfer' ต้องส่ง transferId มาด้วยเสมอ
  *  (ลบเฉพาะรอบนั้น ไม่ลบทุกรอบของสัญญา — ดู insertFeeWaiver) */
-export async function deleteFeeWaiver(contractId: string, right: FeeRight, transferId?: string): Promise<void> {
+export const deleteFeeWaiver = writesContracts(async function deleteFeeWaiver(contractId: string, right: FeeRight, transferId?: string): Promise<void> {
   if (!supabase) return
   if (right === 'transfer' && !transferId) {
     throw new Error('ยกเลิกการยกเว้นค่าธรรมเนียมเปลี่ยนผู้ผ่อนต้องระบุรอบที่ต้องการยกเลิก')
@@ -6991,7 +7048,7 @@ export async function deleteFeeWaiver(contractId: string, right: FeeRight, trans
   const query = supabase.from('fee_waivers').delete().eq('contract_id', contractId).eq('fee_right', right)
   const { error } = await (right === 'transfer' ? query.eq('transfer_id', transferId!) : query)
   if (error) throw error
-}
+})
 
 /**
  * รวมข้อมูล reconcile ค่าธรรมเนียมของสัญญาหนึ่งแล้วคืนสถานะ 3 สิทธิ์ (derive-first)
@@ -7027,38 +7084,38 @@ export async function getContractFeeReconcile(contractId: string): Promise<Recon
 // ---------- helper 6: updateDefectNotes ----------
 
 /** บันทึก/แก้ข้อความข้อบกพร่องของเครื่องคืน (migration 0033 — device_defect_notes text) */
-export async function updateDefectNotes(returnId: string, notes: string): Promise<void> {
+export const updateDefectNotes = writesContracts(async function updateDefectNotes(returnId: string, notes: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase
     .from('device_returns')
     .update({ device_defect_notes: notes || null })
     .eq('id', returnId)
   if (error) throw error
-}
+})
 
 // ---------- helper 7a: updateSalePrice (admin แก้ราคาขายเครื่อง — item 7) ----------
 
 /** admin แก้ราคาขายเครื่องคืน (sale_price + priced_at) — migration 0027 columns */
-export async function updateSalePrice(returnId: string, newPrice: number): Promise<void> {
+export const updateSalePrice = writesContracts(async function updateSalePrice(returnId: string, newPrice: number): Promise<void> {
   if (!supabase) return
   const { error } = await supabase
     .from('device_returns')
     .update({ sale_price: newPrice, priced_at: new Date().toISOString() })
     .eq('id', returnId)
   if (error) throw error
-}
+})
 
 // ---------- helper 7b: updateRepairCost (ค่าซ่อม เพื่อคำนวณ commission สุทธิ — item 8) ----------
 
 /** บันทึก/แก้ค่าซ่อมเครื่อง (repair_cost) — migration 0035; ใช้คำนวณ commission สุทธิ */
-export async function updateRepairCost(returnId: string, repairCost: number): Promise<void> {
+export const updateRepairCost = writesContracts(async function updateRepairCost(returnId: string, repairCost: number): Promise<void> {
   if (!supabase) return
   const { error } = await supabase
     .from('device_returns')
     .update({ repair_cost: repairCost })
     .eq('id', returnId)
   if (error) throw error
-}
+})
 
 // ---------- helper 8: getSaleHistoryRaw ----------
 
@@ -7365,7 +7422,7 @@ import type { PJContract, PJInstallment, ImportResult } from './pjImport'
  * @param createNewShops  true = สร้างร้านใหม่อัตโนมัติถ้าไม่พบ
  * @returns               ImportResult สรุปผล batch
  */
-export async function importPjBatch(
+export const importPjBatch = writesContracts(async function importPjBatch(
   contracts: PJContract[],
   installments: PJInstallment[],
   batchNo: number,
@@ -7403,7 +7460,7 @@ export async function importPjBatch(
       error:     e.error,
     })),
   }
-}
+})
 
 // ============================================================================
 // Collaboration Hub — Wave 3 (0047)
@@ -7858,11 +7915,11 @@ export async function getClawbackAggregates(): Promise<Map<string, ClawbackAggre
  * ถ้า DB raise 'blocked_extended' หรือ 'blocked_paid' → throw Error ข้อความนั้น
  * UI รับ error.message แล้ว map แสดงผล
  */
-export async function regenerateInstallments(contractId: string): Promise<void> {
+export const regenerateInstallments = writesContracts(async function regenerateInstallments(contractId: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('regen_installments', { p_contract_id: contractId })
   if (error) throw error
-}
+})
 
 /**
  * ดึง contract_extensions ของสัญญาเดียว (เฉพาะ id) สำหรับป้อน regenSafety()
@@ -8975,7 +9032,7 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
  *    0096 (ใช้เฉพาะ path นี้) ไม่ทับ/ไม่แทนที่ 0096 หรือ auto-settle ของ 0116 (0116 ยัง freeze/reconcile
  *    ตามปกติ — penalty_overridden=true ที่ align ตั้งไว้กันแค่ cron รอบถัดไปคิดทับค่าที่ยึด PJ มา)
  */
-export async function applyPjReviewPayment(params: {
+export const applyPjReviewPayment = writesContracts(async function applyPjReviewPayment(params: {
   reviewId: string
   contractId: string
   principal: number
@@ -9121,7 +9178,7 @@ export async function applyPjReviewPayment(params: {
   }
 
   await resolvePjReviewItem(reviewId, 'resolved', byName, note ?? 'ลงยอดจากกล่องรอตรวจ')
-}
+})
 
 /**
  * ลงเงินจากกล่องรอตรวจ PJ เป็น "รายได้อื่นๆ" (other_income, migration 0054) แทนค่างวด/ค่าปรับ
@@ -9193,7 +9250,7 @@ export async function applyPjReviewAsOtherIncome(params: {
  * (source='staff-link') กันคำนวณซ้ำของ pj-sync แล้ว resolve แถวในกล่องรอตรวจให้เอง
  * error จาก server (raise exception, ภาษาไทยอยู่แล้ว) ส่งต่อขึ้นไปให้ UI แสดงตรงๆ ไม่ swallow
  */
-export async function linkPjReviewToPaymentLog(
+export const linkPjReviewToPaymentLog = writesContracts(async function linkPjReviewToPaymentLog(
   reviewId: string,
   paymentLogId: string,
   note?: string,
@@ -9205,7 +9262,7 @@ export async function linkPjReviewToPaymentLog(
     p_note: note ?? null,
   })
   if (error) throw new Error(error.message)
-}
+})
 
 /** 1 ใบที่ลงไปแล้วจริง (pj_applied_receipts) จาก RPC get_contract_pj_money_recent */
 interface PjMoneyRecentAppliedRaw {
