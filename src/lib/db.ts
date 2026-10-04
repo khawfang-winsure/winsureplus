@@ -3857,6 +3857,13 @@ export interface AddFollowUpInput {
   contactPersonRelation?: string | null              // 0091: ส่งเมื่อ contactTarget='other'
 }
 
+/** event ที่ยิงหลังแก้สมาชิกกล่องรับงาน (pin / unpin / dismiss / บันทึกติดตาม) — nav ฟังเพื่อรีเฟรชเลขแดงทันที
+ *  (เลขแดงโหลดหนักได้อย่างมากทุก 5 นาที จึงต้องมีสัญญาณนี้ให้เลขสดหลังกดแก้) */
+export const INBOX_CHANGED_EVENT = 'wsp:inbox-changed'
+function notifyInboxChanged(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(INBOX_CHANGED_EVENT))
+}
+
 export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('follow_ups').insert({
@@ -3872,6 +3879,7 @@ export async function addFollowUp(input: AddFollowUpInput): Promise<void> {
     contact_person_relation: input.contactPersonRelation ?? null,
   })
   if (error) throw error
+  notifyInboxChanged()
 }
 
 /** ดึงประวัติการติดตามของสัญญาหนึ่ง (ใหม่ → เก่า) */
@@ -7636,6 +7644,7 @@ export async function pinToInbox(contractId: string): Promise<void> {
     { onConflict: 'contract_id' },
   )
   if (error) throw error
+  notifyInboxChanged()
 }
 
 /** เอาเคสออกจากกล่อง inbox */
@@ -7646,6 +7655,7 @@ export async function unpinFromInbox(contractId: string): Promise<void> {
     .delete()
     .eq('contract_id', contractId)
   if (error) throw error
+  notifyInboxChanged()
 }
 
 // ---------- dismissInboxCase ----------
@@ -7695,6 +7705,7 @@ export async function dismissInboxCase(contractId: string, note?: string): Promi
     .delete()
     .eq('contract_id', contractId)
   if (unpinErr) throw unpinErr
+  notifyInboxChanged()
 }
 
 // ---------- clawback aggregates (Fix C — แก้ PAGE_CAP ค่าคอม clawback) ----------

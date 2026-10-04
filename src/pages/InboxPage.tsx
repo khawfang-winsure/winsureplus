@@ -11,6 +11,7 @@ import { useAuth } from '../lib/auth'
 import { getPromiseDateStatus } from '../lib/priorityQueue'
 import { thaiDate } from '../lib/format'
 import FollowUpModal from '../components/FollowUpModal'
+import { publishInboxCount } from '../components/nav'
 
 // ===== helper: เวลาไทยแบบสั้น =====
 function thaiDateTime(iso: string): string {
@@ -141,6 +142,7 @@ export default function InboxPage() {
     try {
       const data = await getInboxCases()
       setCases(data)
+      publishInboxCount(data.length) // เลขแดงบนเมนูใช้ค่าเดียวกับที่หน้านี้โชว์ (ไม่ต้องโหลดซ้ำ)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {

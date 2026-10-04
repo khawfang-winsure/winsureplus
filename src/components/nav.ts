@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
-import { getInboxCases, getPjSyncReviewPendingCount, getReviewBadgeCount } from '../lib/db'
+import { getInboxCases, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
 
 export interface NavChild {
   to: string
@@ -131,12 +131,14 @@ export const NAV: NavItem[] = [
  *    (HEAD + count เบา) เท่ากับ rows.length ที่หน้า /pj-sync-review โชว์ — admin/staff เห็นเลขเดียวกัน
  *  - 'inbox' "กล่องรับงาน" — จำนวนเคสทั้งหมดในกล่องจาก getInboxCases() เท่ากับ cases.length ที่หน้า
  *    /inbox ก่อนกรองค้นหา — หน้านั้นไม่ได้กรองตาม role เลย ทุก role ที่เห็นเมนูนี้เห็นเลขเดียวกัน
- *    ⚠️ ฟังก์ชันนี้ดึงแถวเต็ม (หนัก) จึง "ไม่ยิงตาม timer 60 วิ" ยิงเฉพาะ mount / เปลี่ยนหน้า / กลับมาที่แท็บ
+ *    ⚠️ ฟังก์ชันนี้ดึงแถวเต็ม (หนัก) จึง "ไม่ยิงตาม timer" และเว้นอย่างน้อย 5 นาทีต่อรอบ
  *
  *  จังหวะรีเฟรช:
  *  - สายเบา (reviewQueue + pjSyncReview): ทุก 60 วิ (ข้ามตอนแท็บซ่อน) + กลับมาที่แท็บ + เปลี่ยนหน้า + mount
- *  - สาย inbox: กลับมาที่แท็บ + เปลี่ยนหน้า + mount เท่านั้น
- *  กันยิงรัว: สายนับเบาเว้นอย่างน้อย BADGE_MIN_GAP_MS (5 วิ) · สาย inbox เว้น INBOX_BADGE_MIN_GAP_MS (60 วิ) · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
+ *  - สาย inbox: mount / เปลี่ยนหน้า / กลับมาที่แท็บ — แต่ยิงจริงเฉพาะเมื่อรอบก่อนเก่าเกิน 5 นาที
+ *    · ตอนอยู่หน้า /inbox ไม่ยิงเอง — หน้านั้นโหลดของตัวเองแล้วส่งจำนวนมาให้ผ่าน publishInboxCount (เลขเท่ากับหน้าเป๊ะ ไม่โหลดซ้ำ)
+ *    · หลังมีการแก้กล่อง (หยิบ/เอาออก/เคลียร์/บันทึกติดตาม) db.ts ยิง INBOX_CHANGED_EVENT → รีเฟรชทันที (ข้ามช่วงเว้น 5 นาที)
+ *  กันยิงรัว: สายนับเบาเว้นอย่างน้อย BADGE_MIN_GAP_MS (5 วิ) · สาย inbox เว้น INBOX_BADGE_MIN_GAP_MS (5 นาที) · ผลของรอบที่ถูกแทนที่/หลัง unmount ถูกทิ้ง */
 export interface NavBadgeCounts {
   reviewQueue: number
   pjSyncReview: number
@@ -147,7 +149,15 @@ const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inb
 
 const BADGE_POLL_MS = 60_000
 const BADGE_MIN_GAP_MS = 5_000 // สายนับเบา (review + กล่อง PJ)
-const INBOX_BADGE_MIN_GAP_MS = 60_000 // สาย inbox ดึงแถวเต็ม (หนัก) — เว้นนานกว่า กันเปลี่ยนหน้าบ่อยแล้วยิงทุก 5 วิ
+const INBOX_BADGE_MIN_GAP_MS = 5 * 60_000 // สาย inbox ดึงแถวเต็ม (หนัก) — เว้น 5 นาที (ลด egress; เดิม 60 วิ)
+const INBOX_EVENT_MIN_GAP_MS = 3_000 // รีเฟรชหลังแก้กล่อง: ข้ามช่วงเว้น 5 นาที แต่กันยิงรัวภายใน 3 วิ
+const INBOX_PATH = '/inbox'
+
+/** หน้า /inbox โหลดเคสเองอยู่แล้ว → ส่งจำนวนมาให้เลขแดงใช้ต่อ (ไม่ต้องโหลดซ้ำ + เลขตรงกับที่หน้าโชว์เสมอ) */
+const inboxCountListeners = new Set<(n: number) => void>()
+export function publishInboxCount(n: number): void {
+  inboxCountListeners.forEach((fn) => fn(n))
+}
 
 /** สถานะกันยิงรัว/ทิ้งผลเก่าของ 1 สายโหลด: req = เลขรอบล่าสุด, start = เวลาเริ่มรอบล่าสุด (ms) */
 interface LoadGuard {
@@ -169,6 +179,8 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
   const [counts, setCounts] = useState<NavBadgeCounts>(ZERO_BADGE_COUNTS)
   const countsGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
   const inboxGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
+  const pathnameRef = useRef(pathname)
+  pathnameRef.current = pathname
 
   // สายเบา: นับ HEAD 2 ตัวขนานกัน (review + กล่อง PJ) — ตัวที่พังคงเลขเดิม
   const loadCounts = useCallback(() => {
@@ -190,20 +202,27 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
   }, [isAdmin, isStaff])
 
   // สาย inbox: ดึงแถวเต็ม (หนัก) — ไม่ผูก timer
-  const loadInbox = useCallback(() => {
-    if (!isAdmin && !isStaff) return
-    const guard = inboxGuardRef.current
-    const req = beginLoad(guard, INBOX_BADGE_MIN_GAP_MS)
-    if (req === null) return
-    void getInboxCases()
-      .then((rows) => {
-        if (req !== guard.req) return
-        setCounts((prev) => ({ ...prev, inbox: rows.length }))
-      })
-      .catch(() => {
-        /* พัง = คงเลขเดิม ไม่รีเซ็ตเป็น 0 */
-      })
-  }, [isAdmin, isStaff])
+  // minGapMs ปกติ 5 นาที; รีเฟรชหลังแก้กล่องส่ง INBOX_EVENT_MIN_GAP_MS
+  const loadInbox = useCallback(
+    (minGapMs: number = INBOX_BADGE_MIN_GAP_MS) => {
+      if (!isAdmin && !isStaff) return
+      // อยู่หน้า /inbox → หน้านั้นโหลดเอง + publishInboxCount ให้ (ไม่โหลดซ้ำ)
+      if (pathnameRef.current === INBOX_PATH) return
+      const guard = inboxGuardRef.current
+      const req = beginLoad(guard, minGapMs)
+      if (req === null) return
+      void getInboxCases()
+        .then((rows) => {
+          if (req !== guard.req) return
+          setCounts((prev) => ({ ...prev, inbox: rows.length }))
+        })
+        .catch(() => {
+          /* พัง = คงเลขเดิม ไม่รีเซ็ตเป็น 0 — ปลดช่วงเว้นให้ลองใหม่ได้เร็ว */
+          if (req === guard.req) guard.start = 0
+        })
+    },
+    [isAdmin, isStaff],
+  )
 
   // ตั้งเวลา (เฉพาะสายเบา) + ฟังตอนกลับมาที่แท็บ (ทั้ง 2 สาย)
   // cleanup ล้างรอบเก่า: role เปลี่ยน/unmount → ผลที่ยังค้างถูกทิ้ง (กัน setState หลัง unmount) + รีเซ็ตช่วงเว้น
@@ -222,10 +241,23 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
       loadCounts()
       loadInbox()
     }
+    function handleInboxChanged() {
+      loadInbox(INBOX_EVENT_MIN_GAP_MS)
+    }
+    // หน้า /inbox ส่งจำนวนที่โหลดเสร็จมาให้ → เลขแดงเท่ากับหน้าเสมอ + นับเป็นรอบโหลดล่าสุด (เริ่มนับ 5 นาทีใหม่)
+    function handlePublished(n: number) {
+      inboxGuard.req += 1
+      inboxGuard.start = Date.now()
+      setCounts((prev) => ({ ...prev, inbox: n }))
+    }
     document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener(INBOX_CHANGED_EVENT, handleInboxChanged)
+    inboxCountListeners.add(handlePublished)
     return () => {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener(INBOX_CHANGED_EVENT, handleInboxChanged)
+      inboxCountListeners.delete(handlePublished)
       countsGuard.req += 1
       countsGuard.start = 0
       inboxGuard.req += 1
