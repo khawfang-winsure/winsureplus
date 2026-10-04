@@ -404,9 +404,64 @@ const MOCK_OPTIONS: Record<OptionKind, Option[]> = {
   promotion: mock.promotions,
 }
 
+// ---------- cache ข้อมูลอ้างอิงที่แก้นานๆ ครั้ง (ลด egress: ร้านค้า/ตัวเลือก) ----------
+// promise cache ระดับโมดูล TTL 10 นาที — เรียกซ้ำจากหลายหน้า/หลาย component ใช้ผลเดียวกัน
+// ถ้า query พัง ไม่เก็บ (ล้าง cache) · ทุก mutator ที่แก้ shops/options เรียก invalidate* ทันที (เฉพาะ client นี้;
+// คนอื่นแก้ร้านจะเห็นภายใน ≤10 นาที) · คืนสำเนา (กัน caller ที่ sort/mutate อาร์เรย์/อ็อบเจกต์ทำ cache เพี้ยน)
+const REF_CACHE_TTL_MS = 10 * 60_000
+
+interface RefCacheEntry<T> {
+  at: number
+  promise: Promise<T>
+}
+
+function cachedRef<T>(
+  store: Map<string, RefCacheEntry<T>>,
+  key: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  const hit = store.get(key)
+  if (hit && Date.now() - hit.at < REF_CACHE_TTL_MS) return hit.promise
+  const promise = load()
+  const entry: RefCacheEntry<T> = { at: Date.now(), promise }
+  store.set(key, entry)
+  promise.catch(() => {
+    if (store.get(key) === entry) store.delete(key)
+  })
+  return promise
+}
+
+const shopsCache = new Map<string, RefCacheEntry<Shop[]>>()
+const optionsCache = new Map<string, RefCacheEntry<Option[]>>()
+
+function invalidateShopsCache(): void {
+  shopsCache.clear()
+}
+function invalidateOptionsCache(): void {
+  optionsCache.clear()
+}
+
+/** ล้าง cache อ้างอิงทั้งหมด — เรียกตอนผู้ใช้ล็อกอินใหม่/สลับคน (RLS ต่าง role เห็นข้อมูลไม่เท่ากัน) */
+export function clearReferenceCaches(): void {
+  shopsCache.clear()
+  optionsCache.clear()
+}
+
+function cloneShops(rows: Shop[]): Shop[] {
+  return rows.map((r) => ({ ...r }))
+}
+function cloneOptions(rows: Option[]): Option[] {
+  return rows.map((r) => ({ ...r }))
+}
+
 // ---------- API ที่หน้าเว็บเรียกใช้ ----------
 
 export async function getShops(): Promise<Shop[]> {
+  if (!supabase) return mock.shops
+  return cloneShops(await cachedRef(shopsCache, 'active', fetchShops))
+}
+
+async function fetchShops(): Promise<Shop[]> {
   if (!supabase) return mock.shops
   const { data, error } = await supabase
     .from('shops')
@@ -437,6 +492,11 @@ export async function getShops(): Promise<Shop[]> {
 /** ร้านค้าทุกสถานะ (รวมที่ปิดแล้ว) — สำหรับหน้าตั้งค่า */
 export async function getAllShops(): Promise<Shop[]> {
   if (!supabase) return mock.shops
+  return cloneShops(await cachedRef(shopsCache, 'all', fetchAllShops))
+}
+
+async function fetchAllShops(): Promise<Shop[]> {
+  if (!supabase) return mock.shops
   const { data, error } = await supabase.from('shops').select('*').order('code').range(0, PAGE_CAP)
   if (error) throw error
   return (data ?? []).map((s) => ({
@@ -459,6 +519,11 @@ export async function getAllShops(): Promise<Shop[]> {
 }
 
 export async function getOptions(kind: OptionKind): Promise<Option[]> {
+  if (!supabase) return MOCK_OPTIONS[kind]
+  return cloneOptions(await cachedRef(optionsCache, kind, () => fetchOptions(kind)))
+}
+
+async function fetchOptions(kind: OptionKind): Promise<Option[]> {
   if (!supabase) return MOCK_OPTIONS[kind]
   const { data, error } = await supabase
     .from('options')
@@ -3402,12 +3467,14 @@ export async function saveShop(s: ShopInput): Promise<void> {
   const { error } = s.id
     ? await supabase.from('shops').update(row).eq('id', s.id)
     : await supabase.from('shops').insert(row)
+  invalidateShopsCache()
   if (error) throw error
 }
 
 export async function setShopActive(id: string, active: boolean): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('shops').update({ active }).eq('id', id)
+  invalidateShopsCache()
   if (error) throw error
 }
 
@@ -3426,12 +3493,14 @@ export async function saveOption(o: OptionInput): Promise<void> {
   const { error } = o.id
     ? await supabase.from('options').update(row).eq('id', o.id)
     : await supabase.from('options').insert(row)
+  invalidateOptionsCache()
   if (error) throw error
 }
 
 export async function setOptionActive(id: string, active: boolean): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('options').update({ active }).eq('id', id)
+  invalidateOptionsCache()
   if (error) throw error
 }
 
