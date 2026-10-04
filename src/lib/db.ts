@@ -586,20 +586,31 @@ export type AssertContractPickColumns = SnakeCase<ContractPickKey> extends keyof
 
 const toColumn = (k: string): string => k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)
 
+/** ตัวกรองฝั่ง DB (ไม่บังคับ) — ลดแถวที่ดึง; ลำดับ/แบ่งหน้าของแถวที่เหลือเหมือนเดิมเป๊ะ
+ *  isNull = คอลัมน์ (snake_case) ที่ต้องเป็น NULL · or = นิพจน์ PostgREST `or(...)` */
+interface ContractPickWhere {
+  isNull?: string
+  or?: string
+}
+
 /** ดึงสัญญาทุกแถวเฉพาะคอลัมน์ที่ขอ — ลำดับ/แบ่งหน้าเหมือน getContracts (transaction_date ใหม่→เก่า, id tiebreaker) */
-async function getContractsPicked<K extends ContractPickKey>(keys: readonly K[]): Promise<Pick<Contract, K>[]> {
+async function getContractsPicked<K extends ContractPickKey>(
+  keys: readonly K[],
+  where?: ContractPickWhere,
+): Promise<Pick<Contract, K>[]> {
   if (!supabase) return mock.contracts // Contract เต็มใช้แทน Pick ได้ (เหมือน getContracts ตอน mock)
   const client = supabase // alias เพื่อให้ narrowing (!null) ใช้ได้ในโคลสเชอร์ด้านล่าง
   const cols = keys.map(toColumn).join(',')
-  const rows = await fetchAllPaged<Partial<ContractRow>>((from, to) =>
-    client
-      .from('contracts')
-      .select(cols)
+  const rows = await fetchAllPaged<Partial<ContractRow>>((from, to) => {
+    let q = client.from('contracts').select(cols)
+    if (where?.isNull) q = q.is(where.isNull, null)
+    if (where?.or) q = q.or(where.or)
+    return q
       .order('transaction_date', { ascending: false })
       .order('id', { ascending: true })
       .range(from, to)
-      .returns<Partial<ContractRow>[]>(), // select ด้วย string ที่ต่อเอง supabase-js อนุมานชนิดแถวไม่ได้ — ระบุเอง
-  )
+      .returns<Partial<ContractRow>[]>() // select ด้วย string ที่ต่อเอง supabase-js อนุมานชนิดแถวไม่ได้ — ระบุเอง
+  })
   return rows.map((r) => {
     // mapContract ทำงานกับแถวไม่ครบได้ (ทุกฟิลด์อ่านแบบ ?? / Number — ไม่มีตัวไหน throw) แล้วเราหยิบเฉพาะคีย์ที่ select มา
     // ฟิลด์นอกลิสต์ไม่ถูกหยิบ จึงไม่รั่วค่า default ปลอม (เช่น Number(undefined) = NaN) ออกไป
@@ -647,10 +658,12 @@ const CONTRACT_WAITING_EMAIL_KEYS = [
   'invNo', 'sn', 'model', 'storage', 'devicePrice', 'downPercent', 'monthlyPayment', 'termMonths', 'financeAmount', 'dueDay',
   'phone', 'phoneAlt1', 'phoneAlt2', 'facebookLink',
 ] as const satisfies readonly ContractPickKey[]
-/** WaitingEmail — 23 คอลัมน์ */
+/** WaitingEmail — 23 คอลัมน์ · เฉพาะสัญญาที่ยังไม่ส่งอีเมล (email_sent_at IS NULL)
+ *  หน้า WaitingEmail ใช้ data.contracts ผ่าน base = filter(!emailSentAt && !sentIds) ทางเดียว — แถวที่ส่งแล้วไม่เคยถูกแสดง/นับ
+ *  (egress: เดิมดึงทุกสัญญา ~3,000 แถว) */
 export type ContractWaitingEmailRow = Pick<Contract, (typeof CONTRACT_WAITING_EMAIL_KEYS)[number]>
 export function getContractsForWaitingEmail(): Promise<ContractWaitingEmailRow[]> {
-  return getContractsPicked(CONTRACT_WAITING_EMAIL_KEYS)
+  return getContractsPicked(CONTRACT_WAITING_EMAIL_KEYS, { isNull: 'email_sent_at' })
 }
 
 const CONTRACT_WAITING_SUMMARY_KEYS = [
@@ -660,10 +673,15 @@ const CONTRACT_WAITING_SUMMARY_KEYS = [
   // buildBulkSummary / itemBlock / calcSummary (lib/messages.ts, lib/calc.ts)
   'invNo', 'sn', 'model', 'storage', 'devicePrice', 'downPercent', 'commissionPercent', 'docFee',
 ] as const satisfies readonly ContractPickKey[]
-/** WaitingSummary — 25 คอลัมน์ */
+/** WaitingSummary — 25 คอลัมน์ · เฉพาะสัญญาที่ยังไม่ส่งร้าน หรือส่งร้านแล้วแต่ยังไม่ส่งบัญชี
+ *  หน้า WaitingSummary ใช้ data.contracts 2 ทางเท่านั้น: shopBase (summary_shop_sent_at IS NULL) กับ
+ *  accountingBase (summary_accounting_sent_at IS NULL AND summary_shop_sent_at IS NOT NULL)
+ *  union = shop_sent_at IS NULL OR accounting_sent_at IS NULL (แถวที่ส่งครบทั้ง 2 ด่านไม่เคยถูกแสดง) */
 export type ContractWaitingSummaryRow = Pick<Contract, (typeof CONTRACT_WAITING_SUMMARY_KEYS)[number]>
 export function getContractsForWaitingSummary(): Promise<ContractWaitingSummaryRow[]> {
-  return getContractsPicked(CONTRACT_WAITING_SUMMARY_KEYS)
+  return getContractsPicked(CONTRACT_WAITING_SUMMARY_KEYS, {
+    or: 'summary_shop_sent_at.is.null,summary_accounting_sent_at.is.null',
+  })
 }
 
 export async function getSettings(): Promise<AppSettings> {
