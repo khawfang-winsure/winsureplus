@@ -150,7 +150,7 @@ const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inb
 const BADGE_POLL_MS = 60_000
 const BADGE_MIN_GAP_MS = 5_000 // สายนับเบา (review + กล่อง PJ)
 const INBOX_BADGE_MIN_GAP_MS = 5 * 60_000 // สาย inbox ดึงแถวเต็ม (หนัก) — เว้น 5 นาที (ลด egress; เดิม 60 วิ)
-const INBOX_EVENT_MIN_GAP_MS = 3_000 // รีเฟรชหลังแก้กล่อง: ข้ามช่วงเว้น 5 นาที แต่กันยิงรัวภายใน 3 วิ
+const INBOX_EVENT_MIN_GAP_MS = 20_000 // รีเฟรชหลังแก้กล่อง: ข้ามช่วงเว้น 5 นาที แต่เว้น 20 วิ (ผู้ติดตามบันทึกถี่ — event ละ 1 รอบหนัก); event ในช่วงเว้นนัดรอบท้ายไว้ ไม่ทิ้ง
 const INBOX_PATH = '/inbox'
 
 /** หน้า /inbox โหลดเคสเองอยู่แล้ว → ส่งจำนวนมาให้เลขแดงใช้ต่อ (ไม่ต้องโหลดซ้ำ + เลขตรงกับที่หน้าโชว์เสมอ) */
@@ -241,8 +241,19 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
       loadCounts()
       loadInbox()
     }
+    // event ในช่วงเว้น 20 วิ ไม่ถูกทิ้ง — นัดรอบท้าย (trailing) 1 รอบเมื่อครบช่วงเว้น รวมหลาย event เป็นรอบเดียว
+    let trailing: ReturnType<typeof setTimeout> | null = null
     function handleInboxChanged() {
-      loadInbox(INBOX_EVENT_MIN_GAP_MS)
+      if (trailing !== null) return // มีรอบท้ายนัดไว้แล้ว ครอบ event นี้ด้วย
+      const wait = INBOX_EVENT_MIN_GAP_MS - (Date.now() - inboxGuard.start)
+      if (wait <= 0) {
+        loadInbox(INBOX_EVENT_MIN_GAP_MS)
+        return
+      }
+      trailing = setTimeout(() => {
+        trailing = null
+        loadInbox(INBOX_EVENT_MIN_GAP_MS)
+      }, wait + 50)
     }
     // หน้า /inbox ส่งจำนวนที่โหลดเสร็จมาให้ → เลขแดงเท่ากับหน้าเสมอ + นับเป็นรอบโหลดล่าสุด (เริ่มนับ 5 นาทีใหม่)
     function handlePublished(n: number) {
@@ -257,6 +268,7 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
       clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener(INBOX_CHANGED_EVENT, handleInboxChanged)
+      if (trailing !== null) clearTimeout(trailing)
       inboxCountListeners.delete(handlePublished)
       countsGuard.req += 1
       countsGuard.start = 0

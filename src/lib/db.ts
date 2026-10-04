@@ -1193,7 +1193,7 @@ export const insertContract = writesContracts(async function insertContract(c: O
 /** ทำเครื่องหมายว่าสรุปยอดแล้ว (กันส่งซ้ำ) — บันทึกลง DB จริง
  *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
  *                    น้องวิวส่ง name จาก useAuth() ในหน้า WaitingSummary */
-export async function markSummarySent(ids: string[], senderName?: string): Promise<void> {
+export const markSummarySent = writesContracts(async function markSummarySent(ids: string[], senderName?: string): Promise<void> {
   if (!supabase || ids.length === 0) return
   const now = new Date().toISOString()
   const { error } = await supabase
@@ -1208,7 +1208,7 @@ export async function markSummarySent(ids: string[], senderName?: string): Promi
     })
     .in('id', ids)
   if (error) throw error
-}
+})
 
 /** สรุปยอด 2 ด่าน รอบ 1 — ส่งร้าน (0075 · date-aware 0105)
  *  set summary_shop_sent_at/by + mirror summary_sent_at/by (กัน audit log เดิมที่อ่าน summary_sent_at พัง)
@@ -1217,7 +1217,7 @@ export async function markSummarySent(ids: string[], senderName?: string): Promi
  *    เวลานาฬิกาปัจจุบัน Bangkok) แทน now() — กัน /transfers จัดกลุ่มผิดวัน. dateISO ว่าง → fallback now()
  *  @param senderName ชื่อผู้ส่ง (useAuth().name = full_name) — optional เพื่อ backward compat
  *  @param dateISO วันที่สรุปที่พนักงานเลือก (YYYY-MM-DD) — optional; ว่าง = ใช้ now() */
-export async function markSummaryShopSent(ids: string[], senderName?: string, dateISO?: string): Promise<void> {
+export const markSummaryShopSent = writesContracts(async function markSummaryShopSent(ids: string[], senderName?: string, dateISO?: string): Promise<void> {
   if (!supabase || ids.length === 0) return
   const { error } = await supabase.rpc('mark_summary_shop_sent', {
     p_ids: ids,
@@ -1225,7 +1225,7 @@ export async function markSummaryShopSent(ids: string[], senderName?: string, da
     p_date: dateISO ?? null,
   })
   if (error) throw error
-}
+})
 
 /** สรุปยอด 2 ด่าน รอบ 2 — ส่งบัญชี (0075 · date-aware 0105)
  *  set summary_accounting_sent_at/by เท่านั้น (ไม่แตะ pending_documents / summary_sent_at)
@@ -3543,6 +3543,7 @@ export async function saveShop(s: ShopInput): Promise<void> {
     ? await supabase.from('shops').update(row).eq('id', s.id)
     : await supabase.from('shops').insert(row)
   invalidateShopsCache()
+  invalidateContractCaches() // shop_name ใน v_contract_status
   if (error) throw error
 }
 
@@ -3550,6 +3551,7 @@ export async function setShopActive(id: string, active: boolean): Promise<void> 
   if (!supabase) return
   const { error } = await supabase.from('shops').update({ active }).eq('id', id)
   invalidateShopsCache()
+  invalidateContractCaches() // shop_name ใน v_contract_status
   if (error) throw error
 }
 
@@ -7437,6 +7439,7 @@ export const importPjBatch = writesContracts(async function importPjBatch(
     p_create_new_shops:  createNewShops,
   })
 
+  invalidateShopsCache() // import_pj_batch สร้างร้านใหม่ได้ (createNewShops)
   if (error) throw new Error(error.message)
 
   const raw = data as {
@@ -10365,7 +10368,7 @@ export async function getSummaryReviewSnapshot(): Promise<SummaryReviewSnapshot[
  *  ส่ง error ของ DB กลับไปให้ผู้เรียกแสดงเอง — ห้ามกลืน error (บทเรียน .catch กลืน error จาก staff-perf)
  *  @param reason เหตุผล (จะถูก trim + เช็คความยาวซ้ำฝั่ง DB อีกชั้น)
  *  @param dateISO วันที่สรุปที่เลือก (YYYY-MM-DD) — optional; ว่าง = ใช้ now() (ตาม pattern markSummaryShopSent) */
-export async function forceMarkSummaryShopSent(contractId: string, reason: string, dateISO?: string): Promise<void> {
+export const forceMarkSummaryShopSent = writesContracts(async function forceMarkSummaryShopSent(contractId: string, reason: string, dateISO?: string): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.rpc('force_mark_summary_shop_sent', {
     p_contract_id: contractId,
@@ -10373,7 +10376,7 @@ export async function forceMarkSummaryShopSent(contractId: string, reason: strin
     p_date: dateISO ?? null,
   })
   if (error) throw error
-}
+})
 
 // ===================================================================================
 // ---------- แคชข้อมูลสัญญาจากเว็บ PJ — เทียบในแผงตรวจของคุณเตย (migration 0152, เฟส 2) ----------
