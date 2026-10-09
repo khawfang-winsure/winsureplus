@@ -35,6 +35,7 @@ import type {
   PjScheduleRow as DueDayPjScheduleRow,
 } from "./dueDayShift.ts";
 import { mapPjScheduleRowsForDueDayShift } from "./pjScheduleMapper.ts";
+import { classifyPjReceiptPaymentType } from "./receiptPaymentType.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -302,9 +303,9 @@ function mapInvoiceItemRows(rows: any[]): {
   for (const row of rows) {
     rowCount++;
 
-    const typeRaw = String(
-      pick(row, ["payment_type", "type", "item_type", "category", "paymentType"]) ?? "",
-    ).toLowerCase();
+    const paymentType = classifyPjReceiptPaymentType(
+      pick(row, ["payment_type", "type", "item_type", "category", "paymentType"]),
+    );
     const paidAmt = parseAmount(
       pick(row, [
         "paid_amount", "amount_paid", "paidAmount", "amountPaid",
@@ -312,11 +313,11 @@ function mapInvoiceItemRows(rows: any[]): {
       ]),
     );
 
-    if (typeRaw.includes("down") || typeRaw.includes("ดาวน์")) {
+    if (paymentType === "down") {
       // เงินดาวน์ — ไม่รวมใน comparison เลยทั้ง 2 ฝั่ง (ตามที่แบมสั่งเดิม เหมือน parseInvoiceDetailHtml)
-    } else if (typeRaw.includes("penalty") || typeRaw.includes("ปรับ")) {
+    } else if (paymentType === "penalty") {
       pjPenaltyPaidTotal += paidAmt;
-    } else if (typeRaw.includes("installment") || typeRaw.includes("งวด")) {
+    } else if (paymentType === "installment") {
       pjInstPaidTotal += paidAmt;
     } else {
       // (0134) ไม่ใช่ down/penalty/installment เลย — "อื่นๆ" (ค่าธรรมเนียม/ค่าเปลี่ยนวัน ฯลฯ) ห้ามรวมเข้า
@@ -1357,7 +1358,7 @@ export default {
       if (mode === "reconcile") {
         // normalize เป็น flat list ต่อ "ใบเสร็จ" (ไม่ aggregate ต่อ invoice เหมือน path เงินเข้า — ตรวจ
         // drift เทียบกัน "รายใบ" ด้วย uuid) ⚠️ ต้องรวม "down" ด้วย — พี่ดิวชี้: ถ้ากรอง down ทิ้งเหมือน
-        // path เงินเข้า (บรรทัด "if (typeRaw.includes('down'))...continue") ใบที่ประเภทถูกเปลี่ยนเป็น
+        // path เงินเข้า (บรรทัด "if (paymentType === 'down')...continue") ใบที่ประเภทถูกเปลี่ยนเป็น
         // down (จาก installment เดิม) จะดูเหมือน "หายไปเลย" (missing) ทั้งที่จริงคือ "เปลี่ยนประเภท" (type
         // drift) — ห้าม reuse โค้ด skip down จาก path เงินเข้าที่นี่เด็ดขาด
         type SnapshotRow = { uuid: string; amount: number; payment_type: string; paid_date: string | null };
@@ -1366,14 +1367,9 @@ export default {
           const uuidRaw = pick(row, ["uuid"]);
           const uuid = uuidRaw ? String(uuidRaw).trim() : null;
           if (!uuid) continue; // ไม่มี uuid ให้เทียบ — ข้าม (ไม่ error ทั้งรอบ)
-          const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
+          const category = classifyPjReceiptPaymentType(pick(row, ["payment_type", "type"]));
           const amt = parseAmount(pick(row, ["amount", "paid_amount", "total"]));
           const paidDate = toIsoDate(pick(row, ["paid_date", "payment_date", "date", "created_at"]));
-          let category: string;
-          if (typeRaw.includes("down")) category = "down";
-          else if (typeRaw.includes("penalty")) category = "penalty";
-          else if (typeRaw.includes("installment")) category = "installment";
-          else category = "other";
           snapshotRows.push({ uuid, amount: amt, payment_type: category, paid_date: paidDate });
         }
 
@@ -1541,7 +1537,7 @@ export default {
 
       for (const row of filteredRows) {
         const invRaw = pick(row, ["invoice_no", "inv_no", "invoiceNo", "contract_no"]);
-        const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
+        const paymentType = classifyPjReceiptPaymentType(pick(row, ["payment_type", "type"]));
         const amt = parseAmount(pick(row, ["amount", "paid_amount", "total"]));
         const paidDate = toIsoDate(pick(row, ["paid_date", "payment_date", "date", "created_at"]));
         // uuid ดิบต่อใบเสร็จจาก PJ (field "uuid" — UUIDv7 unique ทุกใบ) — ใช้ dedup exact แทน
@@ -1552,7 +1548,7 @@ export default {
         if (!invRaw) continue;
         const inv = String(invRaw).trim();
 
-        if (typeRaw.includes("down")) {
+        if (paymentType === "down") {
           downSkipped++;
           continue; // down_payment = สัญญาใหม่ ข้าม
         }
@@ -1586,10 +1582,10 @@ export default {
         if (paidDate && !a.paid_date) a.paid_date = paidDate;
 
         let category: "installment" | "penalty" | "other";
-        if (typeRaw.includes("penalty")) {
+        if (paymentType === "penalty") {
           a.pen_amt += amt;
           category = "penalty";
-        } else if (typeRaw.includes("installment")) {
+        } else if (paymentType === "installment") {
           a.inst_amt += amt;
           a.has_installment = true;
           a.installment_receipt_count++;
@@ -1729,8 +1725,9 @@ export default {
         if (!Array.isArray(rawJson)) return 0;
         let sum = 0;
         for (const row of rawJson as any[]) {
-          const typeRaw = String(pick(row, ["payment_type", "type"]) ?? "").toLowerCase();
-          if (typeRaw.includes("down")) continue; // กันเหนียว — ไม่ควรมีอยู่แล้ว (ตัดตอน build aggMap แล้ว)
+          if (classifyPjReceiptPaymentType(pick(row, ["payment_type", "type"])) === "down") {
+            continue; // กันเหนียว — ไม่ควรมีอยู่แล้ว (ตัดตอน build aggMap แล้ว)
+          }
           sum += parseAmount(pick(row, ["amount", "paid_amount", "total"]));
         }
         return sum;
