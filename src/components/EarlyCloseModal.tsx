@@ -10,6 +10,7 @@ import {
   closeContractEarlyPreserve,
   getContractExtensions,
   getSettlementMatrix,
+  getStaffSettlementQuote,
   type CloseContractEarlyFee,
   type ExtensionRecord,
   type PaymentLogEntry,
@@ -23,6 +24,7 @@ import {
   type SettlementResult,
 } from '../lib/settlement'
 import { penaltyPaidForInstallment } from '../lib/calc'
+import { useAuth } from '../lib/auth'
 import type { Contract, Installment } from '../lib/types'
 
 const CUSTOM_FEE_OPTION = 'อื่นๆ (ระบุเอง)'
@@ -120,7 +122,7 @@ function buildSuspiciousPayments(
 }
 
 /** ข้อความสรุปยอดปิดสัญญาก่อนกำหนด สำหรับคัดลอกส่งลูกค้า — รูปแบบเดียวกับที่ทีมส่งลูกค้าจริง
- *  (ตัวอย่าง: "ยอดรวม 30,780 (2565x12 เดือน)" / "ส่วนลด 12% = 3,694 บาท" / "ยอดหลังลด 27,086 บาท" /
+ *  (ตัวอย่าง: "ยอดรวม 30,780 บาท" / "ส่วนลด 3,694 บาท" / "ยอดหลังลด 27,086 บาท" /
  *  "ปิดด่วน 200 บาท" / "รวมชำระ 27,286 บาท" / "สำหรับชำระเพื่อปิดสัญญาภายในวันนี้เท่านั้น ขอบคุณครับ")
  *
  *  แก้ 08 ก.ย. 2026 (feedback คุณเตยจากการทดสอบจริง — ก่อนหน้านี้ข้อความดึงส่วนลด/ยอดจากตารางเสมอ แม้พนักงาน
@@ -128,24 +130,21 @@ function buildSuspiciousPayments(
  *  - settlementPaid (ยอดในช่องจริง ณ ขณะนั้น) เป็นฐานของทุกยอดเสมอ ไม่ใช่ preview.remainingPrincipal/discount
  *  - settlementDiscount / totalReceived รับมาจาก computeEarlyClose(result) ตรงๆ — ให้ตรงกับ "รับจริงทั้งหมด"
  *    ที่หน้ายืนยันโชว์ทุกกรณี (ตามตาราง/กรอกเอง)
- *  - isFromTable: true เฉพาะตอน settlementPaid ตรงกับยอดที่ตารางแนะนำ (suggestedSettlementPaid) เป๊ะ — โชว์ %
- *    เฉพาะตอนนั้น ถ้ากรอกเอง (ไม่ตรงตาราง) ไม่ใส่ % ที่ไม่จริง
+ *  - ข้อความลูกค้าแสดงเฉพาะจำนวนเงิน ไม่แสดงเปอร์เซ็นต์ส่วนลดหรือสูตรคำนวณ
  *  - ตัดคำว่า "เมื่อวันที่ ..." ออกทั้งหมด แทนด้วยบรรทัดปิดท้ายคงที่
  *  - settlementPaid ว่าง/≤0/ไม่ใช่ตัวเลข → คืน null (caller โชว่ข้อความ "กรอกยอดจ่ายปิดก่อน" แทนกล่องคัดลอก)
  *
  *  แก้ 21 ก.ย. 2026 (เจ้าของเคาะ): settlementDiscount === 0 → ตัดบรรทัด "ส่วนลด ..." และ "ยอดหลังลด ..."
  *  ออกทั้งคู่ (ยอดหลังลด = ยอดรวมเป๊ะ ไม่มีความหมายถ้าไม่มีส่วนลด) — settlementDiscount > 0 ยังโชว์ทั้ง 2 บรรทัดเหมือนเดิม */
 function buildEarlyCloseMessage(params: {
-  installments: Installment[]
   preview: SettlementResult
   settlementPaid: number
   settlementDiscount: number
-  isFromTable: boolean
   penaltyReceived: number
   fees: { category: string; amount: number }[]
   totalReceived: number
 }): string | null {
-  const { installments, preview, settlementPaid, settlementDiscount, isFromTable, penaltyReceived, fees, totalReceived } =
+  const { preview, settlementPaid, settlementDiscount, penaltyReceived, fees, totalReceived } =
     params
 
   if (!settlementPaid || !Number.isFinite(settlementPaid) || settlementPaid <= 0) return null
@@ -153,30 +152,12 @@ function buildEarlyCloseMessage(params: {
   // ชั้นแรกคือ caller ซ่อน CopyBox ทั้งกล่องเมื่อ result.errors.length > 0 อยู่แล้ว
   if (!Number.isFinite(settlementDiscount) || settlementDiscount < 0) return null
 
-  const unpaid = installments.filter((i) => i.paidAt === null)
-  const noPartialPayment = unpaid.every((i) => (i.paidAmount || 0) === 0)
-  const perInstallmentAmount = unpaid.length > 0 ? unpaid[0].amount : 0
-  const uniformAmount = unpaid.every((i) => i.amount === perInstallmentAmount)
-  const canShowMultiply =
-    noPartialPayment &&
-    uniformAmount &&
-    perInstallmentAmount > 0 &&
-    perInstallmentAmount * preview.remainingCount === preview.remainingPrincipal
-
   const lines: string[] = []
 
-  lines.push(
-    canShowMultiply
-      ? `ยอดรวม ${baht(preview.remainingPrincipal)} (${baht(perInstallmentAmount)}x${preview.remainingCount} เดือน)`
-      : `ยอดรวม ${baht(preview.remainingPrincipal)} (เหลือ ${preview.remainingCount} งวด)`,
-  )
+  lines.push(`ยอดรวม ${baht(preview.remainingPrincipal)} บาท (เหลือ ${preview.remainingCount} งวด)`)
 
   if (settlementDiscount > 0) {
-    lines.push(
-      isFromTable
-        ? `ส่วนลด ${preview.percent}% = ${baht(settlementDiscount)} บาท`
-        : `ส่วนลด ${baht(settlementDiscount)} บาท`,
-    )
+    lines.push(`ส่วนลด ${baht(settlementDiscount)} บาท`)
 
     // ยอดหลังลด = settlementRemaining − settlementDiscount = settlementPaid เป๊ะเสมอ (นิยาม settlementDiscount
     // มาจาก settlementRemaining − settlementPaid) — ใส่บรรทัดนี้ให้ลูกค้าเห็นที่มาก่อนเจอค่าปรับ/ค่าธรรมเนียม
@@ -226,6 +207,8 @@ export default function EarlyCloseModal({
   onClose: () => void
   onDone: () => void
 }) {
+  const { role, configured } = useAuth()
+  const isAdmin = !configured || role === 'admin'
   const todayStr = useMemo(() => todayBangkok(), [])
 
   const penaltyPaidByInstallmentId = useMemo(
@@ -261,6 +244,7 @@ export default function EarlyCloseModal({
     let alive = true
     void (async () => {
       try {
+        if (!isAdmin) return
         const m = await getSettlementMatrix()
         if (alive) setMatrix(m)
       } catch {
@@ -278,7 +262,21 @@ export default function EarlyCloseModal({
     return () => {
       alive = false
     }
-  }, [contract.id])
+  }, [contract.id, isAdmin])
+
+  const staffQuoteKey = `${contract.id}:${closedAt}`
+  const [staffSettlementPreview, setStaffSettlementPreview] = useState<{ key: string; preview: SettlementResult } | null>(null)
+  useEffect(() => {
+    if (isAdmin) return
+    let cancelled = false
+    setStaffSettlementPreview(null)
+    void getStaffSettlementQuote(contract.id, closedAt)
+      .then((quote) => {
+        if (!cancelled) setStaffSettlementPreview({ key: `${contract.id}:${closedAt}`, preview: { ...quote, percent: 0, overridden: false } })
+      })
+      .catch(() => { if (!cancelled) setStaffSettlementPreview(null) })
+    return () => { cancelled = true }
+  }, [contract.id, closedAt, isAdmin])
 
   // เคสขยายเวลาแบบเพิ่มจำนวนงวด (ext_type != 'due_day') — เอาอันล่าสุดที่เข้าเงื่อนไข (list เรียงใหม่→เก่า)
   // ตาม logic ที่ settlement.ts กำหนด (isExtendedInstallmentsCase) — ไฟล์นี้แค่ map ข้อมูล ไม่คิดสูตรเอง
@@ -301,7 +299,7 @@ export default function EarlyCloseModal({
   )
 
   // preview จากตารางส่วนลด — reuse computeSettlement (src/lib/settlement.ts) ตรงๆ ห้ามคิดสูตรเอง
-  const settlementPreview = useMemo(() => {
+  const adminSettlementPreview = useMemo(() => {
     if (matrix == null) return null
     return computeSettlement({
       installments: settlementInstallments,
@@ -311,6 +309,9 @@ export default function EarlyCloseModal({
       extension: extensionInfo,
     })
   }, [matrix, settlementInstallments, contract.termMonths, extensionInfo, closedAt])
+  const settlementPreview = isAdmin
+    ? adminSettlementPreview
+    : staffSettlementPreview?.key === staffQuoteKey ? staffSettlementPreview.preview : null
 
   // มีคำเตือน 1 ใน 3 แบบไหม (ไม่มีตาราง/ปิดเดือนแรก/เหลืองวดเดียว) — เดิมเงื่อนไขนี้เขียนซ้ำ 2 จุดใน JSX
   // (ternary คำเตือน + className ของ div ครอบกล่องข้อความ) รวมเป็นตัวแปรเดียว กันเงื่อนไข 2 จุดวิ่งเพี้ยนกัน (แก้ 21 ก.ย. 2026)
@@ -366,34 +367,23 @@ export default function EarlyCloseModal({
     [installments, settlementPaid, penaltyReceived, fees, closedAt, todayStr, penaltyPaidByInstallmentId],
   )
 
-  // ตรงกับยอดที่ตารางแนะนำเป๊ะไหม (ไม่ใช่แค่ "เคยกดใช้ยอดนี้" — เผื่อเคสพิมพ์เลขตรงกับตารางเองโดยไม่กดปุ่ม)
-  // ใช้ตัดสินว่าข้อความส่งลูกค้าควรโชว์ % ส่วนลดหรือไม่ (ข้อ 1 — กันโชว์ % ที่ไม่จริงตอนกรอกยอดเอง)
-  // ต้อง settlementPreview.matched ด้วย — เคส term หลุดตาราง (matched=false) percent/discount เป็น 0 เสมอ
-  // ถ้ายอดที่กรอกบังเอิญตรงกับ remainingPrincipal (suggestedSettlementPaid) จะเข้าเงื่อนไขนี้ทั้งที่ไม่ใช่ % จริงจากตาราง
-  const matchesTableAmount =
-    suggestedSettlementPaid != null && settlementPaid === suggestedSettlementPaid && settlementPreview?.matched === true
-
   // ข้อความคัดลอกส่งลูกค้า — คำนวณจาก settlementPaid ที่กรอกจริง + ผล computeEarlyClose (result) เสมอ
   // ไม่ใช่จากตารางตรงๆ (แก้ 08 ก.ย. 2026, ดูรายละเอียดที่ comment ของ buildEarlyCloseMessage ด้านบน)
   const earlyCloseMessage = useMemo(() => {
     if (!settlementPreview) return null
     return buildEarlyCloseMessage({
-      installments,
       preview: settlementPreview,
       settlementPaid,
       settlementDiscount: result.settlementDiscount,
-      isFromTable: matchesTableAmount,
       penaltyReceived,
       fees,
       totalReceived: result.totalReceived,
     })
   }, [
     settlementPreview,
-    installments,
     settlementPaid,
     result.settlementDiscount,
     result.totalReceived,
-    matchesTableAmount,
     penaltyReceived,
     fees,
   ])
@@ -551,7 +541,7 @@ export default function EarlyCloseModal({
                     </p>
                     <p className="mt-0.5 text-ink-soft">
                       • {settlementPreview.discountableCount} งวดยังไม่ถึงกำหนด{' '}
-                      {baht(settlementPreview.discountableRemaining)} บาท — ลด {settlementPreview.percent}% ={' '}
+                      {baht(settlementPreview.discountableRemaining)} บาท — ส่วนลด{' '}
                       {baht(settlementPreview.discount)} บาท
                     </p>
                   </div>
@@ -574,7 +564,7 @@ export default function EarlyCloseModal({
                   ) : (
                     <p className="flex items-start gap-1.5 text-amber-800">
                       <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                      เหลืองวดสุดท้ายงวดเดียว — ตามตารางไม่มีส่วนลด (0%)
+                      เหลืองวดสุดท้ายงวดเดียว — ตามตารางไม่มีส่วนลด
                     </p>
                   ))}
                 <div className={hasWarning ? 'mt-2' : undefined}>

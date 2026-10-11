@@ -8,11 +8,6 @@ import { buildSaleHistory, type SaleHistoryRow } from '../lib/saleHistory'
 import { useAsync } from '../lib/useAsync'
 import { useAuth } from '../lib/auth'
 
-// ⚠️ FLAG ครีม: ค่าคอมฟรีแลนซ์ 5% ของราคาขาย — ยังไม่ผ่าน commission.ts
-// และยังไม่ได้หัก repair_cost (repairCost อยู่ใน DeviceReturnRow.repairCost)
-// ให้ยืนยันสูตรกับแบมก่อนที่จะ ship หน้านี้ใน production
-const FREELANCER_COMMISSION_RATE = 0.05
-
 // ===== ปรับ raw output ของ db → แบบที่ buildSaleHistory ต้องการ =====
 function adaptRaw(raw: RawInput): Parameters<typeof buildSaleHistory>[0][number] {
   return {
@@ -106,6 +101,10 @@ export default function SaleHistory() {
 
   const rows: SaleHistoryRow[] = useMemo(
     () => buildSaleHistory(rawRows.map(adaptRaw)),
+    [rawRows],
+  )
+  const freelancerCommissionByContract = useMemo(
+    () => new Map(rawRows.map((row) => [row.contractId, row.freelancerCommission] as const)),
     [rawRows],
   )
 
@@ -212,9 +211,7 @@ export default function SaleHistory() {
               <tbody>
                 {pagedRows.map((r) => {
                   const freelancerName = attributionMap.get(r.contractId) ?? null
-                  const freelancerCommission = r.resalePrice > 0
-                    ? Math.round(r.resalePrice * FREELANCER_COMMISSION_RATE)
-                    : 0
+                  const freelancerCommission = freelancerCommissionByContract.get(r.contractId) ?? 0
                   return (
                     <tr
                       key={r.contractId}

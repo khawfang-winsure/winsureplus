@@ -25,10 +25,6 @@ export interface SettlementTier {
 /** เลือก % ส่วนลดตามจำนวนงวดที่เหลือ (Wave 1 — band)
  *  - หา band ที่ minRemaining มากสุดที่ยัง <= remainingCount
  *  - ไม่มี band ไหนเข้า → 0
- *  Trace (tiers = [{5,7},{10,10}]):
- *    remaining 3  → ไม่เข้า band ไหน  → 0
- *    remaining 5  → เข้า {5,7}        → 7
- *    remaining 10 → เข้า {10,10}      → 10
  *  @deprecated ใช้เฉพาะ fallback ตอนไม่มี matrix ส่งเข้า computeSettlement
  *  เคสใหม่ใช้ pickDiscountPercentMatrix */
 export function pickDiscountPercent(remainingCount: number, tiers: SettlementTier[]): number {
@@ -57,10 +53,6 @@ export type SettlementMatrix = Record<string, Record<string, number>>
 /** เลือก % ส่วนลดจาก matrix ตาม (rowTerm, paidCount)
  *  - แถว rowTerm ไม่มีในตาราง → 0 (ห้าม throw)
  *  - ช่อง paidCount ไม่มีในแถวนั้น → 0 (ห้าม throw)
- *  Trace (seed ด้านบน):
- *    (12, 3)  → แถว 12 มี paid 3 = 12%  → 12
- *    (12, 11) → แถว 12 ไม่มี paid 11    → 0
- *    (6, 0)   → แถว 6 ไม่มี paid 0      → 0
  *    (99, 5)  → ไม่มีแถว 99             → 0 */
 export function pickDiscountPercentMatrix(
   rowTerm: number,
@@ -153,53 +145,6 @@ function isExtendedInstallmentsCase(
  *     ('YYYY-MM-DD' < '' เป็น false เสมอ) จะทำให้ทุกงวดถูกนับเป็น "ยังไม่ถึงกำหนด" (ได้ส่วนลดหมดทั้งก้อน)
  *     caller ต้องรับผิดชอบส่งวันที่ปิดจริงที่ถูกต้องเสมอ ห้ามส่งค่าว่าง/placeholder
  */
-/** Trace 1 — term12/paid3 → 12% (matrix seed, ไม่ผ่านขยายเวลา, ทุกงวดยังไม่ถึงกำหนด):
- *    12 งวด งวดละ 1000, จ่ายแล้ว 3 งวด (installmentNo 1-3), เหลือค้าง 9 งวด ไม่มีค่าปรับ
- *    closedAt เร็วกว่า dueDate ของทั้ง 9 งวดที่เหลือ (ยังไม่ถึงกำหนดทั้งหมด)
- *    paidCount=3, rowTerm=12(=termMonths), matrix[12][3]=12 → percent=12, matched=true
- *    remainingPrincipal=9000, overdueRemaining=0, discountableRemaining=9000
- *    discount=round(9000x0.12)=1080, penaltyDue=0, customerPays=7920
- *
- *  Trace 2 — term12/paid11 → 0% (เหลืองวดเดียว ไม่มีใน column ของแถว 12):
- *    จ่ายแล้ว 11/12 งวด เหลือค้าง 1 งวด (1000, ไม่มีค่าปรับ, ยังไม่ถึงกำหนด)
- *    paidCount=11, rowTerm=12, matrix[12][11] ไม่มี → percent=0, matched=true
- *    remainingPrincipal=1000, discountableRemaining=1000, discount=0, penaltyDue=0, customerPays=1000
- *
- *  Trace 3 — term6/paid0 → 0% (ยังไม่จ่ายงวดไหนเลย):
- *    6 งวด งวดละ 1000 ยังไม่จ่ายเลย เหลือค้างครบ 6 งวด (ยังไม่ถึงกำหนดทั้งหมด)
- *    paidCount=0, rowTerm=6, matrix[6][0] ไม่มี (แถว 6 เริ่มที่ 1) → percent=0, matched=true
- *    remainingPrincipal=6000, discount=0, penaltyDue=0, customerPays=6000
- *
- *  Trace 4 — term ไม่มีในตาราง → 0% + matched:false:
- *    termMonths=99 (ไม่มีในตารางเลย) → matrix[99] undefined → percent=0, matched=false
- *    UI ต้องขึ้นคำเตือน "ไม่มีตารางส่วนลดสำหรับสัญญางวด 99 เดือน"
- */
-/** Trace 5 — งวดจ่ายบางส่วน (partial payment ไม่นับว่าจ่ายแล้ว):
- *    term12, งวด 4 จ่ายไปแล้ว paidAmount=500 (จาก 1000) แต่ paidAt ยังเป็น null
- *    → งวด 4 นับเป็น "ยังไม่จ่าย" ทั้งใน paidCount (ไม่รวม)
- *      และ remainingPrincipal (รวม max(0,1000-500)=500 เข้าเหลือค้าง)
- *    ถ้างวด 1-3 จ่ายเต็มแล้ว + งวด 4 จ่ายบางส่วน + งวด 5-12 ยังไม่แตะ:
- *    paidCount=3 (ไม่ใช่ 4), rowTerm=12 → percent=matrix[12][3]=12
- *
- *  Trace 6 — override (admin กรอก % เองแทนตาราง):
- *    term12/paid3 (ตารางให้ 12%) แต่ admin ใส่ overridePercent=20
- *    → percent=20, overridden=true, matched ยังคงคำนวณจากตารางไว้ (=true)
- *    discountableRemaining=9000 (สมมติเหมือน Trace1, ยังไม่ถึงกำหนดทั้งหมด) → discount=round(9000x0.20)=1800
- *
- *  Trace 7 — เคสขยายเวลา S00017PNQ067 (row key = งวดที่ขยายใหม่ ไม่ใช่ termMonths ปัจจุบัน):
- *    termMonths=16 (หลังขยาย), extension={extType:'months', newInstallments:12}
- *    installments 16 งวด: installmentNo 1-4 จ่ายแล้ว (ก่อนขยาย), 5-16 ยังไม่จ่าย
- *    isExtendedInstallmentsCase → true → rowTerm=12 (=newInstallments)
- *    threshold = 16-12 = 4 → paidCount = งวดที่ paidAt≠null และ installmentNo>4 = 0
- *    matrix[12][0] ไม่มี → percent=0, matched=true (แถว 12 มีจริง แค่ column 0 ไม่มี)
- *
- *  Trace 8 — งวดค้างชำระจริง (เลยกำหนด) ต้องจ่ายเต็ม ไม่ได้ส่วนลด (กฎใหม่ 9 ก.ย. 2026):
- *    term12, closedAt='2026-08-22', เหลือค้าง 9 งวด (งวดละ 1000 ไม่มีค่าปรับ):
- *      3 งวดแรก dueDate < closedAt (เลยกำหนดแล้ว) → overdueRemaining=3000
- *      6 งวดหลัง dueDate >= closedAt (ยังไม่ถึงกำหนด) → discountableRemaining=6000
- *    paidCount=3, rowTerm=12, matrix[12][3]=12 → percent=12
- *    discount=round(6000x0.12)=720 (ไม่ใช่ round(9000x0.12)=1080 แบบเดิม)
- *    remainingPrincipal=9000, customerPays=9000-720+0=8280 */
 export function computeSettlement(input: {
   installments: SettlementInstallmentInput[]
   closedAt: string                // วันที่ปิดจริง ('YYYY-MM-DD') — ใช้แบ่งงวดค้าง (เลยกำหนด) vs ยังไม่ถึงกำหนด

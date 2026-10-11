@@ -791,6 +791,39 @@ export async function unlockCommissionMonth(month: string): Promise<void> {
 // ---------- ระบบเรตผ่อน (เก็บใน app_settings เป็น JSON) ----------
 const RATE_SETS_KEY = 'installment_rate_sets'
 
+/** Staff receives labels and available terms only; the server keeps multipliers. */
+export interface StaffRateOption {
+  id: string
+  name: string
+  terms: number[]
+}
+
+export async function getStaffRateOptions(): Promise<StaffRateOption[]> {
+  if (!supabase) return DEFAULT_RATE_SETS.filter((s) => s.active).map((s) => ({
+    id: s.id, name: s.name, terms: s.tiers.map((t) => t.term),
+  }))
+  const { data, error } = await supabase.rpc('staff_rate_options')
+  if (error) throw error
+  return (data ?? []) as StaffRateOption[]
+}
+
+export async function getStaffRateQuote(
+  principal: number, setId: string, term: number,
+): Promise<{ financeAmount: number; monthlyPayment: number }> {
+  if (!supabase) {
+    const set = DEFAULT_RATE_SETS.find((s) => s.id === setId)
+    const multiplier = set?.tiers.find((t) => t.term === term)?.multiplier
+    if (multiplier == null) throw new Error('Rate unavailable')
+    const financeAmount = Math.round(principal * multiplier)
+    return { financeAmount, monthlyPayment: Math.round(financeAmount / term) }
+  }
+  const { data, error } = await supabase.rpc('staff_rate_quote', {
+    p_principal: principal, p_set_id: setId, p_term: term,
+  })
+  if (error) throw error
+  return data as { financeAmount: number; monthlyPayment: number }
+}
+
 export async function getRateSets(): Promise<RateSet[]> {
   if (!supabase) return DEFAULT_RATE_SETS
   const { data, error } = await supabase
@@ -855,6 +888,33 @@ export async function saveSettlementTiers(tiers: SettlementTier[]): Promise<void
 
 // ---------- ตารางส่วนลดปิดสัญญาแบบใหม่ (matrix ชนิดสัญญา × งวดที่จ่ายแล้ว) (0112) ----------
 const SETTLEMENT_MATRIX_KEY = 'settlement_matrix'
+
+/** Staff quote contains only baht amounts and matching information. */
+export interface StaffSettlementQuote {
+  remainingPrincipal: number
+  remainingCount: number
+  overdueRemaining: number
+  overdueCount: number
+  discountableRemaining: number
+  discountableCount: number
+  discount: number
+  penaltyDue: number
+  customerPays: number
+  paidCount: number
+  rowTerm: number
+  matched: boolean
+}
+
+export async function getStaffSettlementQuote(
+  contractId: string, closedAt: string,
+): Promise<StaffSettlementQuote> {
+  if (!supabase) throw new Error('Staff quote requires the server')
+  const { data, error } = await supabase.rpc('staff_settlement_quote', {
+    p_contract_id: contractId, p_closed_at: closedAt,
+  })
+  if (error) throw error
+  return data as StaffSettlementQuote
+}
 
 /** อ่านตารางส่วนลดปิดสัญญาแบบ matrix — ว่าง/พัง/รูปแบบผิด → {} (ห้าม throw) */
 export async function getSettlementMatrix(): Promise<SettlementMatrix> {
@@ -7149,6 +7209,7 @@ export interface SaleHistoryInput {
   downPaid: number            // Σ pay where installment_id IS NULL, floor 0 ต่อแถว (เงินดาวน์)
   installmentPaid: number     // Σ pay where installment_id NOT NULL, floor 0 ต่อแถว (งวดจริง)
   installmentCount: number    // count DISTINCT installment_id ของ pay rows ที่ installment_id NOT NULL
+  freelancerCommission: number // server-calculated amount; no rate reaches the client
   resalePrice: number | null  // device_returns.sale_price
   returnedAt: string | null   // device_returns.transferred_at ?? shipped_at (วันที่ขาย/โอน)
 }
@@ -7198,6 +7259,13 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
 
   const returns = (returnData ?? []) as SaleHistoryReturnRow[]
   if (returns.length === 0) return []
+
+  const { data: commissionData, error: commissionErr } = await supabase.rpc('admin_sale_freelancer_commissions')
+  if (commissionErr) throw commissionErr
+  const freelancerCommissionMap = new Map<string, number>(
+    ((commissionData ?? []) as { return_id: string; amount: number }[])
+      .map((row) => [row.return_id, Number(row.amount)]),
+  )
 
   const contractIds = [...new Set(returns.map((r) => r.contract_id))]
 
@@ -7285,6 +7353,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
       deviceListPrice: devicePrice,
       commissionPercent,
       commission: Math.round((financeAmount * commissionPercent) / 100),
+      freelancerCommission: freelancerCommissionMap.get(ret.id) ?? 0,
       downPaid: downMap.get(ret.contract_id) ?? 0,
       installmentPaid: instMap.get(ret.contract_id) ?? 0,
       installmentCount: instIdSet.get(ret.contract_id)?.size ?? 0,

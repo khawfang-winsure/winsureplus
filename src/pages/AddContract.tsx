@@ -17,6 +17,8 @@ import {
   getInstallments,
   getOptions,
   getRateSets,
+  getStaffRateOptions,
+  getStaffRateQuote,
   getShopContractNos,
   getShops,
   insertContract,
@@ -204,18 +206,19 @@ export default function AddContract() {
   // โหลดร้านค้า + ตัวเลือกผ่านชั้นข้อมูลกลาง (mock หรือ Supabase อัตโนมัติ)
   const { data: opts, loading } = useAsync(
     async () => {
-      const [shops, models, storages, occupations, proofs, promotions, rateSets] = await Promise.all([
+      const [shops, models, storages, occupations, proofs, promotions, rateSets, staffRateOptions] = await Promise.all([
         getShops(),
         getOptions('phone_model'),
         getOptions('storage'),
         getOptions('occupation'),
         getOptions('occupation_proof'),
         getOptions('promotion'),
-        getRateSets(),
+        isStaff ? Promise.resolve([] as RateSet[]) : getRateSets(),
+        isStaff ? getStaffRateOptions() : Promise.resolve([]),
       ])
-      return { shops, models, storages, occupations, proofs, promotions, rateSets }
+      return { shops, models, storages, occupations, proofs, promotions, rateSets, staffRateOptions }
     },
-    { shops: [], models: [], storages: [], occupations: [], proofs: [], promotions: [], rateSets: [] as RateSet[] },
+    { shops: [], models: [], storages: [], occupations: [], proofs: [], promotions: [], rateSets: [] as RateSet[], staffRateOptions: [] as { id: string; name: string; terms: number[] }[] },
   )
 
   const [f, setF] = useState<FormState>(initial)
@@ -352,19 +355,21 @@ export default function AddContract() {
   const [financeMode, setFinanceMode] = useState<'manual' | 'rate'>('manual')
   const [rateSetId, setRateSetId] = useState('')
   const [rateTerm, setRateTerm] = useState(0)
-  const liveRateSets = activeRateSets(opts.rateSets)
+  const liveRateSets = isStaff
+    ? opts.staffRateOptions
+    : activeRateSets(opts.rateSets).map((s) => ({ id: s.id, name: s.name, terms: termsOf(s) }))
   // ตั้งชุดเรต/งวดเริ่มต้นเมื่อข้อมูลโหลด
   useEffect(() => {
     if (!liveRateSets.length) return
     setRateSetId((prev) => prev || liveRateSets[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts.rateSets])
-  const rateSet = liveRateSets.find((s) => s.id === rateSetId) ?? null
-  const rateTerms = termsOf(rateSet)
+  }, [opts.rateSets, opts.staffRateOptions])
+  const rateSet = opts.rateSets.find((s) => s.id === rateSetId) ?? null
+  const rateTerms = liveRateSets.find((s) => s.id === rateSetId)?.terms ?? []
   useEffect(() => {
     if (rateTerms.length && !rateTerms.includes(rateTerm)) setRateTerm(rateTerms[0])
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rateSetId, opts.rateSets])
+  }, [rateSetId, opts.rateSets, opts.staffRateOptions])
 
   // เคสใหม่: auto-fill ผู้ดำเนินการ = ชื่อผู้ที่ล็อกอิน (พนักงานไม่ต้องพิมพ์เอง)
   // เคสแก้ไข: คง operator เดิมไว้ (audit trail — ไม่ใช่ "ใครเป็นคนกดล่าสุด")
@@ -374,12 +379,27 @@ export default function AddContract() {
 
   const principal = summary.afterDown // ยอดต้น = ยอดหลังหักดาวน์
   const rateMult = multiplierFor(rateSet, rateTerm)
-  const rateFinance = rateMult != null ? financeFromPrincipal(principal, rateMult) : 0
-  const rateMonthly = rateMult != null ? monthlyFrom(rateFinance, rateTerm) : 0
+  const staffRateQuoteKey = `${principal}:${rateSetId}:${rateTerm}`
+  const [staffRateQuote, setStaffRateQuote] = useState<{ key: string; financeAmount: number; monthlyPayment: number } | null>(null)
+  useEffect(() => {
+    if (!isStaff || financeMode !== 'rate' || principal <= 0 || !rateSetId || rateTerm <= 0) {
+      setStaffRateQuote(null)
+      return
+    }
+    let cancelled = false
+    setStaffRateQuote(null)
+    void getStaffRateQuote(principal, rateSetId, rateTerm)
+      .then((quote) => { if (!cancelled) setStaffRateQuote({ ...quote, key: `${principal}:${rateSetId}:${rateTerm}` }) })
+      .catch(() => { if (!cancelled) setStaffRateQuote(null) })
+    return () => { cancelled = true }
+  }, [isStaff, financeMode, principal, rateSetId, rateTerm])
+  const currentStaffRateQuote = staffRateQuote?.key === staffRateQuoteKey ? staffRateQuote : null
+  const rateFinance = isStaff ? currentStaffRateQuote?.financeAmount ?? 0 : rateMult != null ? financeFromPrincipal(principal, rateMult) : 0
+  const rateMonthly = isStaff ? currentStaffRateQuote?.monthlyPayment ?? 0 : rateMult != null ? monthlyFrom(rateFinance, rateTerm) : 0
 
   // เติมค่าที่คิดได้ลงช่อง (ยังแก้มือต่อได้)
   function applyRate() {
-    if (rateMult == null) return
+    if (isStaff ? !currentStaffRateQuote : rateMult == null) return
     setF((prev) => ({
       ...prev,
       financeAmount: String(rateFinance),
@@ -1142,7 +1162,7 @@ export default function AddContract() {
             {/* ตัวช่วยคิดค่างวดจากเรต — โชว์เฉพาะตอนเลือกโหมด "คำนวณจากเรต" */}
             {financeMode === 'rate' && liveRateSets.length > 0 ? (
               <div className="mb-3 rounded-xl border border-peach bg-peach-light/40 p-3">
-                <p className="mb-2 text-sm font-semibold text-ink">คิดจากเรต (ตัวคูณต่อจำนวนงวด)</p>
+                <p className="mb-2 text-sm font-semibold text-ink">คำนวณค่างวด</p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="ชุดเรต">
                     <Select value={rateSetId} onChange={(e) => setRateSetId(e.target.value)}>
@@ -1161,11 +1181,10 @@ export default function AddContract() {
                 </div>
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span className="text-ink-soft">
-                    ยอดต้น {baht(principal)} × {rateMult ?? '—'} ={' '}
-                    <b className="text-ink whitespace-nowrap">ยอด {baht(rateFinance)} ฿</b> · งวดละ{' '}
+                    ยอดจัดไฟแนนซ์ <b className="text-ink whitespace-nowrap">{baht(rateFinance)} ฿</b> · งวดละ{' '}
                     <b className="text-salmon-deep whitespace-nowrap">{baht(rateMonthly)} ฿</b>
                   </span>
-                  <Button variant="ghost" onClick={applyRate} disabled={rateMult == null}>
+                  <Button variant="ghost" onClick={applyRate} disabled={isStaff ? !currentStaffRateQuote : rateMult == null}>
                     ใช้เรตนี้
                   </Button>
                 </div>

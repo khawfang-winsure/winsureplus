@@ -10,6 +10,8 @@ import {
   getPaymentLog,
   getContractExtensions,
   getRateSets,
+  getStaffRateOptions,
+  getStaffRateQuote,
   getFollowUps,
   recordPaymentWithPenalty,
   recordPenaltyOnlyPayment,
@@ -286,6 +288,7 @@ export default function ContractDetail() {
   const [log, setLog] = useState<PaymentLogEntry[]>([])
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
   const [rateSets, setRateSets] = useState<RateSet[]>([])
+  const [staffRateOptions, setStaffRateOptions] = useState<{ id: string; name: string; terms: number[] }[]>([])
   const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
   // วันที่คืนเครื่องล่าสุด (yyyy-mm-dd Bangkok) — null = ไม่ใช่เคสคืนเครื่อง/ไม่มีแถว device_returns
   // gate ด้วย RETURN_DATE_RELIABLE_FROM ก่อนส่งเข้า outstandingAfterReturn (กันหยิบงวดครบกำหนดหลังวันคืนมาคิดเป็นยอดตามเก็บ)
@@ -422,12 +425,13 @@ export default function ContractDetail() {
   const load = useCallback(async () => {
     if (!id) return
     setLoading(true)
-    const [c, ins, lg, ext, rs, ec, poh, oi, fr, ce, rd, tr, tfw] = await Promise.all([
+    const [c, ins, lg, ext, rs, staffRs, ec, poh, oi, fr, ce, rd, tr, tfw] = await Promise.all([
       getContract(id),
       getInstallments(id),
       getPaymentLog(id),
       getContractExtensions(id),
-      getRateSets(),
+      isAdmin ? getRateSets() : Promise.resolve([] as RateSet[]),
+      isAdmin ? Promise.resolve([]) : getStaffRateOptions(),
       getExtraCharges(id),
       getPenaltyOverrideHistory(id),
       getOtherIncome(id),
@@ -442,6 +446,7 @@ export default function ContractDetail() {
     setLog(lg)
     setExtensions(ext)
     setRateSets(rs)
+    setStaffRateOptions(staffRs)
     setExtraCharges(ec)
     setPenaltyOverrideHistory(poh)
     setOtherIncomeItems(oi)
@@ -452,7 +457,7 @@ export default function ContractDetail() {
     setTransferHistory(tr)
     setTransferFeeWaivers(tfw)
     setLoading(false)
-  }, [id])
+  }, [id, isAdmin])
 
   useEffect(() => {
     load()
@@ -2661,6 +2666,8 @@ export default function ContractDetail() {
           installments={installments}
           extensions={extensions}
           rateSets={rateSets}
+          staffRateOptions={staffRateOptions}
+          isAdmin={isAdmin}
           logByIns={logByIns}
           initialExtType={extendPreset ?? undefined}
           onClose={() => {
@@ -4335,6 +4342,8 @@ function ExtendModal({
   installments,
   extensions,
   rateSets,
+  staffRateOptions,
+  isAdmin,
   logByIns,
   initialExtType,
   onClose,
@@ -4344,6 +4353,8 @@ function ExtendModal({
   installments: Installment[]
   extensions: ExtensionRecord[]
   rateSets: RateSet[]
+  staffRateOptions: { id: string; name: string; terms: number[] }[]
+  isAdmin: boolean
   logByIns: Map<string, PaymentLogEntry[]>
   initialExtType?: ExtensionType
   onClose: () => void
@@ -4382,10 +4393,12 @@ function ExtendModal({
   const [err, setErr] = useState<string | null>(null)
 
   // ===== ตัวช่วยคิดจากเรต (Option A — Principal-Only) =====
-  const liveRateSets = activeRateSets(rateSets)
+  const liveRateSets = isAdmin
+    ? activeRateSets(rateSets).map((s) => ({ id: s.id, name: s.name, terms: termsOf(s) }))
+    : staffRateOptions
   const [rateSetId, setRateSetId] = useState(liveRateSets[0]?.id ?? '')
-  const rateSet = liveRateSets.find((s) => s.id === rateSetId) ?? null
-  const rateTermList = termsOf(rateSet)
+  const rateSet = rateSets.find((s) => s.id === rateSetId) ?? null
+  const rateTermList = liveRateSets.find((s) => s.id === rateSetId)?.terms ?? []
   const [rateTerm, setRateTerm] = useState(rateTermList[0] ?? 0)
   const rateMult = multiplierFor(rateSet, rateTerm)
 
@@ -4396,23 +4409,43 @@ function ExtendModal({
   }, [rateSetId])
 
   // คำนวณ Option A: ใช้เงินต้นแท้ที่เหลือ ไม่คิดดอกซ้อน; หัก partialPaid ที่จ่ายแล้วในงวดที่ยังเปิด
-  const calc = useMemo(() => {
+  const baseCalc = useMemo(() => {
     if (extType === 'due_day') return null
     if (afterDown <= 0 || contract.termMonths <= 0) return null
-    if (rateMult == null || rateTerm <= 0) return null
+    if (rateTerm <= 0) return null
     try {
       return calcExtensionPrincipal({
         afterDownOriginal: afterDown,
         originalTerm: contract.termMonths,
         unpaidInstallments: unpaidCount,
         newTerm: rateTerm,
-        newRate: rateMult,
+        newRate: isAdmin ? (rateMult ?? 1) : 1,
         partialPaid,
       })
     } catch {
       return null
     }
-  }, [extType, afterDown, contract.termMonths, unpaidCount, rateTerm, rateMult, partialPaid])
+  }, [extType, afterDown, contract.termMonths, unpaidCount, rateTerm, rateMult, partialPaid, isAdmin])
+  const staffQuoteKey = `${baseCalc?.principalRemaining ?? ''}:${rateSetId}:${rateTerm}`
+  const [staffQuote, setStaffQuote] = useState<{ key: string; financeAmount: number; monthlyPayment: number } | null>(null)
+  useEffect(() => {
+    if (isAdmin || !baseCalc || !rateSetId || !rateTerm) {
+      setStaffQuote(null)
+      return
+    }
+    let cancelled = false
+    setStaffQuote(null)
+    void getStaffRateQuote(baseCalc.principalRemaining, rateSetId, rateTerm)
+      .then((quote) => { if (!cancelled) setStaffQuote({ ...quote, key: `${baseCalc.principalRemaining}:${rateSetId}:${rateTerm}` }) })
+      .catch(() => { if (!cancelled) setStaffQuote(null) })
+    return () => { cancelled = true }
+  }, [isAdmin, baseCalc?.principalRemaining, rateSetId, rateTerm])
+  const currentStaffQuote = staffQuote?.key === staffQuoteKey ? staffQuote : null
+  const calc = isAdmin
+    ? rateMult == null ? null : baseCalc
+    : baseCalc && currentStaffQuote
+      ? { ...baseCalc, newFinance: currentStaffQuote.financeAmount, newMonthly: currentStaffQuote.monthlyPayment }
+      : null
 
   const lockDueDay = extType === 'months' // ขยายงวดอย่างเดียว = วันชำระเดิม
 
@@ -4424,10 +4457,10 @@ function ExtendModal({
   }
 
   // สำหรับ due_day: ใช้งวด/ยอดเดิม; สำหรับ months/both: ใช้ผลจาก calc
-  const activeTerm = extType === 'due_day' ? baseTerm : (calc?.newFinance != null ? rateTerm : baseTerm)
+  const activeTerm = extType === 'due_day' ? baseTerm : (calc ? rateTerm : 0)
   const activeFinance = extType === 'due_day'
     ? Math.round(baseTerm * contract.monthlyPayment)
-    : (calc?.newFinance ?? Math.round(baseTerm * contract.monthlyPayment))
+    : (calc?.newFinance ?? 0)
   const activeMonthly = extType === 'due_day'
     ? (baseTerm > 0 ? Math.round(Math.round(baseTerm * contract.monthlyPayment) / baseTerm) : 0)
     : (calc?.newMonthly ?? 0)
@@ -4441,9 +4474,17 @@ function ExtendModal({
   // ยอดค้างรวมใน ExtendModal: outstanding + penaltyDue (ไม่รวม extraCharges ที่ไม่ fetch ในนี้)
   const totalOutstandingLocal = outstanding + penaltyDue
 
-  const canSubmit = newDueDay >= 1 && newDueDay <= 31 && activeTerm > 0 && activeFinance >= 0
+  // ขยายงวดต้องมีผลคำนวณที่ตรงกับตัวเลือกปัจจุบันเสมอ ห้าม fallback เป็นยอดสัญญาเดิม
+  const quoteReady = extType === 'due_day' || calc != null
+  const canSubmit = newDueDay >= 1 && newDueDay <= 31 && activeTerm > 0 && activeFinance >= 0 && quoteReady
+  const missingPrincipal = afterDown <= 0 || contract.termMonths <= 0
+  const alreadyPaidOff = unpaidCount === 0
 
   async function save() {
+    if (busy || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)) {
+      setErr('กรุณาตรวจวันที่และรอผลคำนวณยอดใหม่ก่อนบันทึก')
+      return
+    }
     setBusy(true)
     setErr(null)
     try {
@@ -4460,12 +4501,6 @@ function ExtendModal({
       setBusy(false)
     }
   }
-
-  // Guard: สัญญาเก่าไม่มีข้อมูลเงินต้น
-  const missingPrincipal = afterDown <= 0 || contract.termMonths <= 0
-
-  // Guard: สัญญาผ่อนหมดแล้ว
-  const alreadyPaidOff = unpaidCount === 0
 
   const extFooter = (
     <div className="flex justify-end gap-2">
@@ -4560,7 +4595,7 @@ function ExtendModal({
               </Field>
             </div>
             <p className="mt-2 text-xs text-ink-soft">
-              เรต: <b className="text-ink">{rateMult ?? '—'}</b> · เงินต้นแท้: <b className="text-ink whitespace-nowrap">{baht(afterDown)} ฿</b> · งวดที่ยังไม่ชำระ: <b className="text-ink">{unpaidCount}</b> งวด
+              งวดที่ยังไม่ชำระ: <b className="text-ink">{unpaidCount}</b> งวด
             </p>
           </div>
         )}
@@ -4594,8 +4629,7 @@ function ExtendModal({
               </div>
             </div>
             <div className="mt-3 rounded-lg bg-peach-light/60 px-3 py-2 text-sm">
-              ขยาย <b className="text-ink">{rateTerm}</b> งวด × เรต <b className="text-ink">{rateMult}</b>{' '}
-              → ค่างวดใหม่: <b className="text-salmon-deep whitespace-nowrap">{baht(calc.newMonthly)} ฿/เดือน</b>
+              ค่างวดใหม่: <b className="text-salmon-deep whitespace-nowrap">{baht(calc.newMonthly)} ฿/เดือน</b>
               {' '}(ยอดจัดไฟแนนซ์ <span className="whitespace-nowrap">{baht(calc.newFinance)} ฿</span>)
             </div>
           </div>
