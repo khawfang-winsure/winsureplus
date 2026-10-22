@@ -281,7 +281,7 @@ export default function EarlyCloseModal({
   // เคสขยายเวลาแบบเพิ่มจำนวนงวด (ext_type != 'due_day') — เอาอันล่าสุดที่เข้าเงื่อนไข (list เรียงใหม่→เก่า)
   // ตาม logic ที่ settlement.ts กำหนด (isExtendedInstallmentsCase) — ไฟล์นี้แค่ map ข้อมูล ไม่คิดสูตรเอง
   const extensionInfo = useMemo<SettlementExtensionInfo | null>(() => {
-    const match = extensions.find((e) => e.extType !== 'due_day' && e.newInstallments != null)
+    const match = extensions.find((e) => !e.reversedAt && e.extType !== 'due_day' && e.newInstallments != null)
     return match ? { extType: match.extType, newInstallments: match.newInstallments } : null
   }, [extensions])
 

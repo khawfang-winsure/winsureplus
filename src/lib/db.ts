@@ -2333,6 +2333,9 @@ export interface ExtensionRecord {
   note: string | null
   recordedByName: string | null
   createdAt: string
+  reversedAt: string | null
+  reversedByName: string | null
+  reversedReason: string | null
 }
 
 interface ExtensionRow {
@@ -2351,6 +2354,9 @@ interface ExtensionRow {
   note: string | null
   recorded_by_name: string | null
   created_at: string
+  reversed_at: string | null
+  reversed_by_name: string | null
+  reversed_reason: string | null
   // Supabase embed อาจคืนเป็น object หรือ array แล้วแต่การ infer relation
   contracts?: { contract_no: string; customer_name: string } | { contract_no: string; customer_name: string }[] | null
 }
@@ -2375,11 +2381,55 @@ function mapExtension(r: ExtensionRow): ExtensionRecord {
     note: r.note ?? null,
     recordedByName: r.recorded_by_name ?? null,
     createdAt: r.created_at,
+    reversedAt: r.reversed_at ?? null,
+    reversedByName: r.reversed_by_name ?? null,
+    reversedReason: r.reversed_reason ?? null,
   }
 }
 
 const EXT_SELECT =
-  'id, contract_id, ext_type, old_due_day, new_due_day, old_term, new_term, old_finance, new_finance, old_monthly, new_monthly, new_installments, note, recorded_by_name, created_at'
+  'id, contract_id, ext_type, old_due_day, new_due_day, old_term, new_term, old_finance, new_finance, old_monthly, new_monthly, new_installments, note, recorded_by_name, created_at, reversed_at, reversed_by_name, reversed_reason'
+
+export interface ExtensionScheduleRow {
+  id: string
+  installmentNo: number
+  dueDate: string
+  amount: number
+  paidAmount: number
+  paidAt: string | null
+}
+
+export interface ExtensionSchedulePreview {
+  dueDay: number
+  termMonths: number
+  financeAmount: number
+  monthlyPayment: number
+  installments: ExtensionScheduleRow[]
+}
+
+export interface ExtensionUndoPreview {
+  canUndo: boolean
+  blockedReason: string | null
+  before: ExtensionSchedulePreview | null
+  after: ExtensionSchedulePreview | null
+}
+
+export async function getExtensionUndoPreview(extensionId: string): Promise<ExtensionUndoPreview> {
+  if (!supabase) return {
+    canUndo: false, blockedReason: 'รายการตัวอย่างนี้ไม่มีสำเนาก่อนขยาย', before: null, after: null,
+  }
+  const { data, error } = await supabase.rpc('extension_undo_preview', { p_extension_id: extensionId })
+  if (error) throw error
+  return data as ExtensionUndoPreview
+}
+
+export const undoContractExtension = writesContracts(async function undoContractExtension(extensionId: string, reason: string): Promise<void> {
+  if (!supabase) throw new Error('รายการตัวอย่างนี้ไม่สามารถยกเลิกการขยายได้')
+  const { error } = await supabase.rpc('undo_contract_extension', {
+    p_extension_id: extensionId, p_reason: reason,
+  })
+  if (error) throw error
+})
 
 /** ประวัติการขยายของสัญญาเดียว (ใหม่ → เก่า) */
 export async function getContractExtensions(contractId: string): Promise<ExtensionRecord[]> {
@@ -2400,6 +2450,7 @@ export async function getAllExtensions(): Promise<ExtensionRecord[]> {
   const { data, error } = await supabase
     .from('contract_extensions')
     .select(`${EXT_SELECT}, contracts ( contract_no, customer_name )`)
+    .is('reversed_at', null)
     .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
   if (error) throw error
@@ -6127,6 +6178,9 @@ interface AuditExtensionRow {
   ext_type: string
   recorded_by_name: string | null
   created_at: string
+  reversed_at: string | null
+  reversed_by_name: string | null
+  reversed_reason: string | null
   contracts: ContractsEmbed
 }
 
@@ -6247,7 +6301,7 @@ export async function getAuditTimeline(daysBack = 30, limit = 200): Promise<Audi
     // 6. contract_extensions + join contracts
     supabase
       .from('contract_extensions')
-      .select('id, contract_id, ext_type, recorded_by_name, created_at, contracts(contract_no, customer_name)')
+      .select('id, contract_id, ext_type, recorded_by_name, created_at, reversed_at, reversed_by_name, reversed_reason, contracts(contract_no, customer_name)')
       .gte('created_at', since)
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -6365,8 +6419,8 @@ export async function getAuditTimeline(daysBack = 30, limit = 200): Promise<Audi
       contractNo: c?.contract_no ?? null,
       customerName: c?.customer_name ?? null,
       actor: r.recorded_by_name ?? 'ระบบ',
-      action: `ขยายระยะเวลา (${extTypeText(r.ext_type)})`,
-      details: null,
+      action: `${r.reversed_at ? 'ขยายระยะเวลา (ยกเลิกแล้ว)' : 'ขยายระยะเวลา'} (${extTypeText(r.ext_type)})`,
+      details: r.reversed_at ? `ยกเลิกโดย ${r.reversed_by_name ?? 'แอดมิน'}: ${r.reversed_reason ?? ''}` : null,
       at: r.created_at,
     })
   }
@@ -6508,7 +6562,7 @@ export async function getDailyAudit(dayISO: string): Promise<AuditEvent[]> {
     // 6. contract_extensions + join contracts
     supabase
       .from('contract_extensions')
-      .select('id, contract_id, ext_type, recorded_by_name, created_at, contracts(contract_no, customer_name)')
+      .select('id, contract_id, ext_type, recorded_by_name, created_at, reversed_at, reversed_by_name, reversed_reason, contracts(contract_no, customer_name)')
       .gte('created_at', since)
       .lt('created_at', until)
       .order('created_at', { ascending: false })
@@ -6642,8 +6696,8 @@ export async function getDailyAudit(dayISO: string): Promise<AuditEvent[]> {
       contractNo: c?.contract_no ?? null,
       customerName: c?.customer_name ?? null,
       actor: r.recorded_by_name ?? 'ระบบ',
-      action: `ขยายระยะเวลา (${extTypeText(r.ext_type)})`,
-      details: null,
+      action: `${r.reversed_at ? 'ขยายระยะเวลา (ยกเลิกแล้ว)' : 'ขยายระยะเวลา'} (${extTypeText(r.ext_type)})`,
+      details: r.reversed_at ? `ยกเลิกโดย ${r.reversed_by_name ?? 'แอดมิน'}: ${r.reversed_reason ?? ''}` : null,
       at: r.created_at,
     })
   }
@@ -7133,7 +7187,7 @@ export async function getContractFeeReconcile(contractId: string): Promise<Recon
 
   return reconcileContractFees({
     settledAt,
-    extensions: exts.map((e) => ({ extType: e.extType, createdAt: e.createdAt })),
+    extensions: exts.filter((e) => !e.reversedAt).map((e) => ({ extType: e.extType, createdAt: e.createdAt })),
     otherIncome: income.map((oi) => ({ feeKind: oi.feeKind ?? null, receivedAt: oi.receivedAt })),
     dismisses: waivers,
     launchDate: FEE_RECONCILE_LAUNCH,
@@ -8004,6 +8058,7 @@ export async function getContractExtensionIds(contractId: string): Promise<{ id:
     .from('contract_extensions')
     .select('id')
     .eq('contract_id', contractId)
+    .is('reversed_at', null)
     .limit(1)
   if (error) throw error
   return (data ?? []) as { id: string }[]

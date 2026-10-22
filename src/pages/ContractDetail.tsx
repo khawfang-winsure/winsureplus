@@ -9,6 +9,9 @@ import {
   getInstallments,
   getPaymentLog,
   getContractExtensions,
+  getExtensionUndoPreview,
+  undoContractExtension,
+  type ExtensionUndoPreview,
   getRateSets,
   getStaffRateOptions,
   getStaffRateQuote,
@@ -191,8 +194,8 @@ const FEE_STATUS_BADGE: Partial<Record<RightStatus, { text: string; tone: 'amber
 /** สิทธิ์ที่ใช้ไปแล้วของสัญญา (ขยายได้สิทธิ์ละครั้ง) */
 export function usedExtRights(exts: ExtensionRecord[]): { date: boolean; months: boolean } {
   return {
-    date: exts.some((e) => e.extType === 'due_day' || e.extType === 'both'),
-    months: exts.some((e) => e.extType === 'months' || e.extType === 'both'),
+    date: exts.some((e) => !e.reversedAt && (e.extType === 'due_day' || e.extType === 'both')),
+    months: exts.some((e) => !e.reversedAt && (e.extType === 'months' || e.extType === 'both')),
   }
 }
 
@@ -287,6 +290,7 @@ export default function ContractDetail() {
   const [installments, setInstallments] = useState<Installment[]>([])
   const [log, setLog] = useState<PaymentLogEntry[]>([])
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
+  const [undoExtension, setUndoExtension] = useState<ExtensionRecord | null>(null)
   const [rateSets, setRateSets] = useState<RateSet[]>([])
   const [staffRateOptions, setStaffRateOptions] = useState<{ id: string; name: string; terms: number[] }[]>([])
   const [extraCharges, setExtraCharges] = useState<ExtraCharge[]>([])
@@ -2565,7 +2569,7 @@ export default function ContractDetail() {
             <table className="w-full min-w-[760px] text-sm">
               <thead>
                 <tr className="bg-peach-light text-left text-ink">
-                  {['เวลา', 'ประเภท', 'วันชำระ', 'ค่างวด', 'จำนวนงวด', 'ยอดจัดไฟแนนซ์', 'ผู้ทำ', 'หมายเหตุ'].map((h) => (
+                  {['เวลา', 'ประเภท', 'วันชำระ', 'ค่างวด', 'จำนวนงวด', 'ยอดจัดไฟแนนซ์', 'ผู้ทำ', 'หมายเหตุ', 'การยกเลิก'].map((h) => (
                     <th key={h} className="px-3 py-2.5 font-semibold">{h}</th>
                   ))}
                 </tr>
@@ -2574,13 +2578,16 @@ export default function ContractDetail() {
                 {extensions.map((e, idx) => (
                   <tr key={e.id} className={idx % 2 ? 'bg-white' : 'bg-peach-light/20'}>
                     <td className="px-3 py-2.5 whitespace-nowrap">{thaiDateTime(e.createdAt)}</td>
-                    <td className="px-3 py-2.5"><Badge tone="amber">{EXT_TYPE_LABEL[e.extType]}</Badge></td>
+                    <td className="px-3 py-2.5"><Badge tone={e.reversedAt ? "neutral" : "amber"}>{EXT_TYPE_LABEL[e.extType]}</Badge>{e.reversedAt && <Badge tone="red">ยกเลิกแล้ว</Badge>}</td>
                     <td className="px-3 py-2.5">{e.oldDueDay} → {e.newDueDay}</td>
                     <td className="px-3 py-2.5">{baht(e.oldMonthly ?? 0)} → {baht(e.newMonthly ?? 0)}</td>
                     <td className="px-3 py-2.5">{e.oldTerm} → {e.newTerm} <span className="text-ink-soft">(+{e.newInstallments} งวดใหม่)</span></td>
                     <td className="px-3 py-2.5">{baht(e.oldFinance ?? 0)} → {baht(e.newFinance ?? 0)}</td>
                     <td className="px-3 py-2.5">{e.recordedByName || '—'}</td>
                     <td className="px-3 py-2.5 text-ink-soft">{e.note || '—'}</td>
+                    <td className="px-3 py-2.5">
+                      {e.reversedAt ? <p className="text-xs text-ink-soft">ยกเลิกเมื่อ {thaiDateTime(e.reversedAt)} โดย {e.reversedByName || '—'}<br />เหตุผล: {e.reversedReason || '—'}</p> : isAdmin ? <Button variant="ghost" onClick={() => setUndoExtension(e)}>ยกเลิกการขยาย</Button> : '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -2658,6 +2665,12 @@ export default function ContractDetail() {
           entries={logByIns.get(histTarget.id) ?? []}
           onClose={() => setHistTarget(null)}
         />
+      )}
+
+      {undoExtension && isAdmin && (
+        <ExtensionUndoModal extension={undoExtension} customerName={contract.customerName}
+          onClose={() => setUndoExtension(null)}
+          onDone={async () => { setUndoExtension(null); await load() }} />
       )}
 
       {extendOpen && (
@@ -4337,6 +4350,72 @@ function RevertDocModal({
   )
 }
 
+function ExtensionUndoModal({ extension, customerName, onClose, onDone }: {
+  extension: ExtensionRecord
+  customerName: string
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const [preview, setPreview] = useState<ExtensionUndoPreview | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const savingRef = useRef(false)
+  useEffect(() => {
+    let alive = true
+    void getExtensionUndoPreview(extension.id)
+      .then((result) => { if (alive) setPreview(result) })
+      .catch((e: unknown) => { if (alive) setError(errMsg(e)) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [extension.id])
+  async function save() {
+    if (savingRef.current || !preview?.canUndo || reason.trim().length < 3) return
+    savingRef.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      await undoContractExtension(extension.id, reason.trim())
+      await onDone()
+    } catch (e) {
+      setError(errMsg(e))
+      // A payment or another change may have happened while this dialog was open.
+      try { setPreview(await getExtensionUndoPreview(extension.id)) } catch { setPreview(null) }
+      savingRef.current = false
+      setBusy(false)
+    }
+  }
+  return <Modal accessible title="ยกเลิกการขยาย" size="lg" closeOnEsc={!busy} onClose={() => { if (!busy) onClose() }}>
+    <p className="mb-3 font-bold text-ink">{customerName}</p>
+    {loading ? <Loading /> : <div className="space-y-3 text-sm">
+      <p>รายการ {EXT_TYPE_LABEL[extension.extType]} เมื่อ {thaiDateTime(extension.createdAt)}</p>
+      {preview?.blockedReason && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-amber-800">{preview.blockedReason}</p>}
+      {preview?.before && preview.after && <>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {[{ title: 'ปัจจุบัน (หลังขยาย)', data: preview.after }, { title: 'จะคืนกลับเป็น (ก่อนขยาย)', data: preview.before }].map(({ title, data }) => <div key={title} className="rounded-xl border border-peach p-3">
+            <p className="font-bold text-ink">{title}</p>
+            <p>{data.termMonths} งวด · งวดละ {baht(data.monthlyPayment)} บาท</p>
+            <p>ชำระวันที่ {data.dueDay} · ยอดจัด {baht(data.financeAmount)} บาท</p>
+            <div className="mt-2 max-h-52 overflow-auto" tabIndex={0} role="region" aria-label={`ตารางค่างวด ${title}`}>
+              <table className="w-full text-xs"><thead><tr><th scope="col">งวด</th><th scope="col">ครบกำหนด</th><th scope="col">ค่างวด</th><th scope="col">จ่ายแล้ว</th></tr></thead><tbody>
+                {data.installments.map((row) => <tr key={row.id}><td>{row.installmentNo}</td><td>{thaiDate(row.dueDate)}</td><td>{baht(row.amount)}</td><td>{baht(row.paidAmount)}</td></tr>)}
+              </tbody></table>
+            </div>
+          </div>)}
+        </div>
+        <p className="text-ink-soft">คืนตารางเดิมและสิทธิ์ขยาย โดยเก็บประวัติการยกเลิกไว้ หากมีการรับเงินหรือเปลี่ยนข้อมูลหลังขยาย ระบบจะหยุดให้ตรวจสอบก่อน</p>
+      </>}
+      {preview?.canUndo && <Field label="เหตุผลที่ยกเลิก (อย่างน้อย 3 ตัวอักษร)"><Textarea value={reason} maxLength={1000} minLength={3} disabled={busy} onChange={(e) => setReason(e.target.value)} placeholder="เช่น เลือกจำนวนงวดผิด" /></Field>}
+      {error && <p role="alert" className="text-red-600">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" disabled={busy} onClick={onClose}>ปิด</Button>
+        <Button style={{ backgroundColor: 'var(--color-ink)', color: '#ffffff' }} disabled={loading || busy || !preview?.canUndo || reason.trim().length < 3} onClick={() => void save()}>{busy ? 'กำลังยกเลิก...' : 'ยกเลิกการขยาย'}</Button>
+      </div>
+    </div>}
+  </Modal>
+}
+
 function ExtendModal({
   contract,
   installments,
@@ -4475,16 +4554,21 @@ function ExtendModal({
   const totalOutstandingLocal = outstanding + penaltyDue
 
   // ขยายงวดต้องมีผลคำนวณที่ตรงกับตัวเลือกปัจจุบันเสมอ ห้าม fallback เป็นยอดสัญญาเดิม
+  const [confirmationKey, setConfirmationKey] = useState<string | null>(null)
+  const savingRef = useRef(false)
+  const currentConfirmationKey = JSON.stringify([extType, newDueDay, activeTerm, activeFinance, activeMonthly, note, installments])
+  const confirmationReady = confirmationKey === currentConfirmationKey
   const quoteReady = extType === 'due_day' || calc != null
-  const canSubmit = newDueDay >= 1 && newDueDay <= 31 && activeTerm > 0 && activeFinance >= 0 && quoteReady
+  const canSubmit = partialPaid === 0 && newDueDay >= 1 && newDueDay <= 31 && activeTerm > 0 && activeFinance >= 0 && quoteReady
   const missingPrincipal = afterDown <= 0 || contract.termMonths <= 0
   const alreadyPaidOff = unpaidCount === 0
 
   async function save() {
-    if (busy || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)) {
+    if (savingRef.current || !confirmationReady || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)) {
       setErr('กรุณาตรวจวันที่และรอผลคำนวณยอดใหม่ก่อนบันทึก')
       return
     }
+    savingRef.current = true
     setBusy(true)
     setErr(null)
     try {
@@ -4499,22 +4583,37 @@ function ExtendModal({
     } catch (e) {
       setErr(errMsg(e))
       setBusy(false)
+      savingRef.current = false
     }
   }
 
   const extFooter = (
     <div className="flex justify-end gap-2">
-      <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-      <Button onClick={save} disabled={busy || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)}>
-        {busy ? 'กำลังบันทึก...' : 'ยืนยันขยายระยะเวลา'}
+      <Button variant="ghost" disabled={busy} onClick={() => confirmationKey ? setConfirmationKey(null) : onClose()}>{confirmationKey ? 'กลับไปแก้ไข' : 'ยกเลิก'}</Button>
+      <Button style={{ backgroundColor: 'var(--color-ink)', color: '#ffffff' }} onClick={() => confirmationReady ? void save() : setConfirmationKey(currentConfirmationKey)} disabled={busy || (confirmationKey !== null && !confirmationReady) || !canSubmit || alreadyPaidOff || (extType !== 'due_day' && missingPrincipal)}>
+        {busy ? 'กำลังบันทึก...' : confirmationReady ? 'ยืนยันขยายระยะเวลา' : 'ตรวจสอบก่อนบันทึก'}
       </Button>
     </div>
   )
 
   return (
-    <MobileModal title="ขยายระยะเวลา" onClose={onClose} footer={extFooter}>
-      <div className="flex flex-col gap-3">
+    <Modal accessible title={confirmationKey ? 'ตรวจสอบการขยายระยะเวลา' : 'ขยายระยะเวลา'} onClose={() => { if (!busy) onClose() }} closeOnEsc={!busy}>
+      {confirmationKey ? <div className="space-y-3 text-sm">
+        <p className="font-bold text-ink">{contract.customerName} · {contract.contractNo}</p>
+        <p>ประเภท: {EXT_TYPE_LABEL[extType]}</p>
+        <div className="rounded-xl border border-peach p-3 space-y-1">
+          <p>จำนวนงวดทั้งสัญญา: {contract.termMonths} → {totalTerm} งวด</p>
+          <p>ค่างวด: {baht(contract.monthlyPayment)} → {baht(activeMonthly)} บาท</p>
+          <p>วันชำระ: วันที่ {contract.dueDay} → วันที่ {newDueDay}</p>
+          <p>งวดค้างเดิมครั้งแรกครบกำหนด: {installments.find((row) => !row.paidAt)?.dueDate ? thaiDate(installments.find((row) => !row.paidAt)!.dueDate) : '—'}</p>
+          <p>งวดใหม่ครั้งแรกครบกำหนด: {previewDueDate(1, newDueDay)}</p>
+        </div>
+        <p className="text-ink-soft">ระบบจะเก็บตารางก่อนและหลังเปลี่ยนไว้ หากกดผิด แอดมินสามารถตรวจสอบเพื่อยกเลิกการขยายได้</p>
+        {!confirmationReady && <p role="alert" className="text-red-600">ข้อมูลเปลี่ยนแล้ว กรุณากลับไปตรวจสอบอีกครั้ง</p>}
+        {err && <p role="alert" className="text-red-600">{err}</p>}
+      </div> : <div className="flex flex-col gap-3">
 
+        {partialPaid > 0 && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">ตรวจยอดชำระบางส่วนก่อนขยายระยะเวลา กรุณาให้แอดมินตรวจสอบยอดที่รับแล้ว</p>}
         {/* Guard: สัญญาผ่อนหมดแล้ว */}
         {alreadyPaidOff && (
           <div className="rounded-xl bg-green-50 px-3 py-2.5 text-sm text-green-700">
@@ -4565,7 +4664,7 @@ function ExtendModal({
           )}
         </Field>
 
-        <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink-soft">
+        <div className="rounded-xl bg-peach-light/40 px-3 py-2 text-sm text-ink">
           ค้างชำระ <b className="text-ink">{unpaidCount}</b> งวด · จ่ายล่าสุดงวดที่ <b className="text-ink">{lastPaidNo || '-'}</b> · ยอดคงค้าง <b className="text-ink whitespace-nowrap">{baht(outstanding)} ฿</b>
           {partialPaid > 0 && (
             <span className="mt-1 block rounded-lg bg-green-50 px-2 py-1 text-green-700">
@@ -4594,7 +4693,7 @@ function ExtendModal({
                 </Select>
               </Field>
             </div>
-            <p className="mt-2 text-xs text-ink-soft">
+            <p className="mt-2 text-xs text-ink">
               งวดที่ยังไม่ชำระ: <b className="text-ink">{unpaidCount}</b> งวด
             </p>
           </div>
@@ -4629,7 +4728,7 @@ function ExtendModal({
               </div>
             </div>
             <div className="mt-3 rounded-lg bg-peach-light/60 px-3 py-2 text-sm">
-              ค่างวดใหม่: <b className="text-salmon-deep whitespace-nowrap">{baht(calc.newMonthly)} ฿/เดือน</b>
+              ค่างวดใหม่: <b className="text-ink whitespace-nowrap">{baht(calc.newMonthly)} ฿/เดือน</b>
               {' '}(ยอดจัดไฟแนนซ์ <span className="whitespace-nowrap">{baht(calc.newFinance)} ฿</span>)
             </div>
           </div>
@@ -4663,8 +4762,9 @@ function ExtendModal({
         </Field>
 
         {err && <p className="text-sm text-red-600">{err}</p>}
-      </div>
-    </MobileModal>
+      </div>}
+      <div className="mt-4">{extFooter}</div>
+    </Modal>
   )
 }
 
