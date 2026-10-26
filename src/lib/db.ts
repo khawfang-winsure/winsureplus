@@ -2458,6 +2458,9 @@ export interface RetrospectiveExtensionPreview {
   after: ExtensionSchedulePreview
   remainingBefore: number
   remainingAfter: number
+  historicalRemainingAfter?: number
+  netPaidAfterEffectiveDate?: number
+  dataChangedSinceSubmission?: boolean
   evidenceRemaining: number
   difference: number
   penaltyBefore: number
