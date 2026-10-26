@@ -122,6 +122,7 @@ import { useAuth } from '../lib/auth'
 import type { CompanyEmailPreflight, Contract, ContractMediaStatus, ContractReviewLogEntry, EmailSendLog, ExtraCharge, Installment, OtherIncome, PjContractSnapshot, PrivateNote, Shop } from '../lib/types'
 import FollowUpModal from '../components/FollowUpModal'
 import EarlyCloseModal from '../components/EarlyCloseModal'
+import RetrospectiveExtensionPanel from '../components/RetrospectiveExtensionPanel'
 import CopyBox from '../components/CopyBox'
 import ContractMediaCard, { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractMediaCard'
 import { buildPendingDocMessage } from '../lib/messages'
@@ -2558,6 +2559,8 @@ export default function ContractDetail() {
           </div>
         </>
       )}
+
+      {canStaff && <RetrospectiveExtensionPanel key={contract.id} contract={contract} installments={installments} isAdmin={isAdmin} onChanged={load} />}
 
       {/* ประวัติการขยายระยะเวลา */}
       {extensions.length > 0 && (

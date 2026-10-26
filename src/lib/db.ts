@@ -2431,6 +2431,93 @@ export const undoContractExtension = writesContracts(async function undoContract
   if (error) throw error
 })
 
+export interface RetrospectiveScheduleInput {
+  installmentNo: number
+  dueDate: string
+  /** Gross scheduled amount before crediting preserved partial payments. */
+  amount: number
+}
+export interface RetrospectiveExtensionInput {
+  extType: ExtensionType
+  customerRequestedAt: string
+  effectiveDate: string
+  reason: string
+  evidenceRef: string
+  evidenceRemaining: number
+  newDueDay: number
+  /** Finance amount from the supporting agreement; distinct from gross remaining installments. */
+  newFinanceAmount: number
+  newMonthlyPayment: number
+  /** Complete open schedule; excludes fully paid installments. */
+  schedule: RetrospectiveScheduleInput[]
+}
+export interface RetrospectiveExtensionPreview {
+  canApprove: boolean
+  blockedReasons: string[]
+  before: ExtensionSchedulePreview
+  after: ExtensionSchedulePreview
+  remainingBefore: number
+  remainingAfter: number
+  evidenceRemaining: number
+  difference: number
+  penaltyBefore: number
+  penaltyAfter: number
+  partialPaid: number
+}
+export interface RetrospectiveExtensionRequest {
+  id: string
+  contractId: string
+  status: 'pending' | 'approved' | 'rejected'
+  customerRequestedAt: string
+  effectiveDate: string
+  recordedAt: string
+  recordedByName: string | null
+  reason: string
+  evidenceRef: string
+  approvalReason: string | null
+  approvedAt: string | null
+  approvedByName: string | null
+  penaltyAdjustmentConfirmed: boolean
+  extensionId: string | null
+  input: RetrospectiveExtensionInput
+  preview: RetrospectiveExtensionPreview
+}
+export async function createRetrospectiveExtensionRequest(
+  contractId: string, input: RetrospectiveExtensionInput,
+): Promise<RetrospectiveExtensionRequest> {
+  if (!supabase) throw new Error('คำขอขยายย้อนหลังต้องเชื่อมต่อระบบจริง')
+  const { data, error } = await supabase.rpc('create_retrospective_extension_request', {
+    p_contract_id: contractId, p_input: input,
+  })
+  if (error) throw error
+  return data as RetrospectiveExtensionRequest
+}
+export async function getRetrospectiveExtensionRequests(contractId: string): Promise<RetrospectiveExtensionRequest[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.rpc('get_retrospective_extension_requests', { p_contract_id: contractId })
+  if (error) throw error
+  return (data ?? []) as RetrospectiveExtensionRequest[]
+}
+export async function getRetrospectiveExtensionPreview(requestId: string): Promise<RetrospectiveExtensionPreview> {
+  if (!supabase) throw new Error('คำขอขยายย้อนหลังต้องเชื่อมต่อระบบจริง')
+  const { data, error } = await supabase.rpc('preview_retrospective_extension', { p_request_id: requestId })
+  if (error) throw error
+  return data as RetrospectiveExtensionPreview
+}
+export const approveRetrospectiveExtension = writesContracts(async function approveRetrospectiveExtension(
+  requestId: string, approvalReason: string, confirmPenaltyAdjustment: boolean,
+): Promise<void> {
+  if (!supabase) throw new Error('คำขอขยายย้อนหลังต้องเชื่อมต่อระบบจริง')
+  const { error } = await supabase.rpc('approve_retrospective_extension', {
+    p_request_id: requestId, p_reason: approvalReason, p_confirm_penalty_adjustment: confirmPenaltyAdjustment,
+  })
+  if (error) throw error
+})
+export async function rejectRetrospectiveExtension(requestId: string, reason: string): Promise<void> {
+  if (!supabase) throw new Error('คำขอขยายย้อนหลังต้องเชื่อมต่อระบบจริง')
+  const { error } = await supabase.rpc('reject_retrospective_extension', { p_request_id: requestId, p_reason: reason })
+  if (error) throw error
+}
 /** ประวัติการขยายของสัญญาเดียว (ใหม่ → เก่า) */
 export async function getContractExtensions(contractId: string): Promise<ExtensionRecord[]> {
   if (!supabase) return []
