@@ -2438,6 +2438,7 @@ export interface RetrospectiveScheduleInput {
   amount: number
 }
 export interface RetrospectiveExtensionInput {
+  reviewMode?: 'admin'
   extType: ExtensionType
   customerRequestedAt: string
   effectiveDate: string
@@ -2452,6 +2453,7 @@ export interface RetrospectiveExtensionInput {
   schedule: RetrospectiveScheduleInput[]
 }
 export interface RetrospectiveExtensionPreview {
+  requiresAdminEvidenceCheck?: boolean
   canApprove: boolean
   blockedReasons: string[]
   before: ExtensionSchedulePreview
@@ -2461,8 +2463,8 @@ export interface RetrospectiveExtensionPreview {
   historicalRemainingAfter?: number
   netPaidAfterEffectiveDate?: number
   dataChangedSinceSubmission?: boolean
-  evidenceRemaining: number
-  difference: number
+  evidenceRemaining: number | null
+  difference: number | null
   penaltyBefore: number
   penaltyAfter: number
   partialPaid: number
@@ -2486,7 +2488,9 @@ export interface RetrospectiveExtensionRequest {
   preview: RetrospectiveExtensionPreview
 }
 export async function createRetrospectiveExtensionRequest(
-  contractId: string, input: RetrospectiveExtensionInput,
+  contractId: string, input: RetrospectiveExtensionInput | {
+    reviewMode: 'admin'; reason: string; customerRequestedAt: string; schedule: RetrospectiveScheduleInput[]
+  },
 ): Promise<RetrospectiveExtensionRequest> {
   if (!supabase) throw new Error('คำขอขยายย้อนหลังต้องเชื่อมต่อระบบจริง')
   const { data, error } = await supabase.rpc('create_retrospective_extension_request', {

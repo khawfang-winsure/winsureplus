@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Badge, Button, Card, Field, Input, Loading, Modal, Select, Textarea } from './ui'
+import { Badge, Button, Card, Field, Input, Loading, Modal, Textarea } from './ui'
 import {
   approveRetrospectiveExtension,
   createRetrospectiveExtensionRequest,
@@ -8,7 +8,6 @@ import {
   rejectRetrospectiveExtension,
   type ExtensionSchedulePreview,
   type ExtensionType,
-  type RetrospectiveExtensionInput,
   type RetrospectiveExtensionPreview,
   type RetrospectiveExtensionRequest,
 } from '../lib/db'
@@ -59,11 +58,11 @@ export default function RetrospectiveExtensionPanel({ contract, installments, is
     {notice && <p role="status" className="mb-3 text-sm text-green-800">{notice}</p>}
     {loading ? <Loading /> : error ? <div role="alert" className="text-sm text-red-700">{error} <Button variant="ghost" onClick={() => void load()}>โหลดใหม่</Button></div> : requests.length === 0 ? <p className="text-sm text-ink">ยังไม่มีคำขอ</p> : <div className="space-y-3">
       {requests.map((request) => <div key={request.id} className="rounded-xl border border-peach p-3 text-sm">
-        <div className="mb-2 flex flex-wrap items-center gap-2"><Badge tone={request.status === 'approved' ? 'green' : request.status === 'pending' ? 'amber' : 'neutral'}>{statusLabels[request.status]}</Badge><span>{typeLabels[request.input.extType]}</span></div>
-        <p>ลูกค้าขอเมื่อ {thaiDate(request.customerRequestedAt.slice(0, 10))} · มีผล {thaiDate(request.effectiveDate)}</p>
+        <div className="mb-2 flex flex-wrap items-center gap-2"><Badge tone={request.status === 'approved' ? 'green' : request.status === 'pending' ? 'amber' : 'neutral'}>{statusLabels[request.status]}</Badge><span>{request.input.reviewMode === 'admin' ? 'ปรับตารางตามข้อตกลง' : typeLabels[request.input.extType]}</span></div>
+        <p>ลูกค้าขอเมื่อ {thaiDate(request.customerRequestedAt.slice(0, 10))}{request.input.reviewMode !== 'admin' && <> · มีผล {thaiDate(request.effectiveDate)}</>}</p>
         <p>บันทึกจริง {dateTime(request.recordedAt)} โดย {request.recordedByName || '—'}</p>
-        <p className="mt-1 whitespace-pre-wrap break-words">เหตุผล: {request.reason}</p>
-        <p className="whitespace-pre-wrap break-words">หลักฐานอ้างอิง: {request.evidenceRef}</p>
+        <p className="mt-1 whitespace-pre-wrap break-words">ข้อตกลง: {request.reason}</p>
+        {request.input.reviewMode !== 'admin' && <p className="whitespace-pre-wrap break-words">หลักฐานอ้างอิง: {request.evidenceRef}</p>}
         {request.approvalReason && <p className="mt-1 whitespace-pre-wrap break-words">ผลพิจารณา: {request.approvalReason}{request.penaltyAdjustmentConfirmed && ' · ยืนยันปรับค่าปรับตามยอดที่แสดง'}{request.approvedAt && <> · เมื่อ {dateTime(request.approvedAt)} โดย {request.approvedByName || '—'}</>}</p>}
         <Button variant="ghost" className="mt-2" onClick={() => setSelected(request)}>{isAdmin && request.status === 'pending' ? 'ตรวจสอบคำขอ' : 'ดูรายละเอียดคำขอ'}</Button>
       </div>)}
@@ -77,56 +76,67 @@ export default function RetrospectiveExtensionPanel({ contract, installments, is
   </Card>
 }
 
-interface ScheduleDraft { key: string; existing: boolean; installmentNo: string; dueDate: string; amount: string }
+interface ScheduleDraft { key: string; existing: boolean; installmentNo: number; dueDate: string; amount: string; paidAmount: number }
 function RetrospectiveRequestModal({ contract, installments, onClose, onCreated }: {
   contract: Contract; installments: Installment[]; onClose: () => void; onCreated: () => Promise<void>
 }) {
-  const [extType, setExtType] = useState<ExtensionType>('months')
   const [requestedDate, setRequestedDate] = useState('')
-  const [effectiveDate, setEffectiveDate] = useState('')
-  const [reason, setReason] = useState('')
-  const [evidence, setEvidence] = useState('')
-  const [evidenceRemaining, setEvidenceRemaining] = useState('')
-  const [dueDay, setDueDay] = useState(String(contract.dueDay))
-  const [financeAmount, setFinanceAmount] = useState(String(contract.financeAmount))
-  const [monthlyPayment, setMonthlyPayment] = useState('')
-  const [schedule, setSchedule] = useState<ScheduleDraft[]>(() => installments.filter((row) => !row.paidAt).map((row) => ({ key: row.id, existing: true, installmentNo: String(row.installmentNo), dueDate: row.dueDate, amount: String(row.amount) })))
+  const [agreement, setAgreement] = useState('')
+  const [schedule, setSchedule] = useState<ScheduleDraft[]>(() => installments.filter((row) => !row.paidAt)
+    .sort((a, b) => a.installmentNo - b.installmentNo)
+    .map((row) => ({ key: row.id, existing: true, installmentNo: row.installmentNo, dueDate: row.dueDate, amount: String(row.amount), paidAmount: row.paidAmount })))
   const nextKey = useRef(0)
   const [busy, setBusy] = useState(false)
   const saving = useRef(false)
   const [error, setError] = useState<string | null>(null)
-  const valid = !!requestedDate && !!effectiveDate && reason.trim().length >= 10 && evidence.trim().length >= 10 && evidenceRemaining.trim() !== '' && Number.isFinite(Number(evidenceRemaining)) && Number(evidenceRemaining) >= 0 && Number.isInteger(Number(dueDay)) && Number(dueDay) >= 1 && Number(dueDay) <= 31 && financeAmount.trim() !== '' && Number.isFinite(Number(financeAmount)) && Number(financeAmount) > 0 && monthlyPayment.trim() !== '' && Number.isFinite(Number(monthlyPayment)) && Number(monthlyPayment) > 0 && schedule.length > 0 && schedule.every((row) => Number.isInteger(Number(row.installmentNo)) && Number(row.installmentNo) > 0 && row.dueDate && row.amount.trim() !== '' && Number.isFinite(Number(row.amount)) && Number(row.amount) >= 0)
-  function updateRow(key: string, field: 'installmentNo' | 'dueDate' | 'amount', value: string) {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
+  const valid = !!requestedDate && requestedDate <= today && agreement.trim().length > 0 && schedule.length > 0 && schedule.length <= 120
+    && schedule.every((row) => !!row.dueDate && row.amount.trim() !== '' && Number.isFinite(Number(row.amount)) && Number(row.amount) > row.paidAmount)
+  function updateRow(key: string, field: 'dueDate' | 'amount', value: string) {
     setSchedule((rows) => rows.map((row) => row.key === key ? { ...row, [field]: value } : row))
+  }
+  function addRow() {
+    const last = schedule[schedule.length - 1]
+    const nextNo = last ? last.installmentNo + 1 : Math.max(0, ...installments.map((row) => row.installmentNo)) + 1
+    let dueDate = ''
+    if (last?.dueDate) {
+      const [year, month, day] = last.dueDate.split('-').map(Number)
+      const next = new Date(year, month, 1)
+      const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+      dueDate = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(Math.min(day, lastDay)).padStart(2, '0')}`
+    }
+    setSchedule((rows) => [...rows, { key: `new-${nextKey.current++}`, existing: false, installmentNo: nextNo, dueDate, amount: last?.amount || String(contract.monthlyPayment), paidAmount: 0 }])
   }
   async function submit() {
     if (saving.current || !valid) return
     saving.current = true; setBusy(true); setError(null)
-    const input: RetrospectiveExtensionInput = {
-      extType, customerRequestedAt: requestedDate, effectiveDate, reason: reason.trim(), evidenceRef: evidence.trim(), evidenceRemaining: Number(evidenceRemaining), newDueDay: Number(dueDay), newFinanceAmount: Number(financeAmount), newMonthlyPayment: Number(monthlyPayment),
-      schedule: schedule.map((row) => ({ installmentNo: Number(row.installmentNo), dueDate: row.dueDate, amount: Number(row.amount) })),
-    }
-    try { await createRetrospectiveExtensionRequest(contract.id, input); await onCreated() }
-    catch (e) { setError(errorMessage(e)); saving.current = false; setBusy(false) }
+    try {
+      await createRetrospectiveExtensionRequest(contract.id, {
+        reviewMode: 'admin', reason: agreement.trim(), customerRequestedAt: requestedDate,
+        schedule: schedule.map((row) => ({ installmentNo: row.installmentNo, dueDate: row.dueDate, amount: Number(row.amount) })),
+      })
+      await onCreated()
+    } catch (e) { setError(errorMessage(e)); saving.current = false; setBusy(false) }
   }
-  return <Modal accessible size="lg" title="สร้างคำขอขยายย้อนหลัง" closeOnEsc={!busy} onClose={() => { if (!busy) onClose() }}>
+  return <Modal accessible size="lg" title="ยื่นคำขอขยายย้อนหลัง" closeOnEsc={!busy} onClose={() => { if (!busy) onClose() }}>
     <div className="space-y-4 text-sm text-ink">
       <p className="font-bold">{contract.customerName} · {contract.contractNo}</p>
-      <p className="rounded-xl border border-peach bg-peach-light/40 p-3">ขั้นตอนนี้บันทึกคำขอเท่านั้น ยอดเงินและตารางงวดยังไม่เปลี่ยน วันที่บันทึกจริงจะเป็นเวลาที่กดส่งคำขอ</p>
-      <Field label="ประเภทข้อตกลง" required><Select disabled={busy} value={extType} onChange={(e) => setExtType(e.target.value as ExtensionType)}>{Object.entries(typeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>
-      <div className="grid gap-3 sm:grid-cols-2"><Field label="วันที่ลูกค้าขอขยาย" required><Input type="date" disabled={busy} value={requestedDate} onChange={(e) => setRequestedDate(e.target.value)} /></Field><Field label="วันที่ข้อตกลงเริ่มมีผล" required><Input type="date" disabled={busy} value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} /></Field></div>
-      <Field label="เหตุผลที่บันทึกย้อนหลัง (อย่างน้อย 10 ตัวอักษร)" required><Textarea disabled={busy} minLength={10} maxLength={2000} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-      <Field label="หลักฐานอ้างอิง (อย่างน้อย 10 ตัวอักษร)" required><Textarea disabled={busy} minLength={10} maxLength={2000} value={evidence} onChange={(e) => setEvidence(e.target.value)} placeholder="ระบุเอกสาร ข้อความสนทนา หรือลิงก์ที่ตรวจสอบข้อตกลงเดิมได้" /></Field>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Field label="ยอดคงเหลือตามหลักฐาน ณ วันที่มีผล (บาท)" required><Input type="number" min="0" step="0.01" disabled={busy} value={evidenceRemaining} onChange={(e) => setEvidenceRemaining(e.target.value)} /><span className="text-xs text-ink">ใช้ยอด PJ ณ วันที่เริ่มมีผล ระบบแยกคำนวณเงินที่รับหลังจากวันนั้น</span></Field><Field label="ยอดจัดไฟแนนซ์ตามหลักฐาน (บาท)" required><Input type="number" min="0.01" step="0.01" disabled={busy} value={financeAmount} onChange={(e) => setFinanceAmount(e.target.value)} /></Field><Field label="วันชำระทุกเดือน (1–31)" required><Input type="number" min="1" max="31" step="1" disabled={busy} value={dueDay} onChange={(e) => setDueDay(e.target.value)} /></Field><Field label="ค่างวดปกติตามข้อตกลงใหม่ (บาท)" required><Input type="number" min="0.01" step="0.01" disabled={busy} value={monthlyPayment} onChange={(e) => setMonthlyPayment(e.target.value)} /></Field></div>
-      <p className="text-xs text-ink">ยอดคงเหลือตามตารางเป็นเงินที่ลูกค้ายังต้องชำระ ส่วนยอดจัดไฟแนนซ์เป็นยอดตามสัญญา ให้กรอกแยกตามหลักฐานใน PJ</p>
-      <div><h4 className="font-bold">ตารางงวดใหม่ที่ยังต้องชำระ ({schedule.length} งวด ไม่รวมงวดที่ชำระครบแล้ว)</h4>
-        <p className="mb-2 mt-1">เก็บหมายเลขงวดเดิมไว้ครบ แก้วันและยอดแต่ละงวดให้ตรงหลักฐาน งวดปกติต้องตรงค่างวดใหม่ ส่วนงวดสุดท้ายระบุยอดต่างได้ตามหลักฐาน ยอดค่างวดเป็นยอดเต็มก่อนหักเงินที่รับไว้ ระบบจะหักยอดจ่ายเดิมเพียงครั้งเดียว</p>
-        <div className="max-h-80 overflow-auto" tabIndex={0} role="region" aria-label="กรอกตารางงวดใหม่"><table className="w-full min-w-[560px]"><thead><tr><th scope="col" className="p-2 text-left">งวดที่</th><th scope="col" className="p-2 text-left">วันครบกำหนด</th><th scope="col" className="p-2 text-left">ค่างวดเต็ม (บาท)</th><th scope="col" className="p-2">จัดการ</th></tr></thead><tbody>{schedule.map((row, index) => <tr key={row.key}><td className="p-1"><Input aria-label={`งวดที่ แถว ${index + 1}`} type="number" min="1" step="1" disabled={busy || row.existing} value={row.installmentNo} onChange={(e) => updateRow(row.key, 'installmentNo', e.target.value)} /></td><td className="p-1"><Input aria-label={`วันครบกำหนด แถว ${index + 1}`} type="date" disabled={busy} value={row.dueDate} onChange={(e) => updateRow(row.key, 'dueDate', e.target.value)} /></td><td className="p-1"><Input aria-label={`ค่างวดเต็ม แถว ${index + 1}`} type="number" min="0" step="0.01" disabled={busy} value={row.amount} onChange={(e) => updateRow(row.key, 'amount', e.target.value)} /></td><td className="p-1"><Button variant="ghost" disabled={busy || row.existing} onClick={() => setSchedule((rows) => rows.filter((item) => item.key !== row.key))} aria-label={`นำแถว ${index + 1} ออกจากคำขอ`}>นำแถวออก</Button></td></tr>)}</tbody></table></div>
-        <Button variant="ghost" className="mt-2" disabled={busy} onClick={() => setSchedule((rows) => [...rows, { key: `new-${nextKey.current++}`, existing: false, installmentNo: '', dueDate: '', amount: '' }])}>เพิ่มงวดตามหลักฐาน</Button>
-        <p className="mt-2">ผู้ดูแลต้องตรวจทุกงวดและการจับคู่เงินรับเดิมก่อนอนุมัติ หากยอดไม่ตรงหลักฐาน ระบบจะไม่อนุมัติ</p>
+      <p className="rounded-xl border border-peach bg-peach-light/40 p-3">ระบุข้อตกลง วันที่ลูกค้าขอขยาย และปรับตารางใหม่ แล้วส่งให้แอดมินตรวจสอบ</p>
+      <Field label="ข้อตกลงกับลูกค้า" required><Textarea disabled={busy} maxLength={2000} value={agreement} onChange={(e) => setAgreement(e.target.value)} placeholder="เช่น ลูกค้าขอเปลี่ยนมาชำระทุกวันที่ 5 เริ่มตั้งแต่งวดที่ 6" /></Field>
+      <Field label="วันที่ลูกค้าขอขยาย" required><Input type="date" max={today} disabled={busy} value={requestedDate} onChange={(e) => setRequestedDate(e.target.value)} /><span className="mt-1 block text-xs">วันที่พนักงานยื่นคำขอจะบันทึกให้อัตโนมัติ</span></Field>
+      <div><h4 className="font-bold">ปรับตารางใหม่ ({schedule.length} งวด)</h4><p className="my-2 text-xs">แก้วันครบกำหนดและค่างวดเต็มตามข้อตกลง เงินที่รับแล้วจะแสดงไว้ให้ตรวจสอบ</p>
+        <div className="max-h-80 overflow-auto" tabIndex={0} role="region" aria-label="ปรับตารางงวดใหม่"><table className="w-full min-w-[580px]"><thead><tr><th scope="col" className="p-2 text-left">งวด</th><th scope="col" className="p-2 text-left">ครบกำหนดใหม่</th><th scope="col" className="p-2 text-left">ค่างวดเต็ม (บาท)</th><th scope="col" className="p-2 text-left">รับแล้ว</th><th scope="col" className="p-2">จัดการ</th></tr></thead><tbody>{schedule.map((row, index) => <tr key={row.key}>
+          <td className="p-1">{row.installmentNo}</td>
+          <td className="p-1"><Input aria-label={`ครบกำหนดใหม่งวด ${row.installmentNo}`} type="date" disabled={busy} value={row.dueDate} onChange={(e) => updateRow(row.key, 'dueDate', e.target.value)} /></td>
+          <td className="p-1"><Input aria-label={`ค่างวดเต็มงวด ${row.installmentNo}`} type="number" min={row.paidAmount + 0.01} step="0.01" disabled={busy} value={row.amount} onChange={(e) => updateRow(row.key, 'amount', e.target.value)} /></td>
+          <td className="p-1">{money(row.paidAmount)}</td>
+          <td className="p-1">{!row.existing && index === schedule.length - 1 && <Button variant="ghost" disabled={busy} aria-label={`นำงวด ${row.installmentNo} ออก`} onClick={() => setSchedule((rows) => rows.slice(0, -1))}>นำออก</Button>}</td>
+        </tr>)}</tbody></table></div>
+        <Button variant="ghost" className="mt-2" disabled={busy || schedule.length >= 120} onClick={addRow}>เพิ่มงวด</Button>
       </div>
+      <p className="text-xs">แอดมินจะตรวจข้อตกลง ตาราง และยอดเงินก่อนอนุมัติ การยื่นคำขอยังไม่เปลี่ยนสัญญาจริง</p>
       {error && <p role="alert" className="text-red-700">{error}</p>}
-      <div className="flex justify-end gap-2"><Button variant="ghost" disabled={busy} onClick={onClose}>ยกเลิก</Button><Button style={primaryStyle} disabled={busy || !valid} onClick={() => void submit()}>{busy ? 'กำลังส่งคำขอ...' : 'ส่งคำขอให้ผู้ดูแลตรวจสอบ'}</Button></div>
+      <div className="flex justify-end gap-2"><Button variant="ghost" disabled={busy} onClick={onClose}>ยกเลิก</Button><Button style={primaryStyle} disabled={busy || !valid} onClick={() => void submit()}>{busy ? 'กำลังยื่นคำขอ...' : 'ยื่นคำขอให้แอดมินตรวจ'}</Button></div>
     </div>
   </Modal>
 }
@@ -168,12 +178,12 @@ function RetrospectiveReviewModal({ request, customerName, isAdmin, onClose, onD
   }
   return <Modal accessible size="lg" title={isAdmin && request.status === 'pending' ? 'ตรวจสอบคำขอขยายย้อนหลัง' : 'รายละเอียดคำขอขยายย้อนหลัง'} closeOnEsc={!busy} onClose={() => { if (!busy) onClose() }}>
     <div className="space-y-3 text-sm text-ink"><p className="font-bold">{customerName}</p><Badge tone={request.status === 'approved' ? 'green' : request.status === 'pending' ? 'amber' : 'neutral'}>{statusLabels[request.status]}</Badge>
-      <p>วันที่ลูกค้าขอ: {thaiDate(request.customerRequestedAt.slice(0, 10))} · วันที่มีผล: {thaiDate(request.effectiveDate)}</p><p>บันทึกจริง: {dateTime(request.recordedAt)} โดย {request.recordedByName || '—'}</p>
-      <p className="whitespace-pre-wrap break-words">เหตุผล: {request.reason}</p><p className="whitespace-pre-wrap break-words">หลักฐานอ้างอิง: {request.evidenceRef}</p>
+      <p>วันที่ลูกค้าขอ: {thaiDate(request.customerRequestedAt.slice(0, 10))}{request.input.reviewMode !== 'admin' && <> · วันที่มีผล: {thaiDate(request.effectiveDate)}</>}</p><p>บันทึกจริง: {dateTime(request.recordedAt)} โดย {request.recordedByName || '—'}</p>
+      <p className="whitespace-pre-wrap break-words">ข้อตกลง: {request.reason}</p>{request.input.reviewMode !== 'admin' && <p className="whitespace-pre-wrap break-words">หลักฐานอ้างอิง: {request.evidenceRef}</p>}
       {request.approvalReason && <p className="whitespace-pre-wrap break-words">ผลพิจารณา: {request.approvalReason}</p>}
       {loading ? <Loading label="กำลังตรวจข้อมูลล่าสุด..." /> : preview && <>
         <div className="grid gap-3 sm:grid-cols-2"><SchedulePreview title="ตารางก่อนเปลี่ยน" schedule={preview.before} /><SchedulePreview title="ตารางตามคำขอ" schedule={preview.after} /></div>
-        <div className="rounded-xl border border-peach bg-peach-light/40 p-3 space-y-1"><p>ยอดจัดไฟแนนซ์: {money(preview.before.financeAmount)} → {money(preview.after.financeAmount)} บาท</p><p>ค่างวดคงเหลือปัจจุบัน: {money(preview.remainingBefore)} → {money(preview.remainingAfter)} บาท</p>{preview.historicalRemainingAfter !== undefined ? <p>ยอดตามตาราง ณ วันที่มีผล: {money(preview.historicalRemainingAfter)} บาท · รับหลังวันมีผล {money(preview.netPaidAfterEffectiveDate ?? 0)} บาท · หลักฐาน PJ {money(preview.evidenceRemaining)} บาท · ส่วนต่าง {money(preview.difference)} บาท</p> : <p>ยอดคงเหลือตามหลักฐาน: {money(preview.evidenceRemaining)} บาท · ส่วนต่าง {money(preview.difference)} บาท</p>}<p>ค่าปรับ: {money(preview.penaltyBefore)} → {money(preview.penaltyAfter)} บาท</p><p>เงินที่รับไว้บางส่วน: {money(preview.partialPaid)} บาท</p></div>{preview.dataChangedSinceSubmission && <div role="status" className="rounded-xl border border-peach p-3 text-amber-900">มีข้อมูลสัญญาหรือยอดรับชำระเปลี่ยนหลังส่งคำขอ ระบบคำนวณจากข้อมูลล่าสุดแล้ว กรุณาตรวจตาราง ยอด และหลักฐาน PJ อีกครั้งก่อนพิจารณา</div>}
+        <div className="rounded-xl border border-peach bg-peach-light/40 p-3 space-y-1"><p>ยอดจัดไฟแนนซ์: {money(preview.before.financeAmount)} → {money(preview.after.financeAmount)} บาท</p><p>ค่างวดคงเหลือปัจจุบัน: {money(preview.remainingBefore)} → {money(preview.remainingAfter)} บาท</p>{preview.requiresAdminEvidenceCheck ? <p className="font-bold text-amber-900">ยอดที่แสดงคำนวณจากตารางคำขอ แอดมินต้องตรวจข้อตกลงและ PJ เองก่อนอนุมัติ</p> : preview.historicalRemainingAfter !== undefined ? <p>ยอดตามตาราง ณ วันที่มีผล: {money(preview.historicalRemainingAfter)} บาท · รับหลังวันมีผล {money(preview.netPaidAfterEffectiveDate ?? 0)} บาท · หลักฐาน PJ {money(preview.evidenceRemaining ?? 0)} บาท · ส่วนต่าง {money(preview.difference ?? 0)} บาท</p> : <p>ยอดคงเหลือตามหลักฐาน: {money(preview.evidenceRemaining ?? 0)} บาท · ส่วนต่าง {money(preview.difference ?? 0)} บาท</p>}<p>ค่าปรับ: {money(preview.penaltyBefore)} → {money(preview.penaltyAfter)} บาท</p><p>เงินที่รับไว้บางส่วน: {money(preview.partialPaid)} บาท</p></div>{preview.dataChangedSinceSubmission && <div role="status" className="rounded-xl border border-peach p-3 text-amber-900">มีข้อมูลสัญญาหรือยอดรับชำระเปลี่ยนหลังส่งคำขอ ระบบคำนวณจากข้อมูลล่าสุดแล้ว กรุณาตรวจตาราง ยอด และหลักฐาน PJ อีกครั้งก่อนพิจารณา</div>}
       <p>เงินรับเดิมผูกกับงวดหมายเลขเดิม ตรวจช่องรับแล้วทั้งสองตารางให้ครบ หากยอดค่าปรับเปลี่ยน ระบบจะใช้ยอดหลังที่แสดงเมื่ออนุมัติ</p>
         {preview.blockedReasons.length > 0 && <div role="alert" className="rounded-xl border border-peach p-3 text-red-800"><p className="font-bold">ยังอนุมัติไม่ได้</p><ul className="list-disc pl-5">{preview.blockedReasons.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
       </>}
