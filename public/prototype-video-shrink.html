@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ทดลองย่อคลิป (หน้าทดลอง)</title>
+<style>
+  body { font-family: -apple-system, "Sarabun", "Noto Sans Thai", sans-serif; margin: 0; padding: 16px; background: #f4f4f5; color: #18181b; line-height: 1.5; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  .banner { background: #fef3c7; border: 2px solid #f59e0b; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 15px; }
+  .card { background: #fff; border: 1px solid #d4d4d8; border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+  button, select, input[type=number] { font-size: 17px; min-height: 48px; padding: 8px 16px; border-radius: 8px; border: 1px solid #71717a; background: #fff; }
+  button.primary { background: #18181b; color: #fff; border-color: #18181b; }
+  button:disabled { opacity: .45; }
+  input[type=file] { font-size: 16px; padding: 8px 0; max-width: 100%; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+  .ok { color: #15803d; font-weight: 600; }
+  .bad { color: #b91c1c; font-weight: 600; }
+  .warn { color: #b45309; font-weight: 600; }
+  progress { width: 100%; height: 22px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid #d4d4d8; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-word; }
+  th { background: #f4f4f5; width: 34%; }
+  .scroll { overflow-x: auto; }
+  video { width: 100%; max-height: 420px; background: #000; border-radius: 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin: 0; }
+  textarea { width: 100%; min-height: 120px; font-size: 13px; }
+  a.btn { display: inline-block; min-height: 48px; line-height: 48px; padding: 0 16px; border-radius: 8px; background: #15803d; color: #fff; text-decoration: none; font-size: 17px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ทดลองย่อคลิปในเครื่อง</h1>
+  <div class="banner"><strong>นี่คือหน้าทดลอง</strong> ไม่ใช่ส่วนของระบบจริง ไม่เชื่อมฐานข้อมูล ไม่อ่านการล็อกอิน ไฟล์อยู่ในเครื่องนี้เท่านั้น คลิปที่เลือกจะถูกย่อในเบราว์เซอร์นี้ ไม่มีการอัปโหลดอะไรออกจากเครื่อง (ยกเว้นตอนเปิดหน้าที่โหลดตัวไลบรารีจาก CDN หนึ่งครั้ง)</div>
+
+  <section class="card" id="capCard">
+    <h2>1) เครื่องนี้ทำได้ไหม</h2>
+    <div id="cap">กำลังตรวจ...</div>
+  </section>
+
+  <section class="card">
+    <h2>2) เลือกคลิปและเป้าขนาด</h2>
+    <input type="file" id="file" accept="video/mp4,video/quicktime,video/*">
+    <div id="fileInfo" style="margin-top:6px"></div>
+    <div class="row">
+      <label for="targetSel">เป้าขนาดไฟล์ผล (MB):</label>
+      <select id="targetSel">
+        <option value="5" selected>5 MB</option>
+        <option value="3">3 MB</option>
+        <option value="custom">กำหนดเอง</option>
+      </select>
+      <input type="number" id="targetCustom" min="0.5" step="0.5" value="4" style="width:100px;display:none" aria-label="กำหนดเป้าขนาด MB">
+    </div>
+    <div class="row">
+      <button class="primary" id="go" disabled>ย่อคลิป</button>
+      <button id="cancel" disabled>ยกเลิก</button>
+    </div>
+    <div style="margin-top:12px">
+      <progress id="prog" max="100" value="0"></progress>
+      <div id="status" aria-live="polite">รอเลือกคลิป</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3) ผลลัพธ์</h2>
+    <div class="scroll"><table id="result"><tbody><tr><td>ยังไม่มีผล</td></tr></tbody></table></div>
+    <div id="errBox" class="bad" style="margin-top:10px"></div>
+    <div class="row">
+      <a class="btn" id="dl" style="display:none">ดาวน์โหลดไฟล์ผล</a>
+      <button id="copy" disabled>คัดลอกผล</button>
+    </div>
+    <textarea id="copyArea" style="display:none;margin-top:10px" readonly></textarea>
+  </section>
+
+  <section class="card">
+    <h2>4) เทียบก่อน / หลัง</h2>
+    <p style="margin:0 0 8px;font-size:14px">กดหยุดแล้วเลื่อนแถบเพื่อดูตัวอักษรบนเครื่อง ภาพที่หยุดควรอ่านเลขเครื่อง/หน้าจอได้ชัด</p>
+    <div class="grid2">
+      <div><strong>ก่อน (ต้นฉบับ)</strong><video id="vBefore" controls playsinline preload="metadata"></video><div id="beforeNote" style="font-size:13px"></div></div>
+      <div><strong>หลัง (ย่อแล้ว)</strong><video id="vAfter" controls playsinline preload="metadata"></video></div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+const LIB_VERSION = '1.61.6'; // ออก 2026-10-16 (ตรวจจาก npm view mediabunny time)
+const LIB_URL = `https://cdn.jsdelivr.net/npm/mediabunny@${LIB_VERSION}/+esm`;
+const OK_BRANDS = ['isom', 'iso2', 'mp41', 'mp42', 'avc1']; // ตรงกับ sniffVideoMime ใน src/lib/media.ts
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  mb: null, file: null, conv: null, canceled: false, running: false,
+  caps: { video: false, audio: false, webcodecs: false, libError: '' },
+  report: null, afterUrl: null, beforeUrl: null,
+};
+
+const fmtMB = (b) => (b / 1048576).toFixed(2) + ' MB';
+const fmtKbps = (b) => Math.round(b / 1000) + ' kbps';
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const errText = (e) => (e && e.stack ? `${e.name}: ${e.message}\n${e.stack}` : String(e));
+
+function shortUA() {
+  const ua = navigator.userAgent;
+  const pick = (re) => { const m = ua.match(re); return m ? m[0] : null; };
+  const os = pick(/(iPhone OS|CPU OS|Mac OS X|Windows NT|Android)[ _\d.]*/) || '?';
+  const br = pick(/(Edg|CriOS|FxiOS|Chrome|Version)\/[\d.]+/) || '?';
+  const safari = /Safari\//.test(ua) && !/Chrome|CriOS|Edg/.test(ua) ? ' (Safari)' : '';
+  return `${os.replace(/_/g, '.')} / ${br}${safari} / touch=${navigator.maxTouchPoints}`;
+}
+
+// ---------- ตรวจความสามารถ ----------
+async function checkCaps() {
+  const el = $('cap');
+  const lines = [];
+  lines.push(`<div>เบราว์เซอร์: ${esc(shortUA())}</div>`);
+  state.caps.webcodecs = typeof VideoEncoder !== 'undefined' && typeof VideoDecoder !== 'undefined';
+  lines.push(`<div>WebCodecs ภาพ (VideoEncoder/VideoDecoder): ${state.caps.webcodecs ? '<span class="ok">มี</span>' : '<span class="bad">ไม่มี</span>'}</div>`);
+  lines.push(`<div>WebCodecs เสียง (AudioEncoder): ${typeof AudioEncoder !== 'undefined' ? '<span class="ok">มี</span>' : '<span class="warn">ไม่มี</span>'}</div>`);
+  try {
+    state.mb = await import(LIB_URL);
+  } catch (e) {
+    state.caps.libError = errText(e);
+    lines.push(`<div class="bad">โหลดไลบรารี mediabunny ${LIB_VERSION} ไม่ได้ (ต้องต่อเน็ตตอนเปิดหน้า): ${esc(e && e.message ? e.message : e)}</div>`);
+    el.innerHTML = lines.join('');
+    return;
+  }
+  const { canEncodeVideo, canEncodeAudio } = state.mb;
+  try {
+    state.caps.video = await canEncodeVideo('avc', { width: 1280, height: 720, bitrate: 1_000_000 });
+  } catch (e) { state.caps.video = false; lines.push(`<div class="bad">ตรวจตัวเข้ารหัสภาพล้ม: ${esc(e.message)}</div>`); }
+  try {
+    state.caps.audio = await canEncodeAudio('aac', { numberOfChannels: 2, sampleRate: 44100, bitrate: 64_000 });
+  } catch (e) { state.caps.audio = false; }
+  lines.push(`<div>เข้ารหัสภาพ H.264 (avc): ${state.caps.video ? '<span class="ok">ได้</span>' : '<span class="bad">ไม่ได้ ย่อคลิปในเครื่องนี้ไม่ได้</span>'}</div>`);
+  lines.push(`<div>เข้ารหัสเสียง AAC: ${state.caps.audio ? '<span class="ok">ได้</span>' : '<span class="warn">ไม่ได้ จะย่อแบบไม่มีเสียงต่อ (ผลลัพธ์จะไม่มีเสียง)</span>'}</div>`);
+  lines.push(`<div>ไลบรารี: mediabunny ${LIB_VERSION}</div>`);
+  el.innerHTML = lines.join('');
+  updateGo();
+}
+
+function updateGo() {
+  $('go').disabled = !(state.file && state.mb && state.caps.video) || state.running;
+  $('cancel').disabled = !state.running;
+}
+
+// ---------- เลือกไฟล์ ----------
+$('targetSel').addEventListener('change', () => {
+  $('targetCustom').style.display = $('targetSel').value === 'custom' ? '' : 'none';
+});
+$('file').addEventListener('change', () => {
+  const f = $('file').files && $('file').files[0];
+  state.file = f || null;
+  if (state.beforeUrl) URL.revokeObjectURL(state.beforeUrl);
+  state.beforeUrl = null;
+  if (f) {
+    $('fileInfo').textContent = `${f.name} / ${fmtMB(f.size)} / type=${f.type || '(ไม่ระบุ)'}`;
+    state.beforeUrl = URL.createObjectURL(f);
+    $('vBefore').src = state.beforeUrl;
+    $('beforeNote').textContent = 'ถ้าต้นฉบับเป็น HEVC แล้วเบราว์เซอร์นี้เล่นไม่ได้ จะไม่เห็นภาพตรงนี้ (ไม่ได้แปลว่าย่อไม่ได้)';
+    $('status').textContent = 'พร้อมย่อ';
+  }
+  updateGo();
+});
+
+function targetBytes() {
+  const v = $('targetSel').value === 'custom' ? parseFloat($('targetCustom').value) : parseFloat($('targetSel').value);
+  return Math.round((isFinite(v) && v > 0 ? v : 5) * 1048576);
+}
+
+// ---------- คำนวณ ----------
+function plan({ target, duration, hasAudio, dw, dh, fps, shrinkFactor }) {
+  const audioBps = hasAudio ? 64_000 : 0;
+  // เผื่อ container ~3% + 30 KB และเผื่อ encoder เกินเป้าอีก 8%
+  const budgetBytes = target * 0.89 - 30_000;
+  const totalBps = (budgetBytes * 8) / duration;
+  let videoBps = Math.floor((totalBps - audioBps) * shrinkFactor);
+  const lowFloor = videoBps < 80_000;
+  videoBps = Math.max(videoBps, 80_000);
+  // เลือกด้านยาว: ใหญ่สุดที่ยังได้ bits/pixel/frame >= 0.07
+  const longSide = Math.max(dw, dh);
+  const cands = [1280, 960, 854, 640, 480].filter((c) => c <= longSide);
+  if (!cands.length || cands[0] < longSide) { if (longSide <= 1280) cands.unshift(longSide); }
+  let chosen = cands[cands.length - 1] || longSide;
+  for (const c of cands) {
+    const s = c / longSide;
+    const px = dw * s * dh * s;
+    if (videoBps / (px * fps) >= 0.07) { chosen = c; break; }
+  }
+  const s = Math.min(1, chosen / longSide);
+  const even = (n) => Math.max(2, Math.round(n / 2) * 2);
+  return { videoBps, audioBps, width: even(dw * s), height: even(dh * s), lowFloor };
+}
+
+// ---------- ย่อ ----------
+async function runOnce({ file, input, cfg, withAudio, onProgress }) {
+  const mb = state.mb;
+  const bufTarget = new mb.BufferTarget();
+  const output = new mb.Output({ format: new mb.Mp4OutputFormat({ fastStart: 'in-memory' }), target: bufTarget });
+  const conv = await mb.Conversion.init({
+    input, output,
+    video: {
+      codec: 'avc',
+      bitrate: cfg.videoBps,
+      width: cfg.width, height: cfg.height, fit: 'fill',
+      frameRate: cfg.fps,
+      forceTranscode: true,
+      keyFrameInterval: 2,
+    },
+    audio: withAudio
+      ? { codec: 'aac', bitrate: cfg.audioBps, numberOfChannels: 1, forceTranscode: true }
+      : { discard: true },
+    showWarnings: false,
+  });
+  state.conv = conv;
+  const notes = [];
+  for (const d of conv.discardedTracks) {
+    if (d.reason !== 'discarded_by_user') notes.push(`ทิ้งแทร็ก ${d.track.type}: ${d.reason}`);
+  }
+  if (!conv.isValid) throw new Error('Conversion ใช้ไม่ได้: ' + (notes.join('; ') || 'ไม่ทราบสาเหตุ'));
+  const hasAudioOut = conv.utilizedTracks.some((t) => t.isAudioTrack());
+  conv.onProgress = (p) => onProgress(p);
+  await conv.execute();
+  const buf = bufTarget.buffer;
+  if (!buf) throw new Error('ไม่ได้ไฟล์ผลจาก BufferTarget');
+  return { blob: new Blob([buf], { type: 'video/mp4' }), notes, hasAudioOut };
+}
+
+function brandOf(bytes) {
+  if (bytes.length < 12) return null;
+  const sig = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+  if (sig !== 'ftyp') return null;
+  return String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+}
+
+async function shrink() {
+  const file = state.file;
+  const mb = state.mb;
+  if (!file || !mb) return;
+  state.running = true; state.canceled = false; state.report = null;
+  $('errBox').textContent = ''; $('dl').style.display = 'none'; $('copy').disabled = true; $('copyArea').style.display = 'none';
+  $('vAfter').removeAttribute('src'); $('vAfter').load();
+  if (state.afterUrl) { URL.revokeObjectURL(state.afterUrl); state.afterUrl = null; }
+  updateGo();
+
+  const target = targetBytes();
+  const t0 = performance.now();
+  const report = {
+    file: file.name, before: file.size, target, ua: shortUA(), lib: `mediabunny ${LIB_VERSION}`,
+    attempts: [], error: '', audioNote: '', method: '',
+  };
+  let input = null;
+  try {
+    $('status').textContent = 'กำลังอ่านข้อมูลคลิป...';
+    input = new mb.Input({ formats: mb.ALL_FORMATS, source: new mb.BlobSource(file) });
+    const duration = await input.computeDuration();
+    const vt = await input.getPrimaryVideoTrack();
+    if (!vt) throw new Error('ไม่พบแทร็กภาพในไฟล์นี้');
+    if (!(await vt.canDecode())) throw new Error(`เบราว์เซอร์นี้ถอดรหัสภาพต้นฉบับไม่ได้ (codec=${vt.codec})`);
+    const at = await input.getPrimaryAudioTrack();
+    const dw = await vt.getDisplayWidth();
+    const dh = await vt.getDisplayHeight();
+    let fps = 30;
+    try { const st = await vt.computePacketStats(120); fps = Math.max(10, Math.min(30, Math.round(st.averagePacketRate))); } catch (_) { /* ใช้ 30 */ }
+    report.duration = duration; report.srcW = dw; report.srcH = dh; report.srcCodec = vt.codec; report.srcFps = fps;
+    report.srcHasAudio = !!at;
+    let withAudio = !!at && state.caps.audio;
+    if (at && !state.caps.audio) report.audioNote = 'เครื่องนี้เข้ารหัสเสียงไม่ได้ ผลไม่มีเสียง';
+    if (at && state.caps.audio && !(await at.canDecode())) { withAudio = false; report.audioNote = 'ถอดรหัสเสียงต้นฉบับไม่ได้ ผลไม่มีเสียง'; }
+
+    let shrinkFactor = 1;
+    let best = null;
+    for (let attemptNo = 1; attemptNo <= 2; attemptNo++) {
+      if (state.canceled) throw new Error('CANCELED');
+      const p = plan({ target, duration, hasAudio: withAudio, dw, dh, fps, shrinkFactor });
+      const cfg = { ...p, fps };
+      const a = { no: attemptNo, videoBps: cfg.videoBps, audioBps: cfg.audioBps, w: cfg.width, h: cfg.height, lowFloor: p.lowFloor, withAudio };
+      report.attempts.push(a);
+      const ta = performance.now();
+      const label = attemptNo === 1 ? 'ย่อรอบแรก' : 'ผลเกินเป้า ลองซ้ำด้วยบิตเรตต่ำลง';
+      $('status').textContent = `${label} (${cfg.width}x${cfg.height}, ${fmtKbps(cfg.videoBps)})`;
+      const onProgress = (pr) => {
+        $('prog').value = Math.round(pr * 100);
+        $('status').textContent = `${label}: ${Math.round(pr * 100)}% (ผ่านไป ${((performance.now() - t0) / 1000).toFixed(0)} วินาที)`;
+      };
+      let res;
+      try {
+        res = await runOnce({ file, input, cfg, withAudio, onProgress });
+      } catch (e) {
+        if (state.canceled) throw new Error('CANCELED');
+        if (withAudio) {
+          // ห้ามล้มทั้งงานเพราะเสียง: ลองใหม่แบบไม่มีเสียง
+          a.error = errText(e);
+          report.audioNote = 'ย่อแบบมีเสียงล้ม จึงลองใหม่แบบไม่มีเสียง (ดู error ในรอบนี้)';
+          withAudio = false;
+          input.dispose();
+          input = new mb.Input({ formats: mb.ALL_FORMATS, source: new mb.BlobSource(file) });
+          const cfg2 = { ...plan({ target, duration, hasAudio: false, dw, dh, fps, shrinkFactor }), fps };
+          const a2 = { no: attemptNo, videoBps: cfg2.videoBps, audioBps: 0, w: cfg2.width, h: cfg2.height, lowFloor: false, withAudio: false, note: 'ลองใหม่แบบไม่มีเสียง' };
+          report.attempts.push(a2);
+          const ta2 = performance.now();
+          res = await runOnce({ file, input, cfg: cfg2, withAudio: false, onProgress });
+          a2.ms = performance.now() - ta2; a2.size = res.blob.size; a2.notes = res.notes; a2.hasAudioOut = res.hasAudioOut;
+          best = { res, a: a2 };
+          if (res.blob.size <= target) break;
+          shrinkFactor = Math.min(0.85, (target * 0.85) / res.blob.size);
+          input.dispose();
+          input = new mb.Input({ formats: mb.ALL_FORMATS, source: new mb.BlobSource(file) });
+          continue;
+        }
+        throw e;
+      }
+      a.ms = performance.now() - ta; a.size = res.blob.size; a.notes = res.notes; a.hasAudioOut = res.hasAudioOut;
+      best = { res, a };
+      if (res.blob.size <= target) break;
+      if (attemptNo === 1) {
+        shrinkFactor = Math.min(0.85, (target * 0.85) / res.blob.size);
+        input.dispose();
+        input = new mb.Input({ formats: mb.ALL_FORMATS, source: new mb.BlobSource(file) });
+      }
+    }
+    if (!best) throw new Error('ไม่มีผลลัพธ์');
+    const head = new Uint8Array(await best.res.blob.slice(0, 16).arrayBuffer());
+    report.brand = brandOf(head);
+    report.brandOk = !!report.brand && OK_BRANDS.includes(report.brand);
+    report.after = best.res.blob.size;
+    report.afterW = best.a.w; report.afterH = best.a.h;
+    report.videoBps = best.a.videoBps; report.audioBps = best.a.hasAudioOut ? best.a.audioBps : 0;
+    report.hasAudioOut = best.a.hasAudioOut;
+    report.overTarget = best.res.blob.size > target;
+    report.method = `WebCodecs ผ่าน mediabunny ${LIB_VERSION}: ภาพ H.264 (forceTranscode), เสียง ${best.a.hasAudioOut ? 'AAC mono ' + fmtKbps(best.a.audioBps) : 'ไม่มี'}, mp4 fastStart in-memory, ${best.a.no === 1 && report.attempts.length === 1 ? '1 รอบ' : report.attempts.length + ' รอบ'}`;
+    state.afterUrl = URL.createObjectURL(best.res.blob);
+    $('vAfter').src = state.afterUrl;
+    const dl = $('dl');
+    dl.href = state.afterUrl;
+    dl.download = file.name.replace(/\.[^.]+$/, '') + '_shrunk.mp4';
+    dl.style.display = '';
+    $('prog').value = 100;
+    $('status').textContent = report.overTarget ? 'เสร็จ แต่ผลยังเกินเป้า' : 'เสร็จแล้ว';
+  } catch (e) {
+    if (e && e.message === 'CANCELED') {
+      report.error = 'ผู้ใช้กดยกเลิก';
+      $('status').textContent = 'ยกเลิกแล้ว';
+    } else {
+      report.error = errText(e);
+      $('status').textContent = 'ล้มเหลว';
+      $('errBox').innerHTML = '<pre>' + esc(report.error) + '</pre>';
+    }
+  } finally {
+    report.totalMs = performance.now() - t0;
+    if (input) { try { input.dispose(); } catch (_) { /* ignore */ } }
+    state.running = false; state.conv = null;
+    state.report = report;
+    renderReport(report);
+    $('copy').disabled = false;
+    updateGo();
+  }
+}
+
+function renderReport(r) {
+  const rows = [];
+  const add = (k, v) => rows.push([k, v]);
+  add('ไฟล์', r.file);
+  add('เบราว์เซอร์', r.ua);
+  add('ขนาดก่อน', fmtMB(r.before));
+  add('เป้าขนาด', fmtMB(r.target));
+  if (r.after !== undefined) add('ขนาดหลัง', `${fmtMB(r.after)} (${((r.after / r.before) * 100).toFixed(0)}% ของเดิม) ${r.overTarget ? '[เกินเป้า]' : '[ไม่เกินเป้า]'}`);
+  if (r.duration !== undefined) add('ความยาว', r.duration.toFixed(1) + ' วินาที');
+  if (r.srcW) add('ขนาดภาพก่อน', `${r.srcW}x${r.srcH} (${r.srcCodec}, ~${r.srcFps} fps)`);
+  if (r.afterW) add('ขนาดภาพหลัง', `${r.afterW}x${r.afterH}`);
+  if (r.videoBps) add('บิตเรตภาพ / เสียง', `${fmtKbps(r.videoBps)} / ${r.audioBps ? fmtKbps(r.audioBps) : '-'}`);
+  add('เวลาที่ใช้ทั้งหมด', (r.totalMs / 1000).toFixed(1) + ' วินาที');
+  if (r.method) add('วิธีที่ใช้', r.method);
+  if (r.hasAudioOut !== undefined) add('มีเสียงในผล', r.hasAudioOut ? 'มี' : 'ไม่มี' + (r.srcHasAudio ? ' (ต้นฉบับมีเสียง)' : ' (ต้นฉบับไม่มีเสียง)'));
+  if (r.audioNote) add('หมายเหตุเสียง', r.audioNote);
+  if (r.brand !== undefined) add('ftyp brand', `${r.brand} ${r.brandOk ? '(ผ่านเกณฑ์ sniffVideoMime)' : '(ไม่ผ่านเกณฑ์!)'}`);
+  r.attempts.forEach((a) => {
+    add(`รอบที่ ${a.no}${a.note ? ' (' + a.note + ')' : ''}`,
+      `${a.w}x${a.h}, ภาพ ${fmtKbps(a.videoBps)}, เสียง ${a.withAudio ? fmtKbps(a.audioBps) : '-'}` +
+      (a.size !== undefined ? `, ได้ ${fmtMB(a.size)}, ใช้ ${(a.ms / 1000).toFixed(1)} วิ` : '') +
+      (a.lowFloor ? ', บิตเรตต่ำมากถึงพื้น 80 kbps (ไฟล์อาจเกินเป้า)' : '') +
+      (a.notes && a.notes.length ? ', ' + a.notes.join('; ') : '') +
+      (a.error ? '\nerror: ' + a.error : ''));
+  });
+  if (r.error) add('error', r.error);
+  r.rows = rows;
+  $('result').innerHTML = '<tbody>' + rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td><pre>${esc(v)}</pre></td></tr>`).join('') + '</tbody>';
+}
+
+// ---------- ปุ่ม ----------
+$('go').addEventListener('click', () => { shrink(); });
+$('cancel').addEventListener('click', async () => {
+  state.canceled = true;
+  $('status').textContent = 'กำลังยกเลิก...';
+  try { if (state.conv) await state.conv.cancel(); } catch (_) { /* ignore */ }
+});
+$('copy').addEventListener('click', async () => {
+  const r = state.report;
+  if (!r) return;
+  const capLine = `[ตรวจเครื่อง] ภาพ H.264=${state.caps.video} เสียง AAC=${state.caps.audio} WebCodecs=${state.caps.webcodecs}${state.caps.libError ? ' libError=' + state.caps.libError : ''}`;
+  const text = `ผลทดลองย่อคลิป\n${capLine}\n` + (r.rows || []).map(([k, v]) => `${k}: ${v}`).join('\n');
+  const area = $('copyArea');
+  area.value = text; area.style.display = '';
+  try {
+    await navigator.clipboard.writeText(text);
+    $('status').textContent = 'คัดลอกแล้ว';
+  } catch (_) {
+    area.focus(); area.select();
+    let done = false;
+    try { done = document.execCommand('copy'); } catch (_e) { /* ignore */ }
+    $('status').textContent = done ? 'คัดลอกแล้ว' : 'คัดลอกอัตโนมัติไม่ได้ กดค้างที่กรอบข้อความด้านล่างแล้วเลือกคัดลอก';
+  }
+});
+
+checkCaps();
+</script>
+</body>
+</html>
