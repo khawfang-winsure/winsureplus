@@ -697,6 +697,72 @@ export function checkVideoBudget(input: VideoBudgetInput): VideoBudgetResult {
   return { ok: true, reasonTh: null, reason: null, leftBytes, otherBytes }
 }
 
+// ---------------------------------------------------------------------------
+// videoShrinkTarget — คลิปใหม่ต้องย่อไหม และเป้าขนาดกี่ไบต์ (pure; ใช้ก่อนอัปคลิปจริง)
+// ---------------------------------------------------------------------------
+
+/** เป้าที่ต่ำกว่านี้ถือว่าย่อไม่ได้ (ภาพจะแย่เกินใช้) */
+export const VIDEO_SHRINK_MIN_TARGET_BYTES = Math.round(1.5 * 1024 * 1024)
+/** ไฟล์ต้นฉบับที่รับเข้ามาย่อได้สูงสุด */
+export const VIDEO_SHRINK_SOURCE_MAX_BYTES = 300 * 1024 * 1024
+
+/** สัดส่วนเพดานรวม 2 คลิปที่แบ่งให้แต่ละช่อง ตอนยังไม่มีคลิปอีกช่อง (รวมกัน = 1) — คลิปรอบเครื่องสั้นกว่า (<= 20 วิ) จึงได้น้อยกว่า */
+export const VIDEO_SHRINK_SHARE_LOCK_TEST = 0.625
+export const VIDEO_SHRINK_SHARE_AROUND = 0.375
+
+export interface VideoShrinkInput {
+  /** ช่องที่กำลังจะอัป (lock_test_video | device_around_video) */
+  slotKey: string
+  /** ขนาดคลิปใหม่ที่เลือก (ไบต์) */
+  newBytes: number
+  /** ขนาดคลิป live ในอีกช่อง (0 = ยังไม่มี) */
+  otherVideoBytes: number
+  /** ไฟล์ live อื่นทั้งเคสที่ไม่ใช่ช่องที่กำลังอัป (รวมคลิปอีกช่องด้วย) — ใช้คุมเพดานเมล */
+  otherFilesBytes: number
+  /** เพดานต่อคลิป (media_video_max_mb) */
+  videoMaxBytes: number
+  /** เพดาน 2 คลิปรวม (media_video_total_max_mb) */
+  videoTotalMaxBytes: number
+  /** เพดานเมล (media_email_max_total_mb) */
+  emailMaxBytes: number
+  /** เคสอยู่ใต้กฎเพดานรวม 2 คลิปไหม (isVideoSlotVisible) */
+  totalRuleActive: boolean
+}
+
+export interface VideoShrinkDecision {
+  needsShrink: boolean
+  /** เป้าขนาดไฟล์ผลหลังย่อ (ไบต์, >= 0) */
+  targetBytes: number
+  /** false = เป้าต่ำกว่า VIDEO_SHRINK_MIN_TARGET_BYTES ย่อไม่ได้ ให้ใช้ข้อความเดิมของ checkVideoBudget/checkVideoFile */
+  canShrink: boolean
+  /** true = เป้าถูกบีบเพราะเพดานเมล (รูป+คลิปรวมกันเต็ม) ไม่ใช่เพราะเพดานคลิป — ใช้เลือกข้อความบอกสาเหตุ */
+  limitedByEmail: boolean
+}
+
+export function videoShrinkTarget(i: VideoShrinkInput): VideoShrinkDecision {
+  // เพดานเมล: ไฟล์อื่นทั้งเคส + คลิปใหม่ ต้องไม่เกิน
+  // เคสเก่าเดินทางเดิม: ไม่ใช้เพดานเมลคำนวณเป้า (เพดานต่อคลิปเท่านั้น) ; เคสใต้กฎใช้เพดานเมลด้วย
+  const emailTarget = i.totalRuleActive ? i.emailMaxBytes - i.otherFilesBytes : Number.POSITIVE_INFINITY
+  let base: number
+  if (i.totalRuleActive) {
+    // ยังไม่มีคลิปอีกช่อง: แบ่งเพดานรวมตามสัดส่วนของช่อง (เหลือที่ให้อีกคลิป) ; มีแล้ว: เหลือเท่าไหร่ใช้เท่านั้น
+    const share = i.slotKey === AROUND_VIDEO_SLOT_KEY ? VIDEO_SHRINK_SHARE_AROUND : VIDEO_SHRINK_SHARE_LOCK_TEST
+    base = i.otherVideoBytes > 0
+      ? i.videoTotalMaxBytes - i.otherVideoBytes
+      : Math.floor(i.videoTotalMaxBytes * share)
+    base = Math.min(base, i.videoMaxBytes)
+  } else {
+    base = i.videoMaxBytes
+  }
+  const targetBytes = Math.max(0, Math.min(base, emailTarget))
+  return {
+    needsShrink: i.newBytes > targetBytes,
+    targetBytes,
+    canShrink: targetBytes >= VIDEO_SHRINK_MIN_TARGET_BYTES,
+    limitedByEmail: emailTarget < base,
+  }
+}
+
 /** ข้อความใต้ 2 ช่องคลิป: "2 คลิปรวมกันไม่เกิน 10.5 MB · เหลืออีก {left} MB" (usedBytes = คลิป live รวมกัน) */
 export function videoBudgetHint(usedBytes: number, videoTotalMaxBytes: number = VIDEO_TOTAL_MAX_BYTES): string {
   return (

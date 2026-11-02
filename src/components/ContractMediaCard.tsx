@@ -70,6 +70,8 @@ import {
   VIDEO_SLOT_KEYS,
   VIDEO_TOTAL_MAX_BYTES,
   videoBudgetHint,
+  videoShrinkTarget,
+  VIDEO_SHRINK_SOURCE_MAX_BYTES,
   videoSlotRequiredFrom,
   type EmailBudgetFile,
   type MediaFile,
@@ -87,6 +89,7 @@ import type {
   Shop,
 } from '../lib/types'
 import type { PJContract } from '../lib/pjImport'
+import { shrinkVideo, VideoShrinkError, VIDEO_SHRINK_FAIL_MESSAGE } from '../lib/videoShrink'
 import { buildReviewFields, type ReviewField, type ReviewFieldGroup } from '../lib/reviewFields'
 import { applyPjComparison, countPjFlags, type PjSnapshot } from '../lib/pjCompare'
 import { reviewAgeDays, reviewAgeLabel, REVIEW_BADGE_PENDING } from '../lib/review'
@@ -196,6 +199,12 @@ async function resizeToJpeg(bitmap: ImageBitmap): Promise<{ blob: Blob; width: n
   }
   return { blob, width, height }
 }
+
+/** ข้อความใต้ช่องคลิป: คลิปใหญ่จะถูกย่อให้เอง และคลิปที่ย่อแล้วไม่มีเสียง */
+const VIDEO_AUTO_SHRINK_NOTE = '· ถ้าคลิปใหญ่ ระบบจะย่อให้ และคลิปที่ย่อแล้วจะไม่มีเสียง'
+
+/** ต้นฉบับคลิปที่ใหญ่กว่านี้ไม่คำนวณ sha256 ก่อนย่อ (กันกินหน่วยความจำ) */
+const SHRINK_SOURCE_HASH_MAX_BYTES = 32 * 1024 * 1024
 
 async function sha256Hex(blob: Blob): Promise<string> {
   const buf = await blob.arrayBuffer()
@@ -1006,6 +1015,8 @@ export default function ContractMediaCard({
     videoTotalMaxMb: 10.5,
   })
   const [videoUploadPct, setVideoUploadPct] = useState<Record<string, number | undefined>>({})
+  // กำลังย่อคลิปก่อนอัป (เปอร์เซ็นต์ต่อช่อง) — มีค่า = ช่วงย่อ ; ไม่มีค่าแต่ videoUploadPct มี = ช่วงตรวจ/อัป
+  const [videoShrinkPct, setVideoShrinkPct] = useState<Record<string, number | undefined>>({})
   const [playerFile, setPlayerFile] = useState<ContractMediaFile | null>(null)
   const locked = Boolean(contract.emailSentAt && contract.summarySentAt) // เคสจบแล้ว — เงื่อนไขเดียวกับ ContractDetail.tsx (ล็อกแก้ไข)
   const [expanded, setExpanded] = useState<boolean>(() => readStoredMediaCardOpen(contract.id, !locked))
@@ -1347,9 +1358,89 @@ export default function ContractMediaCard({
     videoAbortControllersRef.current[slotKey] = controller
     try {
       const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
-      const sniffedMime = sniffVideoMime(head)
-      const check = checkVideoFile({ size: file.size, sniffedMime, maxBytes: videoMaxBytes })
-      if (!check.accept || !sniffedMime) {
+      const sourceMime = sniffVideoMime(head)
+      // ตรวจชนิดไฟล์ก่อนเสมอ (ยังไม่ดูขนาด — คลิปใหญ่อาจย่อได้)
+      const typeCheck = checkVideoFile({ size: file.size, sniffedMime: sourceMime, maxBytes: Number.MAX_SAFE_INTEGER })
+      if (!typeCheck.accept || !sourceMime) {
+        if (!unmountedRef.current) setToast(typeCheck.error ?? 'ไฟล์นี้ใช้ไม่ได้')
+        return
+      }
+      if (file.size > VIDEO_SHRINK_SOURCE_MAX_BYTES) {
+        if (!unmountedRef.current) {
+          setToast('คลิปนี้ใหญ่เกินไป (เกิน 300 MB) ขอร้านถ่ายใหม่ให้สั้นลง')
+        }
+        return
+      }
+
+      const liveOtherFiles = files.filter((f) => !f.purgedAt && !f.deletedAt && f.slotKey !== slotKey)
+      const otherVideoBytes = liveOtherFiles
+        .filter((f) => (VIDEO_SLOT_KEYS as readonly string[]).includes(f.slotKey))
+        .reduce((n, f) => n + f.bytes, 0)
+      const otherFilesBytes = liveOtherFiles.reduce((n, f) => n + f.bytes, 0)
+      const shrinkPlan = videoShrinkTarget({
+        slotKey,
+        newBytes: file.size,
+        otherVideoBytes,
+        otherFilesBytes,
+        videoMaxBytes,
+        videoTotalMaxBytes,
+        emailMaxBytes,
+        totalRuleActive: videoTotalRuleActive,
+      })
+
+      if (shrinkPlan.needsShrink && !shrinkPlan.canShrink && shrinkPlan.limitedByEmail) {
+        if (!unmountedRef.current) setToast('รูปและคลิปรวมกันเกินที่เมลรับได้ ลดรูปหรือคลิปอีกช่องก่อน')
+        return
+      }
+
+      let uploadFile: File = file
+      let sniffedMime = sourceMime
+      if (shrinkPlan.needsShrink && shrinkPlan.canShrink) {
+        // เช็คไฟล์ซ้ำของต้นฉบับกับไฟล์เดิมในเคสนี้ก่อนย่อ (ที่เก็บไว้เป็นไฟล์ที่ย่อแล้ว จึงจับได้เฉพาะไฟล์ที่เคยแนบมาตรงๆ)
+        // ไฟล์ใหญ่มากไม่คำนวณ เพราะต้องโหลดทั้งไฟล์เข้าหน่วยความจำ เสี่ยงค้างบน iPad
+        if (file.size <= SHRINK_SOURCE_HASH_MAX_BYTES) {
+          const sourceSha = await sha256Hex(file)
+          if (files.some((f) => f.sha256 === sourceSha)) {
+            if (!unmountedRef.current) setToast('คลิปนี้แนบไว้ในเคสนี้แล้ว (ใช้ไฟล์เดียวกันซ้ำ 2 ช่องไม่ได้) ระบบนับให้ 1 ครั้ง')
+            return
+          }
+        }
+        if (controller.signal.aborted || unmountedRef.current) return
+        setVideoShrinkPct((p) => ({ ...p, [slotKey]: 0 }))
+        try {
+          uploadFile = await shrinkVideo(file, shrinkPlan.targetBytes, {
+            signal: controller.signal,
+            onProgress: (fraction) => {
+              if (!unmountedRef.current) setVideoShrinkPct((p) => ({ ...p, [slotKey]: Math.floor(fraction * 100) }))
+            },
+          })
+        } catch (e) {
+          // ยกเลิกเอง/ออกจากหน้า = ตั้งใจ ไม่ใช่ error
+          if (controller.signal.aborted) return
+          if (!unmountedRef.current) setToast(e instanceof VideoShrinkError ? e.message : VIDEO_SHRINK_FAIL_MESSAGE)
+          return
+        } finally {
+          if (!unmountedRef.current) {
+            setVideoShrinkPct((p) => {
+              const next = { ...p }
+              delete next[slotKey]
+              return next
+            })
+          }
+        }
+        if (controller.signal.aborted || unmountedRef.current) return
+        // ตรวจชนิดไฟล์จริงของผลที่ย่อแล้วอีกรอบ (ต้องเป็น mp4)
+        const shrunkMime = sniffVideoMime(new Uint8Array(await uploadFile.slice(0, 16).arrayBuffer()))
+        if (shrunkMime !== 'video/mp4') {
+          if (!unmountedRef.current) setToast(VIDEO_SHRINK_FAIL_MESSAGE)
+          return
+        }
+        sniffedMime = shrunkMime
+      }
+
+      // ตรวจไฟล์ที่จะอัปจริง (ต้นฉบับถ้าไม่ต้องย่อ / ผลที่ย่อแล้ว) — ถ้าย่อไม่ได้ ข้อความเดิมจะบอกให้ลดอีกคลิป
+      const check = checkVideoFile({ size: uploadFile.size, sniffedMime, maxBytes: videoMaxBytes })
+      if (!check.accept) {
         if (!unmountedRef.current) setToast(check.error ?? 'ไฟล์นี้ใช้ไม่ได้')
         return
       }
@@ -1358,7 +1449,7 @@ export default function ContractMediaCard({
         const otherKey = VIDEO_SLOT_KEYS.find((k) => k !== slotKey)
         const budget = checkVideoBudget({
           newSlotKey: slotKey,
-          newBytes: file.size,
+          newBytes: uploadFile.size,
           files: files.map((f) => ({ slotKey: f.slotKey, bytes: f.bytes, purgedAt: f.purgedAt, deletedAt: f.deletedAt })),
           videoTotalMaxBytes,
           emailMaxBytes,
@@ -1369,8 +1460,13 @@ export default function ContractMediaCard({
           return
         }
       }
+      if (shrinkPlan.needsShrink && !shrinkPlan.canShrink) {
+        // เป้าย่อต่ำเกินไป แต่การตรวจเดิมผ่าน (ไม่ควรเกิด) — กันไม่ให้ไฟล์ใหญ่หลุดไปอัป
+        if (!unmountedRef.current) setToast(VIDEO_SHRINK_FAIL_MESSAGE)
+        return
+      }
 
-      const sha256 = await sha256Hex(file)
+      const sha256 = await sha256Hex(uploadFile)
 
       if (files.some((f) => f.sha256 === sha256)) {
         if (!unmountedRef.current) setToast('คลิปนี้แนบไว้ในเคสนี้แล้ว (ใช้ไฟล์เดียวกันซ้ำ 2 ช่องไม่ได้) ระบบนับให้ 1 ครั้ง')
@@ -1396,7 +1492,7 @@ export default function ContractMediaCard({
       const uploaded = await uploadWithRetry({
         contractId: contract.id,
         slotKey,
-        blob: file,
+        blob: uploadFile,
         sha256,
         width: null,
         height: null,
@@ -1415,6 +1511,14 @@ export default function ContractMediaCard({
       if (!unmountedRef.current) setToast(errMsg(e))
     } finally {
       delete videoBusyRef.current[slotKey]
+      if (!unmountedRef.current) {
+        setVideoShrinkPct((p) => {
+          if (p[slotKey] === undefined) return p
+          const next = { ...p }
+          delete next[slotKey]
+          return next
+        })
+      }
       delete videoAbortControllersRef.current[slotKey]
       // focus อยู่บนปุ่ม "ยกเลิก" ที่กำลังจะหายไปพอดี — ย้ายกลับไปปุ่ม "เพิ่มคลิป" ของช่องนี้ก่อน DOM เอาปุ่มยกเลิกออก
       // (เช็ค document.activeElement ตอนนี้ ก่อน setVideoUploadPct จะสั่ง re-render ลบปุ่มยกเลิกออกจริง — ไม่แย่ง focus ถ้าผู้ใช้ย้ายไปที่อื่นแล้ว)
@@ -1646,11 +1750,11 @@ export default function ContractMediaCard({
             const isOverMax = def?.max != null && e.count > def.max
             const isEmptyUploadable = canUpload && slotFiles.length === 0
             // เพดานคลิปมาจาก app_settings เสมอ (ห้าม hardcode MB ในข้อความ) — ช่องอื่นใช้ hint เดิมจาก media.ts
-            const clipHint = `ไม่เกิน ${videoMaxMbLabel} MB (ประมาณ 1 นาที)`
+            const clipHint = `ไม่เกิน ${videoMaxMbLabel} MB (ประมาณ 1 นาที) ${VIDEO_AUTO_SHRINK_NOTE}`
             const hintText =
               def?.kind === 'video'
                 ? videoTotalRuleActive
-                  ? `${e.key === AROUND_VIDEO_SLOT_KEY && def.hint ? `${def.hint} · ` : ''}${videoBudgetHint(liveVideoBytes, videoTotalMaxBytes)} (เก็บที่ไว้ให้อีกคลิปด้วย)`
+                  ? `${e.key === AROUND_VIDEO_SLOT_KEY && def.hint ? `${def.hint} · ` : ''}${videoBudgetHint(liveVideoBytes, videoTotalMaxBytes)} (เก็บที่ไว้ให้อีกคลิปด้วย) ${VIDEO_AUTO_SHRINK_NOTE}`
                   : clipHint
                 : def?.hint
             return (
@@ -1774,7 +1878,11 @@ export default function ContractMediaCard({
                     )}
                     {videoUploadPct[e.key] !== undefined && (
                       <div className="mt-1 flex items-center gap-2">
-                        <p className="text-xs text-ink-soft">{`กำลังอัป ${videoUploadPct[e.key]}%`}</p>
+                        <p className="text-xs text-ink-soft" aria-live="polite">
+                          {videoShrinkPct[e.key] !== undefined
+                            ? `กำลังย่อคลิป ${videoShrinkPct[e.key]}%`
+                            : `กำลังอัป ${videoUploadPct[e.key]}%`}
+                        </p>
                         <button
                           type="button"
                           ref={(el) => {

@@ -17,7 +17,9 @@ import {
   isVideoRequired,
   isVideoSlotVisible,
   mediaFilename,
+  VIDEO_SHRINK_MIN_TARGET_BYTES,
   videoBudgetHint,
+  videoShrinkTarget,
   videoSlotRequiredFrom,
   type MediaFile,
   type MediaFlagsSettings,
@@ -243,3 +245,90 @@ for (const t of parityTargets) {
     assert.deepEqual(missing, [], t.name + ' ขาดชื่อ: ' + missing.join(', '))
   })
 }
+
+// ---- videoShrinkTarget ----
+const shrinkBase = {
+  slotKey: 'lock_test_video',
+  newBytes: 0,
+  otherVideoBytes: 0,
+  otherFilesBytes: 0,
+  videoMaxBytes: 12 * MB,
+  videoTotalMaxBytes: 12 * MB,
+  emailMaxBytes: 16 * MB,
+  totalRuleActive: true,
+}
+
+
+test('videoShrinkTarget: ไม่มีคลิปอีกช่อง คลิปเทสล็อก เป้า 62.5% = 7.5 MB', () => {
+  const ok = videoShrinkTarget({ ...shrinkBase, slotKey: LOCK, newBytes: 7.5 * MB })
+  assert.equal(ok.needsShrink, false)
+  assert.equal(ok.targetBytes, 7.5 * MB)
+  const over = videoShrinkTarget({ ...shrinkBase, slotKey: LOCK, newBytes: 7.5 * MB + 1 })
+  assert.equal(over.needsShrink, true)
+  assert.equal(over.canShrink, true)
+})
+test('videoShrinkTarget: ไม่มีคลิปอีกช่อง คลิปรอบเครื่อง เป้า 37.5% = 4.5 MB', () => {
+  const ok = videoShrinkTarget({ ...shrinkBase, slotKey: AROUND, newBytes: 4.5 * MB })
+  assert.equal(ok.needsShrink, false)
+  assert.equal(ok.targetBytes, 4.5 * MB)
+  assert.equal(videoShrinkTarget({ ...shrinkBase, slotKey: AROUND, newBytes: 4.5 * MB + 1 }).needsShrink, true)
+  // 5 MB ที่เคยผ่านในกติกาแบ่งครึ่ง ตอนนี้ช่องรอบเครื่องต้องย่อ
+  assert.equal(videoShrinkTarget({ ...shrinkBase, slotKey: AROUND, newBytes: 5 * MB }).needsShrink, true)
+})
+test('videoShrinkTarget: สัดส่วน 2 ช่องรวมกันไม่เกินเพดานรวม', () => {
+  const l = videoShrinkTarget({ ...shrinkBase, slotKey: LOCK }).targetBytes
+  const a = videoShrinkTarget({ ...shrinkBase, slotKey: AROUND }).targetBytes
+  assert.ok(l + a <= 12 * MB)
+})
+test('videoShrinkTarget: ใต้กฎ มีคลิปอีกช่อง 5 MB เป้า = 12 - 5 = 7 MB', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, slotKey: AROUND, newBytes: 9 * MB, otherVideoBytes: 5 * MB, otherFilesBytes: 5 * MB })
+  assert.equal(r.needsShrink, true)
+  assert.equal(r.targetBytes, 7 * MB)
+  assert.equal(videoShrinkTarget({ ...shrinkBase, newBytes: 7 * MB, otherVideoBytes: 5 * MB, otherFilesBytes: 5 * MB }).needsShrink, false)
+})
+test('videoShrinkTarget: ใต้กฎ คลิปอีกช่อง 11 MB เหลือ 1 MB < 1.5 MB ย่อไม่ได้', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, newBytes: 4 * MB, otherVideoBytes: 11 * MB, otherFilesBytes: 11 * MB })
+  assert.equal(r.needsShrink, true)
+  assert.equal(r.targetBytes, 1 * MB)
+  assert.equal(r.canShrink, false)
+  assert.ok(r.targetBytes < VIDEO_SHRINK_MIN_TARGET_BYTES)
+})
+test('videoShrinkTarget: เคสเก่า เป้า = เพดานต่อคลิป', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, totalRuleActive: false, videoMaxBytes: 10 * MB, newBytes: 20 * MB })
+  assert.equal(r.needsShrink, true)
+  assert.equal(r.targetBytes, 10 * MB)
+  assert.equal(videoShrinkTarget({ ...shrinkBase, totalRuleActive: false, videoMaxBytes: 10 * MB, newBytes: 10 * MB }).needsShrink, false)
+})
+test('videoShrinkTarget: เป้าต้องไม่ทำให้เมลเกินเพดาน (รูปในเคสเยอะ)', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, newBytes: 5 * MB, otherFilesBytes: 12 * MB })
+  assert.equal(r.targetBytes, 4 * MB)
+  assert.equal(r.needsShrink, true)
+  assert.ok(r.targetBytes + 12 * MB <= 16 * MB)
+  const old = videoShrinkTarget({ ...shrinkBase, totalRuleActive: false, newBytes: 5 * MB, otherFilesBytes: 12 * MB })
+  assert.equal(old.targetBytes, 12 * MB) // เคสเก่าไม่ใช้เพดานเมล
+})
+test('videoShrinkTarget: ไฟล์อื่นเต็มเมลแล้ว เป้า 0 ย่อไม่ได้', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, newBytes: 1 * MB, otherFilesBytes: 20 * MB })
+  assert.equal(r.targetBytes, 0)
+  assert.equal(r.canShrink, false)
+})
+test('videoShrinkTarget: ผลขนาดเท่าเป้าต้องผ่าน checkVideoBudget', () => {
+  const files = [{ slotKey: 'lock_test_video', bytes: 5 * MB }, { slotKey: 'box_front', bytes: 3 * MB }]
+  const d = videoShrinkTarget({ ...shrinkBase, newBytes: 20 * MB, otherVideoBytes: 5 * MB, otherFilesBytes: 8 * MB })
+  const b = checkVideoBudget({ newSlotKey: AROUND, newBytes: d.targetBytes, files, videoTotalMaxBytes: 12 * MB, emailMaxBytes: 16 * MB })
+  assert.equal(b.ok, true)
+})
+
+test('videoShrinkTarget: เคสเก่า ไม่ใช้เพดานเมลคำนวณเป้า (รูปเยอะก็ยังเป้า = เพดานต่อคลิป)', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, totalRuleActive: false, videoMaxBytes: 10 * MB, newBytes: 12 * MB, otherFilesBytes: 15 * MB })
+  assert.equal(r.targetBytes, 10 * MB)
+  assert.equal(r.canShrink, true)
+  assert.equal(r.limitedByEmail, false)
+})
+test('videoShrinkTarget: ใต้กฎ เมลเต็ม -> limitedByEmail และย่อไม่ได้', () => {
+  const r = videoShrinkTarget({ ...shrinkBase, newBytes: 5 * MB, otherFilesBytes: 15 * MB })
+  assert.equal(r.limitedByEmail, true)
+  assert.equal(r.canShrink, false)
+  const free = videoShrinkTarget({ ...shrinkBase, newBytes: 5 * MB })
+  assert.equal(free.limitedByEmail, false)
+})
