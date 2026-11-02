@@ -133,7 +133,7 @@ export const DEFAULT_MEDIA_SLOTS: MediaSlot[] = [
   { key: 'credit_history_evidence', label: 'ใบแจ้งความ / หลักฐานเคลียร์ยอด', sortOrder: 13.1, min: 1, max: null, required: { when: 'flag', name: 'credit_history_found' } },
   { key: 'device_on_off', label: 'สถานะ On/Off ของเครื่อง', sortOrder: 14, min: 1, max: 1, required: 'always' },
   { key: 'lock_test_video', label: 'คลิปเทสล็อกเครื่อง', sortOrder: 15, min: 1, max: 1, kind: 'video', required: { when: 'flag', name: 'video_required' }, hint: 'ไม่เกินขนาดที่ตั้งไว้ (ประมาณ 1 นาที)' },
-  { key: 'device_around_video', label: 'คลิปรอบตัวเครื่อง', sortOrder: 15.1, min: 1, max: 1, kind: 'video', required: { when: 'flag', name: 'around_video_required' } },
+  { key: 'device_around_video', label: 'คลิปรอบตัวเครื่อง', sortOrder: 15.1, min: 1, max: 1, kind: 'video', hint: 'ถ่ายรอบๆ ตัวเครื่อง ไม่เกิน 20 วินาที', required: { when: 'flag', name: 'around_video_required' } },
 ]
 
 /** ช่องคลิปทั้งหมด — ใช้รวมงบขนาด 2 คลิป (ตรงกับ VIDEO_SLOT_KEYS ฝั่ง send-company-email ที่ hardcode ไว้) */

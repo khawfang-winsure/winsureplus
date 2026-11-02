@@ -47,6 +47,7 @@ test('slot device_around_video ตรงแผน', () => {
   assert.equal(s.min, 1)
   assert.equal(s.max, 1)
   assert.equal(s.kind, 'video')
+  assert.equal(s.hint, 'ถ่ายรอบๆ ตัวเครื่อง ไม่เกิน 20 วินาที')
   assert.deepEqual(s.required, { when: 'flag', name: 'around_video_required' })
   assert.equal(DEFAULT_MEDIA_SLOTS.length, 18)
   assert.deepEqual([...VIDEO_SLOT_KEYS], [LOCK, AROUND])

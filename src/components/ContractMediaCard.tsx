@@ -46,6 +46,7 @@ import {
   type UploadMediaInput,
 } from '../lib/db'
 import {
+  AROUND_VIDEO_SLOT_KEY,
   buildMediaFlags,
   checkImageFile,
   checkVideoBudget,
@@ -1649,7 +1650,7 @@ export default function ContractMediaCard({
             const hintText =
               def?.kind === 'video'
                 ? videoTotalRuleActive
-                  ? `${videoBudgetHint(liveVideoBytes, videoTotalMaxBytes)} (เก็บที่ไว้ให้อีกคลิปด้วย)`
+                  ? `${e.key === AROUND_VIDEO_SLOT_KEY && def.hint ? `${def.hint} · ` : ''}${videoBudgetHint(liveVideoBytes, videoTotalMaxBytes)} (เก็บที่ไว้ให้อีกคลิปด้วย)`
                   : clipHint
                 : def?.hint
             return (

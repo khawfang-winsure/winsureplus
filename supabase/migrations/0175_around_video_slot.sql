@@ -22,7 +22,7 @@ declare
   v_new_slot jsonb := '{
     "key": "device_around_video",
     "label": "คลิปรอบตัวเครื่อง",
-    "hint": "2 คลิปรวมกันไม่เกิน 10.5 MB",
+    "hint": "ถ่ายรอบๆ ตัวเครื่อง ไม่เกิน 20 วินาที",
     "min": 1,
     "max": 1,
     "kind": "video",
