@@ -292,6 +292,7 @@ export default function WaitingSummary() {
   const [gateFromRetryNonce, setGateFromRetryNonce] = useState(0)
   // ค่าตั้งค่าคลิปเทสล็อกเครื่อง (Wave 3) — ใช้คำนวณ video_required ให้ตรงกับที่การ์ดในหน้าสัญญาใช้ (buildMediaFlags)
   const [videoRequiredFrom, setVideoRequiredFrom] = useState<string | null | undefined>(undefined)
+  const [aroundVideoRequiredFrom, setAroundVideoRequiredFrom] = useState<string | null | undefined>(undefined)
   // สถานะยิง markSummaryShopSent จริง — กันกดซ้ำระหว่างรอ + โชว์ error ถ้าฐานข้อมูลตีกลับ (RPC guard)
   const [markShopBusy, setMarkShopBusy] = useState(false)
   const [markShopError, setMarkShopError] = useState<string | null>(null)
@@ -344,6 +345,7 @@ export default function WaitingSummary() {
         setMediaSlots(normalizeMediaSlots(raw))
         setGateFrom(gate)
         setVideoRequiredFrom(videoSettings.videoRequiredFrom)
+        setAroundVideoRequiredFrom(videoSettings.aroundVideoRequiredFrom)
         setGateFromLoaded(true)
       })
       .catch(() => {
@@ -420,7 +422,7 @@ export default function WaitingSummary() {
   function mediaEvaluationFor(c: ContractWaitingSummaryRow) {
     const status = mediaStatuses.get(c.id)
     if (!status) return null
-    return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, emailSentAt: c.emailSentAt })
+    return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, aroundVideoRequiredFrom, emailSentAt: c.emailSentAt })
   }
 
   // คอลัมน์ขวา (รอส่งบัญชี): ส่งร้านแล้ว (DB หรือรอบนี้) แต่ยังไม่ส่งบัญชี

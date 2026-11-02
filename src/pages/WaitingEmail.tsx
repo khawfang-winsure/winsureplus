@@ -93,6 +93,7 @@ export default function WaitingEmail() {
   const [mediaRetryNonce, setMediaRetryNonce] = useState(0)
   // ค่าตั้งค่าคลิปเทสล็อกเครื่อง (Wave 3) — ใช้คำนวณ video_required ให้ตรงกับที่การ์ดในหน้าสัญญาใช้ (buildMediaFlags)
   const [videoRequiredFrom, setVideoRequiredFrom] = useState<string | null | undefined>(undefined)
+  const [aroundVideoRequiredFrom, setAroundVideoRequiredFrom] = useState<string | null | undefined>(undefined)
   const [bypassedIds, setBypassedIds] = useState<Set<string>>(new Set())
 
   // ส่งเมลถึงบริษัท (Edge Function) — สถานะต่อ modal ที่เปิดอยู่
@@ -124,6 +125,7 @@ export default function WaitingEmail() {
         setMediaSlots(normalizeMediaSlots(raw))
         setGateFrom(gate)
         setVideoRequiredFrom(videoSettings.videoRequiredFrom)
+        setAroundVideoRequiredFrom(videoSettings.aroundVideoRequiredFrom)
         setGateFromLoaded(true)
       })
       .catch(() => {
@@ -174,7 +176,7 @@ export default function WaitingEmail() {
   function evaluationFor(c: ContractWaitingEmailRow) {
     const status = mediaStatuses.get(c.id)
     if (!status) return null
-    return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, emailSentAt: c.emailSentAt })
+    return evaluateFromStatus(mediaSlots, status, { videoRequiredFrom, aroundVideoRequiredFrom, emailSentAt: c.emailSentAt })
   }
 
   function renderMediaPill(c: ContractWaitingEmailRow) {

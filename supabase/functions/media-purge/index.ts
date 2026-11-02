@@ -1,4 +1,4 @@
-// Edge Function: media-purge — ลบคลิปเทสล็อกเครื่อง (contract_media.slot_key='lock_test_video') จริงจาก
+// Edge Function: media-purge — ลบคลิป (contract_media.slot_key='lock_test_video' เทสล็อกเครื่อง และ 'device_around_video' รอบตัวเครื่อง) จริงจาก
 // R2 storage หลังผ่าน retention (media_video_retention_days, ค่าเริ่มต้น 30 วัน) นับจาก
 // contract_media.emailed_at (ประทับตอนอีเมลบริษัทส่งสำเร็จจริง — ดู 0154) — **รูปไม่ถูกแตะเลย**
 //
@@ -43,7 +43,7 @@ const json = (body: unknown, status = 200) =>
   });
 
 const ADMIN_ROLES = ["admin"] as readonly string[];
-// slot_key hardcode 'lock_test_video' อยู่ในตัว RPC media_purge_candidates (0155) แล้ว ไม่ต้องประกาศซ้ำที่นี่
+// slot_key hardcode ('lock_test_video','device_around_video') อยู่ในตัว RPC media_purge_candidates (0155 -> 0174) แล้ว ไม่ต้องประกาศซ้ำที่นี่
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 50;
 const MIN_RETENTION_DAYS = 7;

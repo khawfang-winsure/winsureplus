@@ -84,7 +84,13 @@ const SLOT_SLUG: Record<string, string> = {
   credit_history_evidence: "13-1-credit-history",
   device_on_off: "14-device-onoff",
   lock_test_video: "15-lock-test-video",
+  device_around_video: "15-1-device-around-video", // คลิปรอบตัวเครื่อง (0174/0175) ต้องตรง SLOT_SLUG ใน src/lib/media.ts
 };
+
+// (around-video) ช่องที่เป็น "คลิป" hardcode ตั้งใจ ไม่ derive จาก media_slots: ถ้า parse media_slots พังแล้วลิสต์นี้ว่าง
+// จะไม่ประทับ emailed_at -> คลิปไม่ถูก purge เลย (ผิดกติกา 30 วัน) ต้องตรงกับ media_purge_candidates (0174)
+const VIDEO_SLOT_KEYS = ["lock_test_video", "device_around_video"] as const;
+const isVideoSlotKey = (k: unknown): boolean => (VIDEO_SLOT_KEYS as readonly string[]).includes(k as string);
 
 function extFromMime(mime: string | null): string {
   if (mime === "image/png") return "png";
@@ -195,6 +201,7 @@ async function evaluateSendGates(
   slots: SlotDef[],
   gateFrom: string,
   videoRequiredFromSetting: string | null,
+  aroundVideoRequiredFromSetting: string | null = null, // (around-video) ไม่มี/ว่าง = ไม่บังคับ พฤติกรรมเดิมทุกอย่าง
 ): Promise<GateEvalResult> {
   const createdAt: string | null = contract.created_at ?? null;
   const isGated = !!createdAt && createdAt.slice(0, 10) >= gateFrom;
@@ -204,6 +211,9 @@ async function evaluateSendGates(
 
   if (isGated) {
     const videoRequired = computeVideoRequired(createdAt, contract.email_sent_at ?? null, videoRequiredFromSetting);
+    const aroundVideoRequired = computeVideoRequired(
+      createdAt, contract.email_sent_at ?? null, aroundVideoRequiredFromSetting,
+    ); // กฎเดียวกับ video_required (mirror SQL media_gate_complete 0174 + src/lib/media.ts)
     const counts: Record<string, number> = {};
     for (const f of files) counts[f.slot_key] = (counts[f.slot_key] ?? 0) + 1;
     const gate = evaluateGate(
@@ -211,7 +221,9 @@ async function evaluateSendGates(
       {
         condition: contract.condition,
         origin: contract.origin,
-        flags: { credit_history_found: !!contract.credit_history_found, video_required: videoRequired },
+        flags: { credit_history_found: !!contract.credit_history_found, video_required: videoRequired,
+          around_video_required: aroundVideoRequired,
+        },
       },
       counts,
     );
@@ -352,6 +364,7 @@ Deno.serve(async (req) => {
       "media_email_reply_to_sender",
       "media_email_attach_summary",
       "media_video_required_from", // (Wave 2)
+      "media_around_video_required_from", // (around-video)
       "media_email_max_total_mb", // (Wave 2)
     ]);
   if (setErr) return json({ error: setErr.message }, 500);
@@ -372,6 +385,7 @@ Deno.serve(async (req) => {
   const attachSummaryMode: "short" | "full" | "off" =
     rawAttachSummary === "full" || rawAttachSummary === "off" ? rawAttachSummary : "short"; // ค่าไม่รู้จัก/ไม่มี -> short
   const videoRequiredFromSetting: string | null = settings.media_video_required_from ?? null; // (Wave 2)
+  const aroundVideoRequiredFromSetting: string | null = settings.media_around_video_required_from ?? null; // (around-video)
 
   // (Wave 2) งบขนาดรวมต่อเมล — อ่านจาก app_settings.media_email_max_total_mb, fallback 16 MB ถ้าอ่านไม่ได้/
   // ผิดรูปแบบ/≤0, clamp ไม่ให้เกิน MAX_ALLOWED_TOTAL_MB (17) แม้ตั้งมาจาก setting เกินนั้น (เหตุผล/ตัวเลขที่
@@ -405,7 +419,7 @@ Deno.serve(async (req) => {
   // ใช้ evaluateSendGates() ตัวเดียวกับ pre-check ของเส้นทาง real-send ด้านล่าง — ไม่แตะ/ไม่ผ่าน SECTION 2/2.1
   // =====================================================================================
   if (dryRun === true) {
-    const gateEval = await evaluateSendGates(db, contractId, contract, files, slots, gateFrom, videoRequiredFromSetting);
+    const gateEval = await evaluateSendGates(db, contractId, contract, files, slots, gateFrom, videoRequiredFromSetting, aroundVideoRequiredFromSetting);
     const totalBytes = attachableFiles.reduce((sum: number, f: any) => sum + (f.bytes ?? 0), 0);
     const fileCount = attachableFiles.length;
     const budgetOk = fileCount <= MAX_FILES && totalBytes <= MAX_TOTAL_BYTES;
@@ -434,7 +448,7 @@ Deno.serve(async (req) => {
   // =====================================================================================
   let preGate: GateEvalResult;
   try {
-    preGate = await evaluateSendGates(db, contractId, contract, files, slots, gateFrom, videoRequiredFromSetting);
+    preGate = await evaluateSendGates(db, contractId, contract, files, slots, gateFrom, videoRequiredFromSetting, aroundVideoRequiredFromSetting);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
@@ -534,9 +548,12 @@ Deno.serve(async (req) => {
   const baht = (n: number) => Math.round(n).toLocaleString("th-TH");
 
   // (Wave 2) แยกไฟล์รูป (ไม่รวมคลิป) ไว้นับ "แนบรูปเอกสาร N ใบ" — คลิปมีบรรทัดของตัวเองแยกต่างหาก (ข้อ 7)
-  const imageAttachFiles = attachableFiles.filter((f: any) => f.slot_key !== "lock_test_video");
+  const imageAttachFiles = attachableFiles.filter((f: any) => !isVideoSlotKey(f.slot_key));
   const videoAttachFile = attachableFiles.find((f: any) => f.slot_key === "lock_test_video") ?? null;
   const purgedVideoFile = files.find((f: any) => f.slot_key === "lock_test_video" && f.purged_at) ?? null;
+  // (around-video) คลิปรอบตัวเครื่อง รายงานแยกจากคลิปเทสล็อก
+  const aroundAttachFile = attachableFiles.find((f: any) => f.slot_key === "device_around_video") ?? null;
+  const purgedAroundFile = files.find((f: any) => f.slot_key === "device_around_video" && f.purged_at) ?? null;
 
   const slotByKey = Object.fromEntries(slots.map((s) => [s.key, s]));
   const slotCountByKey: Record<string, number> = {};
@@ -587,6 +604,12 @@ Deno.serve(async (req) => {
   } else if (noteVideo) {
     // ข้อความเดิม (ควบคุมด้วย media_email_note_video, ปัจจุบัน 'false') — แสดงเฉพาะไม่มีคลิปในเคสเลย
     bodyLines.push("วิดีโอส่งแยกใน Gmail");
+  }
+  // (around-video) บรรทัดคลิปรอบตัวเครื่อง แสดงเฉพาะเมื่อมีแนบ หรือเคย purge ไปแล้ว (เคสที่ไม่มีช่องนี้ ข้อความเมลเดิมไม่เปลี่ยน)
+  if (aroundAttachFile) {
+    bodyLines.push("แนบคลิปรอบตัวเครื่อง 1 คลิป");
+  } else if (purgedAroundFile?.emailed_at) {
+    bodyLines.push(`คลิปรอบตัวเครื่องส่งไปแล้วเมื่อ ${formatThaiDate(purgedAroundFile.emailed_at)}`);
   }
 
   // บรรทัดท้าย: ผู้ทำรายการ (contract.operator) | ตรวจโดย (reviewerName) | ผู้ส่ง (callerProfile.full_name)
@@ -715,11 +738,11 @@ Deno.serve(async (req) => {
   try {
     const info = await transporter.sendMail(mailOptions);
 
-    // (Wave 2) ประทับ contract_media.emailed_at เฉพาะแถว "คลิป" (lock_test_video) เท่านั้น — รูปไม่ purge
+    // (Wave 2) ประทับ contract_media.emailed_at เฉพาะแถว "คลิป" (lock_test_video + device_around_video ผ่าน VIDEO_SLOT_KEYS) เท่านั้น — รูปไม่ purge
     // เลยไม่ต้องประทับ (ดู comment คอลัมน์นี้ใน 0154 SECTION 1: "รูปไม่ตั้งค่านี้ (ไม่ purge)")
     // ทำก่อน/พร้อมกับการประทับ contracts.email_sent_at ด้านล่าง (ไม่เปลี่ยนวิธีประทับ email_sent_at เดิม)
     const videoMediaIds = attachableFiles
-      .filter((f: any) => f.slot_key === "lock_test_video")
+      .filter((f: any) => isVideoSlotKey(f.slot_key))
       .map((f: any) => f.id);
     if (videoMediaIds.length > 0) {
       try {

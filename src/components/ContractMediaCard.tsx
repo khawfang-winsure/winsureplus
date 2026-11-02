@@ -48,12 +48,14 @@ import {
 import {
   buildMediaFlags,
   checkImageFile,
+  checkVideoBudget,
   checkVideoFile,
   CHECK_IMAGE_MAX_BYTES,
   DEFAULT_MEDIA_SLOTS,
   EMAIL_MAX_TOTAL_BYTES,
   emailBudget,
   evaluateSlots,
+  formatMb1,
   isGated,
   isVideoSlotVisible,
   mbToBytes,
@@ -64,6 +66,10 @@ import {
   sniffImageMime,
   sniffVideoMime,
   VIDEO_MAX_BYTES,
+  VIDEO_SLOT_KEYS,
+  VIDEO_TOTAL_MAX_BYTES,
+  videoBudgetHint,
+  videoSlotRequiredFrom,
   type EmailBudgetFile,
   type MediaFile,
   type MediaSlot,
@@ -104,6 +110,8 @@ export function normalizeMediaSlots(raw: unknown[]): MediaSlot[] {
  *  ไม่ส่งมาเลย (undefined) = พฤติกรรมเดิมเป๊ะ (video_required เป็น false เสมอ — ดู regression trace (6d)/(25d) ใน media.ts) */
 export interface EvaluateFromStatusVideoFlags {
   videoRequiredFrom: string | null | undefined
+  /** วันเริ่มบังคับคลิปรอบตัวเครื่อง — บังคับใส่ ให้ TS ไล่ caller ที่ลืม */
+  aroundVideoRequiredFrom: string | null | undefined
   emailSentAt: string | null | undefined
 }
 
@@ -130,7 +138,7 @@ export function evaluateFromStatus(
   }
   const flags = buildMediaFlags(
     { creditHistoryFound: status.creditHistoryFound, createdAt: status.createdAt, emailSentAt: videoFlags?.emailSentAt },
-    { videoRequiredFrom: videoFlags?.videoRequiredFrom },
+    { videoRequiredFrom: videoFlags?.videoRequiredFrom, aroundVideoRequiredFrom: videoFlags?.aroundVideoRequiredFrom },
   )
   return evaluateSlots(slots, { condition: status.condition, origin: status.origin }, flags, files)
 }
@@ -993,6 +1001,8 @@ export default function ContractMediaCard({
     videoMaxMb: 10,
     emailMaxTotalMb: 16,
     retentionDays: 30,
+    aroundVideoRequiredFrom: null,
+    videoTotalMaxMb: 10.5,
   })
   const [videoUploadPct, setVideoUploadPct] = useState<Record<string, number | undefined>>({})
   const [playerFile, setPlayerFile] = useState<ContractMediaFile | null>(null)
@@ -1119,13 +1129,21 @@ export default function ContractMediaCard({
     return () => document.removeEventListener('keydown', onKey)
   }, [dupConfirm])
 
+  const flagSettings = useMemo(
+    () => ({
+      videoRequiredFrom: videoSettings.videoRequiredFrom,
+      aroundVideoRequiredFrom: videoSettings.aroundVideoRequiredFrom,
+    }),
+    [videoSettings.videoRequiredFrom, videoSettings.aroundVideoRequiredFrom],
+  )
+
   const mediaFlags = useMemo(
     () =>
       buildMediaFlags(
         { creditHistoryFound, createdAt: contract.createdAt, emailSentAt: contract.emailSentAt },
-        { videoRequiredFrom: videoSettings.videoRequiredFrom },
+        flagSettings,
       ),
-    [creditHistoryFound, contract.createdAt, contract.emailSentAt, videoSettings.videoRequiredFrom],
+    [creditHistoryFound, contract.createdAt, contract.emailSentAt, flagSettings],
   )
 
   const evaluation = useMemo(
@@ -1156,7 +1174,8 @@ export default function ContractMediaCard({
     const def = slotDefByKey.get(e.key)
     if (!def) return true
     if (def.kind === 'video') {
-      return isVideoSlotVisible({ createdAt: contract.createdAt }, videoSettings.videoRequiredFrom) || e.count > 0
+      // แต่ละช่องคลิปมีวันเริ่มของตัวเอง (videoSlotRequiredFrom) — ห้ามใช้วันเดียวกันทั้ง 2 ช่อง ไม่งั้นช่องใหม่โผล่ทุกเคสตั้งแต่วันของคลิปเทสล็อก
+      return isVideoSlotVisible({ createdAt: contract.createdAt }, videoSlotRequiredFrom(e.key, flagSettings)) || e.count > 0
     }
     if (isConditionalRule(def.required) && !e.required && e.count === 0) return false
     return true
@@ -1172,6 +1191,8 @@ export default function ContractMediaCard({
     return map
   }, [files])
 
+  const deleteTargetSlotKey = deleteConfirmId ? files.find((f) => f.id === deleteConfirmId)?.slotKey : undefined
+  const deleteNoun = deleteTargetSlotKey && slotDefByKey.get(deleteTargetSlotKey)?.kind === 'video' ? 'คลิป' : 'รูป'
   const gated = isGated(contract, gateFrom)
   const totalRequiredSlots = evaluation.slots.filter((s) => s.required).length
 
@@ -1184,8 +1205,19 @@ export default function ContractMediaCard({
     () => mbToBytes(videoSettings?.emailMaxTotalMb, EMAIL_MAX_TOTAL_BYTES),
     [videoSettings?.emailMaxTotalMb],
   )
-  const emailMaxMbLabel = Math.round(emailMaxBytes / (1024 * 1024))
-  const videoMaxMbLabel = Math.round(videoMaxBytes / (1024 * 1024))
+  // เพดานรวม 2 คลิป (10.5 MB) ใช้เฉพาะเคสที่สร้างตั้งแต่วันเริ่มคลิปรอบตัวเครื่อง — เคสเก่าใช้กฎเดิม (ตรงกับ media-sign)
+  const videoTotalMaxBytes = useMemo(
+    () => mbToBytes(videoSettings?.videoTotalMaxMb, VIDEO_TOTAL_MAX_BYTES),
+    [videoSettings?.videoTotalMaxMb],
+  )
+  const videoTotalRuleActive = isVideoSlotVisible({ createdAt: contract.createdAt }, videoSettings.aroundVideoRequiredFrom)
+  const liveVideoBytes = files
+    .filter((f) => (VIDEO_SLOT_KEYS as readonly string[]).includes(f.slotKey) && !f.purgedAt && !f.deletedAt)
+    .reduce((n, f) => n + f.bytes, 0)
+  const anyVideoUploading = VIDEO_SLOT_KEYS.some((k) => videoUploadPct[k] !== undefined)
+  // เลข MB ทศนิยม 1 ตำแหน่ง ตัด .0 ทิ้ง (16 / 10.5) — ห้าม Math.round เพราะ 10.5 จะกลายเป็น 11
+  const emailMaxMbLabel = formatMb1(emailMaxBytes).replace(/\.0$/, '')
+  const videoMaxMbLabel = formatMb1(videoMaxBytes).replace(/\.0$/, '')
   const emailBudgetFiles: EmailBudgetFile[] = useMemo(
     () => files.map((f) => ({ bytes: f.bytes, purgedAt: f.purgedAt, deletedAt: f.deletedAt })),
     [files],
@@ -1302,7 +1334,8 @@ export default function ContractMediaCard({
    *  เพราะช่วงรอ network (findMediaDuplicate) หรือรอผู้ใช้กด modal ไฟล์ซ้ำ ผู้ใช้ยังกดปุ่ม/ลากไฟล์เข้าช่องเดิมซ้ำได้ถ้าไม่ล็อกไว้ก่อน
    *  ปลดล็อกใน finally เสมอ — ครอบทุกทางออก (สำเร็จ/error/ยกเลิกใน modal/sniff ไม่ผ่าน/abort/unmount) */
   async function processVideoFile(slotKey: string, file: File) {
-    if (videoBusyRef.current[slotKey]) {
+    // ล็อกข้าม 2 ช่องคลิป: อัปได้ทีละคลิป ไม่งั้นอัปพร้อมกันแล้วทั้งคู่ผ่านเพดานรวมแต่รวมกันเกิน
+    if (VIDEO_SLOT_KEYS.some((k) => videoBusyRef.current[k])) {
       setToast('คลิปกำลังอัปอยู่ รอให้เสร็จก่อน')
       return
     }
@@ -1320,10 +1353,26 @@ export default function ContractMediaCard({
         return
       }
 
+      if (videoTotalRuleActive) {
+        const otherKey = VIDEO_SLOT_KEYS.find((k) => k !== slotKey)
+        const budget = checkVideoBudget({
+          newSlotKey: slotKey,
+          newBytes: file.size,
+          files: files.map((f) => ({ slotKey: f.slotKey, bytes: f.bytes, purgedAt: f.purgedAt, deletedAt: f.deletedAt })),
+          videoTotalMaxBytes,
+          emailMaxBytes,
+          otherLabel: otherKey ? slotDefByKey.get(otherKey)?.label : undefined,
+        })
+        if (!budget.ok) {
+          if (!unmountedRef.current) setToast(budget.reasonTh ?? 'ขนาดคลิปเกินเพดาน')
+          return
+        }
+      }
+
       const sha256 = await sha256Hex(file)
 
       if (files.some((f) => f.sha256 === sha256)) {
-        if (!unmountedRef.current) setToast('คลิปนี้แนบไว้แล้ว ระบบนับให้ 1 ครั้ง')
+        if (!unmountedRef.current) setToast('คลิปนี้แนบไว้ในเคสนี้แล้ว (ใช้ไฟล์เดียวกันซ้ำ 2 ช่องไม่ได้) ระบบนับให้ 1 ครั้ง')
         return
       }
 
@@ -1423,7 +1472,7 @@ export default function ContractMediaCard({
     const isVideoSlot = def?.kind === 'video'
     const accepted = arr.filter((f) => looksLikeVideoFile(f) === isVideoSlot)
     if (accepted.length < arr.length) {
-      setToast(isVideoSlot ? 'ช่องนี้รับเฉพาะคลิป mp4 หรือ mov' : 'ช่องนี้รับเฉพาะรูป คลิปให้วางที่ช่องคลิปเทสล็อกเครื่อง')
+      setToast(isVideoSlot ? 'ช่องนี้รับเฉพาะคลิป mp4 หรือ mov' : 'ช่องนี้รับเฉพาะรูป คลิปให้วางที่ช่องคลิป')
     }
     return accepted
   }
@@ -1596,7 +1645,13 @@ export default function ContractMediaCard({
             const isOverMax = def?.max != null && e.count > def.max
             const isEmptyUploadable = canUpload && slotFiles.length === 0
             // เพดานคลิปมาจาก app_settings เสมอ (ห้าม hardcode MB ในข้อความ) — ช่องอื่นใช้ hint เดิมจาก media.ts
-            const hintText = def?.kind === 'video' ? `ไม่เกิน ${videoMaxMbLabel} MB (ประมาณ 1 นาที)` : def?.hint
+            const clipHint = `ไม่เกิน ${videoMaxMbLabel} MB (ประมาณ 1 นาที)`
+            const hintText =
+              def?.kind === 'video'
+                ? videoTotalRuleActive
+                  ? `${videoBudgetHint(liveVideoBytes, videoTotalMaxBytes)} (เก็บที่ไว้ให้อีกคลิปด้วย)`
+                  : clipHint
+                : def?.hint
             return (
               <div
                 key={e.key}
@@ -1654,6 +1709,7 @@ export default function ContractMediaCard({
                         <VideoSlotFile
                           key={f.id}
                           file={f}
+                          label={e.label}
                           canDelete={canDelete}
                           onOpen={() => setPlayerFile(f)}
                           onDeleteRequest={() => setDeleteConfirmId(f.id)}
@@ -1707,7 +1763,7 @@ export default function ContractMediaCard({
                         addButtonRefs.current[e.key] = el
                       }}
                       onClick={() => fileInputRefs.current[e.key]?.click()}
-                      disabled={!!prog || videoUploadPct[e.key] !== undefined}
+                      disabled={!!prog || videoUploadPct[e.key] !== undefined || (def?.kind === 'video' && anyVideoUploading)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-peach px-2.5 py-1.5 text-xs font-semibold text-ink-soft transition hover:bg-peach-light/40 disabled:opacity-50"
                     >
                       <Upload size={13} /> {def?.kind === 'video' ? 'เพิ่มคลิป' : 'เพิ่มรูป'}
@@ -1778,14 +1834,14 @@ export default function ContractMediaCard({
       {deleteConfirmId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setDeleteConfirmId(null)}>
           <div className="w-full max-w-sm rounded-2xl bg-surface p-5 shadow-xl" onClick={(ev) => ev.stopPropagation()}>
-            <p className="mb-4 text-sm text-ink">ยืนยันลบรูปนี้? ลบแล้วกู้คืนไม่ได้</p>
+            <p className="mb-4 text-sm text-ink">{`ยืนยันลบ${deleteNoun}นี้? ลบแล้วกู้คืนไม่ได้`}</p>
             {deleteErr && <p className="mb-3 text-sm text-red-600">{deleteErr}</p>}
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setDeleteConfirmId(null)} disabled={deleteBusy}>
                 ยกเลิก
               </Button>
               <Button onClick={() => void handleConfirmDelete()} disabled={deleteBusy}>
-                {deleteBusy ? 'กำลังลบ...' : 'ลบรูป'}
+                {deleteBusy ? 'กำลังลบ...' : `ลบ${deleteNoun}`}
               </Button>
             </div>
           </div>
@@ -1805,7 +1861,13 @@ export default function ContractMediaCard({
         />
       )}
 
-      {playerFile && <MediaVideoModal file={playerFile} onClose={() => setPlayerFile(null)} />}
+      {playerFile && (
+        <MediaVideoModal
+          file={playerFile}
+          label={slotDefByKey.get(playerFile.slotKey)?.label ?? 'คลิป'}
+          onClose={() => setPlayerFile(null)}
+        />
+      )}
     </Card>
   )
 }
@@ -1821,11 +1883,13 @@ function SlotStatusPill({ status, count, min }: { status: SlotEvaluation['status
  *  ไฟล์ purged (ลบอัตโนมัติหลังส่งเมล 30 วัน) ไม่ขอ URL เลย — โชว์ข้อความแทนตามที่ตกลง ช่องยังนับว่าครบเหมือนเดิม */
 function VideoSlotFile({
   file,
+  label,
   canDelete,
   onOpen,
   onDeleteRequest,
 }: {
   file: ContractMediaFile
+  label: string
   canDelete: boolean
   onOpen: () => void
   onDeleteRequest: () => void
@@ -1848,7 +1912,7 @@ function VideoSlotFile({
         className="flex flex-1 items-center gap-2 text-left text-xs font-semibold text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
       >
         <Video size={16} className="shrink-0 text-salmon-deep" aria-hidden="true" />
-        {`คลิปเทสล็อกเครื่อง (${formatMb(file.bytes)} MB)`}
+        {`${label} (${formatMb(file.bytes)} MB)`}
       </button>
       {canDelete && (
         <button
@@ -2282,7 +2346,7 @@ function MediaLightbox({
 // คลิปมีทีละ 1 ไฟล์ต่อโมดัล เรียก getMediaUrl ตรงทุกครั้งที่ต้องขอใหม่ชัดเจนกว่า)
 const VIDEO_PLAYER_MAX_RETRIES = 2
 
-function MediaVideoModal({ file, onClose }: { file: ContractMediaFile; onClose: () => void }) {
+function MediaVideoModal({ file, label, onClose }: { file: ContractMediaFile; label: string; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -2377,12 +2441,12 @@ function MediaVideoModal({ file, onClose }: { file: ContractMediaFile; onClose: 
       ref={containerRef}
       role="dialog"
       aria-modal="true"
-      aria-label="เล่นคลิปเทสล็อกเครื่อง"
+      aria-label={`เล่น${label}`}
       className="fixed inset-0 z-50 flex flex-col bg-black/85"
       onClick={onClose}
     >
       <div className="flex items-center justify-between gap-2 bg-black/40 px-3 py-2" onClick={(ev) => ev.stopPropagation()}>
-        <p className="text-sm font-semibold text-white">คลิปเทสล็อกเครื่อง</p>
+        <p className="text-sm font-semibold text-white">{label}</p>
         <button
           ref={closeRef}
           type="button"

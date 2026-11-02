@@ -102,12 +102,14 @@ export interface MediaFlagsContract {
 /** อินพุตฝั่ง settings ของ buildMediaFlags — ค่าจริงมาจาก app_settings ผ่าน db.ts */
 export interface MediaFlagsSettings {
   videoRequiredFrom: string | null | undefined
+  /** app_settings.media_around_video_required_from — คลิปรอบตัวเครื่อง (seed 2099-12-31 = ปิด). บังคับใส่ เพื่อให้ TS ไล่ caller ที่ลืม */
+  aroundVideoRequiredFrom: string | null | undefined
 }
 
 // ---------------------------------------------------------------------------
-// Default 17 slots (seed → app_settings.media_slots, admin-editable ภายหลัง)
+// Default 18 slots (seed → app_settings.media_slots, admin-editable ภายหลัง)
 // (คอมเมนต์เดิมเขียนว่า "15 slots" แต่นับจริงคือ 16 มาตั้งแต่ก่อน Wave1 — ตกหล่นตอนเพิ่ม warranty_check
-//  sortOrder 4.1 ทีหลังแล้วลืมแก้เลข ตอนนี้แก้ให้ตรงของจริง 17 = 16 เดิม + lock_test_video ใหม่)
+//  sortOrder 4.1 ทีหลังแล้วลืมแก้เลข ตอนนี้แก้ให้ตรงของจริง 17 = 16 เดิม + lock_test_video ใหม่; ต่อมาเพิ่ม device_around_video เป็น 18 — คลิปรอบตัวเครื่อง แยกช่อง 1 ไฟล์/เคส)
 // อัปเดต 2026-09-13: เจ้าของกลับคำจากเดิม (เคยตัดวิดีโอออกโดยตั้งใจ เพราะกังวลพื้นที่เก็บ/ขนาดไฟล์)
 // ตอนนี้ยอมรับคลิปเทสล็อกเครื่อง 1 คลิป/เคส (เพดานขนาดตามค่าตั้ง app_settings.media_video_max_mb, ~1 นาที) แนบไปกับเมลบริษัทฉบับเดียวกับรูป
 // แล้วลบคลิปออกจากเว็บ 30 วันหลังส่งเมล ทุกเคสไม่มีข้อยกเว้น (ดู videoPurgeDueAt ด้านล่าง) — รูปไม่ลบ
@@ -131,7 +133,12 @@ export const DEFAULT_MEDIA_SLOTS: MediaSlot[] = [
   { key: 'credit_history_evidence', label: 'ใบแจ้งความ / หลักฐานเคลียร์ยอด', sortOrder: 13.1, min: 1, max: null, required: { when: 'flag', name: 'credit_history_found' } },
   { key: 'device_on_off', label: 'สถานะ On/Off ของเครื่อง', sortOrder: 14, min: 1, max: 1, required: 'always' },
   { key: 'lock_test_video', label: 'คลิปเทสล็อกเครื่อง', sortOrder: 15, min: 1, max: 1, kind: 'video', required: { when: 'flag', name: 'video_required' }, hint: 'ไม่เกินขนาดที่ตั้งไว้ (ประมาณ 1 นาที)' },
+  { key: 'device_around_video', label: 'คลิปรอบตัวเครื่อง', sortOrder: 15.1, min: 1, max: 1, kind: 'video', required: { when: 'flag', name: 'around_video_required' } },
 ]
+
+/** ช่องคลิปทั้งหมด — ใช้รวมงบขนาด 2 คลิป (ตรงกับ VIDEO_SLOT_KEYS ฝั่ง send-company-email ที่ hardcode ไว้) */
+export const VIDEO_SLOT_KEYS = ['lock_test_video', 'device_around_video'] as const
+export const AROUND_VIDEO_SLOT_KEY = 'device_around_video'
 
 // ---------------------------------------------------------------------------
 // Resize policy constants (ใช้โดยน้องวิวตอน resize รูปด้วย canvas)
@@ -161,6 +168,10 @@ export const CHECK_IMAGE_MIN_LONG_SIDE = 800 // px, warn ไม่บล็อ�
 export const VIDEO_MAX_BYTES = 10 * 1024 * 1024 // 10 MB ต่อคลิป (default เมื่อไม่ส่ง maxBytes)
 export const EMAIL_MAX_TOTAL_BYTES = 16 * 1024 * 1024 // รูป+คลิป ดิบรวมต่อเมล 1 ฉบับ (default เมื่อไม่ส่ง opts.maxBytes)
 export const EMAIL_MAX_FILES = 30 // default เมื่อไม่ส่ง opts.maxFiles
+// เพดานรวม 2 คลิป (เทสล็อก + รอบตัวเครื่อง) 10.5 MB: 10.5 + รูปใหญ่สุดที่เคยเจอ 5.5 = 16 MB เพดานเมล
+// ค่าจริงอ่านจาก app_settings.media_video_total_max_mb (seed 10.5) ผ่าน mbToBytes(); ค่านี้เป็นแค่ default
+export const VIDEO_TOTAL_MAX_MB_DEFAULT = 10.5
+export const VIDEO_TOTAL_MAX_BYTES = Math.round(VIDEO_TOTAL_MAX_MB_DEFAULT * 1024 * 1024) // 11,010,048
 
 // ---------------------------------------------------------------------------
 // Gate cutoff — สัญญาที่สร้างตั้งแต่วันนี้เป็นต้นไปต้องส่งรูปครบก่อนส่งเมล
@@ -404,6 +415,12 @@ export function sniffVideoMime(bytes: Uint8Array): VideoMime | null {
  * ไม่ใช่ mp4/mov -> บอกให้ใช้คลิปจากกล้องไอโฟนหรือที่ส่งทาง LINE
  * เกินเพดาน (>, เท่ากับพอดี "ผ่าน") -> บอกวิธีย่อด้วย QuickTime Player บน iMac พร้อมตัวเลข MB ตามเพดานจริงที่ใช้
  */
+/** MB สำหรับข้อความเพดาน: เต็มจำนวนไม่มีทศนิยม (10), ไม่เต็ม 1 ตำแหน่ง (10.5) — กัน Math.round โชว์ 10.5 เป็น 11 */
+function formatMbShort(bytes: number): string {
+  const mb = bytes / (1024 * 1024)
+  return Number.isInteger(mb) ? String(mb) : mb.toFixed(1)
+}
+
 export function checkVideoFile(file: {
   size: number
   sniffedMime: VideoMime | null
@@ -417,7 +434,7 @@ export function checkVideoFile(file: {
   }
   const maxBytes = file.maxBytes ?? VIDEO_MAX_BYTES
   if (file.size > maxBytes) {
-    const maxMb = Math.round(maxBytes / (1024 * 1024))
+    const maxMb = formatMbShort(maxBytes)
     return {
       accept: false,
       error:
@@ -548,7 +565,144 @@ export function buildMediaFlags(contract: MediaFlagsContract, settings: MediaFla
       { createdAt: contract.createdAt, emailSentAt: contract.emailSentAt },
       settings.videoRequiredFrom,
     ),
+    around_video_required: isVideoRequired(
+      { createdAt: contract.createdAt, emailSentAt: contract.emailSentAt },
+      settings.aroundVideoRequiredFrom,
+    ),
   }
+}
+
+/**
+ * วันที่เริ่มบังคับ/โชว์ ของช่องคลิปแต่ละช่อง (ใช้คู่กับ isVideoSlotVisible)
+ * lock_test_video -> settings.videoRequiredFrom ; device_around_video -> settings.aroundVideoRequiredFrom
+ * ช่องอื่น -> null (ไม่ใช่ช่องที่คุมด้วยวันที่)
+ */
+export function videoSlotRequiredFrom(slotKey: string, settings: MediaFlagsSettings): string | null | undefined {
+  if (slotKey === 'lock_test_video') return settings.videoRequiredFrom
+  if (slotKey === AROUND_VIDEO_SLOT_KEY) return settings.aroundVideoRequiredFrom
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// checkVideoBudget — เพดานรวม 2 คลิป (<= 10.5 MB) + เพดานเมล 16 MB ตอนจะอัปคลิปใหม่
+// pure: ข้อความไทยใช้ตัวเลขจริง ทศนิยม 1 ตำแหน่งเสมอ (ไม่ใช้ Math.round แบบจำนวนเต็ม)
+// ---------------------------------------------------------------------------
+
+export interface VideoBudgetFile {
+  slotKey: string
+  bytes: number
+  purgedAt?: string | null
+  deletedAt?: string | null
+}
+
+export interface VideoBudgetInput {
+  /** ช่องที่กำลังจะอัป (lock_test_video | device_around_video) */
+  newSlotKey: string
+  newBytes: number
+  /** ไฟล์ทั้งเคส (รูป+คลิป) ที่โหลดอยู่ — ฟังก์ชันกรอง purged/deleted เอง */
+  files: VideoBudgetFile[]
+  /** ไม่ส่ง -> VIDEO_TOTAL_MAX_BYTES (10.5 MB) */
+  videoTotalMaxBytes?: number
+  /** ไม่ส่ง -> EMAIL_MAX_TOTAL_BYTES (16 MB) */
+  emailMaxBytes?: number
+  /** ชื่อคลิปอีกช่องในข้อความ; ไม่ส่ง -> label จาก DEFAULT_MEDIA_SLOTS */
+  otherLabel?: string
+}
+
+export interface VideoBudgetResult {
+  ok: boolean
+  /** null เมื่อ ok */
+  reasonTh: string | null
+  reason: 'video_total' | 'video_total_no_room' | 'email_total' | null
+  /** ที่เหลือสำหรับคลิปใหม่ภายใต้เพดาน 2 คลิป (ไบต์, >= 0) */
+  leftBytes: number
+  /** ไบต์ที่คลิปอีกช่อง (live) ใช้อยู่ */
+  otherBytes: number
+}
+
+const ONE_MB = 1024 * 1024
+
+/** ไบต์ -> สตริง MB ทศนิยม 1 ตำแหน่ง (ปัดปกติ) */
+export function formatMb1(bytes: number): string {
+  return (bytes / ONE_MB).toFixed(1)
+}
+
+/** ปัดลง 1 ตำแหน่ง — ใช้กับ "เหลือที่อีก" ไม่ให้บอกเกินที่มีจริง */
+function formatMb1Floor(bytes: number): string {
+  const tenths = Math.floor((Math.max(0, bytes) / ONE_MB) * 10 + 1e-9)
+  return (tenths / 10).toFixed(1)
+}
+
+/** ปัดขึ้น 1 ตำแหน่ง — ใช้กับ "ต้องลดอีก" ไม่ให้บอกน้อยเกินจริง */
+function formatMb1Ceil(bytes: number): string {
+  const tenths = Math.ceil((Math.max(0, bytes) / ONE_MB) * 10 - 1e-9)
+  return (tenths / 10).toFixed(1)
+}
+
+/**
+ * ตรวจก่อนอัปคลิปใหม่ 2 ชั้น (ชั้นเบราว์เซอร์ — media-sign ทำซ้ำฝั่งเซิร์ฟเวอร์เอง)
+ * 1) คลิปใหม่ + คลิปอีกช่องที่ยัง live <= videoTotalMaxBytes (เท่ากันพอดีผ่าน, เกิน 1 ไบต์ไม่ผ่าน)
+ * 2) ไฟล์ live ทั้งเคส (ไม่รวมไฟล์ใน newSlotKey = กำลังแทนที่) + คลิปใหม่ <= emailMaxBytes
+ * ไฟล์ purgedAt/deletedAt ไม่นับ ; ไฟล์ live ใน newSlotKey เดิมไม่นับ (แทนที่ได้)
+ */
+export function checkVideoBudget(input: VideoBudgetInput): VideoBudgetResult {
+  const videoMax = input.videoTotalMaxBytes ?? VIDEO_TOTAL_MAX_BYTES
+  const emailMax = input.emailMaxBytes ?? EMAIL_MAX_TOTAL_BYTES
+  const live = input.files.filter((f) => !f.purgedAt && !f.deletedAt)
+  const otherKeys = (VIDEO_SLOT_KEYS as readonly string[]).filter((k) => k !== input.newSlotKey)
+  const otherBytes = live.filter((f) => otherKeys.includes(f.slotKey)).reduce((n, f) => n + f.bytes, 0)
+  const otherLabel =
+    input.otherLabel ?? DEFAULT_MEDIA_SLOTS.find((sl) => sl.key === otherKeys[0])?.label ?? 'คลิปอีกช่อง'
+  const leftBytes = Math.max(0, videoMax - otherBytes)
+  const capMb = formatMb1(videoMax)
+
+  if (input.newBytes + otherBytes > videoMax) {
+    if (leftBytes < ONE_MB) {
+      return {
+        ok: false,
+        reason: 'video_total_no_room',
+        leftBytes,
+        otherBytes,
+        reasonTh:
+          otherLabel + ' ใช้ไป ' + formatMb1(otherBytes) + ' MB จนเหลือที่ไม่พอ ลบ' + otherLabel +
+          'แล้วแนบตัวที่ย่อแล้ว (2 คลิปรวมกันไม่เกิน ' + capMb + ' MB)',
+      }
+    }
+    const left = formatMb1Floor(leftBytes)
+    return {
+      ok: false,
+      reason: 'video_total',
+      leftBytes,
+      otherBytes,
+      reasonTh:
+        'คลิปนี้ ' + formatMb1(input.newBytes) + ' MB แต่เหลือที่อีก ' + left + ' MB (2 คลิปรวมกันไม่เกิน ' +
+        capMb + ' MB, ' + otherLabel + ' ใช้ไป ' + formatMb1(otherBytes) + ' MB) ย่อคลิปนี้ให้เหลือไม่เกิน ' +
+        left + ' MB',
+    }
+  }
+
+  const otherFilesBytes = live.filter((f) => f.slotKey !== input.newSlotKey).reduce((n, f) => n + f.bytes, 0)
+  const total = otherFilesBytes + input.newBytes
+  if (total > emailMax) {
+    return {
+      ok: false,
+      reason: 'email_total',
+      leftBytes,
+      otherBytes,
+      reasonTh:
+        'เมลฉบับนี้จะหนัก ' + formatMb1(total) + ' MB เกินเพดาน ' + formatMb1(emailMax).replace(/\.0$/, '') +
+        ' MB ต้องลดอีก ' + formatMb1Ceil(total - emailMax) + ' MB',
+    }
+  }
+  return { ok: true, reasonTh: null, reason: null, leftBytes, otherBytes }
+}
+
+/** ข้อความใต้ 2 ช่องคลิป: "2 คลิปรวมกันไม่เกิน 10.5 MB · เหลืออีก {left} MB" (usedBytes = คลิป live รวมกัน) */
+export function videoBudgetHint(usedBytes: number, videoTotalMaxBytes: number = VIDEO_TOTAL_MAX_BYTES): string {
+  return (
+    '2 คลิปรวมกันไม่เกิน ' + formatMb1(videoTotalMaxBytes) + ' MB · เหลืออีก ' +
+    formatMb1Floor(videoTotalMaxBytes - usedBytes) + ' MB'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +789,7 @@ const SLOT_SLUG: Record<string, string> = {
   credit_history_evidence: '13-1-credit-history',
   device_on_off: '14-device-onoff',
   lock_test_video: '15-lock-test-video',
+  device_around_video: '15-1-device-around-video',
 }
 
 /**
@@ -664,7 +819,7 @@ export function maskName(name: string): string {
 // Trace tests (verify ด้วย node -e ผ่าน tsc transpile — repo ไม่มี vitest)
 // ===========================================================================
 //
-// ต่อไปนี้อ้างอิง DEFAULT_MEDIA_SLOTS ทั้ง 17 ช่อง เว้นแต่ระบุเป็นอย่างอื่น (เดิม 16 ช่องจริง + lock_test_video ใหม่)
+// ต่อไปนี้อ้างอิง DEFAULT_MEDIA_SLOTS ทั้ง 18 ช่อง เว้นแต่ระบุเป็นอย่างอื่น (เดิม 16 ช่องจริง + lock_test_video + device_around_video; เคสทดสอบจริงอยู่ที่ scripts/media.test.ts)
 //
 // evaluateSlots:
 // (1) condition:'new', origin:'th', flags:{credit_history_found:false}

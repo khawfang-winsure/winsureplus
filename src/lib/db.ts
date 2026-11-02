@@ -9859,18 +9859,24 @@ export async function getMediaEmailAttachSummary(): Promise<'short' | 'full' | '
 
 const MEDIA_VIDEO_REQUIRED_FROM_KEY = 'media_video_required_from'
 const MEDIA_VIDEO_MAX_MB_KEY = 'media_video_max_mb'
+const MEDIA_AROUND_VIDEO_REQUIRED_FROM_KEY = 'media_around_video_required_from'
+const MEDIA_VIDEO_TOTAL_MAX_MB_KEY = 'media_video_total_max_mb'
 const MEDIA_EMAIL_MAX_TOTAL_MB_KEY = 'media_email_max_total_mb'
 const MEDIA_VIDEO_RETENTION_DAYS_KEY = 'media_video_retention_days'
 
 /** ค่าตั้งค่าฟีเจอร์คลิปเทสล็อกเครื่อง (0154) รวมทีเดียว — 1 query ด้วย .in() แทนยิงทีละ key
  *  fallback ปลอดภัยถ้าอ่านไม่ได้/ยังไม่ apply migration: videoRequiredFrom=null (ไม่บังคับ — isVideoRequired
- *  ของ media.ts มองว่าไม่ใช่วันที่ที่ถูกต้อง = false เสมอ), videoMaxMb=10, emailMaxTotalMb=16 (เจ้าของเลือกเพดานเมลรวม 16 MB), retentionDays=30 */
+ *  ของ media.ts มองว่าไม่ใช่วันที่ที่ถูกต้อง = false เสมอ), videoMaxMb=10, emailMaxTotalMb=16 (เจ้าของเลือกเพดานเมลรวม 16 MB), retentionDays=30
+ *  (0174 คลิปรอบตัวเครื่อง) aroundVideoRequiredFrom=null (ไม่บังคับ, เหมือน videoRequiredFrom), videoTotalMaxMb=10.5 (เพดานรวม 2 คลิป — เป็นทศนิยมได้ ห้ามปัดเป็นจำนวนเต็ม)
+ *  ยังไม่มี key ใหม่ในฐาน/อ่านไม่ได้ = ใช้ fallback นี้ พฤติกรรมเคสเดิมเหมือนเดิมทุกอย่าง */
 export async function getMediaVideoSettings(): Promise<MediaVideoSettings> {
   const fallback: MediaVideoSettings = {
     videoRequiredFrom: null,
     videoMaxMb: 10,
     emailMaxTotalMb: 16,
     retentionDays: 30,
+    aroundVideoRequiredFrom: null,
+    videoTotalMaxMb: 10.5,
   }
   if (!supabase) return fallback
   const { data, error } = await supabase
@@ -9881,12 +9887,15 @@ export async function getMediaVideoSettings(): Promise<MediaVideoSettings> {
       MEDIA_VIDEO_MAX_MB_KEY,
       MEDIA_EMAIL_MAX_TOTAL_MB_KEY,
       MEDIA_VIDEO_RETENTION_DAYS_KEY,
+      MEDIA_AROUND_VIDEO_REQUIRED_FROM_KEY,
+      MEDIA_VIDEO_TOTAL_MAX_MB_KEY,
     ])
   if (error) throw error
   const rows = (data ?? []) as Array<{ key: string; value: string | null }>
   const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]))
 
   const videoRequiredFrom = byKey[MEDIA_VIDEO_REQUIRED_FROM_KEY]?.trim() || null
+  const aroundVideoRequiredFrom = byKey[MEDIA_AROUND_VIDEO_REQUIRED_FROM_KEY]?.trim() || null
 
   const parsePositiveInt = (raw: string | null | undefined, fallbackN: number): number => {
     const n = Number(raw)
@@ -9898,6 +9907,8 @@ export async function getMediaVideoSettings(): Promise<MediaVideoSettings> {
     videoMaxMb: parsePositiveInt(byKey[MEDIA_VIDEO_MAX_MB_KEY], fallback.videoMaxMb),
     emailMaxTotalMb: parsePositiveInt(byKey[MEDIA_EMAIL_MAX_TOTAL_MB_KEY], fallback.emailMaxTotalMb),
     retentionDays: parsePositiveInt(byKey[MEDIA_VIDEO_RETENTION_DAYS_KEY], fallback.retentionDays),
+    aroundVideoRequiredFrom,
+    videoTotalMaxMb: parsePositiveInt(byKey[MEDIA_VIDEO_TOTAL_MAX_MB_KEY], fallback.videoTotalMaxMb),
   }
 }
 

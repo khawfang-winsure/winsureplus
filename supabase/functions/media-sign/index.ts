@@ -22,6 +22,13 @@
 // ออกจาก UNSIGNABLE_HEADERS default) บังคับว่าขนาดจริงที่ PUT ต้องตรงกับ `bytes` ที่ประกาศตอนขอ sign เป๊ะ
 // ไม่งั้น R2 ปฏิเสธด้วย signature mismatch — ยังไม่เคยทดสอบกับ R2 จริง (เหมือนกับ SigV4 presign เดิม) ต้อง
 // smoke ก่อนเปิดใช้จริง ตั้งใจไม่แตะ branch รูปเดิมเพื่อกันของเดิมพัง (ดูรายละเอียดในรายงานที่ส่งพร้อมงานนี้)
+//
+// (0174/0175 around-video — คลิปรอบตัวเครื่อง `device_around_video`) เฉพาะ branch คลิป หลังเช็ค scope สัญญา:
+//   1) created_at มากับ scope query เดิม (select "id, created_at") ไม่มี query เพิ่ม — ว่าง = ปฏิเสธคลิปนี้ (รูปไม่เกี่ยว)
+//   2) ช่อง device_around_video: ปฏิเสธถ้า media_around_video_required_from ไม่ใช่วันที่ถูกต้อง หรือสัญญาสร้างก่อนวันนั้น
+//      (UTC date เทียบกันเหมือน media_gate_complete) — เคสเก่าไม่มีช่องนี้
+//   3) สัญญาที่สร้างตั้งแต่วันเริ่ม: ขนาดคลิปนี้ + คลิปอีกช่องที่ยังไม่ลบ/purge ต้องไม่เกิน media_video_total_max_mb
+//      (fallback 10.5) — query ล้ม = ปฏิเสธคลิปนี้ ไม่กระทบรูป. เคสเก่าไม่ใช้กฎรวมนี้ (กติกาเดิม)
 
 // @ts-nocheck
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -49,6 +56,16 @@ const SIGN_EXPIRES_SECONDS = 300; // 5 นาที
 // (0154 Wave 2) ช่องคลิปเทสล็อกเครื่อง — kind ต้องอ่านจาก media_slots ฝั่ง server เท่านั้น
 const ALLOWED_VIDEO_MIME = ["video/mp4", "video/quicktime"] as readonly string[];
 const DEFAULT_VIDEO_MAX_MB = 10; // fallback ถ้าอ่าน app_settings.media_video_max_mb ไม่ได้/ผิดรูปแบบ
+const DEFAULT_VIDEO_TOTAL_MAX_MB = 10.5; // (around-video) เพดานรวม 2 คลิป fallback ถ้า media_video_total_max_mb ไม่ได้/ผิดรูปแบบ
+const MB = 1024 * 1024;
+const AROUND_SLOT_KEY = "device_around_video";
+const LOCK_SLOT_KEY = "lock_test_video";
+const CLIP_LABEL: Record<string, string> = {
+  [LOCK_SLOT_KEY]: "คลิปเทสล็อก",
+  [AROUND_SLOT_KEY]: "คลิปรอบตัวเครื่อง",
+};
+const fmt1 = (n: number) => (Math.round(n * 10) / 10).toFixed(1); // one decimal ไม่ปัดเป็นจำนวนเต็ม (10.5 ต้องไม่กลายเป็น 11)
+const floor1 = (n: number) => (Math.floor(n * 10 + 1e-9) / 10).toFixed(1); // "เหลือที่อีก" ปัดลง ไม่ให้เกินจริง
 
 interface MediaSlotDef {
   key: string;
@@ -73,13 +90,18 @@ const env = (k: string) => (Deno.env.get(k) ?? "").trim();
 // ปฏิเสธแบบสุภาพ (ปลอดภัยฝั่งปฏิเสธ ไม่ใช่ฝั่งยอม)
 async function loadMediaSettings(
   adminClient: ReturnType<typeof createClient>,
-): Promise<{ slots: MediaSlotDef[]; videoMaxMb: number }> {
-  const fallback = { slots: [] as MediaSlotDef[], videoMaxMb: DEFAULT_VIDEO_MAX_MB };
+): Promise<{ slots: MediaSlotDef[]; videoMaxMb: number; videoTotalMaxMb: number; aroundFrom: string | null }> {
+  const fallback = {
+    slots: [] as MediaSlotDef[],
+    videoMaxMb: DEFAULT_VIDEO_MAX_MB,
+    videoTotalMaxMb: DEFAULT_VIDEO_TOTAL_MAX_MB,
+    aroundFrom: null as string | null,
+  };
 
   const { data, error } = await adminClient
     .from("app_settings")
     .select("key, value")
-    .in("key", ["media_slots", "media_video_max_mb"]);
+    .in("key", ["media_slots", "media_video_max_mb", "media_video_total_max_mb", "media_around_video_required_from"]);
   if (error) {
     console.error("loadMediaSettings: query app_settings failed, falling back", error.message);
     return fallback;
@@ -87,6 +109,8 @@ async function loadMediaSettings(
 
   let slots: MediaSlotDef[] = [];
   let videoMaxMb = DEFAULT_VIDEO_MAX_MB;
+  let videoTotalMaxMb = DEFAULT_VIDEO_TOTAL_MAX_MB;
+  let aroundFrom: string | null = null;
 
   for (const row of (data ?? []) as AppSettingRow[]) {
     if (row.key === "media_slots") {
@@ -102,9 +126,16 @@ async function loadMediaSettings(
       // clamp เพดานบน 25 MB — เกินนี้ยังไงก็แนบส่งเมลไม่ได้อยู่แล้ว ค่าผิดรูปแบบ/≤0 ใช้ fallback เดิม
       if (Number.isFinite(n) && n > 0) videoMaxMb = Math.min(n, 25);
     }
+    if (row.key === "media_video_total_max_mb") {
+      const n = Number(row.value);
+      if (Number.isFinite(n) && n > 0) videoTotalMaxMb = Math.min(n, 16); // เพดานอีเมล 16 MB — ตั้งเกินนี้ไม่มีความหมาย
+    }
+    if (row.key === "media_around_video_required_from") {
+      aroundFrom = typeof row.value === "string" ? row.value : null;
+    }
   }
 
-  return { slots, videoMaxMb };
+  return { slots, videoMaxMb, videoTotalMaxMb, aroundFrom };
 }
 
 Deno.serve(async (req) => {
@@ -166,7 +197,7 @@ Deno.serve(async (req) => {
       }
 
       // (0154 Wave 2) kind ของช่องมาจาก DB เท่านั้น — ห้ามเชื่อ client ว่านี่คือช่องคลิปหรือรูป
-      const { slots, videoMaxMb } = await loadMediaSettings(adminClient);
+      const { slots, videoMaxMb, videoTotalMaxMb, aroundFrom } = await loadMediaSettings(adminClient);
       const slotDef = slots.find((s) => s && s.key === slotKey);
       const isVideoSlot = slotDef?.kind === "video";
       const looksLikeVideoMime = ALLOWED_VIDEO_MIME.includes(mime);
@@ -199,10 +230,54 @@ Deno.serve(async (req) => {
         return json({ error: "อัปโหลดได้เฉพาะแอดมิน/พนักงานเท่านั้น" }, 403);
       }
       // เช็ค scope ต่อสัญญาด้วย user client (เกาะ RLS) — ผ่าน role gate ข้างบนแล้วยังต้องเห็นสัญญานี้จริง
+      // (around-video) ดึง created_at มาใน query เดียวกัน (ไม่ query contracts เพิ่ม) — put มี scope check กิ่งเดียวสำหรับ
+      // admin/staff ทุกคน (PUT_ROLES) ผ่าน userClient ตัวนี้ จึงได้ created_at ทุกกิ่ง; กิ่ง get ไม่ใช้
       const { data: scopeRow, error: scopeErr } = await userClient
-        .from("contracts").select("id").eq("id", contractId).maybeSingle();
+        .from("contracts").select("id, created_at").eq("id", contractId).maybeSingle();
       if (scopeErr) return json({ error: scopeErr.message }, 500);
       if (!scopeRow) return json({ error: "ไม่มีสิทธิ์เข้าถึงสัญญานี้" }, 403);
+
+      // (around-video) เฉพาะ branch คลิป: กติกาเริ่มใช้ตามวันสร้างสัญญา + เพดานรวม 2 คลิป
+      // ทุกความล้มเหลวของส่วนนี้ปฏิเสธ "คลิปนี้" เท่านั้น — branch รูปไม่เข้ามาตรงนี้เลย
+      if (isVideoSlot && (slotKey === AROUND_SLOT_KEY || slotKey === LOCK_SLOT_KEY)) {
+        // created_at มาจาก scope query ด้านบน — ถ้าว่างผิดปกติ (ไม่ควรเกิด) ปฏิเสธเฉพาะคลิปนี้
+        if (!scopeRow.created_at) {
+          console.error("media-sign: scope row has no created_at", contractId);
+          return json({ error: "ตรวจข้อมูลสัญญาไม่สำเร็จ ลองใหม่อีกครั้ง" }, 500);
+        }
+        const createdDay = String(scopeRow.created_at).slice(0, 10);
+        const fromValid = typeof aroundFrom === "string" && /^\d{4}-\d{2}-\d{2}/.test(aroundFrom) &&
+          !Number.isNaN(Date.parse(aroundFrom.slice(0, 10)));
+        const underNewRule = fromValid && createdDay >= (aroundFrom as string).slice(0, 10);
+
+        if (slotKey === AROUND_SLOT_KEY && !underNewRule) {
+          return json({ error: "สัญญานี้ไม่ต้องแนบคลิปรอบตัวเครื่อง" }, 400);
+        }
+
+        if (underNewRule) {
+          const otherKey = slotKey === AROUND_SLOT_KEY ? LOCK_SLOT_KEY : AROUND_SLOT_KEY;
+          const { data: otherRows, error: oErr } = await adminClient
+            .from("contract_media").select("bytes")
+            .eq("contract_id", contractId).eq("slot_key", otherKey)
+            .is("deleted_at", null).is("purged_at", null);
+          if (oErr) {
+            console.error("media-sign: read other clip bytes failed", oErr.message);
+            return json({ error: "ตรวจขนาดคลิปอีกช่องไม่สำเร็จ ลองใหม่อีกครั้ง" }, 500);
+          }
+          const otherBytes = (otherRows ?? []).reduce((sum: number, r: any) => sum + (Number(r.bytes) || 0), 0);
+          const totalMaxBytes = videoTotalMaxMb * MB;
+          if (bytes + otherBytes > totalMaxBytes) {
+            const otherName = CLIP_LABEL[otherKey];
+            const otherMb = otherBytes / MB;
+            const leftMb = Math.max(0, videoTotalMaxMb - otherMb);
+            const capText = fmt1(videoTotalMaxMb);
+            const msg = leftMb < 1
+              ? `${otherName}ใช้ไป ${fmt1(otherMb)} MB จนเหลือที่ไม่พอ ลบ${otherName}แล้วแนบตัวที่ย่อแล้ว (2 คลิปรวมกันไม่เกิน ${capText} MB)`
+              : `คลิปนี้ ${fmt1(bytes / MB)} MB แต่เหลือที่อีก ${floor1(leftMb)} MB (2 คลิปรวมกันไม่เกิน ${capText} MB, ${otherName}ใช้ไป ${fmt1(otherMb)} MB) ย่อคลิปนี้ให้เหลือไม่เกิน ${floor1(leftMb)} MB`;
+            return json({ error: msg }, 400);
+          }
+        }
+      }
 
       // นามสกุลไฟล์ตาม mime: คลิป mp4/mov ตามชนิดจริง, รูปคง .jpg เดิมทุกกรณี (ไม่เปลี่ยนพฤติกรรมเดิม)
       const ext = isVideoSlot ? (mime === "video/quicktime" ? ".mov" : ".mp4") : ".jpg";

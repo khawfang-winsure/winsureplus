@@ -966,6 +966,10 @@ export interface MediaVideoSettings {
   videoMaxMb: number
   emailMaxTotalMb: number
   retentionDays: number
+  /** (0174) วันเริ่มบังคับคลิปรอบตัวเครื่อง (media_around_video_required_from) — null = ไม่บังคับ/ปิดฟีเจอร์ */
+  aroundVideoRequiredFrom: string | null
+  /** (0174) เพดานรวมของ 2 คลิป (MB, ทศนิยมได้ เช่น 10.5) — media_video_total_max_mb */
+  videoTotalMaxMb: number
 }
 
 // ---------- แคชข้อมูลสัญญาจากเว็บ PJ — เทียบกับค่าที่ทีมเราคีย์เอง (migration 0152, Edge Function pj-snapshot) ----------

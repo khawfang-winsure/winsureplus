@@ -126,7 +126,7 @@ import RetrospectiveExtensionPanel from '../components/RetrospectiveExtensionPan
 import CopyBox from '../components/CopyBox'
 import ContractMediaCard, { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractMediaCard'
 import { buildPendingDocMessage } from '../lib/messages'
-import { DEFAULT_MEDIA_SLOTS, isGated, type MediaSlot } from '../lib/media'
+import { DEFAULT_MEDIA_SLOTS, EMAIL_MAX_FILES, isGated, type MediaSlot } from '../lib/media'
 import {
   canStaffEdit,
   canSubmitForReview,
@@ -370,6 +370,8 @@ export default function ContractDetail() {
   const [reviewMediaStatus, setReviewMediaStatus] = useState<ContractMediaStatus | null>(null)
   // วันที่บังคับมีคลิปเทสล็อก (ตั้งค่าเดียวกับ WaitingEmail.tsx/WaitingSummary.tsx) — ให้ evaluateFromStatus รู้ว่าต้องเช็คคลิปด้วยไหม
   const [videoRequiredFrom, setVideoRequiredFrom] = useState<string | null | undefined>(undefined)
+  // วันบังคับคลิปรอบตัวเครื่อง (ตั้งค่าแยกจากคลิปเทสล็อก)
+  const [aroundVideoRequiredFrom, setAroundVideoRequiredFrom] = useState<string | null | undefined>(undefined)
   const [reviewLog, setReviewLog] = useState<ContractReviewLogEntry[]>([])
   const [reviewLogLoading, setReviewLogLoading] = useState(true)
   const [employeeNameById, setEmployeeNameById] = useState<Map<string, string>>(new Map())
@@ -556,6 +558,7 @@ export default function ContractDetail() {
         setReviewMediaSlots(normalizeMediaSlots(raw))
         setReviewGateFrom(gate)
         setVideoRequiredFrom(videoSettings.videoRequiredFrom)
+        setAroundVideoRequiredFrom(videoSettings.aroundVideoRequiredFrom)
       })
       .catch(() => {
         if (cancelled) return
@@ -717,7 +720,11 @@ export default function ContractDetail() {
   const reviewStatusRaw: ReviewStatus | null = contract.reviewStatus ?? null
   const reviewStatusForMachine: ReviewStatus = reviewStatusRaw ?? 'draft'
   const reviewMediaEvaluation = reviewMediaStatus
-    ? evaluateFromStatus(reviewMediaSlots, reviewMediaStatus, { videoRequiredFrom, emailSentAt: contract.emailSentAt })
+    ? evaluateFromStatus(reviewMediaSlots, reviewMediaStatus, {
+        videoRequiredFrom,
+        aroundVideoRequiredFrom,
+        emailSentAt: contract.emailSentAt,
+      })
     : null
   const reviewCanSubmit =
     reviewPostCutoff &&
@@ -745,6 +752,26 @@ export default function ContractDetail() {
     setReviewBusy(true)
     setReviewErr(null)
     try {
+      // เช็คขนาด/จำนวนไฟล์ก่อนส่งตรวจ (dry-run เดียวกับตอนอนุมัติ) — ไม่งั้นรู้ว่าเมลหนักเกินตอนแอดมินกดอนุมัติ
+      // preflight ที่ล้มคืน maxBytes=0 -> ข้ามการบล็อกเด็ดขาด (ห้ามให้ preflight ล้มทำให้งานเดิมค้าง) ส่งตรวจต่อได้ตามปกติ
+      try {
+        const pre = await preflightCompanyEmail(id)
+        if (pre.maxBytes > 0) {
+          if (pre.totalBytes > pre.maxBytes) {
+            const totalMb = (pre.totalBytes / (1024 * 1024)).toFixed(1)
+            const maxMb = (pre.maxBytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')
+            const overMb = Math.ceil(((pre.totalBytes - pre.maxBytes) / (1024 * 1024)) * 10) / 10
+            setReviewErr(`เมลฉบับนี้จะหนัก ${totalMb} MB เกินเพดาน ${maxMb} MB ต้องลดอีก ${overMb.toFixed(1)} MB (ลบรูปที่ไม่จำเป็นหรือย่อคลิป) แล้วค่อยส่งตรวจ`)
+            return
+          }
+          if (pre.fileCount > EMAIL_MAX_FILES) {
+            setReviewErr(`แนบไฟล์ ${pre.fileCount} ไฟล์ เกินเพดาน ${EMAIL_MAX_FILES} ไฟล์ต่อเมล ลบไฟล์ที่ไม่จำเป็นก่อนส่งตรวจ`)
+            return
+          }
+        }
+      } catch {
+        // preflight ล้ม — ไม่บล็อกการส่งตรวจ
+      }
       await submitForReview(id)
       await load()
       reloadReviewLog()
@@ -779,8 +806,12 @@ export default function ContractDetail() {
       }
       if (pre.totalBytes > pre.maxBytes) {
         const totalMb = (pre.totalBytes / (1024 * 1024)).toFixed(1)
-        const maxMb = (pre.maxBytes / (1024 * 1024)).toFixed(1)
+        const maxMb = (pre.maxBytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')
         setReviewErr(`ไฟล์รวม ${totalMb} MB เกินเพดาน ${maxMb} MB ส่งเมลไม่ได้ ให้ลบรูปที่ไม่จำเป็นหรือย่อคลิปก่อน`)
+        return
+      }
+      if (pre.maxBytes > 0 && pre.fileCount > EMAIL_MAX_FILES) {
+        setReviewErr(`แนบไฟล์ ${pre.fileCount} ไฟล์ เกินเพดาน ${EMAIL_MAX_FILES} ไฟล์ต่อเมล ลบไฟล์ที่ไม่จำเป็นก่อน`)
         return
       }
 
