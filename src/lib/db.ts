@@ -99,6 +99,7 @@ import type { PjReceiptDriftSnapshot } from './pjReceiptDrift'
 import { isPlanChangeReason, type PjPlanChangeSnapshot } from './pjPlanChange'
 import { LATE_BUCKETS, type LateBucket } from './collectorPeriod'
 import type { OverlapMatchKind, PjStaffOverlapCandidate, PjStaffOverlapDetail, RecentPjMoney } from './pjStaffOverlap'
+import { dropCancelledPays } from './cancelledPay'
 
 export type OptionKind =
   | 'phone_model'
@@ -7451,14 +7452,26 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
   // Step 4: payment_log — แยกเงินดาวน์ vs งวดจริง per contract
   // เงินดาวน์ = installment_id IS NULL | งวดจริง = installment_id NOT NULL
   // principal ต่อแถว = max(0, amount - coalesce(penalty_paid_amount, 0)) (ไม่นับค่าปรับ, migration 0034)
-  // รวมเฉพาะ action='pay'
-  const { data: payData, error: payErr } = await supabase
-    .from('payment_log')
-    .select('contract_id, amount, penalty_paid_amount, installment_id')
-    .in('contract_id', contractIds)
-    .eq('action', 'pay')
-    .range(0, PAGE_CAP)
-  if (payErr) throw payErr
+  // รวมเฉพาะ action='pay' ที่ไม่ถูกยกเลิกภายหลัง (migration 0178-0180): ดึง pay+cancel แล้วตัดด้วย dropCancelledPays
+  // ใช้ fetchAllPaged (วนหน้า) เพราะเพิ่มแถว cancel แล้วไม่ควรโดน PAGE_CAP ตัดเงียบ
+  const client = supabase
+  const payLogRows = await fetchAllPaged<{
+    contract_id: string
+    amount: number | null
+    penalty_paid_amount: number | null
+    installment_id: string | null
+    action: string
+    created_at: string
+  }>((from, to, orderBy) =>
+    client
+      .from('payment_log')
+      .select('contract_id, amount, penalty_paid_amount, installment_id, action, created_at')
+      .in('contract_id', contractIds)
+      .in('action', ['pay', 'cancel'])
+      .order(orderBy, { ascending: true })
+      .range(from, to),
+  )
+  const payData = dropCancelledPays(payLogRows)
 
   // Client-side aggregate:
   //   downMap     = Σ principal where installment_id IS NULL (เงินดาวน์)
@@ -7467,12 +7480,7 @@ export async function getSaleHistoryRaw(): Promise<SaleHistoryInput[]> {
   const downMap = new Map<string, number>()
   const instMap = new Map<string, number>()
   const instIdSet = new Map<string, Set<string>>()
-  for (const row of (payData ?? []) as {
-    contract_id: string
-    amount: number | null
-    penalty_paid_amount: number | null
-    installment_id: string | null
-  }[]) {
+  for (const row of payData) {
     const principal = Math.max(0, Number(row.amount ?? 0) - Number(row.penalty_paid_amount ?? 0))
     if (row.installment_id == null) {
       downMap.set(row.contract_id, (downMap.get(row.contract_id) ?? 0) + principal)
