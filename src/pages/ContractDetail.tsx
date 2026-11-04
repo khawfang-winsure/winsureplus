@@ -127,6 +127,7 @@ import CopyBox from '../components/CopyBox'
 import ContractMediaCard, { evaluateFromStatus, normalizeMediaSlots } from '../components/ContractMediaCard'
 import { buildPendingDocMessage } from '../lib/messages'
 import { DEFAULT_MEDIA_SLOTS, EMAIL_MAX_FILES, isGated, type MediaSlot } from '../lib/media'
+import { canSaveEdit, isPaymentReduction } from '../lib/paymentEditGuard'
 import {
   canStaffEdit,
   canSubmitForReview,
@@ -3701,6 +3702,10 @@ function PaymentModal({
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // โหมดแก้ไขยอด: ลดยอดต้องติ๊กยืนยัน + กรอกหมายเหตุ (state เริ่มใหม่ทุกครั้งที่เปิดโมดัล)
+  const [reductionConfirmed, setReductionConfirmed] = useState(false)
+  const reductionWarn = mode === 'edit' && isPaymentReduction(ins.paidAmount, amount)
+  const editBlocked = mode === 'edit' && !canSaveEdit(reductionWarn, reductionConfirmed, note)
 
   // ป้ายเตือนกันลงค่าปรับซ้ำ (PJ Auto-Sync ดูดค่าปรับจาก PJ เข้าให้อัตโนมัติทุก 15 นาทีอยู่แล้ว)
   // เคส 1: งวดนี้ไม่มีค่าปรับค้างเลย (penalty_amount = 0) แต่พนักงานกำลังจะกรอกค่าปรับ > 0
@@ -3794,7 +3799,7 @@ function PaymentModal({
   const payFooter = (
     <div className="flex justify-end gap-2">
       <Button variant="ghost" onClick={onClose}>ยกเลิก</Button>
-      <Button onClick={save} disabled={busy || amount < 0 || (penaltyOnly && penaltyPaid <= 0)}>
+      <Button onClick={save} disabled={busy || amount < 0 || (penaltyOnly && penaltyPaid <= 0) || editBlocked}>
         {busy ? 'กำลังบันทึก...' : mode === 'pay' ? payLabel : 'บันทึก'}
       </Button>
     </div>
@@ -3842,7 +3847,11 @@ function PaymentModal({
                 autoFocus
                 className={numericInputCls}
                 value={amount || ''}
-                onChange={(e) => setAmount(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
+                onChange={(e) => {
+                  const next = Number(e.target.value.replace(/[^0-9]/g, '')) || 0
+                  setAmount(next)
+                  if (!isPaymentReduction(ins.paidAmount, next)) setReductionConfirmed(false)
+                }}
               />
             </Field>
             {mode === 'pay' && (
@@ -3959,9 +3968,28 @@ function PaymentModal({
           </p>
         )}
 
+        {/* เตือนลดยอด: การแก้ยอดไม่ลบรายการรับเงินเดิม รายงานจึงนับซ้ำ — ต้องติ๊กยืนยัน + ใส่หมายเหตุ */}
+        {reductionWarn && (
+          <div role="alert" className="flex flex-col gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+            <p className="flex items-start gap-1.5">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              การลดยอดไม่ได้ลบรายการรับเงินเดิม รายงานจะยังนับยอดเดิมอยู่ ถ้าลงเงินผิด ให้กด 'ยกเลิก' ที่เมนูของงวดนี้ (หน้าต่าง 'ยกเลิกการชำระ') แล้วลงใหม่แทน
+            </p>
+            <label className="flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={reductionConfirmed}
+                onChange={(e) => setReductionConfirmed(e.target.checked)}
+                className="h-3.5 w-3.5 accent-salmon-deep"
+              />
+              ฉันตรวจแล้วว่าต้องลดยอด ไม่ใช่การลงเงินใหม่
+            </label>
+          </div>
+        )}
+
         {/* Note: แสดงเฉพาะโหมด edit เท่านั้น */}
         {mode === 'edit' && (
-          <Field label="หมายเหตุ (ถ้ามี)">
+          <Field label={reductionWarn ? 'หมายเหตุ (จำเป็นเมื่อลดยอด)' : 'หมายเหตุ (ถ้ามี)'}>
             <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น โอนผ่านธนาคาร / แก้ไขจากกรอกผิด" />
           </Field>
         )}
