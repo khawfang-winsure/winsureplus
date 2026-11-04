@@ -729,6 +729,20 @@ export interface PjReviewContext {
     penaltyPaid: number     // ค่าปรับที่จ่ายแล้วจริงสะสมของงวดนี้ (penalty_paid_for_installment mig 0115)
     settled: boolean        // true = จ่ายค่าปรับทันยอดที่ค้าง ณ วันหนึ่งแล้ว (แช่แข็ง ไม่โตต่อ)
   } | null
+  /** ข้อมูลไว้จำลองการกระจายค่าปรับ 3 ขั้นของ record_payment_spread (mig 0181) ผ่าน allocatePenaltySpread
+   *  (lib/penaltySpread.ts) — optional: ฟิลด์เดิมทั้งหมดคงอยู่ ผู้ใช้เดิมไม่พัง */
+  penaltySpreadInput?: {
+    installments: {
+      id: string
+      installmentNo: number
+      dueDate: string
+      paidAt: string | null
+      penaltyAmount: number
+      penaltyPaid: number
+    }[]
+    perDay: number
+    maxDays: number
+  }
 }
 
 /** 1 รอบการรัน auto-sync (จาก pj_sync_runs) */

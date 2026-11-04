@@ -11,6 +11,7 @@
 
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow } from './types'
 import { explainStaffOverlapRow } from './pjStaffOverlap'
+import { allocatePenaltySpread } from './penaltySpread'
 
 /** reason ที่เป็น drift (ใบเสร็จหาย/ถูกแก้ใน PJ) — ตรวจ+รายงานเท่านั้น ไม่อยู่ใน flow ลงเงิน
  *  (คัดลอก guard เดียวกับ isDriftReason ใน PjSyncReview.tsx มาไว้ในไฟล์ pure fn นี้ด้วย กัน import วน) */
@@ -86,6 +87,22 @@ export function explainReviewRow(row: PjSyncReviewRow, ctx: PjReviewContext | nu
       if (isPenalty) {
         const pjAmount = row.paymentType === 'penalty' ? row.amount : row.penaltyAmount
         const target = ctx?.penaltyTarget ?? null
+        // พรีวิวการกระจายค่าปรับหลายงวด (mig 0181) — จำลอง 3 ขั้นเหมือน RPC; ถ้าลงมากกว่า 1 งวดให้บอกรายงวด
+        // (งวดเดียวใช้ข้อความเดิมด้านล่าง). หมายเหตุ: ก่อน apply 0181 ระบบจริงยังลงงวดเดียว
+        const spreadIn = ctx?.penaltySpreadInput
+        if (spreadIn && row.paidDate) {
+          const sim = allocatePenaltySpread({
+            installments: spreadIn.installments,
+            penalty: pjAmount,
+            paidDate: row.paidDate,
+            perDay: spreadIn.perDay,
+            maxDays: spreadIn.maxDays,
+          })
+          if (sim.allocations.length > 1) {
+            const parts = sim.allocations.map(a => `งวดที่ ${a.installmentNo} = ${th(a.amount)} ฿`).join(' · ')
+            return `PJ คิดค่าปรับ ${th(pjAmount)} ฿ — สลิป = PJ · กด "ลงตาม PJ" ระบบจะกระจายค่าปรับลงหลายงวด: ${parts} และปรับยอดเรียกเก็บค่าปรับของแต่ละงวดให้ตรงกับที่จ่าย`
+          }
+        }
         if (target) {
           return `PJ คิดค่าปรับ ${th(pjAmount)} ฿ (งวดที่ ${target.installmentNo}) · ระบบเราคิด ${th(target.chargedPenalty)} ฿ · สลิป = PJ — กด "ลงตาม PJ" จะปรับยอดเรียกเก็บค่าปรับของงวดนี้ให้ตรงกับ PJ ให้เอง`
         }

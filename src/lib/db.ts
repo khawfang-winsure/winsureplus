@@ -88,6 +88,7 @@ import {
   type ReconcileResult,
 } from './feeReconcile'
 import { calcSummary, computePenaltyAccrual, penaltyPaidForInstallment, type PenaltyPayEvent } from './calc'
+import { computePenaltyAlignTargets, type PenaltySpreadInstallment } from './penaltySpread'
 import {
   normalizeInvNo,
   type ContractTransfer,
@@ -8870,6 +8871,23 @@ function groupPenaltyEventsByInstallment(rows: PjPenaltyLogRow[]): Map<string, P
   return map
 }
 
+/** ค่าปรับที่จ่ายแล้วสะสมต่องวดของสัญญา (cancel-aware ผ่าน penaltyPaidForInstallment — ตรงกับ penalty_paid_for_installment ใน DB)
+ *  คืน Map ของทุกงวดที่มีแถว pay/cancel; งวดที่ไม่มีแถว = ไม่อยู่ใน map (ถือเป็น 0) */
+async function fetchPenaltyPaidByInstallment(contractId: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (!supabase) return out
+  const { data, error } = await supabase
+    .from('payment_log')
+    .select('installment_id, action, penalty_paid_amount, created_at')
+    .eq('contract_id', contractId)
+    .in('action', ['pay', 'cancel'])
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  const grouped = groupPenaltyEventsByInstallment((data ?? []) as PjPenaltyLogRow[])
+  for (const [id, events] of grouped) out.set(id, penaltyPaidForInstallment(events))
+  return out
+}
+
 /** วันนี้ (UTC yyyy-mm-dd) — ใช้เทียบกับ due_date แบบเดียวกับ computePenaltyAccrual/utcDayDiff (calc.ts) */
 function todayUtcDate(): string {
   return new Date().toISOString().slice(0, 10)
@@ -9112,7 +9130,7 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
   }
   if (!supabase) return empty
 
-  const [contractRes, instRes, payRes, siblingRes, penaltyLogRes] = await Promise.all([
+  const [contractRes, instRes, payRes, siblingRes, penaltyLogRes, penaltyCfgRes] = await Promise.all([
     supabase.from('contracts').select('monthly_payment').eq('id', contractId).maybeSingle(),
     supabase
       .from('installments')
@@ -9140,12 +9158,15 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
       .eq('contract_id', contractId)
       .in('action', ['pay', 'cancel'])
       .order('created_at', { ascending: true }),
+    // เพดานค่าปรับ (ต่อวัน/จำนวนวันสูงสุด) ไว้จำลองการกระจายค่าปรับของ RPC (mig 0181) ในพรีวิว
+    supabase.from('app_settings').select('key, value').in('key', ['penalty_per_day', 'penalty_max_days']),
   ])
   if (contractRes.error) throw contractRes.error
   if (instRes.error) throw instRes.error
   if (payRes.error) throw payRes.error
   if (siblingRes.error) throw siblingRes.error
   if (penaltyLogRes.error) throw penaltyLogRes.error
+  if (penaltyCfgRes.error) throw penaltyCfgRes.error
 
   const instRows = (instRes.data ?? []) as PjCtxInstallmentRow[]
 
@@ -9225,6 +9246,22 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     }
   }
 
+  // ข้อมูลไว้จำลองการกระจายค่าปรับ 3 ขั้นของ record_payment_spread (mig 0181) — pjReviewExplain เรียก
+  // allocatePenaltySpread ต่อแถว (รู้ยอด+วันที่ของแถว) ได้เป็นรายการงวด+ยอดที่จะลง
+  const cfgMap = new Map(((penaltyCfgRes.data ?? []) as { key: string; value: string | number }[]).map(r => [r.key, Number(r.value)]))
+  const penaltySpreadInput: NonNullable<PjReviewContext['penaltySpreadInput']> = {
+    installments: penaltyCandidates.map((c): PenaltySpreadInstallment => ({
+      id: c.id,
+      installmentNo: c.installmentNo,
+      dueDate: c.dueDate,
+      paidAt: c.paidAt,
+      penaltyAmount: c.penaltyAmount,
+      penaltyPaid: penaltyPaidForInstallment(penaltyEventsByInst.get(c.id) ?? []),
+    })),
+    perDay: cfgMap.get('penalty_per_day') ?? DEFAULT_SETTINGS.penaltyPerDay,
+    maxDays: cfgMap.get('penalty_max_days') ?? DEFAULT_SETTINGS.penaltyMaxDays,
+  }
+
   return {
     monthly: parsePjAmount((contractRes.data as { monthly_payment: string | number | null } | null)?.monthly_payment),
     nextUnpaid,
@@ -9234,6 +9271,7 @@ export async function getPjReviewContext(contractId: string): Promise<PjReviewCo
     unpaidInstallments,
     siblingReviewRows,
     penaltyTarget,
+    penaltySpreadInput,
   }
 }
 
@@ -9327,47 +9365,16 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
     }
   } catch { /* best-effort อ่าน raw_json — ไม่มี uuid ก็ยังลงเงินได้ปกติ แค่ไม่มี exact-dedup เสริม */ }
 
-  // (18 ก.ค. 2026, mig 0117) เคส align ค่าปรับตาม PJ — ต้องคำนวณ "งวดเป้าหมายค่าปรับ" จากสภาพก่อนลงเงิน
-  // ให้ตรงกับที่ record_payment_spread (0115) จะเลือกเองข้างใน RPC (RPC ไม่คืน target กลับมาให้) —
-  // reuse pickPenaltyTargetInstallment (mirror ตรงตัวของ SQL, ใช้ซ้ำจาก getPjReviewContext ด้านบน)
+  // (18 ก.ค. 2026, mig 0117; แก้ 4 พ.ย. 2026 ตาม mig 0181) เคส align ค่าปรับตาม PJ
+  // RPC ตั้งแต่ 0181 กระจายค่าปรับหลายงวด (เก่า = งวดเดียว) จึงห้ามเดางวดเป้าหมายก่อนลงแล้วตั้งยอด PJ ทั้งก้อน
+  // -> เก็บ "ค่าปรับที่จ่ายแล้วต่องวด" ก่อนลง แล้วอ่านซ้ำหลังลง งวดไหนจ่ายเพิ่มก็ตั้ง penalty_amount = ยอดจ่ายรวมของงวดนั้น
+  // (ทำงานถูกทั้ง RPC เก่าและใหม่ เพราะดูจากผลที่ลงจริง)
   const isPenaltyAlign =
     reviewRow?.reason === 'AMOUNT_MISMATCH' &&
     reviewRow?.pj_payment_type === 'penalty' &&
     penalty > 0
 
-  let alignTargetId: string | null = null
-  if (isPenaltyAlign) {
-    const [instRes, penaltyLogRes] = await Promise.all([
-      supabase
-        .from('installments')
-        .select('id, installment_no, due_date, paid_at, penalty_amount')
-        .eq('contract_id', contractId)
-        .order('installment_no'),
-      supabase
-        .from('payment_log')
-        .select('installment_id, action, penalty_paid_amount, created_at')
-        .eq('contract_id', contractId)
-        .in('action', ['pay', 'cancel'])
-        .order('created_at', { ascending: true }),
-    ])
-    if (instRes.error) throw instRes.error
-    if (penaltyLogRes.error) throw penaltyLogRes.error
-    const candidates: PenaltyTargetCandidate[] = ((instRes.data ?? []) as {
-      id: string
-      installment_no: number
-      due_date: string
-      paid_at: string | null
-      penalty_amount: string | number | null
-    }[]).map(r => ({
-      id: r.id,
-      installmentNo: r.installment_no,
-      dueDate: r.due_date,
-      paidAt: r.paid_at,
-      penaltyAmount: parsePjAmount(r.penalty_amount),
-    }))
-    const eventsById = groupPenaltyEventsByInstallment((penaltyLogRes.data ?? []) as PjPenaltyLogRow[])
-    alignTargetId = pickPenaltyTargetInstallment(candidates, eventsById)?.id ?? null
-  }
+  const penaltyPaidBefore = isPenaltyAlign ? await fetchPenaltyPaidByInstallment(contractId) : null
 
   const { error } = await supabase.rpc('record_payment_spread', {
     p_contract_id:    contractId,
@@ -9379,15 +9386,19 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
   })
   if (error) throw error
 
-  // align penalty_amount ของงวดเป้าหมาย = ยอด PJ (mig 0117, grant authenticated ทั้ง staff+admin) — เงิน
-  // ลงไปแล้วที่ RPC ด้านบน ถ้า align fail ต้องให้เห็น error ชัด ไม่ swallow เงียบ (ต่างจากก่อนถอดที่เคย fail
-  // เพราะสิทธิ์ — ตอนนี้ error ที่เหลือคือบั๊กจริงที่ต้องรู้ ไม่ใช่ permission)
-  if (isPenaltyAlign && alignTargetId) {
-    const { error: alignErr } = await supabase.rpc('pj_review_set_penalty', {
-      p_installment_id: alignTargetId,
-      p_amount: penalty,
-    })
-    if (alignErr) throw alignErr
+  // align penalty_amount ของ "ทุกงวดที่ค่าปรับจ่ายเพิ่มรอบนี้" = ค่าปรับที่จ่ายแล้วรวมของงวดนั้น (mig 0117, grant
+  // authenticated ทั้ง staff+admin) — เงินลงไปแล้วที่ RPC ด้านบน ถ้า align fail ต้องให้เห็น error ชัด ไม่ swallow เงียบ
+  // ⚠️ เรียกหลายงวดทีละ RPC ไม่ atomic: ถ้าพังกลางทาง เงินลงครบแล้ว งวดแรกๆ ตั้งยอดแล้ว งวดหลังยังไม่ตั้ง และเคสในกล่อง
+  //    ยังไม่ resolve (throw ก่อน) -> ห้ามกดลงซ้ำ (จะลงเงินเบิ้ล) ต้องให้คนตั้งค่าปรับที่เหลือเอง
+  if (isPenaltyAlign && penaltyPaidBefore) {
+    const penaltyPaidAfter = await fetchPenaltyPaidByInstallment(contractId)
+    for (const t of computePenaltyAlignTargets(penaltyPaidBefore, penaltyPaidAfter)) {
+      const { error: alignErr } = await supabase.rpc('pj_review_set_penalty', {
+        p_installment_id: t.installmentId,
+        p_amount: t.amount,
+      })
+      if (alignErr) throw alignErr
+    }
   }
 
   // จด ledger กันลงซ้ำ (legacy safety net คนละกลไกจาก pj_applied_receipts — คงไว้เหมือนเดิม ห้ามลบ
