@@ -2222,7 +2222,7 @@ export default function ContractDetail() {
                   returnedClosedUnpaid
                 // ปิดสัญญาแล้ว (เช่น ปิดก่อนกำหนดแบบคงตารางงวด) แต่งวดนี้ยังไม่จ่าย — ไม่ใช่ค้างชำระจริง
                 // แสดง "ปิดแล้ว" แทน "รอชำระ"/"ล่าช้า" เพื่อกันพนักงานเข้าใจผิด (derive client-side เท่านั้น ไม่แก้ status ใน DB)
-                const closedPending = contract.status === 'closed' && !i.paidAt && !partial
+                const closedPending = contract.status === 'closed' && !i.paidAt
                 // ค่าปรับที่เก็บแล้วจริงของงวดนี้ (ใช้ทั้งคอลัมน์ค่าปรับ + ป้ายเตือนกันลงซ้ำใน PaymentModal)
                 const rowPenaltyPaid = penaltyPaidForInstallment(logByIns.get(i.id) ?? [])
                 // ค่าปรับที่ "ยังค้างเก็บจริง" ของงวดนี้ — ใช้ตัดสินป้ายเตือน + ปุ่ม "เก็บค่าปรับ" ด้านล่าง
@@ -2241,7 +2241,7 @@ export default function ContractDetail() {
                       {i.paidAmount > 0 ? (
                         <span>
                           {baht(i.paidAmount)}
-                          {remaining > 0 && <span className="text-red-600"> (ค้าง {baht(remaining)})</span>}
+                          {remaining > 0 && !closedPending && <span className="text-red-600"> (ค้าง {baht(remaining)})</span>}
                         </span>
                       ) : (
                         '-'
@@ -2313,7 +2313,7 @@ export default function ContractDetail() {
                         ) : (
                           <Badge tone="green">{installmentLabel(i.status)}</Badge>
                         )
-                      ) : partial ? (
+                      ) : partial && !closedPending ? (
                         <Badge tone="amber">ชำระบางส่วน</Badge>
                       ) : returnedClosedUnpaid ? (
                         <Badge tone="neutral">ไม่เก็บแล้ว (ปิดเคสคืนเครื่อง)</Badge>
@@ -2340,6 +2340,7 @@ export default function ContractDetail() {
                         logCount={logByIns.get(i.id)?.length ?? 0}
                         canStaff={canStaff}
                         notCollectible={returnNotCollect || closedPending}
+                        hideEdit={closedPending}
                         penaltyOnly={rowPenaltyOnly}
                         onPay={() => setPayTarget({ ins: i, mode: 'pay', alreadyPaidPenalty: rowPenaltyPaid })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
@@ -3419,6 +3420,7 @@ function RowActions({
   logCount,
   canStaff,
   notCollectible = false,
+  hideEdit = false,
   penaltyOnly = false,
   onPay,
   onEdit,
@@ -3430,6 +3432,8 @@ function RowActions({
   logCount: number
   canStaff: boolean
   notCollectible?: boolean
+  /** true = ซ่อนเมนู "แก้ไขยอด" (สัญญาปิดแล้ว) — ยกเลิก/ประวัติยังใช้ได้ */
+  hideEdit?: boolean
   /** true = งวดนี้ค่างวดครบแล้ว แต่ยังมีค่าปรับค้างเก็บ — โชว์ปุ่ม "เก็บค่าปรับ" แทน "รับชำระ" */
   penaltyOnly?: boolean
   onPay: () => void
@@ -3508,13 +3512,15 @@ function RowActions({
               role="menu"
               className="absolute right-0 top-full z-20 mt-1 min-w-[120px] rounded-xl border border-peach bg-white py-1 shadow-lg"
             >
-              <button
-                role="menuitem"
-                onClick={() => select(onEdit)}
-                className="w-full px-3 py-2 text-left text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
-              >
-                แก้ไขยอด
-              </button>
+              {!hideEdit && (
+                <button
+                  role="menuitem"
+                  onClick={() => select(onEdit)}
+                  className="w-full px-3 py-2 text-left text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
+                >
+                  แก้ไขยอด
+                </button>
+              )}
               <button
                 role="menuitem"
                 onClick={() => select(onCancel)}
