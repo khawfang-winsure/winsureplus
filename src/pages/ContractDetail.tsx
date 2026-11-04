@@ -2340,7 +2340,7 @@ export default function ContractDetail() {
                         logCount={logByIns.get(i.id)?.length ?? 0}
                         canStaff={canStaff}
                         notCollectible={returnNotCollect || closedPending}
-                        hideEdit={closedPending}
+                        hideMenu={closedPending}
                         penaltyOnly={rowPenaltyOnly}
                         onPay={() => setPayTarget({ ins: i, mode: 'pay', alreadyPaidPenalty: rowPenaltyPaid })}
                         onEdit={() => setPayTarget({ ins: i, mode: 'edit' })}
@@ -3420,7 +3420,7 @@ function RowActions({
   logCount,
   canStaff,
   notCollectible = false,
-  hideEdit = false,
+  hideMenu = false,
   penaltyOnly = false,
   onPay,
   onEdit,
@@ -3432,8 +3432,8 @@ function RowActions({
   logCount: number
   canStaff: boolean
   notCollectible?: boolean
-  /** true = ซ่อนเมนู "แก้ไขยอด" (สัญญาปิดแล้ว) — ยกเลิก/ประวัติยังใช้ได้ */
-  hideEdit?: boolean
+  /** true = ซ่อนเมนู "⋯" ทั้งปุ่ม (แก้ไขยอด/ยกเลิก) บนสัญญาปิดแล้ว — ปุ่มประวัติยังใช้ได้ */
+  hideMenu?: boolean
   /** true = งวดนี้ค่างวดครบแล้ว แต่ยังมีค่าปรับค้างเก็บ — โชว์ปุ่ม "เก็บค่าปรับ" แทน "รับชำระ" */
   penaltyOnly?: boolean
   onPay: () => void
@@ -3493,7 +3493,7 @@ function RowActions({
       )}
 
       {/* "⋯" overflow menu — โชว์เมื่อมียอดที่ชำระแล้ว (แก้ไขยอด / ยกเลิก อยู่ใน menu) */}
-      {ins.paidAmount > 0 && (
+      {ins.paidAmount > 0 && !hideMenu && (
         <div className="relative">
           <button
             ref={triggerRef}
@@ -3512,15 +3512,13 @@ function RowActions({
               role="menu"
               className="absolute right-0 top-full z-20 mt-1 min-w-[120px] rounded-xl border border-peach bg-white py-1 shadow-lg"
             >
-              {!hideEdit && (
-                <button
-                  role="menuitem"
-                  onClick={() => select(onEdit)}
-                  className="w-full px-3 py-2 text-left text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
-                >
-                  แก้ไขยอด
-                </button>
-              )}
+              <button
+                role="menuitem"
+                onClick={() => select(onEdit)}
+                className="w-full px-3 py-2 text-left text-xs font-semibold text-ink-soft hover:bg-peach-light/40"
+              >
+                แก้ไขยอด
+              </button>
               <button
                 role="menuitem"
                 onClick={() => select(onCancel)}
