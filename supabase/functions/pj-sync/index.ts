@@ -44,6 +44,10 @@ import {
   buildSubsetReview,
   filterFreshReviewRows,
   unhandledReceiptsForGroup,
+  chunkArray,
+  uniqueNonEmpty,
+  isFullyAppliedGroup,
+  orderGroupsOldestFirst,
 } from "./reviewDedup.ts";
 
 const corsHeaders = {
@@ -1830,9 +1834,60 @@ export default {
       const PROCESSING_TIME_BUDGET_MS = 45_000;
       const loopStartedAt = Date.now();
       let truncated = false;
-      const aggEntries = Array.from(aggMap.values());
+      // (5 พ.ย. 2026) เรียงเก่าก่อน: ถ้าชนงบเวลา ส่วนที่ตกหล่นคือใบ "ใหม่สุด" ซึ่งรอบปกติ 15 นาที (window วันนี้) จับอยู่แล้ว
+      // ส่วนใบเก่าที่ deep-scan มีไว้ตามหาจะถูกประมวลผลก่อนเสมอ ไม่ตกหล่นซ้ำทุกวัน (เดิมเรียงตามลำดับที่ PJ ส่งมา ไม่แน่นอน)
+      const aggEntries = orderGroupsOldestFirst(Array.from(aggMap.values()));
       const aggEntriesTotal = aggEntries.length;
       let aggEntriesProcessed = 0;
+
+      // ── โหลดล่วงหน้าแบบ batch (อ่านอย่างเดียว ทำเหมือนกันทั้ง dryRun/รันจริง) ──────────────────────
+      // เดิม loop ยิง contracts + installments + pj_applied_receipts ต่อกลุ่ม (~3 query/กลุ่ม) ทั้งที่ ~98% ลงครบแล้ว
+      // ตอนนี้ดึง pj_applied_receipts (ตาม uuid) + contracts (ตาม inv_no) ทีละ 100 ค่า/ก้อน แล้วตัดกลุ่มที่ลงครบแล้ว
+      // ออกใน loop ด้วย isFullyAppliedGroup (fast-path เชิงบวกอย่างเดียว — ไม่ตรงเงื่อนไข = เดินทางเดิมเต็มๆ)
+      // ถ้าโหลดพลาด: ไม่ fail ทั้งรอบ แค่ไม่มี fast-path (ช้าเท่าเดิม) เพราะของจริงตัดสินใน loop เดิมอยู่แล้ว
+      const prefetchStartedAt = Date.now();
+      const prefetchedApplied = new Set<string>();
+      const prefetchedContractStatuses = new Map<string, (string | null)[]>();
+      let prefetchQueries = 0;
+      let prefetchError: string | null = null;
+      let fastSkippedGroups = 0;
+      {
+        const uuidCandidates: string[] = [];
+        const invCandidates: string[] = [];
+        for (const g of aggEntries) {
+          if (g.receipts.length === 0) continue;
+          const t = g.paid_date ?? syncIsoDate;
+          if (!t || t < DEDUP_CUTOFF) continue;
+          for (const r of g.receipts) uuidCandidates.push(r.uuid);
+          invCandidates.push(g.invoice_no);
+        }
+        try {
+          for (const part of chunkArray(uniqueNonEmpty(uuidCandidates), 100)) {
+            prefetchQueries++;
+            const { data, error } = await db.from("pj_applied_receipts").select("pj_receipt_uuid").in("pj_receipt_uuid", part);
+            if (error) throw new Error(`pj_applied_receipts: ${error.message}`);
+            for (const r of (data ?? []) as any[]) prefetchedApplied.add(String(r.pj_receipt_uuid));
+          }
+          for (const part of chunkArray(uniqueNonEmpty(invCandidates), 100)) {
+            prefetchQueries++;
+            const { data, error } = await db.from("contracts").select("inv_no, status").in("inv_no", part);
+            if (error) throw new Error(`contracts: ${error.message}`);
+            // ถ้าได้ครบเพดาน 1000 แถว อาจถูกตัด → ไม่เชื่อผล ปิด fast-path ทั้งรอบ (ปลอดภัยกว่า)
+            if ((data ?? []).length >= 1000) throw new Error("contracts: result hit 1000-row cap");
+            for (const c of (data ?? []) as any[]) {
+              const k = String(c.inv_no);
+              const arr = prefetchedContractStatuses.get(k) ?? [];
+              arr.push(c.status ?? null);
+              prefetchedContractStatuses.set(k, arr);
+            }
+          }
+        } catch (e) {
+          prefetchError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+          prefetchedApplied.clear();
+          prefetchedContractStatuses.clear();
+        }
+      }
+      const prefetchMs = Date.now() - prefetchStartedAt;
 
       // ══════════════════════════════════════════════════════════════════════════════════════
       // (21 ก.ย. 2026 — อนุมัติคุณเตย) "PJ เลื่อนวันครบกำหนดให้เอง" — เมื่อสัญญา active มีใบเสร็จ
@@ -2180,6 +2235,17 @@ export default {
             oldInvAfterTransferQueued++;
             continue;
           }
+        }
+
+        // (5 พ.ย. 2026) fast-path: ทุกใบของก้อนนี้ลงครบแล้วใน pj_applied_receipts (รู้จาก prefetch) และ gate เดิมทุกตัวที่อยู่
+        // ก่อนหน้า (cutover/old-inv ด้านบน) ผ่านมาแล้ว → ผลเดิมคือ skippedAlreadySynced เสมอ ข้ามได้โดยไม่ query
+        // ดูเงื่อนไขละเอียด + เหตุผลลำดับ gate ที่ isFullyAppliedGroup (reviewDedup.ts)
+        if (
+          isFullyAppliedGroup(a, syncIsoDate, DEDUP_CUTOFF, prefetchedApplied, prefetchedContractStatuses.get(a.invoice_no))
+        ) {
+          fastSkippedGroups++;
+          skippedAlreadySynced++;
+          continue;
         }
 
         // เคสไม่มี installment เลย — penalty-only หรือ other-only → review
@@ -2910,6 +2976,15 @@ export default {
         truncated,
         aggregated_invoice_days_total: aggEntriesTotal,
         aggregated_invoice_days_processed: aggEntriesProcessed,
+        // (5 พ.ย. 2026) ตรวจว่ารอบนี้ครบไหม: unprocessed=0 และ truncated=false = ครบ; ถ้าไม่ครบ first_unprocessed_paid_date
+        // คือวันของก้อนแรกที่ยังไม่ได้ทำ (เรียงเก่าก่อน → ที่เหลือคือวันนี้หรือใหม่กว่านั้น)
+        aggregated_invoice_days_unprocessed: aggEntriesTotal - aggEntriesProcessed,
+        first_unprocessed_paid_date: aggEntriesProcessed < aggEntriesTotal ? (aggEntries[aggEntriesProcessed].paid_date ?? null) : null,
+        fast_skipped_groups: fastSkippedGroups,
+        prefetch_queries: prefetchQueries,
+        prefetch_ms: prefetchMs,
+        prefetch_error: prefetchError,
+        loop_elapsed_ms: Date.now() - loopStartedAt,
       });
     } catch (e) {
       // ⚠️ กรอง message ไม่ให้มี credential หลุด (URLSearchParams อาจ leak ใน stack บางกรณี)

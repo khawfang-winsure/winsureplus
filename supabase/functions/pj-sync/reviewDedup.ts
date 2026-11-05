@@ -291,3 +291,81 @@ export function unhandledAfterLedger(
   const remaining = Math.max(0, ledgerTotal - explainedSum);
   return removeLedgerCovered(unexplained, remaining);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// (5 พ.ย. 2026) รอบย้อนหลัง pj-sync ชนงบเวลา 45 วิ — เวลาหมดไปกับ query ต่อกลุ่ม (contracts + installments +
+// pj_applied_receipts ≈ 3 รอบ/กลุ่ม ≈ 85ms) ทั้งที่กลุ่มส่วนใหญ่ (~98%) ลงครบแล้ว → ข้ามได้ทันทีถ้ารู้ล่วงหน้า
+// ฟังก์ชันด้านล่างเป็น pure (ไม่แตะ DB) ใช้โหลดล่วงหน้าแบบ batch + ตัดกลุ่มที่ลงครบแล้ว + เรียงเก่าก่อน
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+/** แบ่งรายการเป็นก้อนละไม่เกิน size (กันเพดาน 1000 แถวของ PostgREST + ความยาว URL ของ .in(...)) */
+export function chunkArray<T>(items: T[], size: number): T[][] {
+  const n = Math.max(1, Math.floor(size));
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += n) out.push(items.slice(i, i + n));
+  return out;
+}
+
+/** ตัดซ้ำ + ตัดค่าว่าง คงลำดับแรกที่เจอ */
+export function uniqueNonEmpty(values: (string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  for (const v of values) {
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s !== "") seen.add(s);
+  }
+  return Array.from(seen);
+}
+
+export interface FastSkipGroup {
+  has_installment: boolean;
+  has_other: boolean;
+  paid_date: string | null;
+  receipts: ReceiptItem[];
+  raw: any[];
+}
+
+/**
+ * กลุ่มนี้ "ลงครบทุกใบแล้ว" และ gate เดิมของ loop จะจบด้วย skippedAlreadySynced แน่ๆ ไหม (true = ข้ามได้เลยไม่ต้อง query)
+ * เป็น fast-path แบบ "ยืนยันเชิงบวกเท่านั้น": false = ปล่อยให้ loop เดิมทำงานเต็มเหมือนเดิมทุกประการ
+ *  - appliedUuids = uuid ที่รู้ล่วงหน้าว่าอยู่ใน pj_applied_receipts (ตาราง append-only → ข้อมูลเก่าไม่ทำให้ผิดทิศ;
+ *    ลงใหม่ระหว่างรอบ = ไม่อยู่ใน set = false = เดินทางเดิม จึงไม่ต้องอัปเดต cache หลัง apply)
+ *  - contractStatuses = status ของสัญญาทุกแถวที่ inv_no ตรง (undefined = โหลดไม่สำเร็จ/ไม่ได้โหลด → false)
+ * กลุ่ม mixed (ค่างวด + อื่นๆ) ไม่เคยผ่าน uuid dedup → false เสมอ
+ * กลุ่มค่างวดล้วน: gate เดิม "contracts ต้องเจอตัวเดียว" มาก่อน alreadyAppliedByUuid และ alreadyAppliedByUuid มาก่อน closed
+ * กลุ่มไม่มีค่างวด (ค่าปรับ/อื่นๆ ล้วน): gate closed มาก่อน uuid-level → ข้ามเฉพาะเมื่อไม่มีสัญญา closed เลย
+ */
+export function isFullyAppliedGroup(
+  g: FastSkipGroup,
+  syncIsoDate: string | null,
+  dedupCutoff: string,
+  appliedUuids: Set<string>,
+  contractStatuses: (string | null)[] | undefined,
+): boolean {
+  if (!contractStatuses) return false;
+  if (g.receipts.length === 0) return false;
+  if (!g.receipts.every((r) => appliedUuids.has(r.uuid))) return false;
+  if (!g.has_installment) {
+    if (!g.paid_date || g.paid_date < dedupCutoff) return false;
+    if (g.receipts.length !== g.raw.length) return false;
+    return !contractStatuses.some((s) => s === "closed");
+  }
+  if (g.has_other) return false;
+  const target = g.paid_date ?? syncIsoDate;
+  if (!target || target < dedupCutoff) return false;
+  return contractStatuses.length === 1;
+}
+
+/** เรียงเก่าก่อน (paid_date น้อย→มาก, ไม่มีวันที่ไว้ท้าย) คงลำดับเดิมในวันเดียวกัน (stable) ไม่แก้ array เดิม */
+export function orderGroupsOldestFirst<T extends { paid_date: string | null }>(groups: T[]): T[] {
+  return groups
+    .map((g, i) => ({ g, i }))
+    .sort((x, y) => {
+      const a = x.g.paid_date, b = y.g.paid_date;
+      if (a === b) return x.i - y.i;
+      if (a == null) return 1;
+      if (b == null) return -1;
+      return a < b ? -1 : 1;
+    })
+    .map((x) => x.g);
+}
