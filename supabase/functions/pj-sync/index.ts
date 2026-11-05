@@ -36,6 +36,7 @@ import type {
 } from "./dueDayShift.ts";
 import { mapPjScheduleRowsForDueDayShift } from "./pjScheduleMapper.ts";
 import { classifyPjReceiptPaymentType } from "./receiptPaymentType.ts";
+import { isReceiptAlreadyAppliedError } from "./receiptClaim.ts";
 import {
   allUuidsOfRawJson,
   buildPendingIndex,
@@ -1639,6 +1640,7 @@ export default {
       // = ก้อนที่ uuid ใบเสร็จทุกใบตรงกับแถว CONTRACT_CLOSED ที่ resolved/skipped/auto_resolved ไปแล้ว — ข้าม
       // เงียบ ไม่คิวซ้ำ (ดู queueContractClosedReview ด้านล่าง คู่กับ reviewAlreadyHandled)
       let closedContractAlreadyHandled = 0;
+      let receiptClaimConflict = 0; // (0184) RPC จองใบไม่ได้เพราะมีคนลงแล้ว (ปุ่มกล่อง/รอบซ้อน) — ไม่ใช่ error
       const staffOverlapDryRunQueue: {
         invoice_no: string;
         paid_date: string | null;
@@ -2788,6 +2790,12 @@ export default {
             p_by_name: SYNC_BY_NAME,
             p_receipt_uuids: receiptUuidsPayload,
           });
+          if (rpcErr && isReceiptAlreadyAppliedError(rpcErr)) {
+            // (0184) ใบเสร็จถูกลงไปแล้วโดยทางอื่น (RPC rollback ทั้งก้อน ไม่มีเงินลง) — ข้ามเงียบ: ไม่เข้ากล่อง,
+            // ไม่นับ autoApplied, ไม่เขียน ledger, ไม่ปิดแถวรอตรวจ (ผู้ลงก่อนจัดการแถวของตัวเองแล้ว)
+            receiptClaimConflict++;
+            continue;
+          }
           if (rpcErr) {
             // ลง RPC ไม่ผ่าน → flag review แทน crash (ไม่หยุดทั้งรอบ) — ไม่มีอะไรถูกลงเลย (atomic)
             queueReview(a, "AMOUNT_MISMATCH", contract.id, "installment", instAmt);
@@ -2955,6 +2963,8 @@ export default {
         // (22 ก.ย. 2026, Wave 1 — แก้ P1) ก้อนที่ uuid ใบเสร็จทุกใบตรงกับแถว CONTRACT_CLOSED ที่ resolved/
         // skipped/auto_resolved ไปแล้ว — ข้ามเงียบ ไม่คิวซ้ำ (นับรวมใน skipped_already_synced ด้วย)
         closed_contract_already_handled: closedContractAlreadyHandled,
+        // (0184) ใบที่ RPC จองไม่ได้เพราะลงไปแล้วโดยทางอื่น ข้ามเงียบ (ไม่ใช่ error)
+        receipt_claim_conflict: receiptClaimConflict,
         // (9 ก.ย. 2026) เคส uuid ตรงบางใบ (มีใบใหม่ปนอยู่) — เข้ากล่องรอตรวจ ไม่ auto-apply ไม่ skip เงียบ
         receipt_partial_applied: receiptPartialApplied,
         // (21 ก.ย. 2026, Wave 2B) กันลงเงินซ้ำกับที่พนักงานลงมือเอง — staff_overlap_queued = เข้ากล่อง
