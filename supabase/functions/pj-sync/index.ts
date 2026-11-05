@@ -36,6 +36,15 @@ import type {
 } from "./dueDayShift.ts";
 import { mapPjScheduleRowsForDueDayShift } from "./pjScheduleMapper.ts";
 import { classifyPjReceiptPaymentType } from "./receiptPaymentType.ts";
+import {
+  allUuidsOfRawJson,
+  buildPendingIndex,
+  applyOpaqueHandled,
+  unhandledAfterLedger,
+  buildSubsetReview,
+  filterFreshReviewRows,
+  unhandledReceiptsForGroup,
+} from "./reviewDedup.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1709,17 +1718,6 @@ export default {
       // ══════════════════════════════════════════════════════════════════════════════════════
       let closedContractResolvedCache: { uuidSet: Set<string>; fallbackKeySet: Set<string> } | null = null;
 
-      // ถอด uuid รายใบจาก raw_json (array ของแถวดิบ PJ — field "uuid" เหมือนที่ build aggMap ต้นไฟล์ใช้)
-      function extractUuidsFromRawJson(rawJson: unknown): string[] {
-        if (!Array.isArray(rawJson)) return [];
-        const out: string[] = [];
-        for (const row of rawJson as any[]) {
-          const u = pick(row, ["uuid"]);
-          if (u) out.push(String(u).trim());
-        }
-        return out;
-      }
-
       // รวมยอด (ทุกประเภท ไม่แยก inst/pen/other) จาก raw_json — ใช้เฉพาะ fallback key ตอนไม่มี uuid เลย
       function sumAmountFromRawJson(rawJson: unknown): number {
         if (!Array.isArray(rawJson)) return 0;
@@ -1767,7 +1765,8 @@ export default {
           .limit(5000);
         if (!error) {
           for (const row of (data ?? []) as any[]) {
-            const uuids = extractUuidsFromRawJson(row.raw_json);
+            // อ่านทุก shape (array ดิบ + แถวแยก {unapplied_receipts, already_applied_receipts, raw}) — แถวแยกที่ resolve แล้วต้องนับว่าจัดการแล้ว
+            const uuids = allUuidsOfRawJson(row.raw_json);
             if (uuids.length > 0) {
               for (const u of uuids) uuidSet.add(u);
             } else {
@@ -2228,29 +2227,91 @@ export default {
           // ⚠️ a.paid_date อาจเป็น null — PostgREST .eq(col, null) ไม่ match แถวที่เป็น NULL จริง (ต้องใช้ .is())
           //    เลยแยก query 2 แบบตามว่ามี paid_date หรือไม่ กัน false-negative (คิดว่ายังไม่เคย handle ทั้งที่เคยแล้ว)
           let alreadyHandled = false;
-          let reviewQuery = db
-            .from("pj_sync_review")
-            .select("id")
-            .eq("pj_invoice_no", a.invoice_no)
-            .in("status", ["resolved", "skipped", "auto_resolved"]);
-          reviewQuery = a.paid_date
-            ? reviewQuery.eq("pj_paid_date", a.paid_date)
-            : reviewQuery.is("pj_paid_date", null);
-          const { data: resolvedReview } = await reviewQuery.limit(1);
-          if (resolvedReview && resolvedReview.length > 0) alreadyHandled = true;
-
-          if (!alreadyHandled && noInstContractId && a.paid_date) {
-            const { data: ledgerRow } = await db
-              .from("pj_applied_ledger")
+          // (5 พ.ย. 2026 — แก้ใบใหม่ของวันเดิมถูกข้ามเงียบ) วันที่ >= DEDUP_CUTOFF และทุกใบมี uuid → เทียบ "รายใบ":
+          // ข้ามเฉพาะเมื่อทุก uuid ลงแล้วใน pj_applied_receipts หรืออยู่ใน raw ของแถว resolved/skipped/auto_resolved
+          // ของ invoice นี้ (ทุก reason/ทุกวัน — uuid ไม่ซ้ำข้ามใบอยู่แล้ว) ถ้ามีใบใหม่ปน → คิวเฉพาะใบใหม่ (ไม่รวมใบที่
+          // จัดการไปแล้ว กันลงเบิ้ล) ก่อน cutoff / ไม่มี uuid / มีใบไม่มี uuid ปน → ใช้ natural key เดิมเป๊ะ
+          // ทั้งหมดอ่านอย่างเดียว ไม่ลงเงินเอง
+          const uuidLevel = a.paid_date != null && a.paid_date >= DEDUP_CUTOFF &&
+            a.receipts.length > 0 && a.receipts.length === a.raw.length;
+          let newOnlyReceipts: typeof a.receipts | null = null;
+          if (uuidLevel) {
+            const groupUuids = Array.from(new Set(a.receipts.map((r) => r.uuid)));
+            const { data: appliedRows, error: appliedErr } = await db
+              .from("pj_applied_receipts")
+              .select("pj_receipt_uuid")
+              .in("pj_receipt_uuid", groupUuids);
+            if (appliedErr) {
+              return await failRun("error", `db error (pj_applied_receipts check, no-installment): ${appliedErr.message}`, 500);
+            }
+            const { data: handledRows, error: handledErr } = await db
+              .from("pj_sync_review")
+              .select("pj_paid_date, raw_json")
+              .eq("pj_invoice_no", a.invoice_no)
+              .in("status", ["resolved", "skipped", "auto_resolved"]);
+            if (handledErr) {
+              return await failRun("error", `db error (handled review check, no-installment): ${handledErr.message}`, 500);
+            }
+            const appliedSet = new Set((appliedRows ?? []).map((r: any) => r.pj_receipt_uuid as string));
+            const handledSet = new Set<string>();
+            for (const hr of (handledRows ?? []) as any[]) for (const u of allUuidsOfRawJson(hr.raw_json)) handledSet.add(u);
+            let unhandled = unhandledReceiptsForGroup(a, DEDUP_CUTOFF, appliedSet, handledSet) ?? a.receipts;
+            // แถวที่จัดการแล้วแต่อ่าน uuid ไม่ได้ (PLAN_CHANGE_* ฯลฯ — เรื่องค่าธรรมเนียม "อื่นๆ") ตัดเฉพาะใบ other; ใบค่าปรับใหม่ไม่ถูกกลืน
+            unhandled = applyOpaqueHandled(unhandled, (handledRows ?? []) as any[], a.paid_date);
+            // ledger (contract+วัน) ไม่มี uuid: หักยอดใบที่ uuid อธิบายแล้ว (applied/handled) ออกจาก ledger ก่อน ใช้เฉพาะส่วนที่เหลือ
+            // ครอบใบที่ยังอธิบายไม่ได้ — ใบใหม่ของวันเดิมไม่ถูกกลืน, INV เปลี่ยนเลขที่ uuid ใหม่หมดยอดเท่าเดิมยังถูกครอบ
+            if (unhandled.length > 0 && noInstContractId && a.paid_date) {
+              const { data: ledgerRow } = await db
+                .from("pj_applied_ledger")
+                .select("inst_amount, pen_amount")
+                .eq("contract_id", noInstContractId)
+                .eq("pj_paid_date", a.paid_date)
+                .maybeSingle();
+              if (ledgerRow) {
+                const ledgerTotal = parseAmount((ledgerRow as any).inst_amount) + parseAmount((ledgerRow as any).pen_amount);
+                const unexplainedUuids = new Set(unhandled.map((r) => r.uuid));
+                unhandled = unhandledAfterLedger(
+                  a.receipts.filter((r) => unexplainedUuids.has(r.uuid) || appliedSet.has(r.uuid) || handledSet.has(r.uuid)),
+                  appliedSet, handledSet, ledgerTotal,
+                );
+              }
+            }
+            if (unhandled.length === 0) alreadyHandled = true;
+            else if (unhandled.length < a.receipts.length) newOnlyReceipts = unhandled;
+          } else {
+            let reviewQuery = db
+              .from("pj_sync_review")
               .select("id")
-              .eq("contract_id", noInstContractId)
-              .eq("pj_paid_date", a.paid_date)
-              .maybeSingle();
-            if (ledgerRow) alreadyHandled = true;
-          }
+              .eq("pj_invoice_no", a.invoice_no)
+              .in("status", ["resolved", "skipped", "auto_resolved"]);
+            reviewQuery = a.paid_date
+              ? reviewQuery.eq("pj_paid_date", a.paid_date)
+              : reviewQuery.is("pj_paid_date", null);
+            const { data: resolvedReview } = await reviewQuery.limit(1);
+            if (resolvedReview && resolvedReview.length > 0) alreadyHandled = true;
 
+            if (!alreadyHandled && noInstContractId && a.paid_date) {
+              const { data: ledgerRow } = await db
+                .from("pj_applied_ledger")
+                .select("id")
+                .eq("contract_id", noInstContractId)
+                .eq("pj_paid_date", a.paid_date)
+                .maybeSingle();
+              if (ledgerRow) alreadyHandled = true;
+            }
+          }
           if (alreadyHandled) {
             skippedAlreadySynced++;
+            continue;
+          }
+          if (newOnlyReceipts) {
+            // มีใบใหม่ปนกับใบที่จัดการแล้ว → คิวเฉพาะใบใหม่ (ไม่ auto due-day shift ไม่รวมใบเก่า)
+            const sub = buildSubsetReview(a, newOnlyReceipts, a.has_other ? "other" : "penalty");
+            if (sub.pjAmount > 0) {
+              queueReview(a, sub.pjType === "other" ? "OTHER" : "AMOUNT_MISMATCH", noInstContractId, sub.pjType, sub.pjAmount, sub.rawJson);
+            } else {
+              skippedAlreadySynced++; // ใบใหม่ยอด 0 (placeholder) ไม่มีอะไรให้ตรวจ
+            }
             continue;
           }
 
@@ -2733,27 +2794,44 @@ export default {
       // ⚠️ dedup: รัน 96 รอบ/วัน — เคส MULTI/PARTIAL ที่ admin ยังไม่ resolve จะถูก flag ใหม่ทุกรอบ
       //    → ข้ามเคสที่มี pending review (pj_invoice_no เดียวกัน) อยู่แล้ว กัน review บวมวันละ ~288 แถวซ้ำ
       //    (ถ้า admin resolve/skip ไปแล้ว แล้วเคสโผล่อีก = flag ใหม่ได้ ถือว่าถูก)
-      if (!dryRun && reviewRows.length > 0) {
-        // ⚠️ landmine 1 (0114, พี่ดิว) — reviewRows (path เงินเข้านี้) ไม่มี reason drift อยู่แล้ว (drift
-        // insert ผ่าน RPC reconcile_pj_receipts คนละ path) แต่ "seen" set ต้องไม่นับแถว drift ที่ pending
-        // อยู่ก่อน ไม่งั้นถ้า invoice_no เดียวกันมีแถว RECEIPT_MISSING/RECEIPT_CHANGED ค้างอยู่ จะทำให้เคส
-        // MULTI/PARTIAL/UNMATCHED/OTHER/AMOUNT_MISMATCH ใหม่ของ invoice นั้นถูกมองว่า "ซ้ำ" แล้วข้ามทิ้งไป
-        // เงียบๆ (หายจริง ไม่ใช่แค่ drift หายอย่างเดียว) — exclude reason drift ออกจากการนับ seen เสมอ
-        //
-        // (21 ก.ย. 2026, Wave 2B) แถว reason=STAFF_MANUAL_OVERLAP ที่เพิ่ง queueReview ไว้ในรอบนี้ก็โดน
-        // "seen" ตัวนี้ทิ้งได้เหมือนกัน ถ้า invoice_no เดียวกันมี pending review reason อื่นค้างอยู่แล้ว —
-        // ยอมรับได้ตั้งใจ ไม่แก้รอบนี้ (ไม่ลงเงินอยู่แล้วไม่ว่ากรณีไหน — แค่ไม่ขึ้นแถวใหม่ซ้ำในกล่องเฉยๆ
-        // ถ้า admin เคลียร์ pending เก่าของ invoice นั้นแล้ว รอบ cron ถัดไปจะ flag STAFF_MANUAL_OVERLAP ใหม่
-        // ให้เอง เพราะ overlapCandidates ยังหาเจอซ้ำอยู่ทุกรอบจนกว่าจะมีคน resolve/skip/ผูกจริง)
-        const { data: existing } = await db
-          .from("pj_sync_review")
-          .select("pj_invoice_no")
-          .eq("status", "pending")
-          .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED")');
-        const seen = new Set((existing || []).map((r: any) => r.pj_invoice_no));
-        const fresh = reviewRows.filter((r) => !seen.has(r.pj_invoice_no));
-        if (fresh.length > 0) {
-          const { error: revErr } = await db.from("pj_sync_review").insert(fresh);
+      //
+      // (5 พ.ย. 2026 — แก้ใบเสร็จใหม่ถูกกลืน) เดิม "seen" = invoice ที่มีแถว pending แล้วทิ้งแถวใหม่ทั้งหมดของ
+      // invoice นั้น → ใบใหม่ที่เกิดระหว่างที่ pending เก่ายังค้าง (เช่น S00016PNQ266, S00006PNQ054) หายเงียบ
+      // ตอนนี้เทียบ "รายใบ" ด้วย uuid (reviewDedup.ts): ใบที่อยู่ใน pending เดิมแล้วไม่สร้างซ้ำ (กันแถวบวม 96 รอบ/วัน),
+      // ใบใหม่ได้แถวใหม่ที่มี "เฉพาะใบใหม่" (ยอด+รายการ) ไม่รวมใบที่ค้าง → กดลงไม่เบิ้ล. แถวไม่มี uuid / pending ที่อ่าน
+      // uuid ไม่ได้ = ทิ้งทั้ง invoice เหมือนเดิมเป๊ะ. ขั้นเทียบเป็นแค่อ่าน DB จึงทำตอน dryRun ด้วย (รายงานใน
+      // review_new_rows) แต่ insert เฉพาะรันจริง
+      let reviewDroppedDuplicate = 0;
+      let reviewSplit = 0;
+      const reviewNewRows: { inv: string; reason: string; type: string | null; amount: number; uuids: number; split: boolean }[] = [];
+      if (reviewRows.length > 0) {
+        const invList = Array.from(new Set(reviewRows.map((r) => r.pj_invoice_no as string)));
+        const pendingRows: { pj_invoice_no: string; raw_json: unknown }[] = [];
+        for (let i = 0; i < invList.length; i += 100) {
+          const { data: existing, error: existErr } = await db
+            .from("pj_sync_review")
+            .select("pj_invoice_no, raw_json")
+            .eq("status", "pending")
+            .in("pj_invoice_no", invList.slice(i, i + 100))
+            .not("reason", "in", '("RECEIPT_MISSING","RECEIPT_CHANGED")');
+          if (existErr) {
+            // fail-closed: อ่าน pending ไม่ได้ → ไม่ insert อะไร (กันแถวซ้ำ) รอบหน้าลองใหม่
+            return await failRun("error", `db error (pending review check): ${existErr.message}`, 500);
+          }
+          for (const r of (existing ?? []) as any[]) pendingRows.push(r);
+        }
+        const fr = filterFreshReviewRows(reviewRows, buildPendingIndex(pendingRows));
+        reviewDroppedDuplicate = fr.droppedDuplicate;
+        reviewSplit = fr.split;
+        for (const r of fr.insert) {
+          reviewNewRows.push({
+            inv: r.pj_invoice_no, reason: r.reason, type: r.pj_payment_type, amount: r.pj_amount,
+            uuids: Array.isArray(r.raw_json) ? r.raw_json.length : (r.raw_json?.unapplied_receipts?.length ?? 0),
+            split: !Array.isArray(r.raw_json) && Array.isArray(r.raw_json?.held_in_pending_uuids),
+          });
+        }
+        if (!dryRun && fr.insert.length > 0) {
+          const { error: revErr } = await db.from("pj_sync_review").insert(fr.insert);
           if (revErr) {
             return await failRun("error", `db error (review insert): ${revErr.message}`, 500);
           }
@@ -2825,6 +2903,10 @@ export default {
         auto_applied_total: autoAppliedTotal,
         review,
         review_count: review.length,
+        // (5 พ.ย. 2026) ผลหลังกรองรายใบ: แถวที่จะ/ได้เข้ากล่องจริง + นับที่ทิ้งเพราะอยู่ใน pending เดิม + นับแถวที่แยกเหลือแต่ใบใหม่
+        review_new_rows: reviewNewRows,
+        review_dropped_duplicate: reviewDroppedDuplicate,
+        review_split_new_receipts_only: reviewSplit,
         truncated,
         aggregated_invoice_days_total: aggEntriesTotal,
         aggregated_invoice_days_processed: aggEntriesProcessed,
