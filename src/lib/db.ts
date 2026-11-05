@@ -6937,6 +6937,10 @@ export interface PenaltyOverrideHistoryEntry {
  * แก้ค่าปรับของงวดแบบ manual (admin only — RLS คุม)
  * เซ็ต penalty_overridden = true กัน cron daily update reset ค่าที่ override ไว้
  * พร้อม INSERT audit row ลง penalty_override_history
+ *
+ * @deprecated ไม่มีหน้าไหนเรียกแล้ว (ใช้ setInstallmentPenalty ผ่าน RPC แทน) ห้ามเอากลับมาใช้:
+ * เขียนแถวงวดตรงจากเว็บ แล้ว trigger ค่อยไปล็อกสัญญา = ลำดับล็อกสวนทางกับทางลงเงิน (สัญญา -> งวด) เสี่ยง deadlock
+ * (0188 ปิดช่องที่ฝั่ง RPC แล้ว แต่ทางตรงนี้แก้ที่ฝั่ง DB ไม่ได้) และข้ามเช็คสิทธิ์/เหตุผล/ยอดที่เก็บแล้วของ RPC
  */
 export const overridePenalty = writesContracts(async function overridePenalty(
   installmentId: string,
