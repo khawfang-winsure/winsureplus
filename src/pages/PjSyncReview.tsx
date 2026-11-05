@@ -15,6 +15,7 @@ import {
   linkPjReviewToPaymentLog,
   resolvePjReviewItem,
 } from '../lib/db'
+import { shouldReloadAfterPjReviewError } from '../lib/pjReviewApplyError'
 import { FEE_INCOME_PRESETS, FEE_INCOME_CUSTOM, type FeeKind } from '../lib/feeReconcile'
 import { spreadPayment } from '../lib/paymentSpread'
 import { detectDuplicatePjReviewRows, detectOddAmountFromContext, type PjReviewDupFlag } from '../lib/pjReviewDup'
@@ -420,6 +421,7 @@ export default function PjSyncReview() {
             setTarget(null)
             await load()
           }}
+          onStale={() => { void load() }}
         />
       )}
 
@@ -434,6 +436,7 @@ export default function PjSyncReview() {
             setApplyTarget(null)
             await load()
           }}
+          onStale={() => { void load() }}
           onSwitchToOtherIncome={() => {
             setOtherIncomeTarget(applyTarget)
             setApplyTarget(null)
@@ -450,6 +453,7 @@ export default function PjSyncReview() {
             setOtherIncomeTarget(null)
             await load()
           }}
+          onStale={() => { void load() }}
         />
       )}
 
@@ -940,6 +944,7 @@ function ResolveModal({
   planChangeDetail,
   onClose,
   onDone,
+  onStale,
 }: {
   row: PjSyncReviewRow
   action: 'resolved' | 'skipped'
@@ -948,9 +953,11 @@ function ResolveModal({
   planChangeDetail: PjPlanChangeSnapshot | null
   onClose: () => void
   onDone: () => void
+  onStale: () => void
 }) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [stale, setStale] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   // ปิดเมื่อกด Esc (ตาม pattern modal อื่นในโปรเจกต์)
@@ -989,6 +996,10 @@ function ResolveModal({
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
+      if (shouldReloadAfterPjReviewError(e)) {
+        setStale(true) // ล็อกปุ่มยืนยัน + โหลดรายการใหม่ (รายการนี้ถูกจัดการไปแล้ว)
+        onStale()
+      }
     }
   }
 
@@ -1051,7 +1062,7 @@ function ResolveModal({
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
-          <Button onClick={confirm} disabled={busy || !canConfirm}>{busy ? 'กำลังบันทึก...' : `ยืนยัน${title}`}</Button>
+          <Button onClick={confirm} disabled={busy || stale || !canConfirm}>{busy ? 'กำลังบันทึก...' : `ยืนยัน${title}`}</Button>
         </div>
       </div>
     </Modal>
@@ -1067,6 +1078,7 @@ function ApplyPjModal({
   byName,
   onClose,
   onDone,
+  onStale,
   onSwitchToOtherIncome,
 }: {
   row: PjSyncReviewRow
@@ -1075,8 +1087,10 @@ function ApplyPjModal({
   byName: string
   onClose: () => void
   onDone: () => void
+  onStale: () => void
   onSwitchToOtherIncome: () => void
 }) {
+  const [stale, setStale] = useState(false)
   // ยึดวันที่จาก PJ เสมอ — ช่องกรอกเปิดใช้เฉพาะกรณี PJ ไม่ได้ส่งวันที่มา (edge case)
   const [paidDate, setPaidDate] = useState((row.paidDate ?? '').slice(0, 10))
   const [busy, setBusy] = useState(false)
@@ -1123,6 +1137,10 @@ function ApplyPjModal({
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
+      if (shouldReloadAfterPjReviewError(e)) {
+        setStale(true) // ล็อกปุ่มยืนยัน + โหลดรายการใหม่ (รายการนี้ถูกจัดการไปแล้ว)
+        onStale()
+      }
     }
   }
 
@@ -1291,7 +1309,7 @@ function ApplyPjModal({
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
-          <Button onClick={confirm} disabled={busy || !ctx || !canConfirm}>
+          <Button onClick={confirm} disabled={busy || stale || !ctx || !canConfirm}>
             {busy ? 'กำลังบันทึก...' : !nextUnpaid && !isPenaltyOnly && ctx ? 'ไม่มีงวดค้างให้ลง' : 'ยืนยันลงตาม PJ'}
           </Button>
         </div>
@@ -1318,13 +1336,16 @@ function OtherIncomeModal({
   byName,
   onClose,
   onDone,
+  onStale,
 }: {
   row: PjSyncReviewRow
   byName: string
   onClose: () => void
   onDone: () => void
+  onStale: () => void
 }) {
   const navigate = useNavigate()
+  const [stale, setStale] = useState(false)
   const [categoryChoice, setCategoryChoice] = useState<string>(FEE_INCOME_PRESETS[0].category)
   const [customCategory, setCustomCategory] = useState('')
   const [amount, setAmount] = useState(String(row.amount))
@@ -1398,6 +1419,10 @@ function OtherIncomeModal({
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
+      if (shouldReloadAfterPjReviewError(e)) {
+        setStale(true) // ล็อกปุ่มยืนยัน + โหลดรายการใหม่ (รายการนี้ถูกจัดการไปแล้ว)
+        onStale()
+      }
     }
   }
 
@@ -1504,7 +1529,7 @@ function OtherIncomeModal({
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
-          <Button onClick={confirm} disabled={busy || !canSubmit}>
+          <Button onClick={confirm} disabled={busy || stale || !canSubmit}>
             {busy ? 'กำลังบันทึก...' : 'ยืนยันลงเป็นรายได้อื่นๆ'}
           </Button>
         </div>

@@ -101,6 +101,7 @@ import { isPlanChangeReason, type PjPlanChangeSnapshot } from './pjPlanChange'
 import { LATE_BUCKETS, type LateBucket } from './collectorPeriod'
 import type { OverlapMatchKind, PjStaffOverlapCandidate, PjStaffOverlapDetail, RecentPjMoney } from './pjStaffOverlap'
 import { dropCancelledPays } from './cancelledPay'
+import { classifyPjReviewError, PjReviewApplyError, PJ_ALIGN_PARTIAL_TEXT } from './pjReviewApplyError'
 
 export type OptionKind =
   | 'phone_model'
@@ -8773,6 +8774,14 @@ function parsePjAmount(v: string | number | null | undefined): number {
 function extractPjPendingReceipts(
   raw: PjRawJson | undefined,
 ): { uuid: string; amount: number; paymentType: string | null }[] {
+  // ไม่นับใบ uuid ซ้ำ (เก็บใบแรก) — ต้องตรงกับ RPC apply_pj_review_payment (mig 0183) ที่ distinct on uuid
+  const seen = new Set<string>()
+  return extractPjPendingReceiptsRaw(raw).filter(r => (seen.has(r.uuid) ? false : (seen.add(r.uuid), true)))
+}
+
+function extractPjPendingReceiptsRaw(
+  raw: PjRawJson | undefined,
+): { uuid: string; amount: number; paymentType: string | null }[] {
   if (Array.isArray(raw)) {
     return raw
       .filter((r): r is PjRawReceipt => !!r?.uuid)
@@ -9063,7 +9072,9 @@ export async function getPjSyncRuns(limit = 20): Promise<PjSyncRunRow[]> {
   }))
 }
 
-/** ยืนยัน/ข้ามเคสในกล่องรอตรวจ — set status + resolved_by/at + note (RLS อนุญาตเฉพาะ admin) */
+/** ยืนยัน/ข้ามเคสในกล่องรอตรวจ — set status + resolved_by/at + note (RLS อนุญาต admin + staff)
+ *  (5 พ.ย. 2026) ปิดเฉพาะแถวที่ยัง pending เท่านั้น — ถ้าไม่มีแถวถูกแก้ (ถูกจัดการ/auto_resolved ไปแล้ว)
+ *  โยน PjReviewApplyError(kind='stale') ให้หน้าเว็บแจ้งให้รีเฟรช ไม่เขียนทับสถานะเดิม */
 export async function resolvePjReviewItem(
   id: string,
   action: 'resolved' | 'skipped',
@@ -9071,7 +9082,7 @@ export async function resolvePjReviewItem(
   note?: string,
 ): Promise<void> {
   if (!supabase) return
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('pj_sync_review')
     .update({
       status: action,
@@ -9080,7 +9091,12 @@ export async function resolvePjReviewItem(
       resolution_note: note ?? null,
     })
     .eq('id', id)
+    .eq('status', 'pending')
+    .select('id')
   if (error) throw error
+  if (!data || data.length === 0) {
+    throw new PjReviewApplyError(classifyPjReviewError('[PJR:NOT_PENDING]'))
+  }
 }
 
 // ---- บริบทประกอบการตัดสินใจในกล่องรอตรวจ (งวดถัดไป + ยอดรวม + ประวัติชำระ) ----
@@ -9309,7 +9325,7 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
   note?: string
 }): Promise<void> {
   if (!supabase) return
-  const { reviewId, contractId, principal, penalty, paidDate, byName, note } = params
+  const { reviewId, contractId, principal, penalty, paidDate, note } = params
 
   // 🚨 กันชั้นสอง (defense in depth, migration 0114 landmine 3) — ห้ามลงยอดจากเคส drift (ใบเสร็จ PJ
   // ที่หาย/ถูกแก้ — reason RECEIPT_MISSING/RECEIPT_CHANGED) เด็ดขาด ต่อให้ UI ซ่อนปุ่มแล้ว (น้องวิว) ก็ต้อง
@@ -9319,7 +9335,7 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
   // pj_payment_type ยังใช้เติม payment_type fallback ใน receiptUuidsPayload ด้านล่าง
   const { data: reviewRow, error: reviewRowErr } = await supabase
     .from('pj_sync_review')
-    .select('reason, pj_invoice_no, pj_payment_type, raw_json')
+    .select('reason, pj_payment_type')
     .eq('id', reviewId)
     .maybeSingle()
   if (reviewRowErr) throw reviewRowErr
@@ -9337,34 +9353,6 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
     throw new Error('เคสนี้ต้องตรวจใน PJ แล้วลงชำระเองที่หน้าสัญญาโดยตรง — ห้ามยืนยันลงยอดจากกล่องรอตรวจนี้')
   }
 
-  // ดึง uuid ต่อใบเสร็จจาก raw_json "ก่อน" เรียก RPC (read-only ไม่กระทบ atomicity ของการลงเงิน)
-  //
-  // ⚠️ (ติ๊ก review RED1 fix, 9 ก.ย. 2026) เดิม cast `(reviewRow?.raw_json ?? []) as PjRawReceipt[]` แล้ว
-  //    เช็ค Array.isArray ทันที — reason RECEIPT_PARTIAL_APPLIED ส่ง raw_json เป็น "object" (ดู
-  //    pj-sync/index.ts queueReview rawJsonOverride: {invoice_no, paid_date, already_applied_receipts,
-  //    unapplied_receipts, unapplied_totals, raw}) ไม่ใช่ array → Array.isArray เป็น false ทันที →
-  //    receiptsFound = [] → receiptUuidsPayload = null → RPC ไม่ได้รับ uuid → ใบที่พนักงานเพิ่งกดยืนยันไม่ถูก
-  //    จดใน pj_applied_receipts → รอบ sync ถัดไปเห็นว่า "ยังไม่เคยลง" → auto-apply ซ้ำ = เงินเบิ้ลจริง
-  //    (คอมเมนต์เดิมด้านบนฟังก์ชันนี้เตือนเรื่องนี้ไว้เองแต่โค้ดไม่ได้ทำตาม) แก้โดยใช้
-  //    extractPjPendingReceipts ตัวเดียวกับที่ sumPjPenalty/extractPjReceiptUuids ใช้ — รองรับทั้ง array
-  //    เดิมและ object ใหม่ในจุดเดียว ไม่มี regression กับ shape เดิม (array คืนผลเหมือนเดิมทุกประการ)
-  let receiptUuidsPayload:
-    | { uuid: string; invoice_no: string | null; paid_date: string | null; amount: number; payment_type: string | null; source: string }[]
-    | null = null
-  try {
-    const receiptsFound = extractPjPendingReceipts(reviewRow?.raw_json as PjRawJson)
-    if (receiptsFound.length > 0) {
-      receiptUuidsPayload = receiptsFound.map(r => ({
-        uuid:         r.uuid,
-        invoice_no:   reviewRow?.pj_invoice_no ?? null,
-        paid_date:    paidDate || null,
-        amount:       r.amount,
-        payment_type: r.paymentType ?? reviewRow?.pj_payment_type ?? null,
-        source:       'review',
-      }))
-    }
-  } catch { /* best-effort อ่าน raw_json — ไม่มี uuid ก็ยังลงเงินได้ปกติ แค่ไม่มี exact-dedup เสริม */ }
-
   // (18 ก.ค. 2026, mig 0117; แก้ 4 พ.ย. 2026 ตาม mig 0181) เคส align ค่าปรับตาม PJ
   // RPC ตั้งแต่ 0181 กระจายค่าปรับหลายงวด (เก่า = งวดเดียว) จึงห้ามเดางวดเป้าหมายก่อนลงแล้วตั้งยอด PJ ทั้งก้อน
   // -> เก็บ "ค่าปรับที่จ่ายแล้วต่องวด" ก่อนลง แล้วอ่านซ้ำหลังลง งวดไหนจ่ายเพิ่มก็ตั้ง penalty_amount = ยอดจ่ายรวมของงวดนั้น
@@ -9376,48 +9364,40 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
 
   const penaltyPaidBefore = isPenaltyAlign ? await fetchPenaltyPaidByInstallment(contractId) : null
 
-  const { error } = await supabase.rpc('record_payment_spread', {
-    p_contract_id:    contractId,
-    p_principal:      principal,
-    p_penalty:        penalty,
-    p_paid_at:        `${paidDate}T00:00:00.000Z`,
-    p_by_name:        byName,
-    p_receipt_uuids:  receiptUuidsPayload,
+  // (5 พ.ย. 2026, mig 0183) ลงเงิน + จด uuid + ledger + ปิดแถว ใน transaction เดียวที่ server
+  // server ล็อกแถว ต้อง pending, ใบเสร็จต้องยังไม่เคยลง, ยอด/วันที่ต้องตรงกับแถว — หน้าเก่า/กดพร้อมกันถูกปฏิเสธ (ไม่เงินเบิ้ล)
+  // raw_json/uuid ให้ server อ่านเอง (ไม่เชื่อ client) · ชื่อผู้ทำใช้จากบัญชีที่ล็อกอิน (byName ไม่ได้ส่ง)
+  const { error } = await supabase.rpc('apply_pj_review_payment', {
+    p_review_id: reviewId,
+    p_principal: principal,
+    p_penalty:   penalty,
+    p_paid_date: paidDate || null,
+    p_note:      note ?? 'ลงยอดจากกล่องรอตรวจ',
   })
-  if (error) throw error
+  if (error) {
+    const info = classifyPjReviewError(error.message)
+    if (info.kind === 'other') throw error
+    throw new PjReviewApplyError(info)
+  }
 
   // align penalty_amount ของ "ทุกงวดที่ค่าปรับจ่ายเพิ่มรอบนี้" = ค่าปรับที่จ่ายแล้วรวมของงวดนั้น (mig 0117, grant
-  // authenticated ทั้ง staff+admin) — เงินลงไปแล้วที่ RPC ด้านบน ถ้า align fail ต้องให้เห็น error ชัด ไม่ swallow เงียบ
-  // ⚠️ เรียกหลายงวดทีละ RPC ไม่ atomic: ถ้าพังกลางทาง เงินลงครบแล้ว งวดแรกๆ ตั้งยอดแล้ว งวดหลังยังไม่ตั้ง และเคสในกล่อง
-  //    ยังไม่ resolve (throw ก่อน) -> ห้ามกดลงซ้ำ (จะลงเงินเบิ้ล) ต้องให้คนตั้งค่าปรับที่เหลือเอง
+  // authenticated ทั้ง staff+admin)
+  // ⚠️ เงินลงและแถวถูกปิดเป็น resolved ไปแล้วใน RPC ด้านบน -> ถ้าขั้นนี้พังกลางทาง การกดซ้ำจะถูก server ปฏิเสธ (ไม่เบิ้ล)
+  //    แต่ค่าปรับบางงวดอาจยังไม่ได้ตั้ง -> โยน kind='partial' บอกให้คนตั้งที่เหลือเอง (หน้าเว็บโหลดรายการใหม่)
   if (isPenaltyAlign && penaltyPaidBefore) {
-    const penaltyPaidAfter = await fetchPenaltyPaidByInstallment(contractId)
-    for (const t of computePenaltyAlignTargets(penaltyPaidBefore, penaltyPaidAfter)) {
-      const { error: alignErr } = await supabase.rpc('pj_review_set_penalty', {
-        p_installment_id: t.installmentId,
-        p_amount: t.amount,
-      })
-      if (alignErr) throw alignErr
+    try {
+      const penaltyPaidAfter = await fetchPenaltyPaidByInstallment(contractId)
+      for (const t of computePenaltyAlignTargets(penaltyPaidBefore, penaltyPaidAfter)) {
+        const { error: alignErr } = await supabase.rpc('pj_review_set_penalty', {
+          p_installment_id: t.installmentId,
+          p_amount: t.amount,
+        })
+        if (alignErr) throw alignErr
+      }
+    } catch {
+      throw new PjReviewApplyError({ kind: 'partial', message: PJ_ALIGN_PARTIAL_TEXT })
     }
   }
-
-  // จด ledger กันลงซ้ำ (legacy safety net คนละกลไกจาก pj_applied_receipts — คงไว้เหมือนเดิม ห้ามลบ
-  // แยก tx เหมือนเดิมทุกประการ ไม่ใช่ scope ของ atomic fix รอบนี้): cron รอบถัดไป (< DEDUP_CUTOFF ใน
-  // pj-sync/index.ts) เจอ ledger → ข้าม ไม่ลงซ้ำ (best-effort)
-  if (paidDate) {
-    try {
-      await supabase.from('pj_applied_ledger').upsert({
-        contract_id:  contractId,
-        pj_paid_date: paidDate,
-        inst_amount:  principal,
-        pen_amount:   penalty,
-        source:       'review',
-        applied_at:   new Date().toISOString(),
-      }, { onConflict: 'contract_id,pj_paid_date' })
-    } catch { /* best-effort — ไม่บล็อก flow หลัก */ }
-  }
-
-  await resolvePjReviewItem(reviewId, 'resolved', byName, note ?? 'ลงยอดจากกล่องรอตรวจ')
 })
 
 /**
@@ -9443,7 +9423,7 @@ export async function applyPjReviewAsOtherIncome(params: {
   feeKind?: FeeKind | null // tag ค่าธรรมเนียมสิทธิ์ (migration 0106) — ถ้ายอดนี้คือค่าเปลี่ยนวัน/ขยายงวด/ปิดด่วน
 }): Promise<void> {
   if (!supabase) return
-  const { reviewId, contractId, amount, category, receivedAt, note, byName, feeKind } = params
+  const { reviewId, amount, category, receivedAt, note, feeKind } = params
 
   // 🚨 กันชั้นสอง (defense in depth, migration 0114 landmine 3) — ดู comment เต็มใน applyPjReviewPayment
   // ด้านบน เหตุผลเดียวกัน: ห้ามลงยอด (แม้เป็นรายได้อื่นๆ) จากเคส drift เด็ดขาด — throw ไม่ swallow
@@ -9466,22 +9446,21 @@ export async function applyPjReviewAsOtherIncome(params: {
     throw new Error('เคสนี้ต้องตรวจใน PJ แล้วลงชำระเองที่หน้าสัญญาโดยตรง — ห้ามลงเป็นรายได้อื่นๆ จากกล่องรอตรวจนี้')
   }
 
-  await insertOtherIncome({
-    contractId,
-    amount,
-    category,
-    note,
-    receivedAt,
-    recordedBy: byName,
-    feeKind: feeKind ?? null,
+  // (5 พ.ย. 2026, mig 0183) RPC เดียว atomic: ล็อกแถว pending + insert other_income + ปิดแถว ใน tx เดียว
+  // (ไม่มี revert — พังกลางทาง = ไม่มีอะไรถูกบันทึกเลย) · ชื่อผู้บันทึกใช้จากบัญชีที่ล็อกอิน
+  const { error } = await supabase.rpc('apply_pj_review_other_income', {
+    p_review_id:   reviewId,
+    p_amount:      amount,
+    p_category:    category,
+    p_received_at: receivedAt,
+    p_note:        note ?? null,
+    p_fee_kind:    feeKind ?? null,
   })
-
-  await resolvePjReviewItem(
-    reviewId,
-    'resolved',
-    byName,
-    note ? `ลงเป็นรายได้อื่นๆ (${category}): ${note}` : `ลงเป็นรายได้อื่นๆ (${category})`,
-  )
+  if (error) {
+    const info = classifyPjReviewError(error.message)
+    if (info.kind === 'other') throw error
+    throw new PjReviewApplyError(info)
+  }
 }
 
 /**
