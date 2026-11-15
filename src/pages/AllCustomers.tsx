@@ -5,9 +5,9 @@ import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
-import { getAllStatuses, getContractAggregates, getContractsForAllCustomers, getShops } from '../lib/db'
-import type { ContractAggregate, ContractAllCustomersRow } from '../lib/db'
-import type { Contract, ContractStatus, ContractStatusRow, OverdueBucket, Shop } from '../lib/types'
+import { getContractProgressLite, getContractsForAllCustomers, getShops, getStatusesLite } from '../lib/db'
+import type { ContractAllCustomersRow, ProgressLite, StatusLiteRow } from '../lib/db'
+import type { Contract, ContractStatus, OverdueBucket, Shop } from '../lib/types'
 import { useAsync } from '../lib/useAsync'
 
 // ป้ายกลุ่มความล่าช้า (ใช้ในดรอปดาวน์ + badge)
@@ -25,7 +25,7 @@ const BUCKET_OPTS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90
 
 // ป้ายสถานะสุขภาพสัญญา — ใช้ bucket จาก v_contract_status
 // "รอเอกสาร" ไม่ใช่สถานะที่มาแทนความล่าช้าอีกต่อไป (2026-09-22) — โชว์คู่กับป้ายสถานะปกติเสมอ
-function StatusPills({ contract, st }: { contract: Pick<Contract, 'status' | 'pendingDocuments'>; st: ContractStatusRow | undefined }) {
+function StatusPills({ contract, st }: { contract: Pick<Contract, 'status' | 'pendingDocuments'>; st: StatusLiteRow | undefined }) {
   let statusBadge: ReactNode
   if (contract.status !== 'active') {
     statusBadge = <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
@@ -55,8 +55,8 @@ function StatusPills({ contract, st }: { contract: Pick<Contract, 'status' | 'pe
 interface AllCustomersData {
   contracts: ContractAllCustomersRow[]
   shops: Shop[]
-  statuses: ContractStatusRow[]
-  aggregates: Map<string, ContractAggregate>
+  statuses: StatusLiteRow[]
+  aggregates: Map<string, ProgressLite>
 }
 
 export default function AllCustomers() {
@@ -65,8 +65,8 @@ export default function AllCustomers() {
       const [contracts, shops, statuses, aggregates] = await Promise.all([
         getContractsForAllCustomers(),
         getShops(),
-        getAllStatuses(),
-        getContractAggregates(),
+        getStatusesLite(),
+        getContractProgressLite(),
       ])
       return { contracts, shops, statuses, aggregates }
     },

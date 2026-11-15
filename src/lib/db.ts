@@ -470,6 +470,8 @@ let aggregatesCache: RefCacheEntry<Map<string, ContractAggregate>> | null = null
 export function invalidateContractCaches(): void {
   statusesCache = null
   aggregatesCache = null
+  statusesLiteCache = null
+  progressLiteCache = null
 }
 
 /** ห่อ mutator ที่แก้สัญญา/งวด/การชำระ ฯลฯ ให้ล้าง cache ก่อนเริ่ม + หลังจบ (finally — ครอบกรณีเขียนสำเร็จบางส่วนแล้ว throw) */
@@ -2003,6 +2005,39 @@ async function fetchContractAggregates(): Promise<Map<string, ContractAggregate>
   return map
 }
 
+export interface ProgressLite { paidCount: number; totalInstallments: number }
+let progressLiteCache: RefCacheEntry<Map<string, ProgressLite>> | null = null
+/** ความคืบหน้างวด (ชำระแล้ว/ทั้งหมด) แบบเบา 3 คอลัมน์ จาก v_contract_aggregates (แทน '*' 11 คอลัมน์) */
+export async function getContractProgressLite(): Promise<Map<string, ProgressLite>> {
+  if (!supabase) return new Map()
+  if (isFresh(aggregatesCache)) {
+    const cached = await aggregatesCache.promise
+    return new Map([...cached].map(([k, v]) => [k, { paidCount: v.paidCount, totalInstallments: v.totalInstallments }]))
+  }
+  if (isFresh(progressLiteCache)) return progressLiteCache.promise
+  const client = supabase
+  const entry: RefCacheEntry<Map<string, ProgressLite>> = {
+    at: Date.now(),
+    promise: (async () => {
+      const { data, error } = await client
+        .from('v_contract_aggregates')
+        .select('contract_id,total_installments,paid_count')
+        .range(0, 9999)
+      if (error) throw error
+      const map = new Map<string, ProgressLite>()
+      for (const r of (data ?? []) as { contract_id: string; total_installments: number | null; paid_count: number | null }[]) {
+        map.set(r.contract_id, { paidCount: Number(r.paid_count ?? 0), totalInstallments: Number(r.total_installments ?? 0) })
+      }
+      return map
+    })(),
+  }
+  progressLiteCache = entry
+  entry.promise.catch(() => {
+    if (progressLiteCache === entry) progressLiteCache = null
+  })
+  return entry.promise
+}
+
 /** บันทึกชำระ (เพิ่มยอดสะสม — จ่ายบางส่วนได้ งวดจะปิดเมื่อยอดสะสม >= ค่างวด) */
 export const recordPayment = writesContracts(async function recordPayment(installmentId: string, amount: number, note?: string): Promise<void> {
   if (!supabase) return
@@ -2858,6 +2893,29 @@ async function fetchAllStatuses(): Promise<ContractStatusRow[]> {
     'contract_id',
   )
   return rows.map(mapStatus)
+}
+
+/** AllCustomers — ใช้แค่ป้ายล่าช้า (bucket/daysLate) ของสถานะต่อสัญญา */
+export type StatusLiteRow = Pick<ContractStatusRow, 'contractId' | 'bucket' | 'daysLate'>
+let statusesLiteCache: RefCacheEntry<StatusLiteRow[]> | null = null
+/** v_contract_status แบบเบา 3 คอลัมน์ (แทน '*' 24 คอลัมน์) — ถ้า cache เต็มของ getAllStatuses ยังสด ใช้ต่อได้เลย */
+export async function getStatusesLite(): Promise<StatusLiteRow[]> {
+  if (!supabase) return []
+  if (isFresh(statusesCache)) return (await statusesCache.promise).map((r) => ({ contractId: r.contractId, bucket: r.bucket, daysLate: r.daysLate }))
+  if (isFresh(statusesLiteCache)) return statusesLiteCache.promise
+  const client = supabase
+  const entry: RefCacheEntry<StatusLiteRow[]> = {
+    at: Date.now(),
+    promise: fetchAllPaged<{ contract_id: string; bucket: OverdueBucket; days_late: number }>((from, to, orderBy) =>
+      client.from('v_contract_status').select('contract_id,bucket,days_late').order(orderBy).range(from, to),
+      'contract_id',
+    ).then((rows) => rows.map((r) => ({ contractId: r.contract_id, bucket: r.bucket, daysLate: r.days_late }))),
+  }
+  statusesLiteCache = entry
+  entry.promise.catch(() => {
+    if (statusesLiteCache === entry) statusesLiteCache = null
+  })
+  return entry.promise
 }
 
 /** ตัวเลข 4 การ์ดหน้าภาพรวม (Dashboard) */
