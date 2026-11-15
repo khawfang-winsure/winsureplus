@@ -73,6 +73,7 @@ function NavContent({
     if (key === 'reviewQueue') return `${count} ${roles.isStaff ? 'เคสต้องแก้ของทีม' : 'เคสรอตรวจ'}`
     if (key === 'pjSyncReview') return `${count} รายการรอตรวจ PJ`
     if (key === 'inbox') return `${count} เคสในกล่องรับงาน`
+    if (key === 'extensionRequests') return `${count} คำขอขยายรออนุมัติ`
     return `${count}`
   }
 

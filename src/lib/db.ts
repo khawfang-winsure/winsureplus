@@ -8964,6 +8964,40 @@ export async function getPjSyncReviewPendingCount(): Promise<number> {
   return count ?? 0
 }
 
+/** จำนวนคำขอขยายย้อนหลังที่รอแอดมินอนุมัติ (RPC แอดมินเท่านั้น) — ใช้เป็นเลขแดงบนเมนู */
+export async function getPendingExtensionRequestCount(): Promise<number> {
+  if (!supabase) return 0
+  const { data, error } = await supabase.rpc('count_pending_retrospective_extension_requests')
+  if (error) throw error
+  return typeof data === 'number' ? data : 0
+}
+
+export interface ExtensionRequestRow {
+  id: string
+  contractId: string
+  status: 'pending' | 'approved' | 'rejected'
+  contractNo: string | null
+  invNo: string | null
+  customerName: string | null
+  extType: string | null
+  customerRequestedAt: string | null
+  effectiveDate: string | null
+  recordedAt: string
+  recordedByName: string | null
+  reason: string | null
+  approvalReason: string | null
+  decidedAt: string | null
+  decidedByName: string | null
+}
+
+/** รายการคำขอขยายย้อนหลัง: รอพิจารณาทั้งหมด + ที่ตัดสินแล้วภายใน `days` วัน (แอดมินเท่านั้น) */
+export async function listExtensionRequests(days = 30): Promise<ExtensionRequestRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.rpc('list_retrospective_extension_requests', { p_days: days })
+  if (error) throw error
+  return Array.isArray(data) ? (data as ExtensionRequestRow[]) : []
+}
+
 /** 1 แถวดิบเฉพาะที่ต้องใช้ parse drift snapshot (reason + raw_json เท่านั้น) */
 interface PjSyncReviewDriftViewRow {
   reason: string
