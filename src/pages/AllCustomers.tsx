@@ -5,9 +5,10 @@ import { ChevronDown, ChevronUp, FileCheck, Mail, Pencil, Search, User, X } from
 import { Badge, Input, Loading, PageTitle, Select } from '../components/ui'
 import Pagination from '../components/Pagination'
 import { baht, maskNationalId, statusLabel, thaiDate } from '../lib/format'
-import { getContractProgressLite, getContractsForAllCustomers, getShops, getStatusesLite } from '../lib/db'
+import { getContractProgressLite, getContractsForAllCustomers, getFieldVisitStatusMap, getShops, getStatusesLite } from '../lib/db'
 import type { ContractAllCustomersRow, ProgressLite, StatusLiteRow } from '../lib/db'
-import type { Contract, ContractStatus, OverdueBucket, Shop } from '../lib/types'
+import type { Contract, ContractStatus, FieldVisitStatusInfo, OverdueBucket, Shop } from '../lib/types'
+import { FieldVisitBadge } from '../components/FieldVisitBadge'
 import { useAsync } from '../lib/useAsync'
 
 // ป้ายกลุ่มความล่าช้า (ใช้ในดรอปดาวน์ + badge)
@@ -25,7 +26,15 @@ const BUCKET_OPTS: OverdueBucket[] = ['normal', '1-10', '11-30', '31-60', '61-90
 
 // ป้ายสถานะสุขภาพสัญญา — ใช้ bucket จาก v_contract_status
 // "รอเอกสาร" ไม่ใช่สถานะที่มาแทนความล่าช้าอีกต่อไป (2026-09-22) — โชว์คู่กับป้ายสถานะปกติเสมอ
-function StatusPills({ contract, st }: { contract: Pick<Contract, 'status' | 'pendingDocuments'>; st: StatusLiteRow | undefined }) {
+function StatusPills({
+  contract,
+  st,
+  fieldVisit,
+}: {
+  contract: Pick<Contract, 'status' | 'pendingDocuments'>
+  st: StatusLiteRow | undefined
+  fieldVisit?: FieldVisitStatusInfo
+}) {
   let statusBadge: ReactNode
   if (contract.status !== 'active') {
     statusBadge = <Badge tone="neutral">{statusLabel(contract.status)}</Badge>
@@ -41,12 +50,13 @@ function StatusPills({ contract, st }: { contract: Pick<Contract, 'status' | 'pe
     }
   }
 
-  if (!contract.pendingDocuments) return statusBadge
+  if (!contract.pendingDocuments && !fieldVisit) return statusBadge
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <Badge tone="amber">รอเอกสาร</Badge>
+      {contract.pendingDocuments && <Badge tone="amber">รอเอกสาร</Badge>}
       {statusBadge}
+      <FieldVisitBadge info={fieldVisit} />
     </div>
   )
 }
@@ -72,6 +82,20 @@ export default function AllCustomers() {
     },
     { contracts: [], shops: [], statuses: [], aggregates: new Map() },
   )
+
+  // ป้ายคำขอลงพื้นที่ — map แยก (ไม่ขยายคอลัมน์ที่ดึงแบบเบา) ล้มเหลว = ไม่ขึ้นป้าย
+  const [fieldVisitMap, setFieldVisitMap] = useState<Map<string, FieldVisitStatusInfo>>(new Map())
+  useEffect(() => {
+    let active = true
+    getFieldVisitStatusMap()
+      .then((m) => {
+        if (active) setFieldVisitMap(m)
+      })
+      .catch((e: unknown) => console.error('getFieldVisitStatusMap failed', e))
+    return () => {
+      active = false
+    }
+  }, [])
 
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -323,7 +347,7 @@ export default function AllCustomers() {
                           </td>
                           <td className="whitespace-nowrap px-3 py-2.5 align-top">{shopName(c.shopId)}</td>
                           <td className="whitespace-nowrap px-3 py-2.5 align-top">
-                            <StatusPills contract={c} st={st} />
+                            <StatusPills contract={c} st={st} fieldVisit={fieldVisitMap.get(c.id)} />
                           </td>
                           <td className="whitespace-nowrap px-3 py-2.5 align-top">{c.model} {c.storage}</td>
                           <td className="whitespace-nowrap px-3 py-2.5 text-right align-top">{baht(c.monthlyPayment)}</td>
@@ -387,7 +411,7 @@ export default function AllCustomers() {
                         >
                           {c.customerName}
                         </button>
-                        <StatusPills contract={c} st={st} />
+                        <StatusPills contract={c} st={st} fieldVisit={fieldVisitMap.get(c.id)} />
                       </div>
                       {/* บรรทัด 2: เลขสัญญา + icon อีเมล/สรุป */}
                       <div className="mb-2 flex items-center gap-1.5 text-xs text-ink-soft">

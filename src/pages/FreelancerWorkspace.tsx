@@ -7,6 +7,7 @@ import { baht, thaiDate } from '../lib/format'
 import {
   claimCase,
   getCaseOwnershipSummary,
+  getFieldVisitStatusMap,
   getFreelancerQueue,
   getFreelancerQueueRow,
   getMyAssignedGrades,
@@ -20,8 +21,10 @@ import {
   type FollowUpResult,
   type FreelancerQueueRow,
 } from '../lib/db'
-import type { OverdueBucket, OverduePromiseContract, PartialPaymentProgress } from '../lib/types'
+import type { FieldVisitStatusInfo, OverdueBucket, OverduePromiseContract, PartialPaymentProgress } from '../lib/types'
 import { useAuth } from '../lib/auth'
+import { FieldVisitBadge } from '../components/FieldVisitBadge'
+import { FieldVisitRequestButton } from '../components/FieldVisitRequestButton'
 import { isContactWindowOpen } from '../lib/contactHours'
 import { overdueBucket } from '../lib/calc'
 import { partialPaymentBadge, PARTIAL_PAYMENT_TOOLTIP } from '../lib/partialPayment'
@@ -298,6 +301,8 @@ function QueueRow({
   actionMode = 'claim',
   claimingId = null,
   partialPayment,
+  fieldVisit,
+  onFieldVisitChanged,
   onSelect,
   onClaim,
   onRelease,
@@ -311,11 +316,15 @@ function QueueRow({
   claimingId?: string | null
   // ป้ายทยอยจ่าย (Wave 3) — undefined = ไม่มีข้อมูล/ยังโหลดไม่เสร็จ ไม่ขึ้นป้าย (fail-open)
   partialPayment?: PartialPaymentProgress
+  // ป้ายคำขอลงพื้นที่ — เตือนอย่างเดียว ไม่ปิดปุ่มโทร/บันทึก
+  fieldVisit?: FieldVisitStatusInfo
+  onFieldVisitChanged: () => void
   onSelect: (r: FreelancerQueueRow) => void
   onClaim: (r: FreelancerQueueRow) => void
   onRelease?: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
+  const { role: viewerRole } = useAuth()
   const isBlocked = r.dnc || r.lawyerEngaged
   // enforceCallHours=false → ไม่ disable ปุ่มบันทึกเลย (แท็บ mine)
   const disableButton = enforceCallHours && isHardBlocked(outsideHours, sr.suppressReason)
@@ -338,6 +347,11 @@ function QueueRow({
             {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ (DNC)</Badge>}
             {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ มีทนายความ</Badge>}
             {r.disputed && <Badge tone="amber">📋 โต้แย้งยอด</Badge>}
+          </div>
+        )}
+        {fieldVisit && (
+          <div className="mb-1.5">
+            <FieldVisitBadge info={fieldVisit} />
           </div>
         )}
 
@@ -466,6 +480,7 @@ function QueueRow({
               {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
             </button>
           )}
+          {!fieldVisit && !(viewerRole === 'freelancer' && r.isReturned) && <FieldVisitRequestButton compact contractId={r.contractId} onChanged={onFieldVisitChanged} />}
         </div>
       </td>
     </tr>
@@ -483,6 +498,8 @@ function QueueCardMobile({
   actionMode = 'claim',
   claimingId = null,
   partialPayment,
+  fieldVisit,
+  onFieldVisitChanged,
   onSelect,
   onClaim,
   onRelease,
@@ -494,11 +511,15 @@ function QueueCardMobile({
   claimingId?: string | null
   // ป้ายทยอยจ่าย (Wave 3) — undefined = ไม่มีข้อมูล/ยังโหลดไม่เสร็จ ไม่ขึ้นป้าย (fail-open)
   partialPayment?: PartialPaymentProgress
+  // ป้ายคำขอลงพื้นที่ — เตือนอย่างเดียว ไม่ปิดปุ่มโทร/บันทึก
+  fieldVisit?: FieldVisitStatusInfo
+  onFieldVisitChanged: () => void
   onSelect: (r: FreelancerQueueRow) => void
   onClaim: (r: FreelancerQueueRow) => void
   onRelease?: (r: FreelancerQueueRow) => void
 }) {
   const r = sr.row
+  const { role: viewerRole } = useAuth()
   const isBlocked = r.dnc || r.lawyerEngaged
   const disableButton = enforceCallHours && isHardBlocked(outsideHours, sr.suppressReason)
   let tooltip = ''
@@ -517,6 +538,11 @@ function QueueCardMobile({
           {r.dnc && <Badge tone="red">⛔ ห้ามติดต่อ</Badge>}
           {r.lawyerEngaged && !r.dnc && <Badge tone="amber">⚖️ ทนายความ</Badge>}
           {r.disputed && <Badge tone="amber">📋 โต้แย้ง</Badge>}
+        </div>
+      )}
+      {fieldVisit && (
+        <div className="mb-1.5">
+          <FieldVisitBadge info={fieldVisit} />
         </div>
       )}
 
@@ -630,6 +656,7 @@ function QueueCardMobile({
             {claimingId === r.contractId ? 'กำลังทิ้งงาน...' : 'ทิ้งงาน'}
           </button>
         )}
+        {!fieldVisit && !(viewerRole === 'freelancer' && r.isReturned) && <FieldVisitRequestButton compact contractId={r.contractId} onChanged={onFieldVisitChanged} />}
       </div>
     </div>
   )
@@ -752,6 +779,20 @@ export default function FreelancerWorkspace() {
       cancelled = true
     }
   }, [partialPaymentIdsKey])
+
+  // ป้ายคำขอลงพื้นที่ — โหลดครั้งเดียวต่อหน้า ล้มเหลว = ไม่ขึ้นป้าย
+  const [fieldVisitMap, setFieldVisitMap] = useState<Map<string, FieldVisitStatusInfo>>(new Map())
+  const reloadFieldVisit = useCallback(() => {
+    getFieldVisitStatusMap()
+      .then(setFieldVisitMap)
+      .catch((e: unknown) => {
+        console.error('getFieldVisitStatusMap failed', e)
+        setFieldVisitMap(new Map())
+      })
+  }, [])
+  useEffect(() => {
+    reloadFieldVisit()
+  }, [reloadFieldVisit])
 
   // req7 admin: โหลดสรุปใครถือกี่เคส
   useEffect(() => {
@@ -1359,6 +1400,8 @@ export default function FreelancerWorkspace() {
                               sr={sr}
                               outsideHours={outsideHours}
                               partialPayment={partialPaymentMap.get(sr.row.contractId)}
+                              fieldVisit={fieldVisitMap.get(sr.row.contractId)}
+                              onFieldVisitChanged={reloadFieldVisit}
                               onSelect={handleOpenCase}
                               onClaim={handleClaimCase}
                             />
@@ -1375,6 +1418,8 @@ export default function FreelancerWorkspace() {
                           sr={sr}
                           outsideHours={outsideHours}
                           partialPayment={partialPaymentMap.get(sr.row.contractId)}
+                          fieldVisit={fieldVisitMap.get(sr.row.contractId)}
+                          onFieldVisitChanged={reloadFieldVisit}
                           onSelect={handleOpenCase}
                           onClaim={handleClaimCase}
                         />
@@ -1483,6 +1528,8 @@ export default function FreelancerWorkspace() {
                             actionMode="release"
                             claimingId={claimingId}
                             partialPayment={partialPaymentMap.get(sr.row.contractId)}
+                            fieldVisit={fieldVisitMap.get(sr.row.contractId)}
+                            onFieldVisitChanged={reloadFieldVisit}
                             onSelect={handleOpenCase}
                             onClaim={handleClaimCase}
                             onRelease={handleReleaseCase}
@@ -1503,6 +1550,8 @@ export default function FreelancerWorkspace() {
                         actionMode="release"
                         claimingId={claimingId}
                         partialPayment={partialPaymentMap.get(sr.row.contractId)}
+                        fieldVisit={fieldVisitMap.get(sr.row.contractId)}
+                        onFieldVisitChanged={reloadFieldVisit}
                         onSelect={handleOpenCase}
                         onClaim={handleClaimCase}
                         onRelease={handleReleaseCase}

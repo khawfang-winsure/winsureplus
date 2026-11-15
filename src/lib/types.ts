@@ -3,6 +3,7 @@
 // ภายหลังจะ map ตรงกับตารางใน Supabase
 
 import type { LateBucket } from './collectorPeriod'
+import type { FieldVisitReason, FieldVisitStatus } from './fieldVisit'
 import type { ReviewStatus } from './review'
 import type { PJContract } from './pjImport'
 import type { PjStaffOverlapDetail } from './pjStaffOverlap'
@@ -1059,4 +1060,52 @@ export type PartialPaymentProgress = {
   amount: number
   paidAmount: number
   lastPaidAt: string | null
+}
+
+// ===== คำขอลงพื้นที่ (field visit) =====
+
+/** แถวรายการคำขอลงพื้นที่ (หน้าแอดมิน) — map จาก RPC list_field_visit_requests */
+export interface FieldVisitRequestRow {
+  id: string
+  contractId: string
+  reason: FieldVisitReason
+  note: string | null
+  status: FieldVisitStatus
+  requestedBy: string | null
+  requestedByName: string | null
+  requestedAt: string
+  roundId: string | null
+  roundLabel: string | null
+  dispatchedAt: string | null
+  resultNote: string | null
+  resultAt: string | null
+  resultByName: string | null
+  closedAt: string | null
+  closedReason: string | null
+  invNo: string | null
+  contractNo: string
+  customerName: string
+  shopName: string | null
+  phone: string | null
+  phoneAlt1: string | null
+  phoneAlt2: string | null
+  model: string | null
+  storage: string | null
+  contractStatus: string
+  currentGrade: string | null
+  daysLate: number
+  overdueAmount: number
+  /** ยอดที่จ่ายเข้ามาหลังกดขอ (payment_log action='pay') */
+  paidSinceRequest: number
+}
+
+/** ป้ายสถานะลงพื้นที่ต่อสัญญา (ไม่มีชื่อ/เบอร์) */
+export interface FieldVisitStatusInfo {
+  requestId: string
+  status: FieldVisitStatus
+  reason: FieldVisitReason
+  requestedAt: string
+  dispatchedAt: string | null
+  /** uuid คนขอ — ใช้ตัดสินว่าโชว์ลิงก์ยกเลิกไหม (RPC ยอมแค่คนขอ/แอดมิน) */
+  requestedBy: string | null
 }

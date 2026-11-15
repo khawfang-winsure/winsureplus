@@ -63,7 +63,10 @@ import type {
   TransferSlipItem,
   TransferSlipSummaryRow,
   UnownedArrearsRow,
+  FieldVisitRequestRow,
+  FieldVisitStatusInfo,
 } from './types'
+import type { FieldVisitReason } from './fieldVisit'
 import * as mock from './mockData'
 import {
   DEFAULT_TIERS,
@@ -10843,4 +10846,164 @@ export async function getPartialPaymentProgress(
   }
 
   return new Map(rows.map((r) => [r.contract_id, mapPartialPaymentProgress(r)]))
+}
+
+// ============================================================================
+// คำขอลงพื้นที่ (mig 20261115130000) — เขียน/อ่านผ่าน RPC เท่านั้น
+// ============================================================================
+
+function fieldVisitErrorMessage(e: { message?: string }): Error {
+  const m = e.message ?? ''
+  if (m.includes('FIELD_VISIT_ALREADY_OPEN')) return new Error('สัญญานี้มีคำขอลงพื้นที่ค้างอยู่แล้ว')
+  if (m.includes('FIELD_VISIT_NOT_CANCELLABLE')) return new Error('ยกเลิกไม่ได้ เพราะคำขอเข้ารอบหรือมีผลแล้ว')
+  return new Error(m || 'ทำรายการคำขอลงพื้นที่ไม่สำเร็จ')
+}
+
+// mock mode: เก็บในหน่วยความจำให้ npm run dev ใช้ได้โดยไม่มี .env
+const mockFieldVisit: FieldVisitRequestRow[] = []
+
+export async function requestFieldVisit(contractId: string, reason: FieldVisitReason, note: string): Promise<string> {
+  if (!supabase) {
+    if (mockFieldVisit.some((r) => r.contractId === contractId && (r.status === 'requested' || r.status === 'dispatched'))) {
+      throw new Error('สัญญานี้มีคำขอลงพื้นที่ค้างอยู่แล้ว')
+    }
+    const id = `mock-fv-${mockFieldVisit.length + 1}`
+    mockFieldVisit.push({
+      id, contractId, reason, note: note || null, status: 'requested', requestedBy: null, requestedByName: 'mock',
+      requestedAt: new Date().toISOString(), roundId: null, roundLabel: null, dispatchedAt: null, resultNote: null,
+      resultAt: null, resultByName: null, closedAt: null, closedReason: null, invNo: null, contractNo: contractId,
+      customerName: '-', shopName: null, phone: null, phoneAlt1: null, phoneAlt2: null, model: null, storage: null,
+      contractStatus: 'active', currentGrade: null, daysLate: 0, overdueAmount: 0, paidSinceRequest: 0,
+    })
+    return id
+  }
+  const { data, error } = await supabase.rpc('request_field_visit', {
+    p_contract_id: contractId,
+    p_reason: reason,
+    p_note: note || null,
+  })
+  if (error) throw fieldVisitErrorMessage(error)
+  return data as string
+}
+
+export async function cancelFieldVisitRequest(id: string, reason: string): Promise<void> {
+  if (!supabase) {
+    const r = mockFieldVisit.find((x) => x.id === id)
+    if (r && r.status === 'requested') r.status = 'cancelled'
+    return
+  }
+  const { error } = await supabase.rpc('cancel_field_visit_request', { p_id: id, p_reason: reason || null })
+  if (error) throw fieldVisitErrorMessage(error)
+}
+
+/** แอดมินจัดรอบ — คืน roundId */
+export async function dispatchFieldVisitRound(ids: string[], label: string, note: string): Promise<string> {
+  if (!supabase) {
+    for (const r of mockFieldVisit) {
+      if (ids.includes(r.id) && r.status === 'requested') {
+        r.status = 'dispatched'
+        r.roundLabel = label
+      }
+    }
+    return 'mock-round'
+  }
+  const { data, error } = await supabase.rpc('dispatch_field_visit_round', {
+    p_ids: ids,
+    p_label: label,
+    p_note: note || null,
+  })
+  if (error) throw fieldVisitErrorMessage(error)
+  return data as string
+}
+
+export async function recordFieldVisitResult(id: string, result: 'found' | 'not_found', note: string): Promise<void> {
+  if (!supabase) {
+    const r = mockFieldVisit.find((x) => x.id === id)
+    if (r && r.status === 'dispatched') {
+      r.status = result
+      r.resultNote = note || null
+    }
+    return
+  }
+  const { error } = await supabase.rpc('record_field_visit_result', { p_id: id, p_result: result, p_note: note || null })
+  if (error) throw fieldVisitErrorMessage(error)
+}
+
+export async function closeFieldVisitRequest(id: string, reason: string): Promise<void> {
+  if (!supabase) {
+    const r = mockFieldVisit.find((x) => x.id === id)
+    if (r) r.status = 'closed'
+    return
+  }
+  const { error } = await supabase.rpc('close_field_visit_request', { p_id: id, p_reason: reason || null })
+  if (error) throw fieldVisitErrorMessage(error)
+}
+
+/** แอดมินเท่านั้น — คำขอที่ยัง open ทุกใบ + ที่ปิด/มีผลภายใน days วัน */
+export async function listFieldVisitRequests(days = 90): Promise<FieldVisitRequestRow[]> {
+  if (!supabase) return [...mockFieldVisit]
+  const { data, error } = await supabase.rpc('list_field_visit_requests', { p_days: days })
+  if (error) throw fieldVisitErrorMessage(error)
+  return (data ?? []) as FieldVisitRequestRow[]
+}
+
+/** เลขแดงบนเมนู (แอดมินเท่านั้น; คนอื่นได้ 0) — น้องวิวต่อใน useNavBadgeCounts */
+export async function countOpenFieldVisitRequests(): Promise<number> {
+  if (!supabase) return mockFieldVisit.filter((r) => r.status === 'requested').length
+  const { data, error } = await supabase.rpc('count_open_field_visit_requests')
+  if (error) throw error
+  return Number(data ?? 0)
+}
+
+/** contractId -> ป้ายสถานะลงพื้นที่ (คำขอ open + ผลภายใน 14 วัน) */
+export async function getFieldVisitStatusMap(): Promise<Map<string, FieldVisitStatusInfo>> {
+  const out = new Map<string, FieldVisitStatusInfo>()
+  if (!supabase) {
+    for (const r of mockFieldVisit) {
+      if (r.status === 'requested' || r.status === 'dispatched') {
+        out.set(r.contractId, {
+          requestId: r.id,
+          status: r.status,
+          reason: r.reason,
+          requestedAt: r.requestedAt,
+          dispatchedAt: r.dispatchedAt,
+          requestedBy: r.requestedBy ?? null,
+        })
+      }
+    }
+    return out
+  }
+  const { data, error } = await supabase.rpc('get_field_visit_status_map')
+  if (error) throw error
+  for (const r of (data ?? []) as Array<FieldVisitStatusInfo & { contractId: string }>) {
+    out.set(r.contractId, {
+      requestId: r.requestId,
+      status: r.status,
+      reason: r.reason,
+      requestedAt: r.requestedAt,
+      dispatchedAt: r.dispatchedAt ?? null,
+      requestedBy: r.requestedBy ?? null,
+    })
+  }
+  return out
+}
+
+/** ที่อยู่ทุกชนิดของสัญญาตามรายการ id (หน้าปริ้นลงพื้นที่) — แบ่งชุดละ 100 กัน URL ยาว */
+export async function getAddressesForContracts(ids: string[]): Promise<Map<string, ContractAddresses>> {
+  const out = new Map<string, ContractAddresses>()
+  if (!supabase || ids.length === 0) return out
+  const uniq = [...new Set(ids)]
+  for (let i = 0; i < uniq.length; i += 100) {
+    const { data, error } = await supabase
+      .from('customer_addresses')
+      .select('*')
+      .in('contract_id', uniq.slice(i, i + 100))
+    if (error) throw error
+    for (const r of (data ?? []) as AddressRow[]) {
+      const cur = out.get(r.contract_id) ?? {}
+      cur[r.kind] = mapAddress(r)
+      out.set(r.contract_id, cur)
+    }
+  }
+  return out
 }

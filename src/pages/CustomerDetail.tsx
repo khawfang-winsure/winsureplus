@@ -7,6 +7,7 @@ import {
   getCustomerAggregate,
   getPaymentLog,
   getFollowUps,
+  getFieldVisitStatusMap,
   type CustomerAggregate,
   type CustomerContractItem,
   type PaymentLogEntry,
@@ -15,6 +16,8 @@ import {
 } from '../lib/db'
 import { useAuth } from '../lib/auth'
 import FollowUpModal from '../components/FollowUpModal'
+import { FieldVisitBadge } from '../components/FieldVisitBadge'
+import type { FieldVisitStatusInfo } from '../lib/types'
 
 // ---------- helpers ----------
 
@@ -89,8 +92,10 @@ function ContractRow({
   item,
   onFollowUp,
   canFollowUp,
+  fieldVisit,
 }: {
   item: CustomerContractItem
+  fieldVisit?: FieldVisitStatusInfo
   onFollowUp: (item: CustomerContractItem) => void
   canFollowUp: boolean
 }) {
@@ -102,6 +107,7 @@ function ContractRow({
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold text-ink">{item.contractNo}</span>
             <ContractStatusPill item={item} />
+            <FieldVisitBadge info={fieldVisit} />
           </div>
           <p className="mt-0.5 text-sm text-ink-soft">
             {item.deviceModel || '—'}
@@ -146,6 +152,19 @@ export default function CustomerDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [followUpTarget, setFollowUpTarget] = useState<CustomerContractItem | null>(null)
+  // ป้ายคำขอลงพื้นที่ — ล้มเหลว = ไม่ขึ้นป้าย
+  const [fieldVisitMap, setFieldVisitMap] = useState<Map<string, FieldVisitStatusInfo>>(new Map())
+  useEffect(() => {
+    let active = true
+    getFieldVisitStatusMap()
+      .then((m) => {
+        if (active) setFieldVisitMap(m)
+      })
+      .catch((e: unknown) => console.error('getFieldVisitStatusMap failed', e))
+    return () => {
+      active = false
+    }
+  }, [])
 
   // ── Customer 360: ประวัติการชำระ + ประวัติการติดตาม ────────────────────────
   const [recentPayments, setRecentPayments] = useState<FlatPayment[]>([])
@@ -307,6 +326,7 @@ export default function CustomerDetail() {
                 item={item}
                 onFollowUp={(i) => setFollowUpTarget(i)}
                 canFollowUp={canStaff}
+                fieldVisit={fieldVisitMap.get(item.contractId)}
               />
             ))}
           </div>

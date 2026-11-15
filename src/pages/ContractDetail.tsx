@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { FileBox, FileCheck, Mail, Pencil, PackageOpen, History, CalendarClock, MoreHorizontal, ShieldAlert, Phone, Plus, AlertCircle, MessageSquarePlus, Pin, PinOff, RotateCcw, AlertTriangle, Wallet, BadgePercent, Trash2, UserCheck, ChevronDown, ChevronUp, CircleCheck, Receipt, Lock, Copy, Check, Repeat } from 'lucide-react'
 import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import UndoToast from '../components/UndoToast'
+import { FieldVisitRequestButton } from '../components/FieldVisitRequestButton'
+import type { FieldVisitStatusInfo } from '../lib/types'
 import { baht, conditionLabel, installmentLabel, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import {
   getContract,
@@ -16,6 +18,7 @@ import {
   getStaffRateOptions,
   getStaffRateQuote,
   getFollowUps,
+  getFieldVisitStatusMap,
   recordPaymentWithPenalty,
   recordPenaltyOnlyPayment,
   setInstallmentPenalty,
@@ -287,6 +290,21 @@ export default function ContractDetail() {
   const { role, name: userName } = useAuth()
   const isAdmin = role === 'admin'
   const canStaff = role === 'admin' || role === 'staff'
+
+  // คำขอลงพื้นที่ของสัญญานี้ — ป้ายเตือนอย่างเดียว ล้มเหลว = ไม่ขึ้นป้าย
+  const [fieldVisitInfo, setFieldVisitInfo] = useState<FieldVisitStatusInfo | undefined>(undefined)
+  const reloadFieldVisit = useCallback(() => {
+    if (!id) return
+    getFieldVisitStatusMap()
+      .then((m) => setFieldVisitInfo(m.get(id)))
+      .catch((e: unknown) => {
+        console.error('getFieldVisitStatusMap failed', e)
+        setFieldVisitInfo(undefined)
+      })
+  }, [id])
+  useEffect(() => {
+    reloadFieldVisit()
+  }, [reloadFieldVisit])
 
   const [contract, setContract] = useState<Contract | null>(null)
   const [installments, setInstallments] = useState<Installment[]>([])
@@ -1750,6 +1768,14 @@ export default function ContractDetail() {
               <span className="text-xs text-ink-soft">— ไม่มีสถานะพิเศษ</span>
             )}
           </div>
+          {canStaff && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <FieldVisitRequestButton contractId={contract.id} info={fieldVisitInfo} onChanged={reloadFieldVisit} />
+              {!fieldVisitInfo && (
+                <span className="text-xs text-ink-soft">ติดต่อไม่ได้/ไม่ร่วมมือ — ขอให้ทีมลงพื้นที่ (ยังโทรติดตามได้ตามปกติ)</span>
+              )}
+            </div>
+          )}
 
           {/* ===== รายการเอกสารที่รอ (read-only — แก้ที่หน้าแก้ไขสัญญา) ===== */}
           {contract.pendingDocuments && contract.pendingDocItems && contract.pendingDocItems.length > 0 && (

@@ -43,6 +43,7 @@ const ReturnsReport = lazy(() => import('./pages/ReturnsReport'))
 const SettlementReport = lazy(() => import('./pages/SettlementReport'))
 const PjSyncReview = lazy(() => import('./pages/PjSyncReview'))
 const ExtensionRequests = lazy(() => import('./pages/ExtensionRequests'))
+const FieldVisitRequests = lazy(() => import('./pages/FieldVisitRequests'))
 const AccountingTransfers = lazy(() => import('./pages/AccountingTransfers'))
 const TransferSummary = lazy(() => import('./pages/TransferSummary'))
 const HrReport = lazy(() => import('./pages/HrReport'))
@@ -143,6 +144,7 @@ function Gate() {
           <Route path="/settlements" element={isAdmin ? <SettlementReport /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/pj-sync-review" element={isAdminOrStaff ? <PjSyncReview /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/extension-requests" element={isAdmin ? <ExtensionRequests /> : <Navigate to={fallbackTo} replace />} />
+          <Route path="/field-visit-requests" element={isAdmin ? <FieldVisitRequests /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/import"element={isAdmin ? <Import /> : <Navigate to={fallbackTo} replace />} />
           <Route path="/inbox" element={isAdminOrStaff ? <InboxPage /> : <Navigate to={fallbackTo} replace />} />
           <Route path="*" element={<Navigate to={isFreelancer ? '/queue' : (isExecutive || isAccounting) ? fallbackTo : '/add'} replace />} />

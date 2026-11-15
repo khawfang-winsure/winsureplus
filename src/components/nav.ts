@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
-import { getInboxCases, getPendingExtensionRequestCount, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
+import { countOpenFieldVisitRequests, getInboxCases, getPendingExtensionRequestCount, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
 
 export interface NavChild {
   to: string
@@ -26,8 +26,9 @@ export interface NavChild {
    *  - 'reviewQueue'   เคสรอตรวจ/ต้องแก้ (spec-review-flow.md §2 "ป้ายแจ้งเตือนเมนู")
    *  - 'pjSyncReview'  แถวรอตรวจในกล่องรอตรวจ PJ (เพิ่ม 23 ก.ย. 2026)
    *  - 'inbox'         เคสทั้งหมดในกล่องรับงาน (เพิ่ม 23 ก.ย. 2026)
-   *  - 'extensionRequests' คำขอขยายย้อนหลังที่รอแอดมินอนุมัติ (admin เท่านั้น) */
-  badgeKey?: 'reviewQueue' | 'pjSyncReview' | 'inbox' | 'extensionRequests'
+   *  - 'extensionRequests' คำขอขยายย้อนหลังที่รอแอดมินอนุมัติ (admin เท่านั้น)
+   *  - 'fieldVisitRequests' คำขอลงพื้นที่ที่ยังรอรอบ (admin เท่านั้น) */
+  badgeKey?: 'reviewQueue' | 'pjSyncReview' | 'inbox' | 'extensionRequests' | 'fieldVisitRequests'
 }
 
 export interface NavItem {
@@ -59,6 +60,7 @@ export const NAV: NavItem[] = [
       { to: '/inbox', label: 'กล่องรับงาน', badgeKey: 'inbox' },
       { to: '/pj-sync-review', label: 'กล่องรอตรวจ PJ', badgeKey: 'pjSyncReview' },
       { to: '/extension-requests', label: 'คำขอรออนุมัติ', adminOnly: true, badgeKey: 'extensionRequests' },
+      { to: '/field-visit-requests', label: 'คำขอลงพื้นที่', adminOnly: true, badgeKey: 'fieldVisitRequests' },
 
       { to: '/overdue/last', label: 'ลูกค้าล่าช้า-หนี้เสีย', sectionLabel: 'ติดตามหนี้' },
       { to: '/letters', label: 'ส่งจดหมาย' },
@@ -146,9 +148,13 @@ export interface NavBadgeCounts {
   pjSyncReview: number
   inbox: number
   extensionRequests: number
+  fieldVisitRequests: number
 }
 
-const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inbox: 0, extensionRequests: 0 }
+const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inbox: 0, extensionRequests: 0, fieldVisitRequests: 0 }
+
+/** หน้าคำขอลงพื้นที่ยิง event นี้หลังทำรายการ → เลขแดงรีเฟรชทันที (ข้ามช่วงเว้น) */
+export const FIELD_VISIT_CHANGED_EVENT = 'winsure:field-visit-changed'
 
 const BADGE_POLL_MS = 60_000
 const BADGE_MIN_GAP_MS = 5_000 // สายนับเบา (review + กล่อง PJ)
@@ -194,14 +200,16 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
     const reviewStatus = isAdmin ? 'pending_review' : 'needs_fix'
     // คำขอขยายย้อนหลัง: RPC แอดมินเท่านั้น — staff ไม่ยิง (ได้ 0)
     const extPromise = isAdmin ? getPendingExtensionRequestCount() : Promise.resolve(0)
-    void Promise.allSettled([getReviewBadgeCount(reviewStatus), getPjSyncReviewPendingCount(), extPromise]).then(
-      ([reviewResult, pjResult, extResult]) => {
+    const fvPromise = isAdmin ? countOpenFieldVisitRequests() : Promise.resolve(0)
+    void Promise.allSettled([getReviewBadgeCount(reviewStatus), getPjSyncReviewPendingCount(), extPromise, fvPromise]).then(
+      ([reviewResult, pjResult, extResult, fvResult]) => {
         if (req !== guard.req) return
         setCounts((prev) => ({
           ...prev,
           reviewQueue: reviewResult.status === 'fulfilled' ? reviewResult.value : prev.reviewQueue,
           pjSyncReview: pjResult.status === 'fulfilled' ? pjResult.value : prev.pjSyncReview,
           extensionRequests: extResult.status === 'fulfilled' ? extResult.value : prev.extensionRequests,
+          fieldVisitRequests: fvResult.status === 'fulfilled' ? fvResult.value : prev.fieldVisitRequests,
         }))
       },
     )
@@ -267,12 +275,18 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
       inboxGuard.start = Date.now()
       setCounts((prev) => ({ ...prev, inbox: n }))
     }
+    function handleFieldVisitChanged() {
+      countsGuard.start = 0
+      loadCounts()
+    }
     document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener(FIELD_VISIT_CHANGED_EVENT, handleFieldVisitChanged)
     window.addEventListener(INBOX_CHANGED_EVENT, handleInboxChanged)
     inboxCountListeners.add(handlePublished)
     return () => {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener(FIELD_VISIT_CHANGED_EVENT, handleFieldVisitChanged)
       window.removeEventListener(INBOX_CHANGED_EVENT, handleInboxChanged)
       if (trailing !== null) clearTimeout(trailing)
       inboxCountListeners.delete(handlePublished)

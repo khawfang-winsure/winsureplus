@@ -1,18 +1,8 @@
 import { useNavigate } from 'react-router-dom'
 import { Printer, ArrowLeft } from 'lucide-react'
+import type { FieldItem } from '../lib/fieldVisit'
 
-// ข้อมูล 1 รายสำหรับลงพื้นที่ (ส่งมาจากหน้าส่งจดหมายผ่าน sessionStorage)
-export interface FieldItem {
-  customerName: string
-  contractNo: string
-  shopName: string
-  daysLate: number
-  amount: number
-  device: string
-  phones: string[]
-  province: string // โซน (ใช้จัดกลุ่ม)
-  addresses: { label: string; line: string }[] // ที่อยู่ทุกชุดที่มี
-}
+export type { FieldItem }
 
 function loadItems(): FieldItem[] {
   try {

@@ -3,10 +3,11 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Download } from 'lucide-react'
 import { Badge, Button, EmptyState, Loading, PageTitle } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getOverdueByBucket, getPartialPaymentProgress } from '../lib/db'
+import { getFieldVisitStatusMap, getOverdueByBucket, getPartialPaymentProgress } from '../lib/db'
 import { useFilter } from '../lib/useFilter'
-import type { ContractStatusRow, OverdueBucket, PartialPaymentProgress } from '../lib/types'
+import type { ContractStatusRow, FieldVisitStatusInfo, OverdueBucket, PartialPaymentProgress } from '../lib/types'
 import Pagination from '../components/Pagination'
+import { FieldVisitBadge } from '../components/FieldVisitBadge'
 import { escCell, downloadCSV } from '../lib/csv'
 import { partialPaymentBadge, PARTIAL_PAYMENT_TOOLTIP } from '../lib/partialPayment'
 
@@ -193,6 +194,20 @@ export default function Overdue() {
     }
   }, [rows])
 
+  // ป้ายคำขอลงพื้นที่ — โหลดครั้งเดียว ล้มเหลว = ไม่ขึ้นป้าย
+  const [fieldVisitMap, setFieldVisitMap] = useState<Map<string, FieldVisitStatusInfo>>(new Map())
+  useEffect(() => {
+    let active = true
+    getFieldVisitStatusMap()
+      .then((m) => {
+        if (active) setFieldVisitMap(m)
+      })
+      .catch((e: unknown) => console.error('getFieldVisitStatusMap failed', e))
+    return () => {
+      active = false
+    }
+  }, [])
+
   // เปลี่ยน bucket แล้วรีเซ็ตตัวกรองสถานะกลับ "ทั้งหมด" ด้วย — กันเลือก "เฉพาะคืนเครื่อง" ค้างข้ามช่วง แล้วเข้าใจผิดว่าไม่มีข้อมูล
   useEffect(() => { setStatusFilter('all') }, [bucket])
 
@@ -313,6 +328,7 @@ export default function Overdue() {
                         <p className="font-medium text-ink">{r.customerName}</p>
                         <p className="text-xs text-ink-soft">{r.contractNo}</p>
                         <PartialPaymentBadge row={r} progress={partialPaymentMap.get(r.contractId)} />
+                        <FieldVisitBadge info={fieldVisitMap.get(r.contractId)} />
                       </td>
                       <td className="whitespace-nowrap px-3 py-2.5 align-top">
                         <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>
@@ -361,6 +377,7 @@ export default function Overdue() {
                       <p className="font-medium text-ink">{r.customerName}</p>
                       <p className="text-xs text-ink-soft">{r.contractNo} · {r.shopName}</p>
                       <PartialPaymentBadge row={r} progress={partialPaymentMap.get(r.contractId)} />
+                      <FieldVisitBadge info={fieldVisitMap.get(r.contractId)} />
                     </div>
                     <div className="flex flex-col items-end gap-1">
                       <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>

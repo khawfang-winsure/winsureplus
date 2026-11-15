@@ -38,13 +38,13 @@ import {
   isAddressEmpty,
   nextLetterAction,
   REPLY_LABEL,
-  type AddressKind,
   type CustomerAddress,
   type LetterRecord,
   type LetterReply,
   type LetterStage,
 } from '../lib/letters'
 import { thaiDate } from '../lib/format'
+import { buildFieldCopyText, toFieldItem } from '../lib/fieldVisit'
 import type { FieldItem } from './FieldVisitPrint'
 import type {
   Contract,
@@ -291,28 +291,21 @@ export default function Letters() {
 
   // ---------- ลงพื้นที่: รวมข้อมูลทุกที่อยู่ + จัดโซนจังหวัด ----------
   function buildFieldItems(): FieldItem[] {
-    const KINDS: AddressKind[] = ['current', 'id_card', 'work', 'registry']
     return allByTab.field
       .filter((r) => selected.has(r.status.contractId))
       .map((r) => {
         const c = r.contract
-        const a = r.addresses
-        const province =
-          a.current?.province || a.id_card?.province || a.work?.province || a.registry?.province || '(ไม่ระบุจังหวัด)'
-        return {
+        return toFieldItem({
           customerName: r.status.customerName,
           contractNo: r.status.contractNo,
           shopName: r.status.shopName,
           daysLate: r.status.daysLate,
           amount: r.amount,
-          device: [c?.model, c?.storage].filter(Boolean).join(' '),
-          phones: [c?.phone, c?.phoneAlt1, c?.phoneAlt2].filter(Boolean) as string[],
-          province,
-          addresses: KINDS.filter((k) => !isAddressEmpty(a[k])).map((k) => ({
-            label: ADDRESS_KIND_LABEL[k],
-            line: addressOneLine(a[k]),
-          })),
-        }
+          model: c?.model,
+          storage: c?.storage,
+          phones: [c?.phone, c?.phoneAlt1, c?.phoneAlt2],
+          addresses: r.addresses,
+        })
       })
   }
 
@@ -326,21 +319,8 @@ export default function Letters() {
   async function copyField() {
     const items = buildFieldItems()
     if (!items.length) return alert('เลือกรายการก่อนนะคะ')
-    const byProv = new Map<string, FieldItem[]>()
-    for (const it of items) (byProv.get(it.province) ?? byProv.set(it.province, []).get(it.province)!).push(it)
-    let text = ''
-    for (const [prov, list] of byProv) {
-      text += `=== โซน: จังหวัด${prov} (${list.length} ราย) ===\n`
-      list.forEach((it, i) => {
-        text += `${i + 1}. ${it.customerName} | สัญญา ${it.contractNo} | ${it.shopName}\n`
-        text += `   เครื่อง: ${it.device || '—'} | โทร: ${it.phones.join(' / ') || '—'}\n`
-        text += `   ล่าช้า ${it.daysLate} วัน | ค้าง ${baht(it.amount)} บาท\n`
-        it.addresses.forEach((ad) => (text += `   - ${ad.label}: ${ad.line}\n`))
-        text += '\n'
-      })
-    }
     try {
-      await navigator.clipboard.writeText(text.trim())
+      await navigator.clipboard.writeText(buildFieldCopyText(items))
       alert('คัดลอกแล้ว ✅ วางใน LINE/แชทส่งให้คนลงพื้นที่ได้เลย')
     } catch {
       alert('คัดลอกไม่สำเร็จ (เบราว์เซอร์ไม่อนุญาต)')
