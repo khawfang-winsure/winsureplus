@@ -716,11 +716,6 @@ function PjPhotoGallery({ contractId, imageRefs }: { contractId: string; imageRe
   const [photosRequested, setPhotosRequested] = useState(false)
   const openSource = openIndex != null ? sources[openIndex] : null
 
-  useEffect(() => {
-    setPhotosRequested(false)
-    setOpenIndex(null)
-  }, [contractId])
-
   if (!photosRequested) {
     return (
       <div className="border-t border-peach px-4 py-3">
@@ -732,7 +727,7 @@ function PjPhotoGallery({ contractId, imageRefs }: { contractId: string; imageRe
         >
           <ImageIcon size={14} /> ดึงรูปจาก PJ
         </button>
-        <p className="mt-2 text-[11px] text-ink-soft">กดเมื่อต้องการดูรูป (ใช้เวลาโหลดสักครู่) — ระบบไม่เก็บรูปไว้ที่ไหน</p>
+        <p className="mt-2 text-[11px] text-ink-soft">รูปจะโหลดจาก PJ เมื่อกดปุ่มเท่านั้น ไม่บันทึกเก็บไว้ (ใช้เวลาโหลดสักครู่)</p>
       </div>
     )
   }
@@ -965,7 +960,7 @@ function ReviewPanel({
             </div>
           ))}
 
-          {pjImages.length > 0 && <PjPhotoGallery contractId={contract.id} imageRefs={pjImages} />}
+          {pjImages.length > 0 && <PjPhotoGallery key={contract.id} contractId={contract.id} imageRefs={pjImages} />}
         </>
       )}
 
