@@ -711,7 +711,31 @@ function PriceRateBar({ contract }: { contract: Contract }) {
 function PjPhotoGallery({ contractId, imageRefs }: { contractId: string; imageRefs: PjImageRef[] }) {
   const sources = useMemo(() => imageRefs.map((ref) => pjImageToSource(contractId, ref)), [contractId, imageRefs])
   const [openIndex, setOpenIndex] = useState<number | null>(null)
+  // ลดข้อมูลวิ่งออกจากระบบ (egress): ไม่โหลดรูปจาก PJ อัตโนมัติตอนเปิดแผง — ต้องกดปุ่มเอง (คุณเตยเคาะ 2026-11-15)
+  // รูปบัตรไม่ cache ที่ไหน: รีเฟรชหน้า/เปิดสัญญาใหม่ = ต้องกดอีกครั้ง
+  const [photosRequested, setPhotosRequested] = useState(false)
   const openSource = openIndex != null ? sources[openIndex] : null
+
+  useEffect(() => {
+    setPhotosRequested(false)
+    setOpenIndex(null)
+  }, [contractId])
+
+  if (!photosRequested) {
+    return (
+      <div className="border-t border-peach px-4 py-3">
+        <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink">{`รูปจาก PJ (${imageRefs.length} รูป)`}</p>
+        <button
+          type="button"
+          onClick={() => setPhotosRequested(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-peach bg-surface px-3 py-2 text-xs font-semibold text-ink transition hover:bg-peach-light/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-salmon/40"
+        >
+          <ImageIcon size={14} /> ดึงรูปจาก PJ
+        </button>
+        <p className="mt-2 text-[11px] text-ink-soft">กดเมื่อต้องการดูรูป (ใช้เวลาโหลดสักครู่) — ระบบไม่เก็บรูปไว้ที่ไหน</p>
+      </div>
+    )
+  }
 
   return (
     <div className="border-t border-peach px-4 py-3">
