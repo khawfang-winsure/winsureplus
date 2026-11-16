@@ -1,27 +1,34 @@
--- 0189: ขยายระยะเวลา - งวดแรกใหม่อยู่เดือนนี้ถ้าวันครบกำหนดใหม่ (หลัง clamp ปลายเดือน) มากกว่าวันนี้ (เวลาไทย) ไม่งั้นเดือนหน้า เหมือนเดิม
+-- 0189: ขยายระยะเวลา - งวดแรกใหม่อยู่เดือนนี้ถ้าวันครบกำหนดใหม่มากกว่าวันนี้ (เวลาไทย) และเดือนนั้นอยู่หลังเดือนของงวดที่จ่ายล่าสุด ไม่งั้นเดือนถัดไป
 -- เปลี่ยนเฉพาะการคำนวณวันครบกำหนดงวดใหม่ ส่วนอื่นของ restructure_contract เหมือนเดิมทุกอย่าง
 
--- helper: วันครบกำหนดของงวดใหม่ลำดับที่ p_i (เริ่ม 1) รับ "วันนี้" เป็นพารามิเตอร์เพื่อทดสอบได้
-create or replace function public.restructure_due_date(p_today date, p_due_day integer, p_i integer)
+-- helper: วันครบกำหนดของงวดใหม่ลำดับที่ p_i (เริ่ม 1) รับ "วันนี้" และวันครบกำหนดงวดที่จ่ายแล้วล่าสุด (null ได้) เป็นพารามิเตอร์เพื่อทดสอบได้
+-- งวดแรกอยู่เดือนแรกสุดที่ (a) วันครบกำหนดหลัง clamp มากกว่าวันนี้ และ (b) อยู่หลังเดือนของงวดที่จ่ายล่าสุด (กันสองงวดในเดือนเดียว)
+-- คำนวณด้วยเลขเดือนล้วน (ปี*12+เดือน) ไม่พึ่ง timezone ของ session
+create or replace function public.restructure_due_date(p_today date, p_due_day integer, p_i integer, p_last_paid_due date default null)
 returns date language sql immutable set search_path to 'public', 'pg_catalog'
-as $$
-  select public.due_date_for(extract(year from b)::int, extract(month from b)::int, p_due_day)
+as $fn$
+  select public.due_date_for((mi / 12)::int, (mi % 12 + 1)::int, p_due_day)
   from (
-    select (date_trunc('month', p_today)
-      + make_interval(months =>
-          (case when public.due_date_for(extract(year from p_today)::int, extract(month from p_today)::int, p_due_day) > p_today
-                then 0 else 1 end) + p_i - 1))::date as b
+    select (extract(year from p_today)::int * 12 + extract(month from p_today)::int - 1)
+      + greatest(
+          case when public.due_date_for(extract(year from p_today)::int, extract(month from p_today)::int, p_due_day) > p_today
+               then 0 else 1 end,
+          case when p_last_paid_due is null then 0
+               else (extract(year from p_last_paid_due)::int * 12 + extract(month from p_last_paid_due)::int)
+                    - (extract(year from p_today)::int * 12 + extract(month from p_today)::int) + 1 end
+        )
+      + p_i - 1 as mi
   ) s
-$$;
+$fn$;
 
-revoke execute on function public.restructure_due_date(date, integer, integer) from public, anon;
-grant execute on function public.restructure_due_date(date, integer, integer) to authenticated, service_role;
+revoke execute on function public.restructure_due_date(date, integer, integer, date) from public, anon;
+grant execute on function public.restructure_due_date(date, integer, integer, date) to authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION public.restructure_contract(p_contract_id uuid, p_ext_type text, p_new_due_day integer, p_new_term integer, p_new_finance numeric, p_note text DEFAULT NULL::text)
  RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'pg_catalog'
 AS $function$
 declare
-  c public.contracts%rowtype; before_state jsonb; eid uuid; last_paid int; monthly numeric; due_date_new date; i int;
+  c public.contracts%rowtype; before_state jsonb; eid uuid; last_paid int; monthly numeric; due_date_new date; i int; last_paid_due date;
   today_th date := (now() at time zone 'Asia/Bangkok')::date;
 begin
   if not exists(select 1 from public.profiles where id=auth.uid() and active=true and role in ('admin','staff')) then
@@ -54,10 +61,11 @@ begin
   end if;
   before_state:=public.extension_contract_state(p_contract_id);
   select coalesce(max(installment_no),0) into last_paid from public.installments where contract_id=p_contract_id and paid_at is not null;
+  select due_date into last_paid_due from public.installments where contract_id=p_contract_id and paid_at is not null order by installment_no desc limit 1;
   monthly:=round(p_new_finance/p_new_term);
   delete from public.installments where contract_id=p_contract_id and paid_at is null;
   for i in 1..p_new_term loop
-    due_date_new:=public.restructure_due_date(today_th,p_new_due_day,i);
+    due_date_new:=public.restructure_due_date(today_th,p_new_due_day,i,last_paid_due);
     insert into public.installments(contract_id,installment_no,due_date,amount,status)
       values(p_contract_id,last_paid+i,due_date_new,monthly,'pending');
   end loop;
