@@ -115,7 +115,7 @@ import {
   type RightStatus,
   type ReconcileResult,
 } from '../lib/feeReconcile'
-import { formatRestructureDueDate, todayBangkok } from '../lib/restructureDueDates'
+import { formatRestructureDueDate, parseYMD, todayBangkok, type YMD } from '../lib/restructureDueDates'
 import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment, netPenaltyDue } from '../lib/calc'
 import { COURIERS } from '../lib/returnWorkflow'
 import { buildPaymentModalWarning, type PaymentModalWarning, type RecentPjMoney } from '../lib/pjStaffOverlap'
@@ -214,9 +214,9 @@ export function allowedExtTypes(exts: ExtensionRecord[]): ExtensionType[] {
   return []
 }
 
-/** พรีวิววันครบกำหนดงวดใหม่ (มิเรอร์ RPC restructure_contract: งวด 1 = วันใหม่ในเดือนนี้ถ้ามากกว่าวันนี้ (เวลาไทย) ไม่งั้นเดือนหน้า, งวดถัดไป +1 เดือน, clamp ปลายเดือน) */
-function previewDueDate(installmentNo: number, dueDay: number): string {
-  return formatRestructureDueDate(installmentNo, dueDay, todayBangkok())
+/** พรีวิววันครบกำหนดงวดใหม่ (มิเรอร์ RPC restructure_contract: ต้องอยู่หลังเดือนของงวดที่จ่ายล่าสุดด้วย; งวด 1 = วันใหม่ในเดือนนี้ถ้ามากกว่าวันนี้ (เวลาไทย) ไม่งั้นเดือนหน้า, งวดถัดไป +1 เดือน, clamp ปลายเดือน) */
+function previewDueDate(installmentNo: number, dueDay: number, lastPaidDue: YMD | null): string {
+  return formatRestructureDueDate(installmentNo, dueDay, todayBangkok(), lastPaidDue)
 }
 
 const ACTION_LABEL: Record<PaymentLogEntry['action'], string> = {
@@ -4543,6 +4543,7 @@ function ExtendModal({
 
   // #6 — ประวัติการชำระ: งวดที่จ่ายแล้ว (เรียงตาม installmentNo)
   const paidInstallments = installments.filter((i) => i.paidAt).sort((a, b) => a.installmentNo - b.installmentNo)
+  const lastPaidDue = parseYMD(paidInstallments[paidInstallments.length - 1]?.dueDate)
   const totalPaidAmount = paidInstallments.reduce((s, i) => s + i.paidAmount, 0)
 
   // ประเภทที่ยังขยายได้ตามสิทธิ์ที่เหลือ (กฎ: ขยาย/เปลี่ยนวันที่ ได้สิทธิ์ละครั้ง)
@@ -4691,7 +4692,7 @@ function ExtendModal({
           <p>ค่างวด: {baht(contract.monthlyPayment)} → {baht(activeMonthly)} บาท</p>
           <p>วันชำระ: วันที่ {contract.dueDay} → วันที่ {newDueDay}</p>
           <p>งวดค้างเดิมครั้งแรกครบกำหนด: {installments.find((row) => !row.paidAt)?.dueDate ? thaiDate(installments.find((row) => !row.paidAt)!.dueDate) : '—'}</p>
-          <p>งวดใหม่ครั้งแรกครบกำหนด: {previewDueDate(1, newDueDay)}</p>
+          <p>งวดใหม่ครั้งแรกครบกำหนด: {previewDueDate(1, newDueDay, lastPaidDue)}</p>
         </div>
         <p className="text-ink-soft">ระบบจะเก็บตารางก่อนและหลังเปลี่ยนไว้ หากกดผิด แอดมินสามารถตรวจสอบเพื่อยกเลิกการขยายได้</p>
         {!confirmationReady && <p role="alert" className="text-red-600">ข้อมูลเปลี่ยนแล้ว กรุณากลับไปตรวจสอบอีกครั้ง</p>}
@@ -4836,8 +4837,8 @@ function ExtendModal({
             <b className="text-ink">{firstNo}–{lastNo}</b> ({activeTerm} งวด · รวมทั้งสัญญา {totalTerm} งวด)
           </p>
           <p className="text-ink-soft">
-            งวดแรกครบ <b className="text-ink">{previewDueDate(1, newDueDay)}</b> · งวดสุดท้ายครบ{' '}
-            <b className="text-ink">{previewDueDate(activeTerm, newDueDay)}</b>
+            งวดแรกครบ <b className="text-ink">{previewDueDate(1, newDueDay, lastPaidDue)}</b> · งวดสุดท้ายครบ{' '}
+            <b className="text-ink">{previewDueDate(activeTerm, newDueDay, lastPaidDue)}</b>
           </p>
           <p className="mt-1 text-red-600">งวดที่ยังไม่จ่าย {unpaidCount} งวด จะถูกลบแล้วสร้างใหม่ตามนี้</p>
         </div>
