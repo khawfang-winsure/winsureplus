@@ -115,6 +115,7 @@ import {
   type RightStatus,
   type ReconcileResult,
 } from '../lib/feeReconcile'
+import { formatRestructureDueDate, todayBangkok } from '../lib/restructureDueDates'
 import { calcSummary, calcExtensionPrincipal, penaltyPaidForInstallment, netPenaltyDue } from '../lib/calc'
 import { COURIERS } from '../lib/returnWorkflow'
 import { buildPaymentModalWarning, type PaymentModalWarning, type RecentPjMoney } from '../lib/pjStaffOverlap'
@@ -213,17 +214,9 @@ export function allowedExtTypes(exts: ExtensionRecord[]): ExtensionType[] {
   return []
 }
 
-/** พรีวิววันครบกำหนดงวดใหม่ (มิเรอร์ตรรกะใน RPC restructure_contract: งวด i = เดือนปัจจุบัน + i, clamp ปลายเดือน) */
-function previewDueDate(monthOffset: number, dueDay: number): string {
-  const now = new Date()
-  const y0 = now.getFullYear()
-  const m0 = now.getMonth() // 0-based
-  const idx = m0 + monthOffset
-  const y = y0 + Math.floor(idx / 12)
-  const m = (idx % 12 + 12) % 12 // 0-based เดือนเป้าหมาย
-  const lastDay = new Date(y, m + 1, 0).getDate()
-  const d = Math.min(dueDay, lastDay)
-  return `${String(d).padStart(2, '0')}/${String(m + 1).padStart(2, '0')}/${y}`
+/** พรีวิววันครบกำหนดงวดใหม่ (มิเรอร์ RPC restructure_contract: งวด 1 = วันใหม่ในเดือนนี้ถ้ามากกว่าวันนี้ (เวลาไทย) ไม่งั้นเดือนหน้า, งวดถัดไป +1 เดือน, clamp ปลายเดือน) */
+function previewDueDate(installmentNo: number, dueDay: number): string {
+  return formatRestructureDueDate(installmentNo, dueDay, todayBangkok())
 }
 
 const ACTION_LABEL: Record<PaymentLogEntry['action'], string> = {
