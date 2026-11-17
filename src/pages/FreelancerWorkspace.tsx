@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFilter } from '../lib/useFilter'
 import { AlarmClock, AlertTriangle, CalendarClock, ChevronRight, PackageCheck, Search, UserCheck, Users } from 'lucide-react'
 import { Badge, Card, EmptyState, Loading, PageTitle } from '../components/ui'
@@ -692,6 +692,10 @@ export default function FreelancerWorkspace() {
 
   // req7: เคสที่ตัวเอง claim ไว้ ("งานที่ต้องดูแล") + toast แจ้งเตือนเคสถูกจองไปแล้ว
   const [myCases, setMyCases] = useState<FreelancerQueueRow[]>([])
+  // สถานะโหลดของแท็บ "งานที่ต้องดูแล" — แยกจาก myCases เพื่อไม่ให้ "โหลดพลาด" ดูเหมือน "ไม่มีเคส"
+  const [myCasesLoading, setMyCasesLoading] = useState(true)
+  const [myCasesError, setMyCasesError] = useState(false)
+  const myCasesReqSeq = useRef(0)
   const [claimToast, setClaimToast] = useState<string | null>(null)
   const [claimingId, setClaimingId] = useState<string | null>(null)
   // req7 admin: สรุปใครถือกี่เคส
@@ -744,12 +748,21 @@ export default function FreelancerWorkspace() {
   }, [loadGrades, loadQueue])
 
   // req7: โหลดเคสที่ตัวเอง claim ไว้ ("งานที่ต้องดูแล")
+  // seq guard: ถ้ามีการโหลดซ้อนกัน ให้ผลของครั้งล่าสุดชนะ (กันผลเก่ามาทับ patch/ผลใหม่)
+  // โหลดพลาด = เก็บรายการเดิมไว้ + ขึ้น error (ห้ามเคลียร์เป็น [] เงียบๆ)
   const loadMyCases = useCallback(async () => {
+    const seq = ++myCasesReqSeq.current
+    setMyCasesLoading(true)
     try {
       const data = await getMyCases()
+      if (seq !== myCasesReqSeq.current) return
       setMyCases(data)
+      setMyCasesError(false)
     } catch {
-      setMyCases([])
+      if (seq !== myCasesReqSeq.current) return
+      setMyCasesError(true)
+    } finally {
+      if (seq === myCasesReqSeq.current) setMyCasesLoading(false)
     }
   }, [])
 
@@ -840,6 +853,7 @@ export default function FreelancerWorkspace() {
     setMyCases((prev) => {
       const idx = prev.findIndex((r) => r.contractId === contractId)
       const myId = session?.user.id ?? null
+      if (!myId) return prev // session ยังไม่พร้อม — อย่าลบเคสออกจากแท็บเงียบๆ
       if (row && myId && row.assignedTo === myId) {
         if (idx >= 0) {
           const next = [...prev]
@@ -926,9 +940,12 @@ export default function FreelancerWorkspace() {
 
   // เคสในแท็บ "งานที่ต้องดูแล" หลังกรองด้วยช่วงวันล่าช้าที่เลือก (OR กัน; ไม่เลือกเลย = ทั้งหมด)
   const myCasesFiltered = useMemo(() => {
-    if (lateBucketFilter.length === 0) return filteredMyCases
-    return filteredMyCases.filter((r) => lateBucketFilter.includes(overdueBucket(r.daysLate)))
-  }, [filteredMyCases, lateBucketFilter])
+    const byBucket =
+      lateBucketFilter.length === 0
+        ? filteredMyCases
+        : filteredMyCases.filter((r) => lateBucketFilter.includes(overdueBucket(r.daysLate)))
+    return overdueFilter ? byBucket.filter((r) => overdueIdsAll.has(r.contractId)) : byBucket
+  }, [filteredMyCases, lateBucketFilter, overdueFilter, overdueIdsAll])
 
   // ดึงรายการร้านไม่ซ้ำ
   const shopOptions = useMemo(() => {
@@ -955,34 +972,42 @@ export default function FreelancerWorkspace() {
     return result
   }, [rows, shopFilter, searchTerm])
 
-  // contractId ที่อยู่ในคิวจริง (หลัง shop+search, ก่อน overdue filter)
-  const rowsInQueueIds = useMemo(
-    () => new Set(rowsBeforeOverdueFilter.map((r) => r.contractId)),
-    [rowsBeforeOverdueFilter],
-  )
-
-  // intersect: เฉพาะ overdue ที่อยู่ในคิวจริง (ตรงกับ role/scope/late-installment ของ getFreelancerQueue)
+  // ตัวกรอง "ผิดนัด" ใช้ได้ทุกแท็บ — ตัวเลขบนชิปนับเฉพาะเคสผิดนัดที่ "แท็บที่เปิดอยู่" แสดงจริง
+  // (ที่ต้องโทร/คืนเครื่อง = เคสที่ยังไม่มีคนถือ, งานที่ต้องดูแล = เคสที่ตัวเองถือ) ไม่นับเคสที่คนอื่นถืออยู่
+  // base = ก่อนใช้ตัวกรองผิดนัด แต่หลัง shop/search/ช่วงวันล่าช้า เหมือนที่แถวในแท็บผ่านมาก่อนถึงชิป
   const activeOverdueIds = useMemo(() => {
+    let ids: string[]
+    if (activeTab === 'mine') {
+      const base =
+        lateBucketFilter.length === 0
+          ? filteredMyCases
+          : filteredMyCases.filter((r) => lateBucketFilter.includes(overdueBucket(r.daysLate)))
+      ids = base.map((r) => r.contractId)
+    } else {
+      const own = (r: FreelancerQueueRow) => role === 'admin' || r.assignedTo === null
+      const base = rowsBeforeOverdueFilter.filter((r) => {
+        if (activeTab === 'done') return r.caseClosedToday
+        if (r.caseClosedToday || !own(r)) return false
+        return activeTab === 'returned' ? r.isReturned : !r.isReturned
+      })
+      ids = base.map((r) => r.contractId)
+    }
     const s = new Set<string>()
-    overdueIdsAll.forEach((id) => { if (rowsInQueueIds.has(id)) s.add(id) })
+    for (const id of ids) if (overdueIdsAll.has(id)) s.add(id)
     return s
-  }, [overdueIdsAll, rowsInQueueIds])
+  }, [activeTab, filteredMyCases, lateBucketFilter, rowsBeforeOverdueFilter, role, overdueIdsAll])
 
-  // ยอดรวม promise เฉพาะ overdue ที่อยู่ใน scope จริง
+  // ยอดรวม promise เฉพาะเคสผิดนัดที่ชิปนับอยู่
   const totalPromised = useMemo(
     () => overdue.filter((o) => activeOverdueIds.has(o.id)).reduce((s, o) => s + (o.promisedAmount ?? 0), 0),
     [overdue, activeOverdueIds],
   )
 
-  // กรองตามร้าน + search term + overdue filter (universal — ใช้ก่อน split todayRows/pendingRows)
+  // กรองตามร้าน + search term + overdue filter (ใช้ก่อน split todayRows/pendingRows)
   const filtered = useMemo(() => {
-    // overdueFilter ใช้ทั้ง 2 tabs — freelancer อาจอยากดูเฉพาะคนที่ผิดนัดทั้งใน "ที่ต้องโทร" และ "ติดต่อแล้ววันนี้"
-    // guard: ถ้าไม่มี overdue ในคิวเลย ข้ามตัวกรองเพื่อป้องกัน empty list โดยไม่มีปุ่มล้าง
-    if (overdueFilter && activeOverdueIds.size > 0) {
-      return rowsBeforeOverdueFilter.filter((r) => activeOverdueIds.has(r.contractId))
-    }
+    if (overdueFilter) return rowsBeforeOverdueFilter.filter((r) => overdueIdsAll.has(r.contractId))
     return rowsBeforeOverdueFilter
-  }, [rowsBeforeOverdueFilter, overdueFilter, activeOverdueIds])
+  }, [rowsBeforeOverdueFilter, overdueFilter, overdueIdsAll])
 
   // แบ่ง 3 กลุ่ม:
   // todayRows   = caseClosedToday (Tab 3 "ปิดเคสวันนี้") — ทุกชนิดรวมคืนเครื่อง
@@ -1238,7 +1263,7 @@ export default function FreelancerWorkspace() {
       ) : (
         <>
           {/* === Overdue promise badge === */}
-          {activeOverdueIds.size > 0 && (
+          {(activeOverdueIds.size > 0 || overdueFilter) && (
             <div className="mb-4 flex items-center gap-2">
               <button
                 onClick={() => setOverdueFilter((v) => !v)}
@@ -1318,7 +1343,7 @@ export default function FreelancerWorkspace() {
             >
               <span className="inline-flex items-center gap-1.5">
                 <UserCheck size={15} />
-                งานที่ต้องดูแล ({myCasesFiltered.length})
+                งานที่ต้องดูแล ({myCasesLoading && myCases.length === 0 ? '…' : myCasesFiltered.length})
               </span>
             </button>
             <button
@@ -1482,7 +1507,23 @@ export default function FreelancerWorkspace() {
                 </div>
               )}
 
-              {myCasesFiltered.length === 0 ? (
+              {myCasesFiltered.length === 0 && myCasesLoading ? (
+                <div className="rounded-2xl border border-peach bg-white px-4 py-10 text-center text-sm text-ink-soft">
+                  กำลังโหลดรายการ...
+                </div>
+              ) : myCasesFiltered.length === 0 && myCasesError ? (
+                <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-8 text-center">
+                  <p className="text-sm font-semibold text-red-700">โหลดรายการไม่สำเร็จ</p>
+                  <p className="mt-1 text-xs text-red-600">อาจเป็นเพราะอินเทอร์เน็ตหลุดชั่วคราว กด "ลองใหม่" อีกครั้ง</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadMyCases()}
+                    className="mt-3 rounded-xl bg-red-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-red-700"
+                  >
+                    ลองใหม่
+                  </button>
+                </div>
+              ) : myCasesFiltered.length === 0 ? (
                 searchTerm.trim() ? (
                   <EmptyState
                     title="ไม่พบลูกค้าที่ค้นหา"

@@ -5040,7 +5040,11 @@ export async function getMyCases(): Promise<FreelancerQueueRow[]> {
   if (!supabase) return []
   const {
     data: { user },
+    error: userErr,
   } = await supabase.auth.getUser()
+  // getUser พลาด (เน็ตหลุด/token refresh ค้าง) จะได้ user=null + error — เดิมคืน [] เงียบๆ ทำให้แท็บ "งานที่ต้องดูแล" ว่าง
+  // ต้อง throw ให้หน้าจอขึ้น "โหลดไม่สำเร็จ" แทน (เฉพาะ "ไม่มี session จริง" ถึงคืน [])
+  if (userErr && userErr.name !== 'AuthSessionMissingError') throw userErr
   if (!user) return []
 
   // เคสที่ assigned_to=me ทั้งหมด (ไม่ผูก grade) — RLS 0099 เปิดให้อ่าน contracts แถวนี้ได้แล้ว
