@@ -1343,7 +1343,7 @@ export default function FreelancerWorkspace() {
             >
               <span className="inline-flex items-center gap-1.5">
                 <UserCheck size={15} />
-                งานที่ต้องดูแล ({myCasesLoading && myCases.length === 0 ? '…' : myCasesFiltered.length})
+                งานที่ต้องดูแล ({myCasesLoading && myCases.length === 0 ? '…' : myCasesError && myCases.length === 0 ? '!' : myCasesFiltered.length})
               </span>
             </button>
             <button
