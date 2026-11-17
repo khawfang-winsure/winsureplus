@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertCircle, ArrowDownAZ, ArrowUpAZ, FileText, Package, Pencil, Search } from 'lucide-react'
+import { AlertCircle, ArrowDownAZ, ArrowUpAZ, CalendarDays, FileText, Package, Pencil, Search } from 'lucide-react'
 import { Badge, Button, EmptyState, Field, Input, Loading, Modal, PageTitle, Select, Textarea } from '../components/ui'
 import { baht, thaiDate } from '../lib/format'
-import { getReturns, updateDefectNotes, updateReturnWorkflow, updateSalePrice } from '../lib/db'
+import { getReturns, updateDefectNotes, updateReturnDates, updateReturnWorkflow, updateSalePrice } from '../lib/db'
 import type { DeviceReturnRow } from '../lib/types'
 import {
   COURIERS,
@@ -10,6 +10,7 @@ import {
   nextStatuses,
   type DeviceStatus,
 } from '../lib/returnWorkflow'
+import { todayISOBangkok } from '../lib/nplHistory'
 import { useAuth } from '../lib/auth'
 import { useFilter } from '../lib/useFilter'
 
@@ -54,6 +55,34 @@ function fmtDatetime(iso: string | null | undefined): string {
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${day} ${mon} ${hh}:${mm}`
+}
+
+// ===== วันที่ (เวลาไทย) =====
+function bkkDate(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return null
+  return d.toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+}
+
+function daysBetweenISO(from: string, to: string): number {
+  return Math.round((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86400000)
+}
+
+// วันที่คืนจริง = created_at (ถูก stamp ด้วยวันที่ที่พนักงานเลือก)
+function returnDateOf(r: DeviceReturnRow): string {
+  return bkkDate(r.createdAt) ?? r.createdAt.slice(0, 10)
+}
+
+// วันที่ขาย/ส่งจริง — เฉพาะแถวที่ขายแล้ว (priced/transferred/shipped)
+function saleDateOf(r: DeviceReturnRow): string | null {
+  const st = r.deviceStatus
+  if (st !== 'priced' && st !== 'transferred' && st !== 'shipped') return null
+  return bkkDate(r.transferredAt ?? r.shippedAt ?? r.pricedAt)
+}
+
+function ddmm(iso: string): string {
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 }
 
 // ===== Coerce deviceStatus: null/undefined → 'pending_check' (DB has DEFAULT) =====
@@ -225,6 +254,76 @@ function EditSalePriceModal({
   )
 }
 
+// ===== Modal แก้วันที่คืน/ขายจริง (แก้ย้อนหลังแถวที่ลงไปแล้ว) =====
+function EditDatesModal({
+  row,
+  onClose,
+  onDone,
+}: {
+  row: DeviceReturnRow
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const today = todayISOBangkok()
+  const currentSale = saleDateOf(row)
+  const [returnedOn, setReturnedOn] = useState(returnDateOf(row))
+  const [soldOn, setSoldOn] = useState(currentSale ?? '')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function save() {
+    if (!returnedOn || returnedOn > today || (currentSale && (!soldOn || soldOn > today))) {
+      setErr('กรุณาเลือกวันที่ให้ถูกต้อง (ห้ามเป็นวันในอนาคต)')
+      return
+    }
+    if (currentSale && soldOn < returnedOn) {
+      setErr('วันที่ขายต้องไม่ก่อนวันที่คืนเครื่อง')
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      const changes: { returnedOn?: string; soldOn?: string } = {}
+      if (returnedOn !== returnDateOf(row)) changes.returnedOn = returnedOn
+      if (currentSale && soldOn !== currentSale) changes.soldOn = soldOn
+      if (changes.returnedOn === undefined && changes.soldOn === undefined) {
+        onClose()
+        return
+      }
+      await updateReturnDates(row.id, changes)
+      await onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด กรุณาลองใหม่')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={`แก้วันที่ — ${row.customerName}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-ink-soft">สัญญา {row.contractNo}</p>
+        <Field label="วันที่คืนจริง" required>
+          <Input type="date" value={returnedOn} max={today} onChange={(e) => setReturnedOn(e.target.value)} />
+        </Field>
+        {currentSale && (
+          <Field label="วันที่ขายจริง" required>
+            <Input type="date" value={soldOn} max={today} onChange={(e) => setSoldOn(e.target.value)} />
+          </Field>
+        )}
+        <p className="text-xs text-ink-soft">รายงานจะนับตามวันที่ที่แก้นี้</p>
+        {err && <p className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{err}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
+          <Button onClick={save} disabled={busy}>
+            <CalendarDays size={14} />
+            {busy ? 'กำลังบันทึก...' : 'บันทึกวันที่'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ===== Modal ดูรายละเอียด/ตำหนิเครื่อง =====
 // แก้ไขตำหนิได้ตั้งแต่สถานะ "ตรวจสอบเรียบร้อยแล้ว" จนถึงก่อน "ร้านโอนแล้วรอจัดส่ง" (canEditDefect)
 // นอกช่วงนั้น (ยังไม่ตรวจ / ร้านโอนเงินแล้ว) แสดงอ่านอย่างเดียว
@@ -369,6 +468,7 @@ export default function DevicePipeline() {
   const [selected, setSelected] = useState<DeviceReturnRow | null>(null)
   const [editPriceTarget, setEditPriceTarget] = useState<DeviceReturnRow | null>(null)
   const [detailTarget, setDetailTarget] = useState<DeviceReturnRow | null>(null)
+  const [datesTarget, setDatesTarget] = useState<DeviceReturnRow | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -474,6 +574,10 @@ export default function DevicePipeline() {
                 const status = resolveStatus(r)
                 const nexts = nextStatuses(status)
                 const showLateFill = !r.trackingNumber && status === 'pending_check'
+                const retDate = returnDateOf(r)
+                const saleDate = saleDateOf(r)
+                const recDate = bkkDate(r.recordedAt)
+                const lateKeyed = recDate !== null && Math.abs(daysBetweenISO(retDate, recDate)) >= 1
                 return (
                   <tr
                     key={r.id}
@@ -481,7 +585,13 @@ export default function DevicePipeline() {
                   >
                     <td className="py-3 pr-4">
                       <p className="font-medium text-ink">{r.customerName}</p>
-                      <p className="text-xs text-ink-soft">{r.contractNo} · เริ่ม {thaiDate(r.createdAt.slice(0, 10))}</p>
+                      <p className="text-xs text-ink-soft">{r.contractNo} · คืน {thaiDate(retDate)}</p>
+                      {saleDate && (
+                        <p className="text-xs text-ink-soft">ขาย/ส่ง {thaiDate(saleDate)}</p>
+                      )}
+                      {lateKeyed && recDate && (
+                        <p className="text-xs text-ink-soft/70">ลงระบบ {ddmm(recDate)}</p>
+                      )}
                       <p className="text-xs text-ink-soft">{r.deviceModel ?? '—'}</p>
                       {r.imei && (
                         <p className="text-xs text-ink-soft font-mono">IMEI: {r.imei}</p>
@@ -548,6 +658,16 @@ export default function DevicePipeline() {
                           {canEditDefect(status) ? <Pencil size={13} /> : <FileText size={13} />}
                           {canEditDefect(status) ? 'ดู/แก้ตำหนิ' : 'ดูตำหนิ'}
                         </Button>
+                        {isAdmin && (
+                          <Button
+                            variant="ghost"
+                            onClick={() => setDatesTarget(r)}
+                            aria-label="แก้วันที่คืน/ขายจริง"
+                          >
+                            <CalendarDays size={13} />
+                            แก้วันที่
+                          </Button>
+                        )}
                         {nexts.length > 0 ? (
                           <Button variant="ghost" onClick={() => setSelected(r)}>
                             เปลี่ยนสถานะ
@@ -587,6 +707,17 @@ export default function DevicePipeline() {
         />
       )}
 
+      {datesTarget && (
+        <EditDatesModal
+          row={datesTarget}
+          onClose={() => setDatesTarget(null)}
+          onDone={async () => {
+            setDatesTarget(null)
+            await load()
+          }}
+        />
+      )}
+
       {detailTarget && (
         <DeviceDetailModal
           row={detailTarget}
@@ -615,6 +746,8 @@ function StatusModal({
   const [targetStatus, setTargetStatus] = useState<DeviceStatus>(nexts[0] ?? currentStatus)
   const [salePrice, setSalePrice] = useState(row.salePrice != null ? String(row.salePrice) : '')
   const [defectNotes, setDefectNotes] = useState('')
+  const today = todayISOBangkok()
+  const [eventDate, setEventDate] = useState(today)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -623,6 +756,11 @@ function StatusModal({
 
   // แสดงตำหนิเครื่องเมื่อ: เปลี่ยนสถานะเป็น 'checked'
   const showDefectNotes = targetStatus === 'checked'
+
+  // วันที่ขาย/ส่งจริง — เมื่อเปลี่ยนเป็น priced / transferred / shipped
+  const showEventDate =
+    targetStatus === 'priced' || targetStatus === 'transferred' || targetStatus === 'shipped'
+  const eventBackdays = showEventDate ? daysBetweenISO(eventDate || today, today) : 0
 
   if (nexts.length === 0) {
     return (
@@ -640,12 +778,17 @@ function StatusModal({
   }
 
   async function save() {
+    if (showEventDate && (!eventDate || eventDate > today)) {
+      setErr('กรุณาเลือกวันที่ขาย/ส่งจริง (ห้ามเป็นวันในอนาคต)')
+      return
+    }
     setBusy(true)
     setErr(null)
     try {
       await updateReturnWorkflow(row.id, {
         deviceStatus: targetStatus,
         salePrice: showSalePrice && salePrice ? Number(salePrice) : undefined,
+        ...(showEventDate ? { eventDate } : {}),
         updatedBy: name ?? undefined,
       })
       // บันทึกตำหนิแยก (updateDefectNotes ใช้ column เดียวกันตลอด)
@@ -713,6 +856,19 @@ function StatusModal({
               placeholder="ระบุราคาขายเครื่อง"
             />
           </Field>
+        )}
+
+        {showEventDate && (
+          <>
+            <Field label="วันที่ขาย/ส่งจริง" required>
+              <Input type="date" value={eventDate} max={today} onChange={(e) => setEventDate(e.target.value)} />
+            </Field>
+            {eventBackdays > 0 && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                ลงย้อนหลัง {eventBackdays} วัน — รายงานจะนับวันที่นี้
+              </p>
+            )}
+          </>
         )}
 
         {err && (

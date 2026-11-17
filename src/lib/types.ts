@@ -107,6 +107,7 @@ export interface DeviceReturnRow {
   repairFee: number
   checkedAt: string | null
   createdAt: string
+  recordedAt: string | null // เวลาคีย์เข้าระบบจริง (createdAt = วันคืนจริงที่เลือก)
   // --- Device Pipeline (0027) ---
   trackingNumber?: string | null
   deviceStatus?: 'pending_check' | 'checked' | 'pending_sale' | 'priced' | 'transferred' | 'shipped' | 'in_transit' | null

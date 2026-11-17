@@ -2987,6 +2987,36 @@ export interface ReturnInput {
   courier?: string                       // ชื่อขนส่ง (returnMethod='shipped' เท่านั้น)
   returnLocation?: string               // สถานที่คืน (returnMethod='walk_in' เท่านั้น)
   deviceStatus?: string                 // override device_status ตอน insert (ถ้าไม่ส่ง → derive จาก returnMethod)
+  returnedOn?: string                   // YYYY-MM-DD (วันไทย) วันคืนจริง — ไม่ส่ง = ตอนนี้
+}
+
+/** YYYY-MM-DD (วันไทย) -> ISO เที่ยงวันเวลาไทย (เที่ยงกันวันเลื่อนตอนแปลง UTC) */
+function bkkNoonIso(d: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(new Date(`${d}T12:00:00+07:00`).getTime())) {
+    throw new Error('รูปแบบวันที่ไม่ถูกต้อง')
+  }
+  return `${d}T12:00:00+07:00`
+}
+
+function bkkDayOf(iso: string): string {
+  return new Date(new Date(iso).getTime() + 7 * 3600_000).toISOString().slice(0, 10)
+}
+
+/** ตรวจวันที่: ห้ามเป็นอนาคต / ห้ามก่อน minDate (ถ้าส่ง) */
+function assertActualDate(d: string, minDate?: string | null): string {
+  const iso = bkkNoonIso(d)
+  const nowIso = new Date().toISOString()
+  const today = bkkDayOf(nowIso)
+  if (d > today) throw new Error('วันที่ต้องไม่เกินวันนี้')
+  if (minDate && d < minDate) throw new Error('วันที่ต้องไม่ก่อนวันทำสัญญา/วันคืนเครื่อง')
+  // วันนี้ = เวลาปัจจุบัน, ย้อนหลัง = เที่ยงวันไทย
+  return d === today ? nowIso : iso
+}
+
+async function getContractStartDate(contractId: string): Promise<string | null> {
+  if (!supabase) return null
+  const { data } = await supabase.from('contracts').select('transaction_date').eq('id', contractId).maybeSingle()
+  return (data?.transaction_date as string | null | undefined) ?? null
 }
 
 export const submitReturn = writesContracts(async function submitReturn(contractId: string, input: ReturnInput): Promise<void> {
@@ -3004,14 +3034,20 @@ export const submitReturn = writesContracts(async function submitReturn(contract
   }
   // returnMethod='walk_in' หรือไม่ระบุ → ไม่ใส่ device_status (ใช้ default 'pending_check')
 
+  let actualIso: string | null = null
+  if (input.returnedOn) {
+    actualIso = assertActualDate(input.returnedOn, await getContractStartDate(contractId))
+  }
+
   const returnRow: Record<string, unknown> = {
     contract_id: contractId,
     case_no: input.caseNo,
     last_installment_paid: input.lastInstallmentPaid,
     penalty_paid: input.penaltyPaid,
     repair_fee: input.repairFee || 0,
-    checked_at: input.caseNo === 3 ? new Date().toISOString() : null,
+    checked_at: input.caseNo === 3 ? (actualIso ?? new Date().toISOString()) : null,
   }
+  if (actualIso) returnRow.created_at = actualIso // recorded_at ใช้ default now() = เวลาคีย์จริง
 
   // ใส่ shipping fields เฉพาะเมื่อมีค่า
   if (insertDeviceStatus !== undefined) returnRow.device_status = insertDeviceStatus
@@ -3113,6 +3149,7 @@ interface ReturnRow {
   repair_fee: number
   checked_at: string | null
   created_at: string
+  recorded_at: string | null
   contracts: { contract_no: string; customer_name: string; model: string | null; storage: string | null; imei: string | null; sn: string | null } | null
   // Device Pipeline columns (0027)
   tracking_number: string | null
@@ -3159,6 +3196,7 @@ export async function getReturns(filter?: { deviceStatus?: DeviceStatus | 'all' 
     repairFee: Number(r.repair_fee),
     checkedAt: r.checked_at,
     createdAt: r.created_at,
+    recordedAt: r.recorded_at ?? null,
     // Device Pipeline fields (0027)
     trackingNumber: r.tracking_number,
     deviceStatus: r.device_status,
@@ -3196,10 +3234,17 @@ export const updateReturnWorkflow = writesContracts(async function updateReturnW
     courier?: string          // 0052: ชื่อขนส่ง (patch ภายหลัง)
     salePrice?: number
     updatedBy?: string
+    eventDate?: string        // YYYY-MM-DD วันเกิดเหตุจริง (priced/transferred/shipped) — ไม่ส่ง = ตอนนี้
   },
 ): Promise<void> {
   if (!supabase) return
   const now = new Date().toISOString()
+  let eventIso = now
+  if (patch.eventDate) {
+    // ไม่ให้ก่อนวันคืนเครื่อง (created_at ของแถวนี้)
+    const { data: row } = await supabase.from('device_returns').select('created_at').eq('id', returnId).maybeSingle()
+    eventIso = assertActualDate(patch.eventDate, row?.created_at ? bkkDayOf(row.created_at as string) : null)
+  }
   const update: Record<string, unknown> = {}
 
   if (patch.trackingNumber !== undefined) {
@@ -3216,15 +3261,50 @@ export const updateReturnWorkflow = writesContracts(async function updateReturnW
     update.device_status_updated_at = now
     update.device_status_by = patch.updatedBy ?? null
     // ประทับเวลาตามสถานะที่เข้าถึงครั้งแรก
-    if (patch.deviceStatus === 'priced') update.priced_at = now
-    if (patch.deviceStatus === 'transferred') update.transferred_at = now
-    if (patch.deviceStatus === 'shipped') update.shipped_at = now
+    if (patch.deviceStatus === 'priced') update.priced_at = eventIso
+    if (patch.deviceStatus === 'transferred') update.transferred_at = eventIso
+    if (patch.deviceStatus === 'shipped') update.shipped_at = eventIso
+    if (patch.deviceStatus === 'transferred' || patch.deviceStatus === 'shipped') update.sold_recorded_at = now
   }
 
   const { error } = await supabase
     .from('device_returns')
     .update(update)
     .eq('id', returnId)
+  if (error) throw error
+})
+
+/** แก้วันที่ของเคสที่คีย์ไปแล้ว: returnedOn = วันคืนจริง (created_at), soldOn = วันขายจริง (transferred_at/shipped_at)
+ *  recorded_at / sold_recorded_at ไม่ถูกแตะ = เวลาคีย์จริงยังอยู่ครบ (ยังไม่มีตาราง audit ของ device_returns) */
+export const updateReturnDates = writesContracts(async function updateReturnDates(
+  returnId: string,
+  d: { returnedOn?: string; soldOn?: string },
+): Promise<void> {
+  if (!supabase) return
+  if (!d.returnedOn && !d.soldOn) return
+  const { data: row, error: e0 } = await supabase
+    .from('device_returns')
+    .select('contract_id, created_at, device_status, priced_at, transferred_at, shipped_at')
+    .eq('id', returnId)
+    .maybeSingle()
+  if (e0) throw e0
+  if (!row) throw new Error('ไม่พบรายการคืนเครื่อง')
+
+  const update: Record<string, unknown> = {}
+  let retDay = bkkDayOf(row.created_at as string)
+  if (d.returnedOn) {
+    update.created_at = assertActualDate(d.returnedOn, await getContractStartDate(row.contract_id as string))
+    retDay = d.returnedOn
+  }
+  if (d.soldOn) {
+    const iso = assertActualDate(d.soldOn, retDay)
+    if (!row.transferred_at && !row.shipped_at && !row.priced_at) throw new Error('เคสนี้ยังไม่มีขั้นขาย/โอน/ส่ง จึงแก้วันขายไม่ได้')
+    // รายงานใช้ transferred_at ?? shipped_at — แก้ตัวที่มีค่าอยู่ทั้งหมดให้ตรงกัน; ถ้ามีแค่ priced_at แก้ priced_at
+    if (row.transferred_at) update.transferred_at = iso
+    if (row.shipped_at) update.shipped_at = iso
+    if (!row.transferred_at && !row.shipped_at) update.priced_at = iso
+  }
+  const { error } = await supabase.from('device_returns').update(update).eq('id', returnId)
   if (error) throw error
 })
 

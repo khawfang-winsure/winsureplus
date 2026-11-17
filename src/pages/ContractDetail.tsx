@@ -5,6 +5,7 @@ import { Badge, Button, Card, Field, Input, Loading, Modal, PageTitle, Select, T
 import UndoToast from '../components/UndoToast'
 import { FieldVisitRequestButton } from '../components/FieldVisitRequestButton'
 import type { FieldVisitStatusInfo } from '../lib/types'
+import { todayISOBangkok } from '../lib/nplHistory'
 import { baht, conditionLabel, installmentLabel, maskNationalId, statusLabel, thaiDate } from '../lib/format'
 import {
   getContract,
@@ -4879,12 +4880,23 @@ function ReturnModal({
     courier: '',
     trackingNumber: '',
     returnLocation: '',
+    returnedOn: todayISOBangkok(),
   })
+  const today = todayISOBangkok()
+  const returnedOn = f.returnedOn ?? today
+  const backdateDays = Math.round(
+    (new Date(`${today}T00:00:00Z`).getTime() - new Date(`${returnedOn}T00:00:00Z`).getTime()) / 86400000,
+  )
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
 
   async function save() {
+    if (!f.returnedOn || f.returnedOn > today) {
+      setErr('กรุณาเลือกวันที่คืนเครื่องจริง (ห้ามเป็นวันในอนาคต)')
+      setConfirming(false)
+      return
+    }
     setBusy(true)
     setErr(null)
     try {
@@ -4912,6 +4924,20 @@ function ReturnModal({
             <option value="3">3 — ชำระครบ+ค่าซ่อม(ถ้ามี)แล้ว → ปิดสัญญา</option>
           </Select>
         </Field>
+
+        <Field label="วันที่ลูกค้าคืนเครื่องจริง" required>
+          <Input
+            type="date"
+            value={returnedOn}
+            max={today}
+            onChange={(e) => setF((p) => ({ ...p, returnedOn: e.target.value }))}
+          />
+        </Field>
+        {backdateDays > 0 && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            ลงย้อนหลัง {backdateDays} วัน — รายงานจะนับวันที่นี้
+          </p>
+        )}
 
         {/* ===== วิธีคืนเครื่อง ===== */}
         <Field label="วิธีคืนเครื่อง">
