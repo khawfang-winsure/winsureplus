@@ -865,7 +865,7 @@ function StatusModal({
             </Field>
             {eventBackdays > 0 && (
               <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                ลงย้อนหลัง {eventBackdays} วัน — รายงานจะนับวันที่นี้
+                ลงย้อนหลัง {eventBackdays} วัน
               </p>
             )}
           </>
