@@ -22,7 +22,106 @@ export const FIELD_VISIT_STATUS_LABEL: Record<FieldVisitStatus, string> = {
   cancelled: 'ยกเลิกคำขอลงพื้นที่',
 }
 
-export function fieldVisitStatusTone(status: FieldVisitStatus): FieldVisitTone {
+// ---------- ผลลงพื้นที่ 7 แบบ (status found/not_found = กลุ่ม, result_code = รายละเอียด) ----------
+export type FieldVisitResultCode =
+  | 'paid'
+  | 'promised'
+  | 'device_returned'
+  | 'uncooperative'
+  | 'relative_met'
+  | 'not_found'
+  | 'wrong_address'
+
+export const FIELD_VISIT_RESULT_CODES: FieldVisitResultCode[] = [
+  'paid',
+  'promised',
+  'device_returned',
+  'uncooperative',
+  'relative_met',
+  'not_found',
+  'wrong_address',
+]
+
+export const FIELD_VISIT_RESULT_LABEL: Record<FieldVisitResultCode, string> = {
+  paid: 'กลับมาจ่ายแล้ว',
+  promised: 'นัดจ่าย',
+  device_returned: 'คืนเครื่อง / ได้เครื่องคืน',
+  uncooperative: 'พบแต่ไม่ให้ความร่วมมือ',
+  relative_met: 'พบญาติ/คนในบ้าน (ไม่พบตัวลูกค้า)',
+  not_found: 'ไม่พบใครเลย / ย้ายออก',
+  wrong_address: 'ที่อยู่ไม่ถูกต้อง',
+}
+
+// 4 ตัวแรก = found, 3 ตัวหลัง = not_found
+export const FIELD_VISIT_RESULT_GROUP: Record<FieldVisitResultCode, 'found' | 'not_found'> = {
+  paid: 'found',
+  promised: 'found',
+  device_returned: 'found',
+  uncooperative: 'found',
+  relative_met: 'not_found',
+  not_found: 'not_found',
+  wrong_address: 'not_found',
+}
+
+const FIELD_VISIT_RESULT_TONE: Record<FieldVisitResultCode, FieldVisitTone> = {
+  paid: 'green',
+  promised: 'green',
+  device_returned: 'green',
+  uncooperative: 'red',
+  relative_met: 'amber',
+  not_found: 'amber',
+  wrong_address: 'red',
+}
+
+export const RELATIVE_MET_LEGAL_HINT =
+  'ตาม พ.ร.บ.ทวงถามหนี้ 2558 ห้ามแจ้งญาติ/บุคคลอื่นว่าลูกค้าค้างหนี้ ถามได้แค่ช่องทางติดต่อลูกค้า — จดว่าคุยกับใคร เกี่ยวข้องอย่างไร ได้ข้อมูลอะไร'
+export const PAID_NO_MONEY_HINT = 'ลงผลนี้เป็นป้ายสถานะเท่านั้น ไม่บันทึกยอดเงิน — ยอดเงินเข้าทาง PJ/รับชำระตามปกติ'
+
+/** 'YYYY-MM-DD' → 'dd/mm/yyyy' (พ.ศ.); รูปแบบผิด → คืนค่าเดิม */
+function thaiShortDate(ymd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd)
+  if (!m) return ymd
+  return `${m[3]}/${m[2]}/${Number(m[1]) + 543}`
+}
+
+/** ป้ายผล: มี code → ชื่อละเอียด (นัดจ่ายต่อท้ายวัน); ไม่มี code → 'พบตัว'/'ไม่พบตัว' (ข้อมูลเก่า); อื่นๆ → ป้ายสถานะเดิม */
+export function fieldVisitResultLabel(
+  status: FieldVisitStatus,
+  code: FieldVisitResultCode | null,
+  promiseDate?: string | null,
+): string {
+  if (code) {
+    const base = FIELD_VISIT_RESULT_LABEL[code]
+    return code === 'promised' && promiseDate ? `${base} (นัด ${thaiShortDate(promiseDate)})` : base
+  }
+  if (status === 'found') return 'พบตัว'
+  if (status === 'not_found') return 'ไม่พบตัว'
+  return FIELD_VISIT_STATUS_LABEL[status]
+}
+
+/** คืน null ถ้าผ่าน, ไม่ผ่าน → ข้อความไทย (todayBangkok = 'YYYY-MM-DD') */
+export function validateFieldVisitOutcome(
+  code: FieldVisitResultCode | null | undefined,
+  note: string | null | undefined,
+  promiseDate: string | null | undefined,
+  todayBangkok: string,
+): string | null {
+  if (!code) return 'เลือกผลการลงพื้นที่ก่อน'
+  if (code === 'promised') {
+    if (!promiseDate) return 'ผลนัดจ่ายต้องระบุวันนัด'
+    if (promiseDate < todayBangkok) return 'วันนัดจ่ายต้องไม่เป็นวันที่ผ่านมาแล้ว'
+  }
+  if (code === 'relative_met' && !(note ?? '').trim()) {
+    return 'ผลพบญาติ/คนในบ้านต้องจดหมายเหตุ (คุยกับใคร เกี่ยวข้องอย่างไร ได้ข้อมูลอะไร)'
+  }
+  return null
+}
+
+export function fieldVisitStatusTone(
+  status: FieldVisitStatus,
+  resultCode?: FieldVisitResultCode | null,
+): FieldVisitTone {
+  if ((status === 'found' || status === 'not_found') && resultCode) return FIELD_VISIT_RESULT_TONE[resultCode]
   switch (status) {
     case 'requested':
       return 'amber'
@@ -79,9 +178,18 @@ export function waitingDays(requestedAt: string, today: Date): number {
 }
 
 export function fieldVisitBadgeText(
-  info: { status: FieldVisitStatus; requestedAt: string; dispatchedAt?: string | null },
+  info: {
+    status: FieldVisitStatus
+    requestedAt: string
+    dispatchedAt?: string | null
+    resultCode?: FieldVisitResultCode | null
+    promiseDate?: string | null
+  },
   today: Date,
 ): string {
+  if ((info.status === 'found' || info.status === 'not_found') && info.resultCode) {
+    return `ลงพื้นที่: ${fieldVisitResultLabel(info.status, info.resultCode, info.promiseDate)}`
+  }
   const base = FIELD_VISIT_STATUS_LABEL[info.status]
   if (info.status === 'requested') return `${base} (${waitingDays(info.requestedAt, today)} วัน)`
   if (info.status === 'dispatched' && info.dispatchedAt) {
@@ -198,4 +306,10 @@ export function buildFieldCopyText(items: FieldItem[]): string {
    status dispatched, dispatchedAt 2026-11-17T20:00:00Z (03:00 ไทย 18/11) -> "กำลังลงพื้นที่ (ส่งเมื่อ 18/11)"
 5) defaultRoundLabel(2026-11-15T05:00:00Z) -> "รอบ 15 พ.ย. 69"
 6) validateFieldVisitRequest(other, 2 spaces) -> "เหตุผลอื่นๆ ต้องใส่หมายเหตุ" ; (defiant, empty) -> null
+7) fieldVisitResultLabel: 7 code -> label ตาม FIELD_VISIT_RESULT_LABEL
+   ('found',null) -> 'พบตัว' ; ('not_found',null) -> 'ไม่พบตัว'
+   ('found','promised','2026-11-20') -> 'นัดจ่าย (นัด 20/11/2569)'
+8) validateFieldVisitOutcome('promised','', '2026-11-16','2026-11-17') -> error ; ('promised','', '2026-11-17', same) -> null
+   ('relative_met','   ',null,today) -> error ; ('paid','',null,today) -> null
+9) fieldVisitStatusTone('found','uncooperative') -> 'red' ; ('not_found','relative_met') -> 'amber' ; ('found',null) -> 'green'
 */

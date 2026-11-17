@@ -6,7 +6,7 @@ import { Badge } from './ui'
 /** ป้ายเตือนอย่างเดียว — ไม่ปิดปุ่มโทร/บันทึกติดตาม */
 export function FieldVisitBadge({ info }: { info: FieldVisitStatusInfo | undefined }) {
   if (!info) return null
-  const tone = fieldVisitStatusTone(info.status)
+  const tone = fieldVisitStatusTone(info.status, info.resultCode)
   const text = fieldVisitBadgeText(info, new Date())
   return (
     <span

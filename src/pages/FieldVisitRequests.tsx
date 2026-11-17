@@ -9,36 +9,49 @@ import {
   dispatchFieldVisitRound,
   getAddressesForContracts,
   listFieldVisitRequests,
-  recordFieldVisitResult,
+  recordFieldVisitOutcome,
 } from '../lib/db'
 import {
   FIELD_VISIT_REASON_LABEL,
+  FIELD_VISIT_RESULT_CODES,
+  FIELD_VISIT_RESULT_GROUP,
+  FIELD_VISIT_RESULT_LABEL,
   FIELD_VISIT_STATUS_LABEL,
+  PAID_NO_MONEY_HINT,
+  RELATIVE_MET_LEGAL_HINT,
   buildFieldCopyText,
   defaultRoundLabel,
+  fieldVisitResultLabel,
+  fieldVisitStatusTone,
   toFieldItem,
+  validateFieldVisitOutcome,
   waitingDays,
   type FieldItem,
-  type FieldVisitStatus,
+  type FieldVisitResultCode,
 } from '../lib/fieldVisit'
 import type { FieldVisitRequestRow } from '../lib/types'
 
 type Tab = 'waiting' | 'dispatched' | 'done'
 type Tone = 'neutral' | 'green' | 'amber' | 'red'
 
-const STATUS_TONE: Record<FieldVisitStatus, Tone> = {
-  requested: 'amber',
-  dispatched: 'neutral',
-  found: 'green',
-  not_found: 'red',
-  closed: 'neutral',
-  cancelled: 'neutral',
+const RESULT_GROUPS: { title: string; group: 'found' | 'not_found' }[] = [
+  { title: 'พบตัวลูกค้า', group: 'found' },
+  { title: 'ไม่พบตัวลูกค้า', group: 'not_found' },
+]
+
+function toneOf(r: FieldVisitRequestRow): Tone {
+  const t = fieldVisitStatusTone(r.status, r.resultCode)
+  return t === 'gray' || t === 'blue' ? 'neutral' : t
+}
+
+function todayBangkok(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date())
 }
 
 type Dialog =
   | { kind: 'round'; ids: string[] }
   | { kind: 'cancel'; row: FieldVisitRequestRow }
-  | { kind: 'result'; row: FieldVisitRequestRow; result: 'found' | 'not_found' }
+  | { kind: 'result'; row: FieldVisitRequestRow }
   | { kind: 'close'; row: FieldVisitRequestRow }
 
 const baht = (n: number) => n.toLocaleString('th-TH')
@@ -61,7 +74,11 @@ function RowInfo({ r, children }: { r: FieldVisitRequestRow; children?: React.Re
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-base font-semibold text-ink">{r.customerName}</span>
-        <Badge tone={STATUS_TONE[r.status]}>{FIELD_VISIT_STATUS_LABEL[r.status]}</Badge>
+        <Badge tone={toneOf(r)}>
+          {r.status === 'found' || r.status === 'not_found'
+            ? `ลงพื้นที่: ${fieldVisitResultLabel(r.status, r.resultCode, r.promiseDate)}`
+            : FIELD_VISIT_STATUS_LABEL[r.status]}
+        </Badge>
         {open && closedContract && <Badge tone="red">สัญญาปิดแล้ว</Badge>}
         {open && r.paidSinceRequest > 0 && (
           <Badge tone="amber">
@@ -113,6 +130,9 @@ function ActionModal({
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [code, setCode] = useState<FieldVisitResultCode | null>(null)
+  const [promiseDate, setPromiseDate] = useState('')
+  const today = todayBangkok()
 
   const needText = dialog.kind === 'cancel' || dialog.kind === 'close'
   const title =
@@ -122,11 +142,18 @@ function ActionModal({
         ? `ยกเลิกคำขอ — ${dialog.row.customerName}`
         : dialog.kind === 'close'
           ? `ปิดเรื่อง — ${dialog.row.customerName}`
-          : `${dialog.result === 'found' ? 'พบตัว' : 'ไม่พบตัว'} — ${dialog.row.customerName}`
+          : `ลงผลลงพื้นที่ — ${dialog.row.customerName}`
 
   async function submit() {
     if (busy) return
     const t = text.trim()
+    if (dialog.kind === 'result') {
+      const v = validateFieldVisitOutcome(code, t, promiseDate || null, today)
+      if (v || !code) {
+        setErr(v)
+        return
+      }
+    }
     if (needText && !t) {
       setErr('กรุณาใส่เหตุผล')
       return
@@ -141,7 +168,7 @@ function ActionModal({
       if (dialog.kind === 'round') await dispatchFieldVisitRound(dialog.ids, label.trim(), t)
       else if (dialog.kind === 'cancel') await cancelFieldVisitRequest(dialog.row.id, t)
       else if (dialog.kind === 'close') await closeFieldVisitRequest(dialog.row.id, t)
-      else await recordFieldVisitResult(dialog.row.id, dialog.result, t)
+      else if (code) await recordFieldVisitOutcome(dialog.row.id, code, t, code === 'promised' ? promiseDate : null)
       await onDone()
     } catch (e: unknown) {
       setErr(errText(e))
@@ -157,15 +184,48 @@ function ActionModal({
             <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} />
           </Field>
         )}
+        {dialog.kind === 'result' &&
+          RESULT_GROUPS.map((g) => (
+            <fieldset key={g.group}>
+              <legend className="mb-1 text-sm font-semibold text-ink">{g.title}</legend>
+              <div className="space-y-1.5">
+                {FIELD_VISIT_RESULT_CODES.filter((c) => FIELD_VISIT_RESULT_GROUP[c] === g.group).map((c) => (
+                  <label key={c} className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                    <input
+                      type="radio"
+                      name="field-visit-result"
+                      checked={code === c}
+                      onChange={() => setCode(c)}
+                      disabled={busy}
+                    />
+                    {FIELD_VISIT_RESULT_LABEL[c]}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ))}
+        {dialog.kind === 'result' && code === 'promised' && (
+          <Field label="วันนัดจ่าย" required>
+            <Input type="date" min={today} value={promiseDate} onChange={(e) => setPromiseDate(e.target.value)} />
+          </Field>
+        )}
+        {dialog.kind === 'result' && code === 'relative_met' && (
+          <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">{RELATIVE_MET_LEGAL_HINT}</p>
+        )}
+        {dialog.kind === 'result' && code === 'paid' && (
+          <p className="rounded-xl bg-peach-light px-3 py-2 text-sm text-ink-soft">{PAID_NO_MONEY_HINT}</p>
+        )}
         <Field
           label={
             dialog.kind === 'round'
               ? 'โน้ตถึงทีมลงพื้นที่ (ไม่บังคับ)'
               : dialog.kind === 'result'
-                ? 'โน้ตผลการลงพื้นที่ (ไม่บังคับ)'
+                ? code === 'relative_met'
+                  ? 'โน้ตผลการลงพื้นที่ (จำเป็น)'
+                  : 'โน้ตผลการลงพื้นที่ (ไม่บังคับ)'
                 : 'เหตุผล'
           }
-          required={needText}
+          required={needText || (dialog.kind === 'result' && code === 'relative_met')}
         >
           <Textarea rows={3} value={text} onChange={(e) => setText(e.target.value)} />
         </Field>
@@ -307,7 +367,7 @@ export default function FieldVisitRequests() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageTitle sub="คำขอลงพื้นที่จากทีมติดตามหนี้ — รวมเคสเป็นรอบ ส่งให้ทีมข้างนอก แล้วลงผลพบตัว/ไม่พบตัว">
+      <PageTitle sub="คำขอลงพื้นที่จากทีมติดตามหนี้ — รวมเคสเป็นรอบ ส่งให้ทีมข้างนอก แล้วลงผลการลงพื้นที่">
         คำขอลงพื้นที่
       </PageTitle>
 
@@ -417,15 +477,8 @@ export default function FieldVisitRequests() {
                     <div className="flex flex-wrap items-start gap-3">
                       <RowInfo r={r} />
                       <div className="flex flex-wrap gap-2">
-                        <Button type="button" onClick={() => setDialog({ kind: 'result', row: r, result: 'found' })}>
-                          พบตัว
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          type="button"
-                          onClick={() => setDialog({ kind: 'result', row: r, result: 'not_found' })}
-                        >
-                          ไม่พบตัว
+                        <Button type="button" onClick={() => setDialog({ kind: 'result', row: r })}>
+                          ลงผล
                         </Button>
                         <Button variant="ghost" type="button" onClick={() => setDialog({ kind: 'close', row: r })}>
                           ปิดเรื่อง
@@ -449,7 +502,7 @@ export default function FieldVisitRequests() {
                   {r.roundLabel && <p className="mt-1 text-xs text-ink-soft">{r.roundLabel}</p>}
                   {(r.status === 'found' || r.status === 'not_found') && (
                     <p className="mt-1 text-sm text-ink">
-                      ผล: {r.status === 'found' ? 'พบตัว' : 'ไม่พบตัว'}
+                      ผล: {fieldVisitResultLabel(r.status, r.resultCode, r.promiseDate)}
                       {r.resultNote ? ` — ${r.resultNote}` : ''}
                       <span className="text-ink-soft">
                         {' '}

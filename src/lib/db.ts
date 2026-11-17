@@ -66,7 +66,7 @@ import type {
   FieldVisitRequestRow,
   FieldVisitStatusInfo,
 } from './types'
-import type { FieldVisitReason } from './fieldVisit'
+import type { FieldVisitReason, FieldVisitResultCode } from './fieldVisit'
 import * as mock from './mockData'
 import {
   DEFAULT_TIERS,
@@ -10968,7 +10968,7 @@ export async function requestFieldVisit(contractId: string, reason: FieldVisitRe
     mockFieldVisit.push({
       id, contractId, reason, note: note || null, status: 'requested', requestedBy: null, requestedByName: 'mock',
       requestedAt: new Date().toISOString(), roundId: null, roundLabel: null, dispatchedAt: null, resultNote: null,
-      resultAt: null, resultByName: null, closedAt: null, closedReason: null, invNo: null, contractNo: contractId,
+      resultAt: null, resultByName: null, resultCode: null, promiseDate: null, closedAt: null, closedReason: null, invNo: null, contractNo: contractId,
       customerName: '-', shopName: null, phone: null, phoneAlt1: null, phoneAlt2: null, model: null, storage: null,
       contractStatus: 'active', currentGrade: null, daysLate: 0, overdueAmount: 0, paidSinceRequest: 0,
     })
@@ -11026,6 +11026,32 @@ export async function recordFieldVisitResult(id: string, result: 'found' | 'not_
   if (error) throw fieldVisitErrorMessage(error)
 }
 
+/** แอดมินลงผลลงพื้นที่แบบละเอียด 7 แบบ (ไม่แตะเงิน/งวด) — promiseDate เป็น YYYY-MM-DD ส่งตรง */
+export async function recordFieldVisitOutcome(
+  id: string,
+  code: FieldVisitResultCode,
+  note: string,
+  promiseDate: string | null,
+): Promise<void> {
+  if (!supabase) {
+    const r = mockFieldVisit.find((x) => x.id === id)
+    if (r && r.status === 'dispatched') {
+      r.status = ['paid', 'promised', 'device_returned', 'uncooperative'].includes(code) ? 'found' : 'not_found'
+      r.resultCode = code
+      r.promiseDate = code === 'promised' ? promiseDate : null
+      r.resultNote = note || null
+    }
+    return
+  }
+  const { error } = await supabase.rpc('record_field_visit_outcome', {
+    p_id: id,
+    p_code: code,
+    p_note: note || null,
+    p_promise_date: code === 'promised' ? promiseDate : null,
+  })
+  if (error) throw fieldVisitErrorMessage(error)
+}
+
 export async function closeFieldVisitRequest(id: string, reason: string): Promise<void> {
   if (!supabase) {
     const r = mockFieldVisit.find((x) => x.id === id)
@@ -11041,7 +11067,11 @@ export async function listFieldVisitRequests(days = 90): Promise<FieldVisitReque
   if (!supabase) return [...mockFieldVisit]
   const { data, error } = await supabase.rpc('list_field_visit_requests', { p_days: days })
   if (error) throw fieldVisitErrorMessage(error)
-  return (data ?? []) as FieldVisitRequestRow[]
+  return ((data ?? []) as FieldVisitRequestRow[]).map((r) => ({
+    ...r,
+    resultCode: r.resultCode ?? null,
+    promiseDate: r.promiseDate ?? null,
+  }))
 }
 
 /** เลขแดงบนเมนู (แอดมินเท่านั้น; คนอื่นได้ 0) — น้องวิวต่อใน useNavBadgeCounts */
@@ -11065,6 +11095,8 @@ export async function getFieldVisitStatusMap(): Promise<Map<string, FieldVisitSt
           requestedAt: r.requestedAt,
           dispatchedAt: r.dispatchedAt,
           requestedBy: r.requestedBy ?? null,
+          resultCode: r.resultCode ?? null,
+          promiseDate: r.promiseDate ?? null,
         })
       }
     }
@@ -11080,6 +11112,8 @@ export async function getFieldVisitStatusMap(): Promise<Map<string, FieldVisitSt
       requestedAt: r.requestedAt,
       dispatchedAt: r.dispatchedAt ?? null,
       requestedBy: r.requestedBy ?? null,
+      resultCode: r.resultCode ?? null,
+      promiseDate: r.promiseDate ?? null,
     })
   }
   return out

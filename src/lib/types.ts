@@ -3,7 +3,7 @@
 // ภายหลังจะ map ตรงกับตารางใน Supabase
 
 import type { LateBucket } from './collectorPeriod'
-import type { FieldVisitReason, FieldVisitStatus } from './fieldVisit'
+import type { FieldVisitReason, FieldVisitResultCode, FieldVisitStatus } from './fieldVisit'
 import type { ReviewStatus } from './review'
 import type { PJContract } from './pjImport'
 import type { PjStaffOverlapDetail } from './pjStaffOverlap'
@@ -1081,6 +1081,10 @@ export interface FieldVisitRequestRow {
   resultNote: string | null
   resultAt: string | null
   resultByName: string | null
+  /** ผลลงพื้นที่ละเอียด (null = ลงผลแบบเก่า found/not_found) */
+  resultCode: FieldVisitResultCode | null
+  /** วันนัดจ่าย (YYYY-MM-DD) เมื่อ resultCode = 'promised' */
+  promiseDate: string | null
   closedAt: string | null
   closedReason: string | null
   invNo: string | null
@@ -1109,4 +1113,6 @@ export interface FieldVisitStatusInfo {
   dispatchedAt: string | null
   /** uuid คนขอ — ใช้ตัดสินว่าโชว์ลิงก์ยกเลิกไหม (RPC ยอมแค่คนขอ/แอดมิน) */
   requestedBy: string | null
+  resultCode: FieldVisitResultCode | null
+  promiseDate: string | null
 }
