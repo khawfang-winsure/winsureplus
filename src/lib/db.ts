@@ -3274,17 +3274,18 @@ export const updateReturnWorkflow = writesContracts(async function updateReturnW
   if (error) throw error
 })
 
-/** แก้วันที่ของเคสที่คีย์ไปแล้ว: returnedOn = วันคืนจริง (created_at), soldOn = วันขายจริง (transferred_at/shipped_at)
- *  recorded_at / sold_recorded_at ไม่ถูกแตะ = เวลาคีย์จริงยังอยู่ครบ (ยังไม่มีตาราง audit ของ device_returns) */
+/** แก้วันที่ของเคสที่คีย์ไปแล้ว: returnedOn = วันคืนจริง (created_at); pricedOn/transferredOn/shippedOn = วันของแต่ละขั้น
+ *  แก้ได้เฉพาะขั้นที่เคสมีเวลาอยู่แล้ว; ลำดับ priced <= transferred <= shipped และทุกขั้นห้ามก่อนวันคืน
+ *  recorded_at / sold_recorded_at ไม่ถูกแตะ = เวลาคีย์จริงยังอยู่ครบ */
 export const updateReturnDates = writesContracts(async function updateReturnDates(
   returnId: string,
-  d: { returnedOn?: string; soldOn?: string },
+  d: { returnedOn?: string; pricedOn?: string; transferredOn?: string; shippedOn?: string },
 ): Promise<void> {
   if (!supabase) return
-  if (!d.returnedOn && !d.soldOn) return
+  if (!d.returnedOn && !d.pricedOn && !d.transferredOn && !d.shippedOn) return
   const { data: row, error: e0 } = await supabase
     .from('device_returns')
-    .select('contract_id, created_at, device_status, priced_at, transferred_at, shipped_at')
+    .select('contract_id, created_at, priced_at, transferred_at, shipped_at')
     .eq('id', returnId)
     .maybeSingle()
   if (e0) throw e0
@@ -3296,14 +3297,26 @@ export const updateReturnDates = writesContracts(async function updateReturnDate
     update.created_at = assertActualDate(d.returnedOn, await getContractStartDate(row.contract_id as string))
     retDay = d.returnedOn
   }
-  if (d.soldOn) {
-    const iso = assertActualDate(d.soldOn, retDay)
-    if (!row.transferred_at && !row.shipped_at && !row.priced_at) throw new Error('เคสนี้ยังไม่มีขั้นขาย/โอน/ส่ง จึงแก้วันขายไม่ได้')
-    // รายงานใช้ transferred_at ?? shipped_at — แก้ตัวที่มีค่าอยู่ทั้งหมดให้ตรงกัน; ถ้ามีแค่ priced_at แก้ priced_at
-    if (row.transferred_at) update.transferred_at = iso
-    if (row.shipped_at) update.shipped_at = iso
-    if (!row.transferred_at && !row.shipped_at) update.priced_at = iso
+  const steps = [
+    { key: 'priced_at', label: 'ตีราคา', val: d.pricedOn, stored: row.priced_at as string | null },
+    { key: 'transferred_at', label: 'โอนเงิน', val: d.transferredOn, stored: row.transferred_at as string | null },
+    { key: 'shipped_at', label: 'ส่งเครื่อง', val: d.shippedOn, stored: row.shipped_at as string | null },
+  ]
+  const days: (string | null)[] = []
+  for (const st of steps) {
+    if (st.val) {
+      if (!st.stored) throw new Error(`เคสนี้ยังไม่มีขั้น${st.label} จึงแก้วัน${st.label}ไม่ได้`)
+      if (st.val < retDay) throw new Error(`วัน${st.label}ต้องไม่ก่อนวันคืนเครื่อง`)
+      update[st.key] = assertActualDate(st.val, retDay)
+      days.push(st.val)
+    } else {
+      days.push(st.stored ? bkkDayOf(st.stored) : null)
+    }
   }
+  const [pd, td, sd] = days
+  if (pd && td && pd > td) throw new Error('วันตีราคาต้องไม่หลังวันโอนเงิน')
+  if (td && sd && td > sd) throw new Error('วันโอนเงินต้องไม่หลังวันส่งเครื่อง')
+  if (pd && sd && pd > sd) throw new Error('วันตีราคาต้องไม่หลังวันส่งเครื่อง')
   const { error } = await supabase.from('device_returns').update(update).eq('id', returnId)
   if (error) throw error
 })

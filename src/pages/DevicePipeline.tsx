@@ -265,28 +265,47 @@ function EditDatesModal({
   onDone: () => Promise<void>
 }) {
   const today = todayISOBangkok()
-  const currentSale = saleDateOf(row)
+  const curPriced = bkkDate(row.pricedAt)
+  const curTransferred = bkkDate(row.transferredAt)
+  const curShipped = bkkDate(row.shippedAt)
   const [returnedOn, setReturnedOn] = useState(returnDateOf(row))
-  const [soldOn, setSoldOn] = useState(currentSale ?? '')
+  const [pricedOn, setPricedOn] = useState(curPriced ?? '')
+  const [transferredOn, setTransferredOn] = useState(curTransferred ?? '')
+  const [shippedOn, setShippedOn] = useState(curShipped ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   async function save() {
-    if (!returnedOn || returnedOn > today || (currentSale && (!soldOn || soldOn > today))) {
+    const shown: Array<[string | null, string]> = [
+      [curPriced, pricedOn],
+      [curTransferred, transferredOn],
+      [curShipped, shippedOn],
+    ]
+    if (!returnedOn || returnedOn > today || shown.some(([cur, v]) => cur && (!v || v > today))) {
       setErr('กรุณาเลือกวันที่ให้ถูกต้อง (ห้ามเป็นวันในอนาคต)')
       return
     }
-    if (currentSale && soldOn < returnedOn) {
+    if (shown.some(([cur, v]) => cur && v < returnedOn)) {
       setErr('วันที่ขายต้องไม่ก่อนวันที่คืนเครื่อง')
+      return
+    }
+    if (
+      (curPriced && curTransferred && pricedOn > transferredOn) ||
+      (curTransferred && curShipped && transferredOn > shippedOn) ||
+      (curPriced && curShipped && !curTransferred && pricedOn > shippedOn)
+    ) {
+      setErr('ลำดับวันที่ต้องเป็น ได้ราคาขาย ≤ ร้านโอน ≤ ส่งจริง')
       return
     }
     setBusy(true)
     setErr(null)
     try {
-      const changes: { returnedOn?: string; soldOn?: string } = {}
+      const changes: { returnedOn?: string; pricedOn?: string; transferredOn?: string; shippedOn?: string } = {}
       if (returnedOn !== returnDateOf(row)) changes.returnedOn = returnedOn
-      if (currentSale && soldOn !== currentSale) changes.soldOn = soldOn
-      if (changes.returnedOn === undefined && changes.soldOn === undefined) {
+      if (curPriced && pricedOn !== curPriced) changes.pricedOn = pricedOn
+      if (curTransferred && transferredOn !== curTransferred) changes.transferredOn = transferredOn
+      if (curShipped && shippedOn !== curShipped) changes.shippedOn = shippedOn
+      if (Object.keys(changes).length === 0) {
         onClose()
         return
       }
@@ -305,12 +324,22 @@ function EditDatesModal({
         <Field label="วันที่คืนจริง" required>
           <Input type="date" value={returnedOn} max={today} onChange={(e) => setReturnedOn(e.target.value)} />
         </Field>
-        {currentSale && (
-          <Field label="วันที่ขายจริง" required>
-            <Input type="date" value={soldOn} max={today} onChange={(e) => setSoldOn(e.target.value)} />
+        {curPriced && (
+          <Field label="วันที่ได้ราคาขาย" required>
+            <Input type="date" value={pricedOn} max={today} onChange={(e) => setPricedOn(e.target.value)} />
           </Field>
         )}
-        <p className="text-xs text-ink-soft">รายงานจะนับตามวันที่ที่แก้นี้</p>
+        {curTransferred && (
+          <Field label="วันที่ร้านโอน" required>
+            <Input type="date" value={transferredOn} max={today} onChange={(e) => setTransferredOn(e.target.value)} />
+          </Field>
+        )}
+        {curShipped && (
+          <Field label="วันที่ส่งจริง" required>
+            <Input type="date" value={shippedOn} max={today} onChange={(e) => setShippedOn(e.target.value)} />
+          </Field>
+        )}
+        <p className="text-xs text-ink-soft">รายงานนับวันขาย = วันที่ร้านโอน (ถ้าไม่มี ใช้วันที่ส่ง)</p>
         {err && <p className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{err}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>ยกเลิก</Button>
@@ -586,9 +615,15 @@ export default function DevicePipeline() {
                     <td className="py-3 pr-4">
                       <p className="font-medium text-ink">{r.customerName}</p>
                       <p className="text-xs text-ink-soft">{r.contractNo} · คืน {thaiDate(retDate)}</p>
-                      {saleDate && (
-                        <p className="text-xs text-ink-soft">ขาย/ส่ง {thaiDate(saleDate)}</p>
-                      )}
+                      {saleDate && (() => {
+                        const tDay = bkkDate(r.transferredAt)
+                        const sDay = bkkDate(r.shippedAt)
+                        return tDay && sDay && tDay !== sDay ? (
+                          <p className="text-xs text-ink-soft">โอน {ddmm(tDay)} · ส่ง {ddmm(sDay)}</p>
+                        ) : (
+                          <p className="text-xs text-ink-soft">ขาย/ส่ง {thaiDate(saleDate)}</p>
+                        )
+                      })()}
                       {lateKeyed && recDate && (
                         <p className="text-xs text-ink-soft/70">ลงระบบ {ddmm(recDate)}</p>
                       )}
