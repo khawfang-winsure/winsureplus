@@ -63,10 +63,11 @@ import type {
   TransferSlipItem,
   TransferSlipSummaryRow,
   UnownedArrearsRow,
+  FieldVisitAttention,
   FieldVisitRequestRow,
   FieldVisitStatusInfo,
 } from './types'
-import type { FieldVisitReason, FieldVisitResultCode } from './fieldVisit'
+import type { FieldVisitCloseCode, FieldVisitReason, FieldVisitResultCode } from './fieldVisit'
 import * as mock from './mockData'
 import {
   DEFAULT_TIERS,
@@ -10952,6 +10953,7 @@ export async function getPartialPaymentProgress(
 function fieldVisitErrorMessage(e: { message?: string }): Error {
   const m = e.message ?? ''
   if (m.includes('FIELD_VISIT_ALREADY_OPEN')) return new Error('สัญญานี้มีคำขอลงพื้นที่ค้างอยู่แล้ว')
+  if (m.includes('FIELD_VISIT_UPDATE_CHANGED')) return new Error('สถานะลูกค้าเปลี่ยนไปแล้ว กรุณารีเฟรชแล้วดูอีกครั้ง')
   if (m.includes('FIELD_VISIT_NOT_CANCELLABLE')) return new Error('ยกเลิกไม่ได้ เพราะคำขอเข้ารอบหรือมีผลแล้ว')
   return new Error(m || 'ทำรายการคำขอลงพื้นที่ไม่สำเร็จ')
 }
@@ -10971,6 +10973,8 @@ export async function requestFieldVisit(contractId: string, reason: FieldVisitRe
       resultAt: null, resultByName: null, resultCode: null, promiseDate: null, closedAt: null, closedReason: null, invNo: null, contractNo: contractId,
       customerName: '-', shopName: null, phone: null, phoneAlt1: null, phoneAlt2: null, model: null, storage: null,
       contractStatus: 'active', currentGrade: null, daysLate: 0, overdueAmount: 0, paidSinceRequest: 0,
+      liveState: null, liveKey: null, ackKey: null, ackAt: null, ackByName: null, paidSinceDispatch: 0,
+      latestPromiseDate: null, penaltyDue: 0, closeCode: null, holdUntil: null, paidLast3d: 0, activePromiseDate: null,
     })
     return id
   }
@@ -11071,7 +11075,76 @@ export async function listFieldVisitRequests(days = 90): Promise<FieldVisitReque
     ...r,
     resultCode: r.resultCode ?? null,
     promiseDate: r.promiseDate ?? null,
+    liveState: r.liveState ?? null,
+    liveKey: r.liveKey ?? null,
+    ackKey: r.ackKey ?? null,
+    ackAt: r.ackAt ?? null,
+    ackByName: r.ackByName ?? null,
+    paidSinceDispatch: Number(r.paidSinceDispatch ?? 0),
+    latestPromiseDate: r.latestPromiseDate ?? null,
+    penaltyDue: Number(r.penaltyDue ?? 0),
+    closeCode: r.closeCode ?? null,
+    holdUntil: r.holdUntil ?? null,
+    paidLast3d: Number(r.paidLast3d ?? 0),
+    activePromiseDate: r.activePromiseDate ?? null,
   }))
+}
+
+/** แอดมินกดรับทราบอัปเดตสด (key = liveKey ของแถว; ถ้าสถานะเปลี่ยนไปแล้ว RPC จะ error) */
+export async function ackFieldVisitUpdate(id: string, key: string): Promise<void> {
+  if (!supabase) {
+    const r = mockFieldVisit.find((x) => x.id === id)
+    if (r) { r.ackKey = key; r.ackAt = new Date().toISOString(); r.ackByName = 'mock' }
+    return
+  }
+  const { error } = await supabase.rpc('ack_field_visit_update', { p_id: id, p_key: key })
+  if (error) throw fieldVisitErrorMessage(error)
+}
+
+/** ยกเลิกคำขอที่เข้ารอบแล้ว (ยังไม่มีผล) — คืน id คำขอใหม่ถ้าเลือกพักรอนัดจ่าย ไม่งั้นคืน id เดิม; holdUntil = YYYY-MM-DD */
+export async function cancelDispatchedFieldVisit(
+  id: string,
+  code: Exclude<FieldVisitCloseCode, 'auto_paid_before_round'>,
+  note: string,
+  holdUntil: string | null,
+): Promise<string> {
+  if (!supabase) {
+    const r = mockFieldVisit.find((x) => x.id === id)
+    if (r && r.status === 'dispatched') {
+      r.status = 'cancelled'
+      r.closeCode = code
+      r.closedAt = new Date().toISOString()
+      r.closedReason = note || null
+    }
+    return id
+  }
+  const { data, error } = await supabase.rpc('cancel_dispatched_field_visit', {
+    p_id: id,
+    p_code: code,
+    p_note: note || null,
+    p_hold_until: code === 'on_hold_promise' ? holdUntil : null,
+  })
+  if (error) throw fieldVisitErrorMessage(error)
+  return data as string
+}
+
+/** เลขแจ้งเตือนเมนูลงพื้นที่ (แอดมินเท่านั้น; คนอื่นได้ 0) */
+export async function getFieldVisitAttention(): Promise<FieldVisitAttention> {
+  if (!supabase) {
+    return {
+      waiting: mockFieldVisit.filter((r) => r.status === 'requested').length,
+      updates: mockFieldVisit.filter((r) => r.status === 'dispatched' && r.liveKey && r.liveKey !== r.ackKey).length,
+      staleRounds: [],
+    }
+  }
+  const { data, error } = await supabase.rpc('count_field_visit_attention')
+  if (error) throw error
+  const d = (data ?? {}) as Partial<FieldVisitAttention>
+  return {
+    waiting: Number(d.waiting ?? 0),
+    updates: Number(d.updates ?? 0),
+    staleRounds: (d.staleRounds ?? []).map((s) => ({ ...s, pending: Number(s.pending) })),
+  }
 }
 
 /** เลขแดงบนเมนู (แอดมินเท่านั้น; คนอื่นได้ 0) — น้องวิวต่อใน useNavBadgeCounts */
@@ -11097,6 +11170,7 @@ export async function getFieldVisitStatusMap(): Promise<Map<string, FieldVisitSt
           requestedBy: r.requestedBy ?? null,
           resultCode: r.resultCode ?? null,
           promiseDate: r.promiseDate ?? null,
+          closeCode: r.closeCode ?? null,
         })
       }
     }
@@ -11114,6 +11188,7 @@ export async function getFieldVisitStatusMap(): Promise<Map<string, FieldVisitSt
       requestedBy: r.requestedBy ?? null,
       resultCode: r.resultCode ?? null,
       promiseDate: r.promiseDate ?? null,
+      closeCode: r.closeCode ?? null,
     })
   }
   return out

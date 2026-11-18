@@ -6,11 +6,15 @@ import { Badge } from './ui'
 /** ป้ายเตือนอย่างเดียว — ไม่ปิดปุ่มโทร/บันทึกติดตาม */
 export function FieldVisitBadge({ info }: { info: FieldVisitStatusInfo | undefined }) {
   if (!info) return null
-  const tone = fieldVisitStatusTone(info.status, info.resultCode)
+  const tone = fieldVisitStatusTone(info.status, info.resultCode, info.closeCode)
   const text = fieldVisitBadgeText(info, new Date())
   return (
     <span
-      title={`เหตุผล: ${FIELD_VISIT_REASON_LABEL[info.reason]} — อยู่ระหว่างลงพื้นที่ ยังโทรติดตามได้ตามปกติ`}
+      title={
+        info.closeCode
+          ? `เหตุผลที่ขอลงพื้นที่: ${FIELD_VISIT_REASON_LABEL[info.reason]}`
+          : `เหตุผล: ${FIELD_VISIT_REASON_LABEL[info.reason]} — อยู่ระหว่างลงพื้นที่ ยังโทรติดตามได้ตามปกติ`
+      }
       className="inline-flex"
     >
       <Badge tone={tone === 'gray' || tone === 'blue' ? 'neutral' : tone}>

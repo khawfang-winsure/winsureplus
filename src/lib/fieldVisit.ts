@@ -1,5 +1,6 @@
 // ===== คำขอลงพื้นที่ (pure functions) =====
 // ป้ายเตือนเท่านั้น ไม่ระงับการโทร — แอดมินรวบส่งทีมข้างนอกเป็นรอบ แล้วลงผลพบตัว/ไม่พบตัว
+import { baht } from './format'
 import { ADDRESS_KIND_LABEL, addressOneLine, isAddressEmpty, type AddressKind, type CustomerAddress } from './letters'
 
 export type FieldVisitReason = 'unreachable_all_phones' | 'answered_uncooperative' | 'defiant' | 'other'
@@ -120,7 +121,9 @@ export function validateFieldVisitOutcome(
 export function fieldVisitStatusTone(
   status: FieldVisitStatus,
   resultCode?: FieldVisitResultCode | null,
+  closeCode?: FieldVisitCloseCode | null,
 ): FieldVisitTone {
+  if ((status === 'closed' || status === 'cancelled') && closeCode) return FIELD_VISIT_CLOSE_TONE[closeCode]
   if ((status === 'found' || status === 'not_found') && resultCode) return FIELD_VISIT_RESULT_TONE[resultCode]
   switch (status) {
     case 'requested':
@@ -151,6 +154,127 @@ const TRANSITIONS: Record<FieldVisitStatus, FieldVisitStatus[]> = {
 
 export function canTransition(from: FieldVisitStatus, to: FieldVisitStatus): boolean {
   return TRANSITIONS[from].includes(to)
+}
+
+// ---------- สถานะสดหลังส่งทีม + เหตุผลปิด/ยกเลิก (DB เป็นแหล่งความจริง) ----------
+export type FieldVisitUpdateState = 'paid_full' | 'paid_partial' | 'promised' | 'promise_broken'
+export type FieldVisitCloseCode = 'paid_before_visit' | 'on_hold_promise' | 'cancel_other' | 'auto_paid_before_round'
+
+export const FIELD_VISIT_UPDATE_TONE: Record<FieldVisitUpdateState, FieldVisitTone> = {
+  paid_full: 'green',
+  paid_partial: 'amber',
+  promised: 'blue',
+  promise_broken: 'red',
+}
+
+/** ป้ายสถานะสด; paid_partial ใส่ยอดค้าง, promised ใส่วันนัด (ไม่มีค่า → ตัดส่วนท้าย) */
+export function fieldVisitUpdateLabel(
+  state: FieldVisitUpdateState,
+  opts?: { overdueAmount?: number | null; promiseDate?: string | null },
+): string {
+  switch (state) {
+    case 'paid_full':
+      return 'จ่ายครบแล้ว ไม่ต้องไป'
+    case 'paid_partial':
+      return opts?.overdueAmount != null
+        ? `จ่ายบางส่วน ยังค้าง ${baht(opts.overdueAmount)} บาท`
+        : 'จ่ายบางส่วน ยังค้างอยู่'
+    case 'promised':
+      return opts?.promiseDate ? `ลูกค้านัดจ่าย ${thaiShortDate(opts.promiseDate)}` : 'ลูกค้านัดจ่าย'
+    case 'promise_broken':
+      return 'ผิดนัด ลงพื้นที่ต่อ'
+  }
+}
+
+export const FIELD_VISIT_CLOSE_LABEL: Record<FieldVisitCloseCode, string> = {
+  paid_before_visit: 'ยกเลิก: ลูกค้าจ่ายเองก่อนลงพื้นที่',
+  on_hold_promise: 'พักไว้: ลูกค้านัดจ่าย',
+  cancel_other: 'ยกเลิก: อื่นๆ',
+  auto_paid_before_round: 'ปิดแล้ว: ลูกค้าชำระครบ',
+}
+
+export const FIELD_VISIT_CLOSE_TONE: Record<FieldVisitCloseCode, FieldVisitTone> = {
+  paid_before_visit: 'green',
+  on_hold_promise: 'amber',
+  cancel_other: 'gray',
+  auto_paid_before_round: 'green',
+}
+
+/** ป้ายแถวที่ปิด/ยกเลิกแล้วและมี closeCode — จ่ายก่อนลงพื้นที่/ชำระครบ → "ปิดแล้ว: ลูกค้าชำระครบ" */
+function closeBadgeText(code: FieldVisitCloseCode): string {
+  return code === 'paid_before_visit' ? FIELD_VISIT_CLOSE_LABEL.auto_paid_before_round : FIELD_VISIT_CLOSE_LABEL[code]
+}
+
+/** โครงขั้นต่ำที่ต้องใช้ (ไม่ผูก FieldVisitRequestRow) */
+export interface FieldVisitLiveInput {
+  customerName: string
+  invNo?: string | null
+  status: FieldVisitStatus
+  liveState?: FieldVisitUpdateState | null
+  latestPromiseDate?: string | null
+  activePromiseDate?: string | null
+  paidLast3d?: number | null
+  daysLate?: number | null
+  overdueAmount?: number | null
+  contractStatus?: string | null
+  closeCode?: FieldVisitCloseCode | null
+}
+
+/** คำเตือนก่อนส่งทีมลงพื้นที่ (เตือนเท่านั้น ไม่บล็อก); todayBkk = 'YYYY-MM-DD' */
+export function preDispatchWarnings(row: FieldVisitLiveInput, todayBkk: string): string[] {
+  const out: string[] = []
+  const paid = row.paidLast3d ?? 0
+  if (paid > 0) out.push(`ลูกค้าจ่ายเงินเข้ามาใน 3 วันล่าสุด ${baht(paid)} บาท · ตรวจก่อนส่งทีม`)
+  const promise = row.activePromiseDate ?? null
+  if (promise && promise >= todayBkk) out.push(`ลูกค้านัดจ่าย ${thaiShortDate(promise)} · ควรรอก่อน`)
+  const cs = row.contractStatus
+  if (cs === 'returned') out.push('สัญญานี้คืนเครื่องแล้ว')
+  else if (cs && cs !== 'active') out.push('สัญญานี้ปิดแล้ว ไม่ต้องลงพื้นที่')
+  else if (row.daysLate != null && row.overdueAmount != null && row.daysLate === 0 && row.overdueAmount === 0) {
+    out.push('ไม่มียอดค้างแล้ว')
+  }
+  return out
+}
+
+const LEGAL_FOOTER = [
+  'หมายเหตุ: ติดต่อลูกค้าได้ จ.–ศ. 08:00–20:00 น., เสาร์-อาทิตย์และวันหยุดราชการ 08:00–18:00 น. เท่านั้น',
+  'ห้ามบอกเรื่องหนี้กับเพื่อนบ้าน ญาติ หรือบุคคลอื่น — ถามได้แค่ช่องทางติดต่อลูกค้า',
+]
+
+/** ข้อความอัปเดตส่งทีมข้างนอก (ชื่อ + INV เท่านั้น ไม่มีเลขบัตร/เบอร์โทร); ไม่มีแถวที่เกี่ยวข้อง → '' */
+export function buildFieldUpdateLineText(rows: FieldVisitLiveInput[], todayBkk: string): string {
+  const who = (r: FieldVisitLiveInput) => (r.invNo ? `${r.customerName} (${r.invNo})` : r.customerName)
+  const paid: string[] = []
+  const wait: string[] = []
+  const go: string[] = []
+  const partial: string[] = []
+  const cancelled: string[] = []
+  for (const r of rows) {
+    if ((r.status === 'cancelled' || r.status === 'closed') && r.closeCode) {
+      cancelled.push(`- ${who(r)} · ${FIELD_VISIT_CLOSE_LABEL[r.closeCode]}`)
+      continue
+    }
+    if (r.status !== 'dispatched' || !r.liveState) continue
+    const promise = r.activePromiseDate ?? r.latestPromiseDate ?? null
+    if (r.liveState === 'paid_full') paid.push(`- ${who(r)}`)
+    else if (r.liveState === 'promised') wait.push(`- ${who(r)} · นัดจ่าย ${promise ? thaiShortDate(promise) : '-'}`)
+    else if (r.liveState === 'promise_broken') {
+      go.push(`- ${who(r)}${promise ? ` · ผิดนัด ${thaiShortDate(promise)}` : ''}`)
+    } else {
+      partial.push(`- ${who(r)} · ยังค้าง ${r.overdueAmount != null ? baht(r.overdueAmount) : '-'} บาท`)
+    }
+  }
+  const sections: string[] = []
+  const add = (title: string, list: string[]) => {
+    if (list.length) sections.push(`${title}\n${list.join('\n')}`)
+  }
+  add('✅ จ่ายแล้ว ไม่ต้องไป', paid)
+  add('📅 นัดจ่าย รอก่อน', wait)
+  add('🔴 ผิดนัด ไปได้เลย', go)
+  add('🟡 จ่ายบางส่วน', partial)
+  add('ยกเลิกแล้วในรอบนี้', cancelled)
+  if (!sections.length) return ''
+  return [`อัปเดตลงพื้นที่ ${thaiShortDate(todayBkk)}`, ...sections, LEGAL_FOOTER.join('\n')].join('\n\n')
 }
 
 // ---------- วัน/เวลาแบบไทย (UTC+7 ไม่มี DST) ----------
@@ -184,9 +308,11 @@ export function fieldVisitBadgeText(
     dispatchedAt?: string | null
     resultCode?: FieldVisitResultCode | null
     promiseDate?: string | null
+    closeCode?: FieldVisitCloseCode | null
   },
   today: Date,
 ): string {
+  if ((info.status === 'closed' || info.status === 'cancelled') && info.closeCode) return closeBadgeText(info.closeCode)
   if ((info.status === 'found' || info.status === 'not_found') && info.resultCode) {
     return `ลงพื้นที่: ${fieldVisitResultLabel(info.status, info.resultCode, info.promiseDate)}`
   }
@@ -312,4 +438,18 @@ export function buildFieldCopyText(items: FieldItem[]): string {
 8) validateFieldVisitOutcome('promised','', '2026-11-16','2026-11-17') -> error ; ('promised','', '2026-11-17', same) -> null
    ('relative_met','   ',null,today) -> error ; ('paid','',null,today) -> null
 9) fieldVisitStatusTone('found','uncooperative') -> 'red' ; ('not_found','relative_met') -> 'amber' ; ('found',null) -> 'green'
+10) fieldVisitUpdateLabel paid_partial overdueAmount 1500 -> "จ่ายบางส่วน ยังค้าง 1,500 บาท"
+    promised promiseDate 2026-11-20 -> "ลูกค้านัดจ่าย 20/11/2569" ; promise_broken -> "ผิดนัด ลงพื้นที่ต่อ"
+11) badge: status closed + closeCode auto_paid_before_round -> "ปิดแล้ว: ลูกค้าชำระครบ" ; paid_before_visit ก็เช่นกัน
+    status cancelled + on_hold_promise -> "พักไว้: ลูกค้านัดจ่าย" ; cancel_other -> "ยกเลิก: อื่นๆ"
+    ไม่มี closeCode -> ป้ายเดิม ; fieldVisitStatusTone(closed,null,auto_paid_before_round) -> green ; (cancelled,null,cancel_other) -> gray
+12) preDispatchWarnings today 2026-11-18:
+    paidLast3d 2000 + activePromiseDate 2026-11-20 + active + daysLate 5 + overdue 1500
+    -> ["ลูกค้าจ่ายเงินเข้ามาใน 3 วันล่าสุด 2,000 บาท · ตรวจก่อนส่งทีม", "ลูกค้านัดจ่าย 20/11/2569 · ควรรอก่อน"]
+    active + daysLate 0 + overdue 0 -> ["ไม่มียอดค้างแล้ว"] ; contractStatus returned -> ["สัญญานี้คืนเครื่องแล้ว"]
+    activePromiseDate 2026-11-17 (ผ่านแล้ว) -> ไม่เตือนนัด ; ไม่มีอะไรผิด -> []
+13) buildFieldUpdateLineText (today 2026-11-18): dispatched paid_full ก/INV1, dispatched promised ข/INV2 นัด 2026-11-20,
+    dispatched paid_partial ค/INV3 ค้าง 1500, cancelled cancel_other ง/INV4, requested จ/INV5
+    -> "อัปเดตลงพื้นที่ 18/11/2569" + หัว ✅ (- ก (INV1)) / 📅 (- ข (INV2) · นัดจ่าย 20/11/2569) / 🟡 (- ค (INV3) · ยังค้าง 1,500 บาท)
+       / ยกเลิกแล้วในรอบนี้ (- ง (INV4) · ยกเลิก: อื่นๆ) + footer เวลา/ห้ามบอกเพื่อนบ้าน ; แถว requested ไม่ออก ; ไม่มีแถว -> ว่าง
 */

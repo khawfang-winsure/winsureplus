@@ -74,7 +74,7 @@ function NavContent({
     if (key === 'pjSyncReview') return `${count} รายการรอตรวจ PJ`
     if (key === 'inbox') return `${count} เคสในกล่องรับงาน`
     if (key === 'extensionRequests') return `${count} คำขอขยายรออนุมัติ`
-    if (key === 'fieldVisitRequests') return `${count} คำขอลงพื้นที่รอรอบ`
+    if (key === 'fieldVisitRequests') return `${count} เรื่องลงพื้นที่ต้องดู`
     return `${count}`
   }
 

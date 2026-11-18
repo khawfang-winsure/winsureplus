@@ -3,7 +3,13 @@
 // ภายหลังจะ map ตรงกับตารางใน Supabase
 
 import type { LateBucket } from './collectorPeriod'
-import type { FieldVisitReason, FieldVisitResultCode, FieldVisitStatus } from './fieldVisit'
+import type {
+  FieldVisitCloseCode,
+  FieldVisitReason,
+  FieldVisitResultCode,
+  FieldVisitStatus,
+  FieldVisitUpdateState,
+} from './fieldVisit'
 import type { ReviewStatus } from './review'
 import type { PJContract } from './pjImport'
 import type { PjStaffOverlapDetail } from './pjStaffOverlap'
@@ -1102,6 +1108,33 @@ export interface FieldVisitRequestRow {
   overdueAmount: number
   /** ยอดที่จ่ายเข้ามาหลังกดขอ (payment_log action='pay') */
   paidSinceRequest: number
+  /** สถานะสดหลังเข้ารอบ (คำนวณที่ DB; null = ไม่มีอัปเดต / ยังไม่เข้ารอบ) */
+  liveState: FieldVisitUpdateState | null
+  /** กุญแจสถานะสด ใช้เทียบกับ ackKey เพื่อรู้ว่าแอดมินยังไม่เห็นอัปเดตล่าสุด */
+  liveKey: string | null
+  ackKey: string | null
+  ackAt: string | null
+  ackByName: string | null
+  /** ยอดจ่ายหลังเข้ารอบ (ไม่นับงวดที่ยกเลิก) */
+  paidSinceDispatch: number
+  /** วันนัดจ่ายล่าสุดจากบันทึกติดตามหลังเข้ารอบ (YYYY-MM-DD) */
+  latestPromiseDate: string | null
+  /** ค่าปรับค้างจ่าย (แสดงเป็นข้อมูลเพิ่ม ไม่นับเป็นยอดค้างงวด) */
+  penaltyDue: number
+  closeCode: FieldVisitCloseCode | null
+  /** พักคำขอไว้ถึงวันนี้ (YYYY-MM-DD) */
+  holdUntil: string | null
+  /** ยอดจ่ายใน 3 วันล่าสุด */
+  paidLast3d: number
+  /** นัดจ่ายล่าสุดที่ยังไม่ถึงกำหนด (YYYY-MM-DD) ไม่จำกัดว่าก่อน/หลังเข้ารอบ */
+  activePromiseDate: string | null
+}
+
+/** ตัวเลขแจ้งเตือนคำขอลงพื้นที่ (แอดมิน) */
+export interface FieldVisitAttention {
+  waiting: number
+  updates: number
+  staleRounds: { roundId: string; label: string; dispatchedAt: string; pending: number }[]
 }
 
 /** ป้ายสถานะลงพื้นที่ต่อสัญญา (ไม่มีชื่อ/เบอร์) */
@@ -1115,4 +1148,5 @@ export interface FieldVisitStatusInfo {
   requestedBy: string | null
   resultCode: FieldVisitResultCode | null
   promiseDate: string | null
+  closeCode: FieldVisitCloseCode | null
 }

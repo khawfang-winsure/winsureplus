@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
-import { countOpenFieldVisitRequests, getInboxCases, getPendingExtensionRequestCount, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
+import { getFieldVisitAttention, getInboxCases, getPendingExtensionRequestCount, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
 
 export interface NavChild {
   to: string
@@ -200,7 +200,10 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
     const reviewStatus = isAdmin ? 'pending_review' : 'needs_fix'
     // คำขอขยายย้อนหลัง: RPC แอดมินเท่านั้น — staff ไม่ยิง (ได้ 0)
     const extPromise = isAdmin ? getPendingExtensionRequestCount() : Promise.resolve(0)
-    const fvPromise = isAdmin ? countOpenFieldVisitRequests() : Promise.resolve(0)
+    // เลขแดงลงพื้นที่ = รอเข้ารอบ + มีอัปเดตยังไม่แจ้งทีม + รอบที่ส่งไปนานยังไม่ลงผล (นับรอบละ 1)
+    const fvPromise = isAdmin
+      ? getFieldVisitAttention().then((a) => a.waiting + a.updates + a.staleRounds.length)
+      : Promise.resolve(0)
     void Promise.allSettled([getReviewBadgeCount(reviewStatus), getPjSyncReviewPendingCount(), extPromise, fvPromise]).then(
       ([reviewResult, pjResult, extResult, fvResult]) => {
         if (req !== guard.req) return
