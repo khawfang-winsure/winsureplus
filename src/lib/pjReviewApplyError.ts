@@ -31,7 +31,9 @@ export function classifyPjReviewError(raw: string | null | undefined): PjReviewE
         message: 'ยอดหรือวันที่ในรายการนี้ไม่ตรงกับที่ระบบคำนวณ จึงลงยอดให้ไม่ได้ — กรุณาแจ้งทีมให้ตรวจรายการนี้ค่ะ (ไม่ต้องรีเฟรช)',
       }
     case 'MANUAL_ONLY':
-      return { kind: 'manual', message: 'รายการประเภทนี้ลงยอดจากกล่องรอตรวจไม่ได้ ต้องตรวจใน PJ แล้วจัดการเองที่หน้าสัญญาค่ะ' }
+      return { kind: 'manual', message: 'รายการนี้ต้องตรวจและลงมือเอง ระบบไม่ให้ลงอัตโนมัติ' }
+    case 'UNRECORDED_RECEIPT':
+      return { kind: 'manual', message: 'ใบนี้เป็นค่างวด/ค่าปรับ ลงเป็นรายได้อื่นๆ ไม่ได้ค่ะ — ให้กด "ลงตาม PJ" หรือ "พนักงานลงไว้แล้ว → ผูกรายการ" แทน' }
     case 'NO_CONTRACT':
       return { kind: 'manual', message: 'รายการนี้ยังไม่ผูกกับสัญญา ลงยอดไม่ได้ค่ะ' }
     case 'FORBIDDEN':

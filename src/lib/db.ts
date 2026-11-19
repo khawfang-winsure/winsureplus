@@ -9082,6 +9082,7 @@ interface PjSyncReviewViewRow {
   status: string
   raw_json: PjRawJson
   overlap_detail: unknown
+  detector_batch: string | null
   contracts: { contract_no: string | null; customer_name: string | null } | null
 }
 
@@ -9095,6 +9096,14 @@ interface PjOverlapCandidateRaw {
   installment_no?: number | string | null
   capacity_left?: string | number | null
   match_kind?: string | null
+  // รูปแบบ camelCase ที่ตัวตรวจใบตกหล่น (pj-sync) เขียน — อ่านรองรับทั้ง 2 แบบ
+  logId?: string | null
+  bangkokPaidDate?: string | null
+  byName?: string | null
+  penaltyPaidAmount?: string | number | null
+  capacityLeft?: string | number | null
+  matchKind?: string | null
+  installmentNo?: number | string | null
 }
 
 const OVERLAP_MATCH_KINDS: ReadonlySet<string> = new Set(['exact_total', 'exact_principal', 'near', 'other'])
@@ -9108,18 +9117,42 @@ function parseOverlapDetail(raw: unknown): PjStaffOverlapDetail | null {
   const candidatesRaw = (raw as { candidates?: unknown }).candidates
   if (!Array.isArray(candidatesRaw)) return null
   const candidates: PjStaffOverlapCandidate[] = candidatesRaw
-    .filter((c): c is PjOverlapCandidateRaw => !!c && typeof c === 'object' && !!(c as PjOverlapCandidateRaw).payment_log_id)
-    .map(c => ({
-      paymentLogId: String(c.payment_log_id),
-      createdAt: c.created_at ?? '',
-      byName: c.by_name ?? '',
-      amount: parsePjAmount(c.amount),
-      penaltyPaidAmount: parsePjAmount(c.penalty_paid_amount),
-      installmentNo: c.installment_no == null ? null : Number(c.installment_no),
-      capacityLeft: parsePjAmount(c.capacity_left),
-      matchKind: (OVERLAP_MATCH_KINDS.has(String(c.match_kind)) ? c.match_kind : 'other') as OverlapMatchKind,
-    }))
+    .filter((c): c is PjOverlapCandidateRaw => {
+      if (!c || typeof c !== 'object') return false
+      const r = c as PjOverlapCandidateRaw
+      return !!(r.payment_log_id ?? r.logId)
+    })
+    .map(c => {
+      const kind = c.match_kind ?? c.matchKind
+      const instNo = c.installment_no ?? c.installmentNo
+      return {
+        paymentLogId: String(c.payment_log_id ?? c.logId),
+        // ตัวตรวจใหม่ส่งแค่วันที่ไทย (bangkokPaidDate 'YYYY-MM-DD') ไม่มี timestamp — ใช้แทน createdAt ได้
+        // เพราะทุกจุดที่อ่านต่อ (fmtDate/isoToBangkokDate) ตัดเหลือแค่วันที่อยู่แล้ว
+        createdAt: c.created_at ?? c.bangkokPaidDate ?? '',
+        byName: c.by_name ?? c.byName ?? '',
+        amount: parsePjAmount(c.amount),
+        penaltyPaidAmount: parsePjAmount(c.penalty_paid_amount ?? c.penaltyPaidAmount),
+        installmentNo: instNo == null ? null : Number(instNo),
+        capacityLeft: parsePjAmount(c.capacity_left ?? c.capacityLeft),
+        matchKind: (OVERLAP_MATCH_KINDS.has(String(kind)) ? kind : 'other') as OverlapMatchKind,
+      }
+    })
   return { candidates }
+}
+
+/** อ่าน field เสริมที่ตัวตรวจใบตกหล่นใส่ใน overlap_detail — contractNote (สัญญาปิด/คืนเครื่อง) + confidence
+ *  (exact = ตรงเป๊ะ กดยืนยันผูกได้ทันที) — ไม่มี/shape ไม่ตรง → null ทั้งคู่ (ห้าม throw) */
+function parseDetectorMeta(raw: unknown): {
+  contractNote: PjSyncReviewRow['contractNote']
+  overlapConfidence: PjSyncReviewRow['overlapConfidence']
+} {
+  if (!raw || typeof raw !== 'object') return { contractNote: null, overlapConfidence: null }
+  const o = raw as { contractNote?: unknown; confidence?: unknown }
+  return {
+    contractNote: o.contractNote === 'CONTRACT_CLOSED' || o.contractNote === 'CONTRACT_RETURNED' || o.contractNote === 'CONTRACT_INACTIVE' ? o.contractNote : null,
+    overlapConfidence: o.confidence === 'exact' || o.confidence === 'possible' ? o.confidence : null,
+  }
 }
 
 /** parse จำนวนเงินที่เก็บเป็น string ("4,115.00") → number; ว่าง/พังคืน 0 */
@@ -9286,7 +9319,7 @@ export async function getPjSyncReview(
   if (!supabase) return []
   const { data, error } = await supabase
     .from('pj_sync_review')
-    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, raw_json, overlap_detail, contracts(contract_no, customer_name)')
+    .select('id, created_at, pj_invoice_no, pj_payment_type, pj_amount, pj_paid_date, matched_contract_id, reason, status, raw_json, overlap_detail, detector_batch, contracts(contract_no, customer_name)')
     .eq('status', status)
     .order('created_at', { ascending: false })
     .range(0, PAGE_CAP)
@@ -9307,6 +9340,8 @@ export async function getPjSyncReview(
     receiptUuids: extractPjReceiptUuids(r.raw_json),
     invUuid: extractPjInvUuid(r.raw_json),
     overlapDetail: parseOverlapDetail(r.overlap_detail),
+    detectorBatch: r.detector_batch ?? null,
+    ...parseDetectorMeta(r.overlap_detail),
   }))
 }
 
@@ -9738,6 +9773,15 @@ export const applyPjReviewPayment = writesContracts(async function applyPjReview
     .eq('id', reviewId)
     .maybeSingle()
   if (reviewRowErr) throw reviewRowErr
+  // 🚨 ใบ PJ ตกหล่นประเภท "อื่นๆ" (RECEIPT_UNRECORDED) ห้ามลงเป็นค่างวด/ค่าปรับเด็ดขาด — ต้องลงเป็นรายได้อื่นๆ เท่านั้น
+  // (server กันซ้ำแล้วด้วย [PJR:MANUAL_ONLY] ทั้งแถวชนิด other และแถวที่ตัวตรวจติดสถานะสัญญา applyBlocked) — client กันอีกชั้นให้ข้อความชัดก่อนยิง RPC
+  if (
+    reviewRow?.reason === 'RECEIPT_UNRECORDED' &&
+    reviewRow?.pj_payment_type !== 'installment' &&
+    reviewRow?.pj_payment_type !== 'penalty'
+  ) {
+    throw new Error('ใบนี้เป็นรายการอื่นๆ ไม่ใช่ค่างวด/ค่าปรับ — ลงตาม PJ ไม่ได้ ให้ลงเป็นรายได้อื่นๆ แทน')
+  }
   if (reviewRow?.reason === 'RECEIPT_MISSING' || reviewRow?.reason === 'RECEIPT_CHANGED') {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามยืนยันลงยอด ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
   }
@@ -9828,10 +9872,18 @@ export async function applyPjReviewAsOtherIncome(params: {
   // ด้านบน เหตุผลเดียวกัน: ห้ามลงยอด (แม้เป็นรายได้อื่นๆ) จากเคส drift เด็ดขาด — throw ไม่ swallow
   const { data: driftGuardRow, error: driftGuardErr } = await supabase
     .from('pj_sync_review')
-    .select('reason')
+    .select('reason, pj_payment_type')
     .eq('id', reviewId)
     .maybeSingle()
   if (driftGuardErr) throw driftGuardErr
+  // ใบ PJ ตกหล่นที่เป็นค่างวด/ค่าปรับ ห้ามปิดเป็นรายได้อื่นๆ (ต้นเหตุเดิมที่ทำให้ใบหายเงียบ) — server กันด้วย
+  // [PJR:UNRECORDED_RECEIPT] เช่นกัน กันซ้ำที่ client ให้ข้อความชัดเจน
+  if (
+    driftGuardRow?.reason === 'RECEIPT_UNRECORDED' &&
+    (driftGuardRow?.pj_payment_type === 'installment' || driftGuardRow?.pj_payment_type === 'penalty')
+  ) {
+    throw new PjReviewApplyError(classifyPjReviewError('[PJR:UNRECORDED_RECEIPT]'))
+  }
   if (driftGuardRow?.reason === 'RECEIPT_MISSING' || driftGuardRow?.reason === 'RECEIPT_CHANGED') {
     throw new Error('เคสนี้เป็นใบเสร็จ PJ ที่หาย/ถูกแก้ (drift) — ห้ามลงเป็นรายได้อื่นๆ ให้แอดมินตรวจสอบใน PJ ก่อนแล้วจัดการมือ')
   }
@@ -9863,7 +9915,7 @@ export async function applyPjReviewAsOtherIncome(params: {
 }
 
 /**
- * ผูกแถวกล่องรอตรวจ PJ (reason='STAFF_MANUAL_OVERLAP') เข้ากับรายการที่พนักงานลงมือรับชำระไว้แล้ว แทนการ
+ * ผูกแถวกล่องรอตรวจ PJ (reason='STAFF_MANUAL_OVERLAP' หรือ 'RECEIPT_UNRECORDED') เข้ากับรายการที่พนักงานลงมือรับชำระไว้แล้ว แทนการ
  * ลงเงินซ้ำ (RPC link_pj_review_to_payment_log, mig 0162) — server insert pj_applied_receipts
  * (source='staff-link') กันคำนวณซ้ำของ pj-sync แล้ว resolve แถวในกล่องรอตรวจให้เอง
  * error จาก server (raise exception, ภาษาไทยอยู่แล้ว) ส่งต่อขึ้นไปให้ UI แสดงตรงๆ ไม่ swallow
@@ -9881,6 +9933,47 @@ export const linkPjReviewToPaymentLog = writesContracts(async function linkPjRev
   })
   if (error) throw new Error(error.message)
 })
+
+/**
+ * หารายการที่พนักงานลงมือไว้ของสัญญานี้ ใกล้วันที่ใบ PJ (RPC find_staff_payment_overlap, mig 0162, ±10 วัน)
+ * ไว้ให้ปุ่ม "พนักงานลงไว้แล้ว → ผูกรายการ" ของใบตกหล่นที่ตัวตรวจไม่ได้แนบรายการมาให้ — คืนรูปแบบเดียวกับ
+ * candidates ใน overlap_detail · error/ไม่มีสิทธิ์ → [] (ไม่ throw)
+ */
+export async function findStaffPaymentCandidates(params: {
+  contractId: string
+  paidDate: string // 'YYYY-MM-DD'
+  principal: number
+  penalty: number
+}): Promise<PjStaffOverlapCandidate[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.rpc('find_staff_payment_overlap', {
+    p_contract_id: params.contractId,
+    p_paid_date: params.paidDate,
+    p_principal: params.principal,
+    p_penalty: params.penalty,
+    p_window_days: 10,
+  })
+  if (error || !Array.isArray(data)) return []
+  return (data as {
+    log_id: string
+    created_at: string
+    by_name: string | null
+    amount: string | number | null
+    penalty_paid_amount: string | number | null
+    installment_no: number | null
+    capacity_left: string | number | null
+    match_kind: string | null
+  }[]).map(r => ({
+    paymentLogId: String(r.log_id),
+    createdAt: r.created_at,
+    byName: r.by_name ?? '',
+    amount: parsePjAmount(r.amount),
+    penaltyPaidAmount: parsePjAmount(r.penalty_paid_amount),
+    installmentNo: r.installment_no == null ? null : Number(r.installment_no),
+    capacityLeft: parsePjAmount(r.capacity_left),
+    matchKind: (OVERLAP_MATCH_KINDS.has(String(r.match_kind)) ? r.match_kind : 'other') as OverlapMatchKind,
+  }))
+}
 
 /** 1 ใบที่ลงไปแล้วจริง (pj_applied_receipts) จาก RPC get_contract_pj_money_recent */
 interface PjMoneyRecentAppliedRaw {

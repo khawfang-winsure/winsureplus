@@ -12,6 +12,7 @@
 import type { PjReviewContext, PjSyncReviewReason, PjSyncReviewRow } from './types'
 import { explainStaffOverlapRow } from './pjStaffOverlap'
 import { allocatePenaltySpread } from './penaltySpread'
+import { thaiDate } from './format'
 
 /** reason ที่เป็น drift (ใบเสร็จหาย/ถูกแก้ใน PJ) — ตรวจ+รายงานเท่านั้น ไม่อยู่ใน flow ลงเงิน
  *  (คัดลอก guard เดียวกับ isDriftReason ใน PjSyncReview.tsx มาไว้ในไฟล์ pure fn นี้ด้วย กัน import วน) */
@@ -154,6 +155,25 @@ export function explainReviewRow(row: PjSyncReviewRow, ctx: PjReviewContext | nu
       return explainStaffOverlapRow(row).headline
     case 'CONTRACT_CLOSED':
       return `สัญญาถูกปิด (เช่นปิดก่อนกำหนด) ในเว็บไปแล้ว ใบเสร็จนี้ยอด ${th(row.amount + row.penaltyAmount)} ฿ น่าจะเป็นเงินปิดสัญญาที่บันทึกไว้แล้ว — ให้เทียบยอดกับการปิดสัญญา ถ้าตรงกันให้กดข้ามพร้อมหมายเหตุ ถ้าไม่ตรง แจ้งแอดมิน (ห้ามกดลงเงินซ้ำเด็ดขาด)`
+    case 'RECEIPT_UNRECORDED': {
+      const date = row.paidDate ? ` วันที่ ${thaiDate(row.paidDate.slice(0, 10))}` : ''
+      const closedNote =
+        row.contractNote === 'CONTRACT_CLOSED'
+          ? ' · สัญญาปิดแล้ว ต้องตรวจมือ'
+          : row.contractNote === 'CONTRACT_RETURNED'
+            ? ' · คืนเครื่องแล้ว ต้องตรวจมือ'
+            : row.contractNote === 'CONTRACT_INACTIVE'
+              ? ' · สถานะสัญญาไม่ใช่ผ่อนปกติ ต้องตรวจมือ'
+              : ''
+      if (row.paymentType === 'other') {
+        return `PJ มีใบอื่นๆ ${th(row.amount)} ฿${date} · ยังไม่ลงเป็นรายได้อื่นๆ${closedNote}`
+      }
+      if (row.paymentType === 'penalty') {
+        return `PJ มีใบค่าปรับ ${th(row.amount)} ฿${date} · ยังไม่ลงในระบบ${closedNote}`
+      }
+      const pen = row.penaltyAmount > 0 ? ` + ค่าปรับ ${th(row.penaltyAmount)} ฿` : ''
+      return `PJ มีใบค่างวด ${th(row.amount)} ฿${pen}${date} · ยังไม่ลงในระบบ${closedNote}`
+    }
     default:
       return `ยอด ${th(row.amount)} ฿ รอตรวจสอบ`
   }

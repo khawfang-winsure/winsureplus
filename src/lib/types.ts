@@ -666,6 +666,7 @@ export type PjSyncReviewReason =
   | 'PLAN_CHANGE_AUTO'
   | 'STAFF_MANUAL_OVERLAP'
   | 'CONTRACT_CLOSED'
+  | 'RECEIPT_UNRECORDED'
 
 /** สถานะของเคสในกล่องรอตรวจ */
 export type PjSyncReviewStatus = 'pending' | 'resolved' | 'skipped' | 'auto_resolved'
@@ -695,6 +696,12 @@ export interface PjSyncReviewRow {
    *  pjStaffOverlap.ts อธิบาย), link: link_pj_review_to_payment_log เขียนตอนผูกสำเร็จ (merge เข้าไปข้างๆ
    *  candidates ไม่ทับ) — null = ยังไม่เคยผูก/ไม่ใช่ reason นี้/shape ไม่ตรง (ไม่ throw) */
   overlapDetail: PjStaffOverlapDetail | null
+  /** ล็อตที่ตัวตรวจใบตกหล่นสร้างแถว ('backfill-2026-11' = ย้อนหลัง, 'daily' = รายวัน) — null = แถวปกติจาก flow อื่น */
+  detectorBatch: string | null
+  /** หมายเหตุสถานะสัญญาจากตัวตรวจ (overlap_detail.contractNote) — null = สัญญา active ปกติ/ไม่มีข้อมูล */
+  contractNote: 'CONTRACT_CLOSED' | 'CONTRACT_RETURNED' | 'CONTRACT_INACTIVE' | null
+  /** ความมั่นใจของตัวตรวจว่าตรงกับรายการที่พนักงานลงไว้ (overlap_detail.confidence) — null = ไม่มี */
+  overlapConfidence: 'exact' | 'possible' | null
 }
 
 /** บริบทประกอบการตัดสินใจในกล่องรอตรวจ — งวดถัดไป + ยอดรวม + ประวัติชำระล่าสุด */

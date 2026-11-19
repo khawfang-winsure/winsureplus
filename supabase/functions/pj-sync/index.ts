@@ -37,6 +37,7 @@ import type {
 import { mapPjScheduleRowsForDueDayShift } from "./pjScheduleMapper.ts";
 import { classifyPjReceiptPaymentType } from "./receiptPaymentType.ts";
 import { isReceiptAlreadyAppliedError } from "./receiptClaim.ts";
+import { buildReviewIndex, classifyUnrecorded } from "./unrecordedMatch.ts";
 import {
   allUuidsOfRawJson,
   buildPendingIndex,
@@ -556,7 +557,8 @@ export default {
     // mode="reconcile" (0114) — ตรวจจับใบเสร็จ PJ ที่หาย/ถูกแก้ (ไม่แตะเงิน) แยกจาก path เดิม (money-in)
     // mode="returned_watch" (0125) — ตรวจเงินคืนเครื่องที่ PJ ซ่อนใบเสร็จออกจาก feed ทั้งหมด (ไม่แตะเงิน)
     // ไม่ส่ง mode มาเลย = path เดิมเป๊ะ (mode="sync") ห้ามกระทบ money-in path ที่มีอยู่แล้ว
-    const mode: "sync" | "reconcile" | "returned_watch" =
+    const mode: "sync" | "reconcile" | "returned_watch" | "unrecorded_watch" =
+      body?.mode === "unrecorded_watch" ? "unrecorded_watch" :
       body?.mode === "reconcile" ? "reconcile" :
       body?.mode === "returned_watch" ? "returned_watch" :
       "sync";
@@ -626,7 +628,8 @@ export default {
     // return ก่อนถึง bookkeeping ท้ายไฟล์เสมอ) — เพิ่ม `&& !debugInv` เข้าเงื่อนไขเดิม behave เหมือน
     // dryRun=true เฉพาะจุดนี้ ไม่แตะ logic ของ dryRun ปกติที่จุดอื่นเลย (runId ยังคงเป็น null ต่อไป
     // ทำให้ failRun/finalize block ท้ายไฟล์ทั้งหมดที่เช็ค `if (!dryRun && runId)` เป็น no-op อัตโนมัติอยู่แล้ว)
-    if (!dryRun && !debugInv) {
+    // unrecorded_watch ไม่เขียน pj_sync_runs (run_kind check ไม่รับค่านี้ + อ่านอย่างเดียวต่อเงิน) — ไม่ชนล็อก sync ปกติ
+    if (!dryRun && !debugInv && mode !== "unrecorded_watch") {
       const staleCut = new Date(Date.now() - LOCK_STALE_MINUTES * 60 * 1000).toISOString();
       const { data: running, error: lockErr } = await db
         .from("pj_sync_runs")
@@ -1335,6 +1338,273 @@ export default {
           recordsTotal: Number(pageParsed.recordsTotal ?? 0),
           recordsFiltered: Number(pageParsed.recordsFiltered ?? 0),
         };
+      }
+
+      // ══════════════════════════════════════════════════════════════════════════
+      // mode="unrecorded_watch" (19 พ.ย. 2026) — ตรวจใบเสร็จ PJ (ค่างวด/ค่าปรับ/อื่นๆ) ที่ไม่เคยถูกลงในระบบ
+      // เช่น ใบค่างวดที่ซ่อนใน raw_json ของแถว OTHER ที่ staff ปิดเป็นรายได้อื่นๆ (ดู unrecordedMatch.ts)
+      // READ-ONLY ต่อเงินเสมอ: ห้ามเขียน payment_log / installments / other_income / pj_applied_receipts
+      // เขียนได้อย่างเดียว = INSERT แถว pj_sync_review (pending) เมื่อ dry_run=false เท่านั้น (default dry_run=true)
+      // ไม่เขียน pj_sync_runs (run_kind check ไม่รับค่านี้) — ไม่ชนล็อกของ sync ปกติ
+      // params: start/end (YYYY-MM-DD) หรือ days_back (default 35) · dry_run · batch · ช่วงสูงสุด 62 วัน/ครั้ง
+      // fail-closed: ดึงหน้าไม่ครบ/ชนเพดานหน้า/หมดเวลา/DB error → ไม่เขียนอะไรเลย
+      // ══════════════════════════════════════════════════════════════════════════
+      if (mode === "unrecorded_watch") {
+        const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+        const uwDry = body?.dry_run !== false;
+        const uwBatch = typeof body?.batch === "string" && body.batch.trim() ? body.batch.trim().slice(0, 60) : (uwDry ? "dryrun" : "manual");
+        const todayBkk = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+        const dayN = (iso: string) => { const m = iso.split("-").map(Number); return Math.floor(Date.UTC(m[0], m[1] - 1, m[2]) / 86400000); };
+        const isoOf = (n: number) => new Date(n * 86400000).toISOString().slice(0, 10);
+        const toDdMm = (iso: string) => `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`;
+        let uwEnd = typeof body?.end === "string" && ISO_RE.test(body.end) ? body.end : todayBkk;
+        if (uwEnd > todayBkk) uwEnd = todayBkk;
+        let uwStart: string;
+        if (typeof body?.start === "string" && ISO_RE.test(body.start)) {
+          uwStart = body.start;
+        } else {
+          const db0 = Number(body?.days_back);
+          const back = Number.isFinite(db0) && db0 > 0 ? Math.min(Math.floor(db0), 62) : 35;
+          uwStart = isoOf(dayN(uwEnd) - back);
+        }
+        if (uwStart > uwEnd) return json({ ok: false, mode: "unrecorded_watch", error: "start อยู่หลัง end" }, 400);
+        if (dayN(uwEnd) - dayN(uwStart) > 62) return json({ ok: false, mode: "unrecorded_watch", error: "ช่วงวันที่เกิน 62 วันต่อครั้ง — แบ่งเรียกเป็นก้อนๆ" }, 400);
+
+        const t0 = Date.now();
+        const TIME_BUDGET_MS = 110_000;
+        const uwFail = (msg: string, extra: Record<string, unknown> = {}) =>
+          json({ ok: false, mode: "unrecorded_watch", dry_run: uwDry, start: uwStart, end: uwEnd, error: msg, ...extra });
+
+        // 1) ดึง receipts ทีละ 14 วัน (fail-closed ถ้าชนเพดานหน้า)
+        const uwRows = new Map<string, any>(); // uuid -> row
+        let uwNoUuid = 0;
+        let uwPages = 0;
+        let uwChunks = 0;
+        for (let cs = dayN(uwStart); cs <= dayN(uwEnd); cs += 14) {
+          const ce = Math.min(cs + 13, dayN(uwEnd));
+          startDate = toDdMm(isoOf(cs));
+          endDate = toDdMm(isoOf(ce));
+          uwChunks++;
+          let off = 0;
+          let pg = 0;
+          let got = 0;
+          while (true) {
+            if (Date.now() - t0 > TIME_BUDGET_MS) return uwFail("หมดเวลาระหว่างดึง PJ — ไม่ได้เขียนอะไร ลองช่วงสั้นลง", { chunks_done: uwChunks - 1 });
+            let page: { rows: any[]; recordsTotal: number; recordsFiltered: number };
+            try {
+              page = await fetchReceiptsPage(off);
+            } catch (e) {
+              return uwFail(e instanceof Error ? e.message : String(e));
+            }
+            pg++; uwPages++;
+            got += page.rows.length;
+            for (const r of page.rows) {
+              const u = pick(r, ["uuid"]);
+              if (!u) { uwNoUuid++; continue; }
+              uwRows.set(String(u).trim(), r);
+            }
+            const known = page.recordsFiltered || page.recordsTotal || 0;
+            const full = page.rows.length >= PAGE_LENGTH;
+            if (pg >= MAX_PAGES) return uwFail("ชนเพดานจำนวนหน้า (truncated) — ไม่ได้เขียนอะไร", { chunk_start: startDate });
+            if (!full || page.rows.length === 0 || (known > 0 && got >= known)) break;
+            off += PAGE_LENGTH;
+          }
+        }
+
+        // 2) แปลงเป็น PjReceipt
+        const receipts: any[] = [];
+        let uwNoDate = 0;
+        for (const [uuid, row] of uwRows) {
+          const inv = pick(row, ["invoice_no", "inv_no", "invoiceNo", "contract_no"]);
+          const paidDate = toIsoDate(pick(row, ["paid_date", "payment_date", "date", "created_at"]));
+          if (!inv || !paidDate) { uwNoDate++; continue; }
+          if (paidDate < uwStart || paidDate > uwEnd) continue; // ขอบหน้าต่าง PJ อาจคืนใบนอกช่วง — ไม่ประเมิน
+          receipts.push({
+            uuid, invoiceNo: String(inv).trim(), paymentTypeRaw: pick(row, ["payment_type", "type"]),
+            amount: parseAmount(pick(row, ["amount", "paid_amount", "total"])), paidDate, pjRow: row,
+          });
+        }
+
+        // helper: ดึงทุกหน้า (เพดาน 1000 แถวของ PostgREST)
+        async function pageAll(build: (from: number, to: number) => any): Promise<any[]> {
+          const out: any[] = [];
+          for (let from = 0; ; from += 1000) {
+            const { data, error } = await build(from, from + 999);
+            if (error) throw new Error(error.message);
+            out.push(...(data ?? []));
+            if (!data || data.length < 1000) break;
+            if (from > 200000) throw new Error("pageAll: too many rows");
+          }
+          return out;
+        }
+
+        try {
+          const invRaw = uniqueNonEmpty(receipts.map((r) => r.invoiceNo));
+          const invAll = uniqueNonEmpty(invRaw.flatMap((i) => [i, normalizeInvNoEdge(i)]));
+          const uuids = receipts.map((r) => r.uuid);
+
+          // 3) ctx จาก DB (อ่านอย่างเดียว)
+          const appliedUuids = new Set<string>();
+          for (const part of chunkArray(uuids, 100)) {
+            const { data, error } = await db.from("pj_applied_receipts").select("pj_receipt_uuid").in("pj_receipt_uuid", part);
+            if (error) throw new Error(`pj_applied_receipts: ${error.message}`);
+            for (const r of data ?? []) appliedUuids.add(String(r.pj_receipt_uuid));
+          }
+
+          const contractsByInvNo = new Map<string, any[]>();
+          for (const part of chunkArray(invAll, 100)) {
+            const { data, error } = await db.from("contracts").select("id, contract_no, inv_no, status").in("inv_no", part).limit(1000);
+            if (error) throw new Error(`contracts: ${error.message}`);
+            if ((data ?? []).length >= 1000) throw new Error("contracts: ชนเพดาน 1000 แถว");
+            for (const c of data ?? []) {
+              const k = String(c.inv_no);
+              const arr = contractsByInvNo.get(k) ?? [];
+              arr.push(c);
+              contractsByInvNo.set(k, arr);
+            }
+          }
+          const contractsByInvoice = new Map<string, { id: string; contractNo: string; status: string | null }[]>();
+          for (const inv of invRaw) {
+            const hit = contractsByInvNo.get(inv) ?? contractsByInvNo.get(normalizeInvNoEdge(inv)) ?? [];
+            const uniq = Array.from(new Map(hit.map((c) => [c.id, c])).values());
+            contractsByInvoice.set(inv, uniq.map((c) => ({ id: c.id, contractNo: c.contract_no, status: c.status ?? null })));
+          }
+
+          const reviewRows: any[] = [];
+          for (const part of chunkArray(invAll, 50)) {
+            const got = await pageAll((from, to) =>
+              db.from("pj_sync_review")
+                .select("id, reason, status, pj_payment_type, pj_invoice_no, pj_paid_date, raw_json")
+                .in("pj_invoice_no", part).order("id").range(from, to));
+            reviewRows.push(...got);
+          }
+          const idx = buildReviewIndex(reviewRows);
+          const baseCtx = {
+            todayIso: todayBkk, appliedUuids,
+            reviewRowsByUuid: idx.reviewRowsByUuid, opaqueRowKeys: idx.opaqueRowKeys,
+            contractsByInvoice,
+            staffLogsByContract: new Map(), otherIncomeByContract: new Map(),
+          };
+
+          // รอบแรก (ยังไม่มีข้อมูลพนักงาน/รายได้อื่นๆ) ไว้หา "คู่ (สัญญา, วัน)" ที่ต้องไปถามต่อ
+          const pass1 = classifyUnrecorded(receipts, baseCtx);
+          const contractIds = uniqueNonEmpty(pass1.findings.map((f) => f.contractId));
+          const pairs = new Map<string, { cid: string; date: string }>();
+          for (const f of pass1.findings) if (f.pjPaymentType !== "other") pairs.set(`${f.contractId}::${f.paidDate}`, { cid: f.contractId, date: f.paidDate });
+
+          const staffLogsByContract = new Map<string, any[]>();
+          const pairList = Array.from(pairs.values());
+          for (let i = 0; i < pairList.length; i += 5) {
+            if (Date.now() - t0 > TIME_BUDGET_MS) return uwFail("หมดเวลาระหว่างตรวจรายการพนักงาน — ไม่ได้เขียนอะไร ลองช่วงสั้นลง");
+            await Promise.all(pairList.slice(i, i + 5).map(async (p) => {
+              const { data, error } = await db.rpc("find_staff_payment_overlap_engine", {
+                p_contract_id: p.cid, p_paid_date: p.date, p_principal: 1, p_penalty: 0, p_window_days: 10,
+              });
+              if (error) throw new Error(`find_staff_payment_overlap_engine: ${error.message}`);
+              const m = staffLogsByContract.get(p.cid) ?? [];
+              for (const l of data ?? []) {
+                if (m.some((x) => x.logId === l.log_id)) continue;
+                m.push({
+                  logId: l.log_id, bangkokPaidDate: String(l.bangkok_paid_date).slice(0, 10), amount: Number(l.amount),
+                  penaltyPaidAmount: Number(l.penalty_paid_amount ?? 0), capacityLeft: Number(l.capacity_left), byName: l.by_name ?? "",
+                });
+              }
+              staffLogsByContract.set(p.cid, m);
+            }));
+          }
+
+          const otherIncomeByContract = new Map<string, any[]>();
+          for (const part of chunkArray(contractIds, 50)) {
+            const got = await pageAll((from, to) =>
+              db.from("other_income").select("id, contract_id, amount, received_at").in("contract_id", part).order("id").range(from, to));
+            for (const o of got) {
+              const arr = otherIncomeByContract.get(o.contract_id) ?? [];
+              arr.push({ id: o.id, amount: Number(o.amount), receivedAt: String(o.received_at).slice(0, 10) });
+              otherIncomeByContract.set(o.contract_id, arr);
+            }
+          }
+
+          const result = classifyUnrecorded(receipts, { ...baseCtx, staffLogsByContract, otherIncomeByContract });
+
+          // 4) สรุป
+          const byOutcome: Record<string, { count: number; amount: number }> = {};
+          const byMonth: Record<string, { count: number; amount: number }> = {};
+          const byType: Record<string, { count: number; amount: number }> = {};
+          const bump = (m: Record<string, { count: number; amount: number }>, k: string, amt: number) => {
+            const e = m[k] ?? (m[k] = { count: 0, amount: 0 });
+            e.count++; e.amount += amt;
+          };
+          for (const f of result.findings) {
+            bump(byOutcome, `${f.outcome}${f.confidence ? "/" + f.confidence : ""}`, f.receiptTotal);
+            bump(byMonth, f.paidDate.slice(0, 7), f.receiptTotal);
+            bump(byType, f.pjPaymentType, f.receiptTotal);
+          }
+          const blocked = result.findings.filter((f) => f.applyBlocked).length;
+
+          // 5) เขียนแถวกล่องรอตรวจ (เฉพาะ dry_run=false) — INSERT ทีละแถว ชน unique index (23505) = ข้ามเงียบ
+          let inserted = 0, duplicates = 0, insertErrors = 0;
+          const insertErrorSamples: string[] = [];
+          if (!uwDry) {
+            const toRow = (f: any) => ({
+              run_id: null,
+              pj_invoice_no: f.invoiceNo,
+              pj_payment_type: f.pjPaymentType,
+              pj_amount: f.pjAmount,
+              pj_paid_date: f.paidDate,
+              matched_contract_id: f.contractId,
+              reason: f.outcome,
+              raw_json: f.rawJson,
+              status: "pending",
+              pj_receipt_uuid: [...f.uuids].sort()[0],
+              detector_batch: uwBatch,
+              // shape ล็อกกับน้องวิว (UI อ่าน camelCase): contractNote / confidence / candidates[]
+              overlap_detail: {
+                kind: "unrecorded_watch",
+                confidence: f.confidence ?? null,
+                contractNote: f.contractNote,
+                applyBlocked: f.applyBlocked,
+                explainTh: f.explainTh,
+                receiptTotal: f.receiptTotal,
+                candidates: (f.candidates ?? []).map((c: any) => ({
+                  logId: c.logId, byName: c.byName, amount: c.amount, penaltyPaidAmount: c.penaltyPaidAmount,
+                  bangkokPaidDate: c.bangkokPaidDate, dayDiff: c.dayDiff, capacityLeft: c.capacityLeft, matchKind: c.matchKind,
+                })),
+              },
+            });
+            for (let i = 0; i < result.findings.length; i += 5) {
+              if (Date.now() - t0 > TIME_BUDGET_MS + 30_000) { insertErrors++; insertErrorSamples.push("หมดเวลาระหว่างเขียน — รันซ้ำได้ (idempotent)"); break; }
+              await Promise.all(result.findings.slice(i, i + 5).map(async (f) => {
+                const { error } = await db.from("pj_sync_review").insert(toRow(f));
+                if (!error) inserted++;
+                else if (error.code === "23505") duplicates++;
+                else { insertErrors++; if (insertErrorSamples.length < 3) insertErrorSamples.push(error.message.slice(0, 160)); }
+              }));
+            }
+          }
+
+          return json({
+            ok: insertErrors === 0,
+            mode: "unrecorded_watch",
+            dry_run: uwDry,
+            batch: uwBatch,
+            start: uwStart, end: uwEnd, chunks: uwChunks, pages_fetched: uwPages, truncated: false,
+            receipts_fetched: uwRows.size, receipts_evaluated: receipts.length, receipts_no_uuid: uwNoUuid, receipts_no_date: uwNoDate,
+            stats: result.stats,
+            findings_total: result.findings.length,
+            total_amount_flagged: result.stats.sumAmountFlagged,
+            apply_blocked_count: blocked,
+            by_outcome: byOutcome, by_month: byMonth, by_type: byType,
+            inserted, duplicates_skipped: duplicates, insert_errors: insertErrors, insert_error_samples: insertErrorSamples,
+            findings_head: result.findings.slice(0, 30).map((f) => ({
+              outcome: f.outcome, confidence: f.confidence ?? null, contract_no: f.contractNo, invoice_no: f.invoiceNo,
+              paid_date: f.paidDate, type: f.pjPaymentType, amount: f.receiptTotal, receipts: f.uuids.length,
+              note: f.contractNote, cand: f.candidates?.length ?? 0, explain: f.explainTh,
+            })),
+            elapsed_ms: Date.now() - t0,
+          });
+        } catch (e) {
+          return uwFail(`db error: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
 
       const rows: any[] = [];
