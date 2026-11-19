@@ -1671,7 +1671,7 @@ export default function FreelancerWorkspace() {
                           onChange={(e) => setBucketChip(e.target.value)}
                           className="rounded-lg border border-peach bg-white px-2.5 py-1.5 text-sm text-ink outline-none transition focus:border-salmon-deep"
                         >
-                          <option value="">ทั้งหมด</option>
+                          <option value="">ไม่กรอง</option>
                           {TODO_BUCKETS.map((b) => (
                             <option key={b} value={`bucket:${b}`}>
                               {LATE_BUCKET_LABEL[b]} ({todoChipCounts.get(`bucket:${b}`) ?? 0})
@@ -1694,10 +1694,10 @@ export default function FreelancerWorkspace() {
                           onChange={(e) => setFieldVisitChip(e.target.value)}
                           className="rounded-lg border border-peach bg-white px-2.5 py-1.5 text-sm text-ink outline-none transition focus:border-salmon-deep"
                         >
-                          <option value="">ทั้งหมด</option>
-                          <option value="requested">รอส่งรอบ ({todoChipCounts.get('fv:requested') ?? 0})</option>
-                          <option value="dispatched">ส่งทีมไปแล้ว ({todoChipCounts.get('fv:dispatched') ?? 0})</option>
-                          <option value="both">ลงพื้นที่ทั้งสองแบบ ({fvBothCount})</option>
+                          <option value="">ไม่กรอง</option>
+                          <option value="both">ลงพื้นที่ทั้งหมด ({fvBothCount})</option>
+                          <option value="requested">— รอส่งรอบ ({todoChipCounts.get('fv:requested') ?? 0})</option>
+                          <option value="dispatched">— ส่งทีมไปแล้ว ({todoChipCounts.get('fv:dispatched') ?? 0})</option>
                         </select>
                       </label>
                     </div>
