@@ -293,6 +293,78 @@ export function unhandledAfterLedger(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════
+// (19 พ.ย. 2026, Wave 5 — อนุมัติคุณเตย) mixed branch: ก้อน (invoice + วันจ่าย) ที่มีใบ "อื่นๆ" ปนกับค่างวด/ค่าปรับ
+// เดิมคิวแถว OTHER แถวเดียว (pj_amount = ยอด other) แต่ raw_json ใส่ทุกใบ → พนักงาน resolve เป็นรายได้อื่นๆ แล้วใบค่างวด/
+// ค่าปรับที่ยังไม่ลง "หายเงียบ" (เคสจริง S00016PNQ023 700 บาท 22 ต.ค.) แก้: แยกเป็น 2 แถว
+//   - OTHER  : เฉพาะใบ other (raw_json = array ดิบของใบ other เท่านั้น)
+//   - ค่างวด/ค่าปรับที่ยังไม่ลง : แถวแยก reason RECEIPT_PARTIAL_APPLIED shape เดียวกับ buildSubsetReview
+// ใบที่ "จัดการแล้ว" = อยู่ใน pj_applied_receipts หรืออยู่ในแถว resolved/skipped/auto_resolved ที่ "ครอบคลุมหมวดของใบนั้น"
+// (mirror covers() ใน unrecordedMatch.ts: แถว OTHER และแถวทึบ (ไม่มี uuid) ครอบแค่ใบ other; reason อื่นครอบทุกหมวด)
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+export interface HandledReviewRow {
+  reason: string;
+  pj_paid_date: string | null;
+  raw_json: unknown;
+}
+
+/** แถว resolved/skipped/auto_resolved ที่มี reason นี้ ครอบคลุมใบหมวดนี้ไหม (mirror covers() ใน unrecordedMatch.ts) */
+export function reviewReasonCovers(reason: string, opaque: boolean, cat: ReceiptCategory): boolean {
+  if (opaque) return cat === "other";
+  if (reason === "OTHER") return cat === "other";
+  return true;
+}
+
+/** uuid ที่ถือว่า "จัดการแล้ว" จากแถว resolved/skipped/auto_resolved — อ่านทุก element ของ raw_json ทุก shape
+ *  แต่นับเฉพาะเมื่อ reason ของแถวครอบคลุมหมวดของใบนั้น (ใบค่างวดใน OTHER ที่ resolve แล้ว "ไม่" ถือว่าจัดการแล้ว) */
+export function coveredHandledUuids(rows: HandledReviewRow[], receipts: ReceiptItem[]): Set<string> {
+  const catOf = new Map<string, ReceiptCategory>();
+  for (const r of receipts) catOf.set(r.uuid, r.paymentType);
+  const out = new Set<string>();
+  for (const row of rows) {
+    for (const u of allUuidsOfRawJson(row.raw_json)) {
+      const cat = catOf.get(u);
+      if (cat && reviewReasonCovers(row.reason, false, cat)) out.add(u);
+    }
+  }
+  return out;
+}
+
+export interface MixedSplit {
+  other: ReceiptItem[];   // ใบ other ที่ยังไม่จัดการ → แถว OTHER
+  unapplied: ReceiptItem[]; // ใบค่างวด/ค่าปรับที่ยังไม่ลง/ไม่เคยจัดการ → แถวแยก
+  applied: ReceiptItem[]; // ใบที่อยู่ใน pj_applied_receipts (ไว้ใส่ already_applied_receipts)
+}
+
+/** แยกก้อน mixed เป็น (other, ค่างวด/ค่าปรับที่ยังไม่ลง) — pure; ledgerTotal = ยอด inst+pen ใน pj_applied_ledger ของ
+ *  (สัญญา, วัน) หรือ null ถ้าไม่มี/ไม่รู้ผูกสัญญา. ไม่ตัดสินเรื่องเงิน: แค่บอกว่าใบไหน "ยังไม่มีใครดูแล" */
+export function splitMixedGroup(
+  group: GroupLike,
+  appliedUuids: Set<string>,
+  handledRows: HandledReviewRow[],
+  ledgerTotal: number | null,
+): MixedSplit {
+  const covered = coveredHandledUuids(handledRows, group.receipts);
+  const applied = group.receipts.filter((r) => appliedUuids.has(r.uuid));
+  let unhandled = group.receipts.filter((r) => !appliedUuids.has(r.uuid) && !covered.has(r.uuid));
+  // แถวทึบ (ไม่มี uuid เช่น PLAN_CHANGE_*) ของ invoice+วันเดียวกัน = เรื่องค่าธรรมเนียม "อื่นๆ" → ตัดเฉพาะใบ other
+  unhandled = applyOpaqueHandled(unhandled, handledRows, group.paid_date);
+  // ledger (สัญญา+วัน) ไม่มี uuid: ครอบเฉพาะใบค่างวด/ค่าปรับที่ยอดรวมตรง (หักใบที่อธิบายด้วย uuid แล้วออกก่อน)
+  if (ledgerTotal != null && ledgerTotal > 0 && unhandled.length > 0) {
+    const unex = new Set(unhandled.map((r) => r.uuid));
+    unhandled = unhandledAfterLedger(
+      group.receipts.filter((r) => unex.has(r.uuid) || appliedUuids.has(r.uuid) || covered.has(r.uuid)),
+      appliedUuids, covered, ledgerTotal,
+    );
+  }
+  return {
+    other: unhandled.filter((r) => r.paymentType === "other"),
+    unapplied: unhandled.filter((r) => r.paymentType !== "other"),
+    applied,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════
 // (5 พ.ย. 2026) รอบย้อนหลัง pj-sync ชนงบเวลา 45 วิ — เวลาหมดไปกับ query ต่อกลุ่ม (contracts + installments +
 // pj_applied_receipts ≈ 3 รอบ/กลุ่ม ≈ 85ms) ทั้งที่กลุ่มส่วนใหญ่ (~98%) ลงครบแล้ว → ข้ามได้ทันทีถ้ารู้ล่วงหน้า
 // ฟังก์ชันด้านล่างเป็น pure (ไม่แตะ DB) ใช้โหลดล่วงหน้าแบบ batch + ตัดกลุ่มที่ลงครบแล้ว + เรียงเก่าก่อน

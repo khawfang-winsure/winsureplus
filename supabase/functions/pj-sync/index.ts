@@ -50,6 +50,7 @@ import {
   uniqueNonEmpty,
   isFullyAppliedGroup,
   orderGroupsOldestFirst,
+  splitMixedGroup,
 } from "./reviewDedup.ts";
 
 const corsHeaders = {
@@ -2762,9 +2763,82 @@ export default {
             await queueContractClosedReview(a, mixedContract.id, "installment", a.inst_amt);
             continue;
           }
-          // active / ไม่เจอ / เจอซ้ำ = พฤติกรรมเดิมเป๊ะ — ห้ามผูก contract ให้ mixed active เด็ดขาด (ถ้าผูก
-          // ปุ่ม "ลงตาม PJ" ของ reason=OTHER จะเข้าใจผิดว่าเป็นค่างวดแล้วลง other_amt เป็นค่างวด = เงินหาย)
-          queueReview(a, "OTHER", null, "other", a.other_amt);
+          // active / ไม่เจอ / เจอซ้ำ — ห้ามผูก contract ให้แถว OTHER เด็ดขาด (ถ้าผูก ปุ่ม "ลงตาม PJ" ของ
+          // reason=OTHER จะเข้าใจผิดว่าเป็นค่างวดแล้วลง other_amt เป็นค่างวด = เงินหาย)
+          //
+          // (19 พ.ย. 2026, Wave 5 — อนุมัติคุณเตย) แก้ต้นเหตุใบค่างวด/ค่าปรับถูกกลืนเงียบ (เคสจริง S00016PNQ023
+          // 700 บาท 22 ต.ค.): เดิมแถว OTHER ถือ raw_json "ทุกใบ" ของก้อน → resolve เป็นรายได้อื่นๆ แล้วใบค่างวดที่ยังไม่
+          // ลงถูกนับว่าจัดการแล้วเงียบๆ ตอนนี้แยก 2 แถว: OTHER เฉพาะใบ other + แถวแยก RECEIPT_PARTIAL_APPLIED เฉพาะ
+          // ค่างวด/ค่าปรับที่ยังไม่ลง (ผูกสัญญาเมื่อเจอตัวเดียว) — ก้อน mixed ยัง "ไม่ auto-apply" เหมือนเดิม
+          // ใบที่ลงแล้ว (pj_applied_receipts) ไม่อยู่ในทั้งสองแถว; ใบที่แถว resolved/skipped ครอบคลุมหมวดแล้วก็ไม่คิวซ้ำ
+          // ก่อน DEDUP_CUTOFF / ไม่มี uuid ครบ → พฤติกรรมเดิมเป๊ะ (OTHER ทั้งก้อน)
+          const mixedUuidLevel = a.paid_date != null && a.paid_date >= DEDUP_CUTOFF &&
+            a.receipts.length > 0 && a.receipts.length === a.raw.length;
+          if (!mixedUuidLevel) {
+            queueReview(a, "OTHER", null, "other", a.other_amt);
+            continue;
+          }
+          const mixedUuids = Array.from(new Set(a.receipts.map((r) => r.uuid)));
+          const { data: mixedAppliedRows, error: mixedAppliedErr } = await db
+            .from("pj_applied_receipts")
+            .select("pj_receipt_uuid")
+            .in("pj_receipt_uuid", mixedUuids);
+          if (mixedAppliedErr) {
+            return await failRun("error", `db error (pj_applied_receipts check, mixed): ${mixedAppliedErr.message}`, 500);
+          }
+          const { data: mixedHandledRows, error: mixedHandledErr } = await db
+            .from("pj_sync_review")
+            .select("reason, pj_paid_date, raw_json")
+            .eq("pj_invoice_no", a.invoice_no)
+            .in("status", ["resolved", "skipped", "auto_resolved"]);
+          if (mixedHandledErr) {
+            return await failRun("error", `db error (handled review check, mixed): ${mixedHandledErr.message}`, 500);
+          }
+          let mixedLedgerTotal: number | null = null;
+          if (mixedContract && a.paid_date) {
+            const { data: mixedLedger } = await db
+              .from("pj_applied_ledger")
+              .select("inst_amount, pen_amount")
+              .eq("contract_id", mixedContract.id)
+              .eq("pj_paid_date", a.paid_date)
+              .maybeSingle();
+            if (mixedLedger) {
+              mixedLedgerTotal = parseAmount((mixedLedger as any).inst_amount) + parseAmount((mixedLedger as any).pen_amount);
+            }
+          }
+          const split = splitMixedGroup(
+            a,
+            new Set((mixedAppliedRows ?? []).map((r: any) => r.pj_receipt_uuid as string)),
+            (mixedHandledRows ?? []) as any[],
+            mixedLedgerTotal,
+          );
+          if (split.other.length === 0 && split.unapplied.length === 0) {
+            skippedAlreadySynced++; // ทุกใบมีคนดูแลแล้ว
+            continue;
+          }
+          if (split.other.length > 0) {
+            // raw_json = array ดิบเฉพาะใบ other (shape เดิมที่ปุ่มรายได้อื่นๆ/หน้าเว็บอ่านอยู่)
+            const otherKeep = new Set(split.other.map((r) => r.uuid));
+            const otherRaw = a.raw.filter((r) => {
+              const u = pick(r, ["uuid"]);
+              return !!u && otherKeep.has(String(u).trim());
+            });
+            const otherAmt = split.other.reduce((s, r) => s + r.amount, 0);
+            if (otherAmt > 0) {
+              queueReview(a, "OTHER", null, "other", otherAmt, otherRaw);
+            } else {
+              skippedAlreadySynced++; // ใบอื่นๆ ยอด 0 (placeholder) ไม่มีอะไรให้ตรวจ
+            }
+          }
+          if (split.unapplied.length > 0) {
+            const sub = buildSubsetReview(a, split.unapplied, "installment", {}, split.applied);
+            if (sub.pjAmount > 0) {
+              receiptPartialApplied++;
+              queueReview(a, "RECEIPT_PARTIAL_APPLIED", mixedContract ? mixedContract.id : null, sub.pjType, sub.pjAmount, sub.rawJson);
+            } else {
+              skippedAlreadySynced++;
+            }
+          }
           continue;
         }
 
