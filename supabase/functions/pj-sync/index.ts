@@ -1524,7 +1524,55 @@ export default {
             }
           }
 
-          const result = classifyUnrecorded(receipts, { ...baseCtx, staffLogsByContract, otherIncomeByContract });
+          // เงินที่ระบบบันทึกไว้แล้วต่อ (สัญญา, วัน) — อ่านอย่างเดียว: payment_log 'pay' (ไม่ถูกยกเลิก) + pj_applied_ledger
+          const bkkDate = (ts: string) => new Date(new Date(ts).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+          const addDays = (iso: string, n: number) => new Date(new Date(iso + "T00:00:00Z").getTime() + n * 86400000).toISOString().slice(0, 10);
+          const moneyRecorded = new Map<string, { logsTotal: number; ledgerTotal: number; settleNearby: boolean }>();
+          const pairsByContract = new Map<string, string[]>();
+          for (const f of pass1.findings) {
+            if (f.pjPaymentType === "other") continue;
+            const a = pairsByContract.get(f.contractId) ?? [];
+            if (!a.includes(f.paidDate)) a.push(f.paidDate);
+            pairsByContract.set(f.contractId, a);
+          }
+          for (const part of chunkArray(Array.from(pairsByContract.keys()), 20)) {
+            if (Date.now() - t0 > TIME_BUDGET_MS) return uwFail("หมดเวลาระหว่างตรวจเงินที่ระบบบันทึกแล้ว — ไม่ได้เขียนอะไร ลองช่วงสั้นลง");
+            const dates = part.flatMap((c) => pairsByContract.get(c) ?? []).sort();
+            const lo = addDays(dates[0], -4), hi = addDays(dates[dates.length - 1], 5);
+            const logs = await pageAll((from, to) =>
+              db.from("payment_log").select("id, contract_id, installment_id, action, amount, created_at")
+                .in("contract_id", part).eq("action", "pay").gte("created_at", lo + "T00:00:00Z").lte("created_at", hi + "T00:00:00Z")
+                .order("id").range(from, to));
+            const cancels = await pageAll((from, to) =>
+              db.from("payment_log").select("id, contract_id, installment_id, created_at")
+                .in("contract_id", part).eq("action", "cancel").gte("created_at", lo + "T00:00:00Z").order("id").range(from, to));
+            const ledgers = await pageAll((from, to) =>
+              db.from("pj_applied_ledger").select("contract_id, pj_paid_date, inst_amount, pen_amount, source")
+                .in("contract_id", part).gte("pj_paid_date", addDays(dates[0], -3)).lte("pj_paid_date", addDays(dates[dates.length - 1], 3))
+                .order("contract_id").range(from, to));
+            for (const cid of part) {
+              for (const d of pairsByContract.get(cid) ?? []) {
+                let logsTotal = 0;
+                for (const l of logs) {
+                  if (l.contract_id !== cid) continue;
+                  const bd = bkkDate(l.created_at);
+                  if (bd < d || bd > addDays(d, 2)) continue;
+                  const cancelled = l.installment_id != null && cancels.some((c) => c.contract_id === cid && c.installment_id === l.installment_id && c.created_at > l.created_at);
+                  if (!cancelled) logsTotal += Number(l.amount);
+                }
+                let ledgerTotal = 0, settleNearby = false;
+                for (const g of ledgers) {
+                  if (g.contract_id !== cid) continue;
+                  const gd = String(g.pj_paid_date).slice(0, 10);
+                  if (gd === d) ledgerTotal += Number(g.inst_amount ?? 0) + Number(g.pen_amount ?? 0);
+                  if (g.source === "settle" && Math.abs((Date.parse(gd) - Date.parse(d)) / 86400000) <= 3) settleNearby = true;
+                }
+                moneyRecorded.set(`${cid}::${d}`, { logsTotal, ledgerTotal, settleNearby });
+              }
+            }
+          }
+
+          const result = classifyUnrecorded(receipts, { ...baseCtx, staffLogsByContract, otherIncomeByContract, moneyRecorded });
 
           // 4) สรุป
           const byOutcome: Record<string, { count: number; amount: number }> = {};
@@ -1565,6 +1613,8 @@ export default {
                 applyBlocked: f.applyBlocked,
                 explainTh: f.explainTh,
                 receiptTotal: f.receiptTotal,
+                ourTotal: f.ourTotal ?? null,
+                pjTotal: f.pjTotal ?? null,
                 candidates: (f.candidates ?? []).map((c: any) => ({
                   logId: c.logId, byName: c.byName, amount: c.amount, penaltyPaidAmount: c.penaltyPaidAmount,
                   bangkokPaidDate: c.bangkokPaidDate, dayDiff: c.dayDiff, capacityLeft: c.capacityLeft, matchKind: c.matchKind,

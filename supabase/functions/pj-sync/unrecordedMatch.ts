@@ -40,6 +40,10 @@ export interface UnrecordedCtx {
   contractsByInvoice: Map<string, { id: string; contractNo: string; status: string | null }[]>;
   staffLogsByContract: Map<string, StaffLog[]>;
   otherIncomeByContract: Map<string, { id: string; amount: number; receivedAt: string }[]>;
+  // (ไม่บังคับ) เงินที่ระบบบันทึกไว้แล้วต่อ `${contractId}::${paidDate}` — caller โหลดแบบอ่านอย่างเดียว:
+  //   logsTotal = Σ payment_log 'pay' ที่ไม่ถูกยกเลิก วันไทย [paidDate, paidDate+2] (ทุกคน รวม PJ Auto-Sync)
+  //   ledgerTotal = pj_applied_ledger (contract, pj_paid_date=paidDate) inst+pen · settleNearby = มีแถว ledger source='settle' ±3 วัน
+  moneyRecorded?: Map<string, { logsTotal: number; ledgerTotal: number; settleNearby: boolean }>;
 }
 
 export type PjCategory = "installment" | "penalty" | "other";
@@ -65,6 +69,8 @@ export interface Finding {
   pjPaymentType: PjCategory;
   pjAmount: number;
   receiptTotal: number; // ยอดรวมทุกใบใน rawJson (ใช้รายงานขนาดเงิน)
+  ourTotal?: number; // ยอดที่ระบบบันทึกไว้ (วันเดียวกัน) — ใส่เมื่อ caller โหลด moneyRecorded มา
+  pjTotal?: number;  // ยอดค่างวด+ค่าปรับทุกใบของ PJ วันนั้น (ทั้งที่ลง/ไม่ลง)
   rawJson: Record<string, any>[];
   uuids: string[];
   candidates?: StaffCandidate[];
@@ -82,6 +88,8 @@ export interface UnrecordedStats {
   accountedPending: number;
   accountedResolved: number;
   accountedSkippedRows: number;
+  accountedMoneyMatched: number;
+  accountedSettle: number;
   accountedOtherIncome: number;
   noContract: number;
   findingsUnrecorded: number;
@@ -164,9 +172,26 @@ function outcomeFor(cat: PjCategory, kind: Finding["outcome"]): string {
 export function classifyUnrecorded(receipts: PjReceipt[], ctx: UnrecordedCtx): UnrecordedResult {
   const stats: UnrecordedStats = {
     scanned: 0, skippedDown: 0, skippedSettling: 0, accountedApplied: 0, accountedPending: 0,
-    accountedResolved: 0, accountedSkippedRows: 0, accountedOtherIncome: 0, noContract: 0,
+    accountedResolved: 0, accountedSkippedRows: 0, accountedMoneyMatched: 0, accountedSettle: 0, accountedOtherIncome: 0, noContract: 0,
     findingsUnrecorded: 0, findingsStaff: 0, sumAmountFlagged: 0,
   };
+
+  // ยอด PJ รวมต่อ (สัญญา, วัน) — ค่างวด+ค่าปรับทุกใบ (ทั้งที่ลงแล้ว/ยังไม่ลง) ใช้เทียบกับเงินที่ระบบบันทึกแล้ว
+  // (ไม่รวมใบ "อื่นๆ" เพราะบันทึกที่ other_income ไม่ใช่ payment_log/ledger — เทียบแล้วจะเหลื่อมผิด)
+  const pjTotals = new Map<string, number>();
+  {
+    const s2 = new Set<string>();
+    for (const r of receipts) {
+      if (r.uuid) { if (s2.has(r.uuid)) continue; s2.add(r.uuid); }
+      if (!Number.isFinite(r.amount) || !(r.amount > EPS)) continue;
+      const t = classifyPjReceiptPaymentType(r.paymentTypeRaw);
+      if (t !== "installment" && t !== "penalty") continue;
+      const cs = ctx.contractsByInvoice.get(r.invoiceNo);
+      if (!cs || cs.length !== 1) continue;
+      const k = `${cs[0].id}::${r.paidDate}`;
+      pjTotals.set(k, (pjTotals.get(k) ?? 0) + r.amount);
+    }
+  }
 
   // เหลือใบที่ไม่ซ้ำ uuid และยอดใช้ได้
   const seen = new Set<string>();
@@ -256,6 +281,16 @@ export function classifyUnrecorded(receipts: PjReceipt[], ctx: UnrecordedCtx): U
   }
   for (const g of ipGroups.values()) {
     const first = g[0];
+    // "เงินอยู่ในระบบแล้ว" (ใบ legacy ที่ไม่เคยจอง uuid): ปิดสัญญาก่อนกำหนด (ledger settle) หรือยอดที่ระบบลงวันนั้น >= ยอด PJ - 1
+    const moneyKey = `${first.contract.id}::${first.r.paidDate}`;
+    const rec = ctx.moneyRecorded?.get(moneyKey);
+    const pjTotal = pjTotals.get(moneyKey) ?? 0;
+    let ourTotal: number | undefined;
+    if (rec) {
+      if (rec.settleNearby) { stats.accountedSettle += g.length; continue; }
+      ourTotal = Math.max(rec.logsTotal, rec.ledgerTotal); // ledger กับ log มาจากการลงครั้งเดียวกัน ห้ามบวกซ้ำ
+      if (ourTotal >= pjTotal - 1) { stats.accountedMoneyMatched += g.length; continue; }
+    }
     const sorted = [...g].sort((a, b) => (a.r.uuid < b.r.uuid ? -1 : a.r.uuid > b.r.uuid ? 1 : 0));
     const P = sorted.filter((x) => x.cat === "installment").reduce((s, x) => s + x.r.amount, 0);
     const PEN = sorted.filter((x) => x.cat === "penalty").reduce((s, x) => s + x.r.amount, 0);
@@ -292,6 +327,7 @@ export function classifyUnrecorded(receipts: PjReceipt[], ctx: UnrecordedCtx): U
       contractId: first.contract.id, contractNo: first.contract.contractNo,
       invoiceNo: first.r.invoiceNo, paidDate: first.r.paidDate,
       pjPaymentType: pjType, pjAmount, receiptTotal: T, rawJson,
+      ...(ourTotal !== undefined ? { ourTotal, pjTotal } : {}),
       uuids: sorted.map((x) => x.r.uuid),
       contractNote: note, applyBlocked: note !== null,
     };
@@ -310,7 +346,7 @@ export function classifyUnrecorded(receipts: PjReceipt[], ctx: UnrecordedCtx): U
       const label = pjType === "installment" ? "ค่างวด" : "ค่าปรับ";
       findings.push({
         ...base, outcome: "RECEIPT_UNRECORDED",
-        explainTh: `PJ มีใบ${label} ${money(pjAmount)} บาท วันที่ ${ddmm(first.r.paidDate)} · ยังไม่ลงในระบบ${suffix(note)}`,
+        explainTh: `PJ มีใบ${label} ${money(pjAmount)} บาท วันที่ ${ddmm(first.r.paidDate)} · ยังไม่ลงในระบบ${ourTotal !== undefined ? ` · PJ ${money(pjTotal)} / ระบบ ${money(ourTotal)}` : ""}${suffix(note)}`,
       });
     }
   }

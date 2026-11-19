@@ -203,3 +203,50 @@ Deno.test("6b exact amount 28 days away -> possible (not exact); 36 days -> RECE
   assertEquals(mk("2026-11-25").outcome, "RECEIPT_UNRECORDED"); // 36 วัน
   assertEquals(mk("2026-10-30").confidence, "exact"); // 10 วัน
 });
+
+// ── "เงินอยู่ในระบบแล้ว" (ใบ legacy ที่ไม่เคยจอง uuid) ──
+const rec = (logsTotal: number, ledgerTotal = 0, settleNearby = false) =>
+  new Map([["c1::2026-07-19", { logsTotal, ledgerTotal, settleNearby }]]);
+
+Deno.test("money (a) penalty receipt unclaimed but PJ Auto-Sync log 4052 covers inst 3952 + pen 100", () => {
+  const r = classifyUnrecorded([rc("u-i", "ค่างวด", 3952, "2026-07-19"), rc("u-p", "ค่าปรับ", 100, "2026-07-19")], ctx({
+    appliedUuids: new Set(["u-i"]),
+    moneyRecorded: rec(4052),
+  }));
+  assertEquals(r.findings.length, 0);
+  assertEquals(r.stats.accountedMoneyMatched, 1);
+});
+
+Deno.test("money (b) early close: ledger settle within 3 days -> accounted; manual close log 40739 covers", () => {
+  const s = classifyUnrecorded([rc("u-s", "ค่างวด", 27086, "2026-07-28")], ctx({
+    moneyRecorded: new Map([["c1::2026-07-28", { logsTotal: 0, ledgerTotal: 0, settleNearby: true }]]),
+  }));
+  assertEquals(s.findings.length, 0);
+  assertEquals(s.stats.accountedSettle, 1);
+  const m = classifyUnrecorded([rc("u-m", "ค่างวด", 40739, "2026-07-25")], ctx({
+    moneyRecorded: new Map([["c1::2026-07-25", { logsTotal: 40739, ledgerTotal: 0, settleNearby: false }]]),
+  }));
+  assertEquals(m.findings.length, 0);
+  assertEquals(m.stats.accountedMoneyMatched, 1);
+});
+
+Deno.test("money (c) ledger review/manual_fix amount covers; log and ledger not double-counted", () => {
+  const r = classifyUnrecorded([rc("u-c", "ค่างวด", 700, "2026-07-19")], ctx({ moneyRecorded: rec(0, 700) }));
+  assertEquals(r.findings.length, 0);
+  assertEquals(r.stats.accountedMoneyMatched, 1);
+  // log 400 + ledger 400 จากการลงครั้งเดียวกัน = 400 ไม่ใช่ 800 -> ยังไม่ครอบ 700
+  const d = classifyUnrecorded([rc("u-c", "ค่างวด", 700, "2026-07-19")], ctx({ moneyRecorded: rec(400, 400) }));
+  assertEquals(d.findings.length, 1);
+});
+
+Deno.test("money: ourTotal < pjTotal stays a finding and reports the gap", () => {
+  const r = classifyUnrecorded([rc("u-i", "ค่างวด", 3952, "2026-07-19"), rc("u-p", "ค่าปรับ", 100, "2026-07-19")], ctx({
+    appliedUuids: new Set(["u-i"]),
+    moneyRecorded: rec(3952),
+  }));
+  assertEquals(r.findings.length, 1);
+  assertEquals(r.findings[0].outcome, "RECEIPT_UNRECORDED");
+  assertEquals(r.findings[0].ourTotal, 3952);
+  assertEquals(r.findings[0].pjTotal, 4052);
+  assertEquals(r.findings[0].explainTh.includes("PJ 4,052 / ระบบ 3,952"), true);
+});
