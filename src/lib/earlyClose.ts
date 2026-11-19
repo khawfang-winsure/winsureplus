@@ -32,6 +32,12 @@
 // สไตล์ comment/Trace ลอกจาก settlement.ts / outstandingExtras.ts
 
 import type { Installment } from './types'
+import {
+  computeSettlement,
+  type SettlementExtensionInfo,
+  type SettlementInstallmentInput,
+  type SettlementMatrix,
+} from './settlement'
 
 export const EARLY_CLOSE_FEE_CATEGORIES = [
   'ค่าดำเนินการ',
@@ -246,5 +252,241 @@ export function computeEarlyClose(input: EarlyCloseInput): EarlyCloseResult {
     feeTotal,
     totalReceived,
     errors,
+  }
+}
+
+// ===== โหมด "เงินเข้าครบแล้ว" (funds_in) — แยกโหมดปิดก่อนกำหนดอัตโนมัติ (คุณเตยเคาะ 19 พ.ย. 2026) =====
+// ลูกค้าจ่ายเงินก้อนปิดสัญญาเข้า PJ แล้ว (ระบบลงเข้างวดท้ายๆ เอง) แต่ยอดไม่ครบตามตาราง เพราะร้านยอมลดให้
+// → ไม่ต้องเก็บเงินซ้ำ แค่ "กดปิด" บันทึกส่วนลดที่ยกให้ (ไม่เขียน payment_log / ไม่แตะ installments)
+// ฟังก์ชันนี้ pure — แยกโหมด + คำนวณยอด + เช็คกติกา; ส่วนลดตามตารางคิดด้วย computeSettlement (ห้ามคิดสูตรซ้ำ)
+
+const TOL = 1 // บาท — ความคลาดเคลื่อนที่ยอมรับ (ปัดเศษ/ดาวน์ต่าง 1 บาท)
+const AMBIGUOUS_PCT = 0.3
+
+export type EarlyCloseMode = 'collect' | 'funds_in' | 'ambiguous' | 'none'
+
+export interface FundsInInstallment {
+  id: string
+  installmentNo: number
+  amount: number
+  paidAmount: number
+  paidAt: string | null
+  dueDate: string
+  penaltyAmount: number
+  /** วันที่ (เวลาไทย) ของรายการรับชำระล่าสุดที่ไม่ถูกยกเลิก — ไม่มี = ใช้วันที่ของ paidAt */
+  lastPayDate: string | null
+}
+
+export interface AnalyzeEarlyCloseInput {
+  installments: FundsInInstallment[]
+  penaltyPaidByInstallmentId?: Record<string, number>
+  termMonths: number
+  matrix: SettlementMatrix
+  extension?: SettlementExtensionInfo | null
+  role: 'admin' | 'staff'
+  today: string
+  closedAt?: string
+  note?: string
+  ambiguousAck?: boolean
+  feeWaived?: boolean
+}
+
+export interface AnalyzeEarlyCloseResult {
+  mode: EarlyCloseMode
+  closeDay: string | null // D = วันที่เงินเข้าล่าสุดของชุดงวดท้าย
+  defaultClosedAt: string // D (ไม่เกินวันนี้) ไม่มี D = วันนี้
+  tailIds: string[] // T = งวดที่เป็นก้อนเงินปิดสัญญา
+  gross: number
+  received: number
+  shortfall: number
+  shortfallPct: number // 0..1
+  expectedDiscount: number
+  matrixPercent: number
+  matrixMatches: boolean
+  noteRequired: boolean
+  penaltyDue: number
+  worklistEligible: boolean
+  staffBlocked: boolean
+  warnings: string[]
+  errors: string[]
+  infos: string[]
+  /** collect = true (ถ้าไม่มี error) · none = false · ambiguous = ติ๊กยืนยันแล้วค่อยไปต่อฟอร์มเก็บเงิน · funds_in = admin + ไม่มี error */
+  canSubmit: boolean
+}
+
+// วันที่ตามเวลาไทย (วิธีเดียวกับ getInstallmentLastPayDates ใน db.ts) — กัน paidAt เป็น UTC ข้ามวัน
+function bangkokDate(ts: string): string {
+  return new Date(ts).toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+}
+
+function isOpen(i: FundsInInstallment): boolean {
+  return i.paidAt == null || i.paidAmount < i.amount - TOL
+}
+
+function fmtNum(n: number): string {
+  return Math.round(n).toLocaleString('th-TH')
+}
+
+/**
+ * Trace (ครีมเช็คข้อมูลจริง 19 พ.ย. — term 12):
+ *   P-JA020094: งวด 11 จ่าย 09-23 ครบ, งวด 12 จ่ายบางส่วน → T={11,12} D=09-23
+ *     gross 8376 / received 7790 / shortfall 586 (7.0%) → funds_in, ตาราง (จ่ายแล้ว 10 งวด = 7%) ให้ 586 → ตรง
+ *   จ่ายทีละงวดคนละวัน (3000x12, งวด 11 จ่าย 1500 วัน 11-10, งวด 12 จ่าย 1500 วัน 11-15) → ambiguous
+ *   ยังไม่มีเงินเข้างวดท้ายเลย → collect (ฟอร์มเดิม)
+ */
+export function analyzeEarlyClose(input: AnalyzeEarlyCloseInput): AnalyzeEarlyCloseResult {
+  const sorted = [...input.installments].sort((a, b) => a.installmentNo - b.installmentNo)
+  const warnings: string[] = []
+  const errors: string[] = []
+  const infos: string[] = []
+  const penaltyPaid = input.penaltyPaidByInstallmentId ?? {}
+  const payDate = (i: FundsInInstallment): string | null => i.lastPayDate ?? (i.paidAt ? bangkokDate(i.paidAt) : null)
+
+  const base: AnalyzeEarlyCloseResult = {
+    mode: 'none',
+    closeDay: null,
+    defaultClosedAt: input.today,
+    tailIds: [],
+    gross: 0,
+    received: 0,
+    shortfall: 0,
+    shortfallPct: 0,
+    expectedDiscount: 0,
+    matrixPercent: 0,
+    matrixMatches: true,
+    noteRequired: false,
+    penaltyDue: 0,
+    worklistEligible: false,
+    staffBlocked: false,
+    warnings,
+    errors,
+    infos,
+    canSubmit: false,
+  }
+
+  const open = sorted.filter(isOpen)
+  if (sorted.length === 0 || open.length === 0) return base
+
+  const last = sorted[sorted.length - 1]
+  const s = Math.min(...open.map((i) => i.installmentNo))
+
+  // D = วันที่เงินเข้าล่าสุดในช่วงงวด >= s
+  let closeDay: string | null = null
+  let anyPaidFromS = false
+  let dateMissing = false
+  for (const i of sorted) {
+    if (i.installmentNo < s || i.paidAmount <= 0) continue
+    anyPaidFromS = true
+    const d = payDate(i)
+    if (d == null) dateMissing = true
+    else if (closeDay == null || d > closeDay) closeDay = d
+  }
+
+  // T = [s..N] ขยายถอยหลังตราบที่งวดนั้นมีเงินเข้าและเข้าวัน D เดียวกัน
+  const tail = sorted.filter((i) => i.installmentNo >= s)
+  if (closeDay != null) {
+    let idx = sorted.findIndex((i) => i.installmentNo === s) - 1
+    while (idx >= 0 && sorted[idx].paidAmount > 0 && payDate(sorted[idx]) === closeDay) {
+      tail.unshift(sorted[idx])
+      idx -= 1
+    }
+  }
+
+  const gross = tail.reduce((a, i) => a + i.amount, 0)
+  const received = tail.reduce((a, i) => a + Math.min(i.paidAmount, i.amount), 0)
+  const shortfall = gross - received
+  const shortfallPct = gross > 0 ? shortfall / gross : 0
+  const tailIds = tail.map((i) => i.id)
+  const penaltyScope = new Map<string, FundsInInstallment>()
+  for (const i of [...tail, ...open]) penaltyScope.set(i.id, i)
+  let penaltyDue = 0
+  for (const i of penaltyScope.values()) {
+    penaltyDue += Math.max(0, (i.penaltyAmount || 0) - (penaltyPaid[i.id] ?? 0))
+  }
+  const defaultClosedAt = closeDay != null && closeDay <= input.today ? closeDay : input.today
+
+  const common = { closeDay, defaultClosedAt, tailIds, gross, received, shortfall, shortfallPct, penaltyDue }
+  const staffCannotWaive = input.feeWaived === true && input.role !== 'admin'
+
+  // 1) ไม่มีเงินเข้างวดท้ายเลย → ฟอร์มเดิม
+  if (!anyPaidFromS || received <= 0) {
+    if (staffCannotWaive) errors.push('เฉพาะแอดมินเท่านั้นที่ยกเว้นค่าธรรมเนียมได้')
+    return { ...base, ...common, mode: 'collect', canSubmit: errors.length === 0 }
+  }
+
+  // 2-4) รูปแบบ funds_in: ค้างงวดสุดท้ายงวดเดียว + จ่ายบางส่วน
+  const shapeOk =
+    !dateMissing &&
+    open.length === 1 &&
+    open[0].id === last.id &&
+    last.paidAmount > 0 &&
+    last.paidAmount < last.amount - TOL
+
+  if (shapeOk && shortfall <= TOL) {
+    return { ...base, ...common, mode: 'none' }
+  }
+
+  if (!(shapeOk && shortfall > TOL && shortfallPct <= AMBIGUOUS_PCT)) {
+    warnings.push('มีเงินเข้าบางงวด ไม่แน่ใจว่าเป็นการปิดก่อนกำหนด · ติ๊กยืนยันก่อนดำเนินการ')
+    if (!input.ambiguousAck) errors.push('กรุณาติ๊กยืนยันว่าลูกค้าตกลงปิดสัญญาแล้ว')
+    if (staffCannotWaive) errors.push('เฉพาะแอดมินเท่านั้นที่ยกเว้นค่าธรรมเนียมได้')
+    return { ...base, ...common, mode: 'ambiguous', canSubmit: input.ambiguousAck === true }
+  }
+
+  // ===== funds_in =====
+  const tailSet = new Set(tailIds)
+  const virtual: SettlementInstallmentInput[] = sorted.map((i) => {
+    const inTail = tailSet.has(i.id)
+    return {
+      id: i.id,
+      installmentNo: i.installmentNo,
+      amount: i.amount,
+      paidAmount: inTail ? 0 : i.paidAmount,
+      penaltyAmount: i.penaltyAmount,
+      paidAt: inTail ? null : i.paidAt,
+      dueDate: i.dueDate,
+    }
+  })
+  const settle = computeSettlement({
+    installments: virtual,
+    closedAt: closeDay ?? input.today,
+    termMonths: input.termMonths,
+    matrix: input.matrix,
+    extension: input.extension ?? null,
+  })
+  const expectedDiscount = settle.discount
+  const matrixMatches = Math.abs(shortfall - expectedDiscount) <= TOL
+  const noteRequired = !matrixMatches
+  const staffBlocked = input.role !== 'admin'
+
+  infos.push(`ส่วนลด ${fmtNum(shortfall)} ฿ (${(shortfallPct * 100).toFixed(1)}% ของยอดรวม ${fmtNum(gross)} ฿)`)
+  if (staffBlocked) infos.push('เงินเข้าครบแล้ว · รอแอดมินกดปิด')
+  if (noteRequired) {
+    warnings.push(
+      `ส่วนลด ${fmtNum(shortfall)} ฿ ไม่ตรงตาราง (ตารางให้ ${fmtNum(expectedDiscount)} ฿) · ต้องระบุหมายเหตุ`,
+    )
+    if (!(input.note ?? '').trim()) errors.push('กรุณาระบุหมายเหตุที่ส่วนลดไม่ตรงตาราง')
+  }
+  if (penaltyDue > 0) {
+    errors.push(`ยังมีค่าปรับค้าง ${fmtNum(penaltyDue)} ฿ · เก็บค่าปรับก่อนจึงปิดแบบเงินเข้าครบแล้วได้`)
+  }
+  if (staffCannotWaive) errors.push('เฉพาะแอดมินเท่านั้นที่ยกเว้นค่าธรรมเนียมได้')
+  if (input.closedAt !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.closedAt)) errors.push('กรุณาระบุวันที่ปิดสัญญา')
+    else if (input.closedAt > input.today) errors.push('วันที่ปิดสัญญาต้องไม่เกินวันนี้')
+    else if (closeDay != null && input.closedAt < closeDay) warnings.push('วันปิดสัญญาก่อนวันที่เงินเข้าล่าสุด')
+  }
+
+  return {
+    ...base,
+    ...common,
+    mode: 'funds_in',
+    expectedDiscount,
+    matrixPercent: settle.percent,
+    matrixMatches,
+    noteRequired,
+    worklistEligible: true,
+    staffBlocked,
+    canSubmit: !staffBlocked && errors.length === 0,
   }
 }

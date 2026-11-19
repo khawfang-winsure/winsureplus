@@ -3,19 +3,26 @@
 // pure calc มาจาก src/lib/earlyClose.ts (แบมเขียน) — ไฟล์นี้แค่ผูก UI + เรียก db.ts (น้องชีสเขียน)
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
-import { Badge, Button, Field, Input, Modal, Select } from './ui'
+import { Badge, Button, Field, Input, Modal, Select, Textarea } from './ui'
 import CopyBox from './CopyBox'
 import { baht, statusLabel, thaiDate } from '../lib/format'
 import {
+  closeContractEarlyFundsReceived,
   closeContractEarlyPreserve,
   getContractExtensions,
+  getInstallmentLastPayDates,
   getSettlementMatrix,
   getStaffSettlementQuote,
   type CloseContractEarlyFee,
   type ExtensionRecord,
   type PaymentLogEntry,
 } from '../lib/db'
-import { computeEarlyClose, EARLY_CLOSE_FEE_CATEGORIES } from '../lib/earlyClose'
+import {
+  analyzeEarlyClose,
+  computeEarlyClose,
+  EARLY_CLOSE_FEE_CATEGORIES,
+  type FundsInInstallment,
+} from '../lib/earlyClose'
 import {
   computeSettlement,
   type SettlementExtensionInfo,
@@ -182,6 +189,93 @@ function buildEarlyCloseMessage(params: {
   return lines.join('\n')
 }
 
+/** ส่วนกรอกค่าธรรมเนียมปิด (0..n รายการ) — แยกออกมาเพื่อใช้ร่วมกันทั้งฟอร์มเก็บเงินและฟอร์มเงินเข้าครบแล้ว */
+function FeeRowsEditor({
+  feeRows,
+  onAdd,
+  onRemove,
+  onUpdate,
+}: {
+  feeRows: FeeRowState[]
+  onAdd: () => void
+  onRemove: (key: string) => void
+  onUpdate: (key: string, patch: Partial<FeeRowState>) => void
+}) {
+  return (
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-sm font-medium text-ink">ค่าธรรมเนียมปิด</span>
+              <button
+                type="button"
+                onClick={onAdd}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-salmon-deep hover:bg-peach-light/50"
+              >
+                <Plus size={13} /> เพิ่มรายการ
+              </button>
+            </div>
+            {feeRows.length === 0 ? (
+              <p className="rounded-xl bg-peach-light/40 px-3 py-2 text-xs text-ink-soft">
+                ไม่มีรายการค่าธรรมเนียม (ไม่ใส่เลยก็ได้)
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {feeRows.map((row) => {
+                  const isCustom = row.categoryChoice === CUSTOM_FEE_OPTION
+                  return (
+                    <div key={row.key} className="rounded-xl border border-peach p-2.5">
+                      {/* ข้อ 3 (feedback คุณเตย): เดิม select ถูก flex-1 บีบเหลือแค่ลูกศรตอนโมดัลแคบ/มือถือ
+                          (min-content ของ <select> ในเบราว์เซอร์เล็กมาก ไม่คิดตามความยาวชื่อตัวเลือก) —
+                          แก้ด้วยการวางแนวตั้งบนมือถือ (select เต็มบรรทัดแรก เห็นชื่อยาวสุดครบ ไม่ถูกตัด)
+                          แล้วค่อยจัดแถวเดียวจาก sm ขึ้นไป (จอกว้างพอ) โดยให้ select ยังยืดหยุ่น (flex-1 min-w-0)
+                          ส่วนช่องจำนวนเงินคงความกว้างตายตัว (w-28) ไม่แย่งพื้นที่ select */}
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+                        <Select
+                          className="w-full sm:min-w-0 sm:flex-1"
+                          value={row.categoryChoice}
+                          onChange={(e) => onUpdate(row.key, { categoryChoice: e.target.value })}
+                        >
+                          {EARLY_CLOSE_FEE_CATEGORIES.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                          <option value={CUSTOM_FEE_OPTION}>{CUSTOM_FEE_OPTION}</option>
+                        </Select>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            min={0}
+                            className="w-28 shrink-0"
+                            placeholder="บาท"
+                            value={row.amount || ''}
+                            onChange={(e) => onUpdate(row.key, { amount: Number(e.target.value) || 0 })}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onRemove(row.key)}
+                            aria-label="ลบรายการ"
+                            className="shrink-0 rounded-lg p-2 text-ink-soft hover:bg-red-50 hover:text-red-600"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                      {isCustom && (
+                        <Input
+                          className="mt-2"
+                          autoFocus
+                          value={row.customName}
+                          onChange={(e) => onUpdate(row.key, { customName: e.target.value })}
+                          placeholder="พิมพ์ชื่อค่าธรรมเนียมเอง"
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+  )
+}
+
 let feeRowSeq = 0
 function nextFeeRowKey(): string {
   feeRowSeq += 1
@@ -239,6 +333,10 @@ export default function EarlyCloseModal({
   // matrix=null แปลว่า "ยังไม่โหลดเสร็จ" หรือ "โหลดไม่สำเร็จ" — ทั้ง 2 กรณี ซ่อนกล่องคำนวณจากตาราง
   // ไปเลย (ข้อบังคับข้อ 4) ไม่บล็อกการปิดสัญญาแบบกรอกยอดเอง
   const [matrix, setMatrix] = useState<SettlementMatrix | null>(null)
+  const [matrixLoaded, setMatrixLoaded] = useState(false)
+  const [extLoaded, setExtLoaded] = useState(false)
+  const [lastPayDates, setLastPayDates] = useState<Record<string, string>>({})
+  const [payDatesLoaded, setPayDatesLoaded] = useState(false)
   const [extensions, setExtensions] = useState<ExtensionRecord[]>([])
   useEffect(() => {
     let alive = true
@@ -249,6 +347,8 @@ export default function EarlyCloseModal({
         if (alive) setMatrix(m)
       } catch {
         if (alive) setMatrix(null)
+      } finally {
+        if (alive) setMatrixLoaded(true)
       }
     })()
     void (async () => {
@@ -257,8 +357,21 @@ export default function EarlyCloseModal({
         if (alive) setExtensions(ext)
       } catch {
         if (alive) setExtensions([])
+      } finally {
+        if (alive) setExtLoaded(true)
       }
     })()
+    void getInstallmentLastPayDates(contract.id)
+      .then((m) => {
+        if (alive) setLastPayDates(m)
+      })
+      .catch(() => {
+        // โหลดวันที่เงินเข้าไม่ได้ → ใช้วันที่ปิดงวด (paidAt) แทน ไม่บล็อกการปิดสัญญา
+        if (alive) setLastPayDates({})
+      })
+      .finally(() => {
+        if (alive) setPayDatesLoaded(true)
+      })
     return () => {
       alive = false
     }
@@ -391,7 +504,65 @@ export default function EarlyCloseModal({
   // guard ฝั่งหน้าเว็บ mirror guard ฝั่ง SQL (status='active' เท่านั้น) — เข้าโมดัลได้จาก 2 ทางที่ไม่ได้ gate
   // มาก่อน (deep-link ?feeAction=settle + ปุ่มในกล่อง "รายการรอดำเนินการ") กันโดน error ดิบจาก RPC
   const notActive = contract.status !== 'active'
-  const canProceed = result.errors.length === 0 && !notActive
+
+  // ===== แยกโหมดอัตโนมัติ: เงินเข้าครบแล้ว (funds_in) vs เก็บเงินปิด (collect) — pure: analyzeEarlyClose =====
+  // ค่าปรับที่เก็บแล้วต่องวด "ทุกงวด" (analyzeEarlyClose ดูงวดก้อนท้ายที่จ่ายแล้วด้วย ไม่ใช่แค่งวดค้าง)
+  const penaltyPaidAll = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const ins of installments) map[ins.id] = penaltyPaidForInstallment(logByIns.get(ins.id) ?? [])
+    return map
+  }, [installments, logByIns])
+  const fundsInstallments = useMemo<FundsInInstallment[]>(
+    () =>
+      installments.map((i) => ({
+        id: i.id,
+        installmentNo: i.installmentNo,
+        amount: i.amount,
+        paidAmount: i.paidAmount,
+        paidAt: i.paidAt,
+        dueDate: i.dueDate,
+        penaltyAmount: i.penaltyAmount,
+        lastPayDate: lastPayDates[i.id] ?? null,
+      })),
+    [installments, lastPayDates],
+  )
+  const [note, setNote] = useState('')
+  const [ambiguousAck, setAmbiguousAck] = useState(false)
+  const [switchedToCollect, setSwitchedToCollect] = useState(false)
+  const [waiveFee, setWaiveFee] = useState(false)
+  const [closedAtTouched, setClosedAtTouched] = useState(false)
+  const analysisReady = payDatesLoaded && matrixLoaded && extLoaded
+  const analysis = useMemo(
+    () =>
+      analyzeEarlyClose({
+        installments: fundsInstallments,
+        penaltyPaidByInstallmentId: penaltyPaidAll,
+        termMonths: contract.termMonths,
+        matrix: matrix ?? {},
+        extension: extensionInfo,
+        role: isAdmin ? 'admin' : 'staff',
+        today: todayStr,
+        closedAt,
+        note,
+        ambiguousAck,
+        feeWaived: waiveFee,
+      }),
+    [fundsInstallments, penaltyPaidAll, contract.termMonths, matrix, extensionInfo, isAdmin, todayStr, closedAt, note, ambiguousAck, waiveFee],
+  )
+  const fundsInView = analysisReady && analysis.mode === 'funds_in' && !switchedToCollect
+  const needsAmbiguousAck = analysisReady && (analysis.mode === 'ambiguous' || (analysis.mode === 'funds_in' && switchedToCollect))
+
+  // วันปิดสัญญาเริ่มต้น = วันที่เงินเข้าล่าสุด (เงินเข้าครบแล้ว) · โหมดเก็บเงิน = วันนี้ — เปลี่ยนเองเมื่อคนแก้วันที่แล้วจะไม่ทับ
+  const defaultClosedAtForView = fundsInView ? analysis.defaultClosedAt : todayStr
+  useEffect(() => {
+    if (!analysisReady || closedAtTouched) return
+    setClosedAt(defaultClosedAtForView)
+  }, [analysisReady, closedAtTouched, defaultClosedAtForView])
+
+  const feeInputProblem = fees.some((f) => f.amount < 0 || (f.amount > 0 && f.category.trim() === ''))
+  const canProceed = fundsInView
+    ? analysis.canSubmit && !feeInputProblem && !notActive
+    : result.errors.length === 0 && !notActive && !(needsAmbiguousAck && !ambiguousAck)
 
   // ตรวจกันซ้ำ: เงินที่ลงเว็บไปแล้วตั้งแต่วันที่ปิด (closedAt) — ไม่ block ปุ่ม แค่เตือนให้เช็คก่อนกด
   // (แทนคำเตือน PJ auto-sync เดิมที่ไม่ตรงความจริง — pj-sync เข้ากล่องรอตรวจเมื่อไม่มีงวดค้าง ไม่ลงอัตโนมัติ)
@@ -407,12 +578,24 @@ export default function EarlyCloseModal({
       // กรองแถวที่ยังไม่กรอกออกก่อนส่ง (amount<=0 หรือ category ว่าง) — ฝั่ง SQL ไม่พัง (no-op)
       // แต่กันไม่ให้ยิงแถวขยะไปเป็น payload โดยไม่จำเป็น
       const feePayload: CloseContractEarlyFee[] = fees.filter((f) => f.amount > 0 && f.category.trim() !== '')
-      await closeContractEarlyPreserve(contract.id, {
-        settlementPaid,
-        penaltyReceived,
-        closedAt,
-        fees: feePayload,
-      })
+      if (fundsInView) {
+        // เงินเข้าครบแล้ว — ไม่ลงเงินซ้ำ แค่ปิดสัญญา + ค่าธรรมเนียม (หรือยกเว้น) ; ฝั่ง DB ตรวจกติกาซ้ำอีกชั้น
+        await closeContractEarlyFundsReceived({
+          contractId: contract.id,
+          closedAt,
+          fees: waiveFee ? [] : feePayload,
+          waive: waiveFee,
+          note: note.trim(),
+          noteRequired: analysis.noteRequired,
+        })
+      } else {
+        await closeContractEarlyPreserve(contract.id, {
+          settlementPaid,
+          penaltyReceived,
+          closedAt,
+          fees: feePayload,
+        })
+      }
       onDone()
     } catch (e) {
       setErr(errMsg(e))
@@ -420,6 +603,146 @@ export default function EarlyCloseModal({
       setBusy(false)
     }
   }
+
+  // ===== ฟอร์มโหมด "เงินเข้าครบแล้ว" — ไม่มีช่องกรอกยอด (เงินเข้าแล้ว) แค่ตรวจ + ปิด =====
+  const switchToCollectLink = (
+    <button
+      type="button"
+      onClick={() => { setSwitchedToCollect(true); setConfirming(false) }}
+      className="self-start text-xs text-ink-soft underline hover:text-salmon-deep"
+    >
+      ลูกค้าจ่ายเพิ่มอีก → โหมดลงเงิน
+    </button>
+  )
+  const validFundsFees = fees.filter((f) => f.amount > 0 && f.category.trim() !== '')
+  const fundsInSummary = (
+    <div className="rounded-xl border border-peach bg-white p-3 text-sm">
+      <div className="flex flex-col gap-1.5">
+        <div className="flex justify-between text-ink-soft">
+          <span>ยอดเต็มตามตาราง</span>
+          <b className="whitespace-nowrap text-ink">{baht(analysis.gross)} ฿</b>
+        </div>
+        <div className="flex justify-between text-ink-soft">
+          <span>รับแล้ว</span>
+          <b className="whitespace-nowrap text-ink">{baht(analysis.received)} ฿</b>
+        </div>
+        <div className="flex justify-between border-t border-peach pt-1.5 text-ink-soft">
+          <span>ส่วนลดที่ยกให้</span>
+          <span className="whitespace-nowrap font-semibold text-green-700">
+            −{baht(analysis.shortfall)} ฿ ({(analysis.shortfallPct * 100).toFixed(1)}%)
+          </span>
+        </div>
+        <p className="text-xs text-ink-soft">
+          เงินเข้า {analysis.tailIds.length} งวดท้ายสุด ล่าสุดวันที่ {analysis.closeDay ? thaiDate(analysis.closeDay) : '-'}
+        </p>
+      </div>
+    </div>
+  )
+  const fundsInBody = !isAdmin ? (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm text-blue-800">
+        <p className="font-semibold">เงินเข้าครบแล้ว · รอแอดมินกดปิด</p>
+        <p className="mt-1 text-xs">ลูกค้าจ่ายเงินปิดสัญญาเข้าระบบแล้ว ไม่ต้องรับเงินซ้ำ ให้แอดมินเป็นคนกดปิดสัญญา</p>
+      </div>
+      {fundsInSummary}
+    </div>
+  ) : confirming ? (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
+      <p className="mb-3 flex items-center gap-1.5 font-semibold text-amber-800">
+        <AlertTriangle size={15} /> ยืนยันปิดสัญญาของ {contract.customerName}?
+      </p>
+      {fundsInSummary}
+      <div className="mt-3 flex flex-col gap-1.5 rounded-lg bg-white p-3 text-ink-soft">
+        <div className="flex justify-between">
+          <span>วันที่ปิดจริง</span>
+          <b className="text-ink">{thaiDate(closedAt)}</b>
+        </div>
+        {waiveFee ? (
+          <p className="text-xs">ไม่เก็บค่าธรรมเนียม (ยกเว้นโดยแอดมิน)</p>
+        ) : validFundsFees.length === 0 ? (
+          <p className="text-xs">
+            ไม่ได้ใส่ค่าธรรมเนียม — กล่อง &quot;รายการรอดำเนินการ&quot; จะเตือนค้างจนกว่าจะลงค่าธรรมเนียม
+          </p>
+        ) : (
+          validFundsFees.map((f, idx) => (
+            <div key={`${f.category}-${idx}`} className="flex justify-between">
+              <span>{f.category}</span>
+              <b className="whitespace-nowrap text-ink">{baht(f.amount)} ฿</b>
+            </div>
+          ))
+        )}
+        {note.trim() !== '' && <p className="text-xs">หมายเหตุ: {note.trim()}</p>}
+      </div>
+      <p className="mt-2 text-xs text-amber-800">
+        การปิดแบบนี้ไม่ลงเงินเพิ่ม ไม่แก้ตารางงวด — แค่เปลี่ยนสถานะเป็นปิดสัญญาและบันทึกส่วนลด
+      </p>
+      {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+    </div>
+  ) : (
+    <>
+      <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-800">
+        <p className="font-semibold">เงินเข้าครบแล้ว — ไม่ต้องรับเงินซ้ำ</p>
+        <p className="mt-1 text-xs">ลูกค้าจ่ายเงินปิดสัญญาเข้าระบบแล้ว ตรวจยอดด้านล่างแล้วกดปิดสัญญาได้เลย</p>
+      </div>
+      {fundsInSummary}
+
+      {analysis.warnings.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+          <ul className="list-disc pl-5">
+            {analysis.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {analysis.noteRequired && (
+        <Field label="หมายเหตุ (ส่วนลดไม่ตรงตาราง)" required>
+          <Textarea
+            rows={2}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="เช่น ร้านลดให้ลูกค้าเพิ่ม / ตกลงยอดปิดกับลูกค้าแล้ว"
+          />
+        </Field>
+      )}
+
+      <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+        <input type="checkbox" className="h-4 w-4" checked={waiveFee} onChange={(e) => setWaiveFee(e.target.checked)} />
+        ไม่เก็บค่าธรรมเนียม
+      </label>
+      {!waiveFee && (
+        <FeeRowsEditor feeRows={feeRows} onAdd={addFeeRow} onRemove={removeFeeRow} onUpdate={updateFeeRow} />
+      )}
+
+      <Field label="วันที่ปิดจริง" required>
+        <Input
+          type="date"
+          max={todayStr}
+          value={closedAt}
+          onChange={(e) => { setClosedAt(e.target.value); setClosedAtTouched(true) }}
+        />
+      </Field>
+
+      {analysis.errors.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+          <p className="mb-1 flex items-center gap-1.5 font-semibold">
+            <AlertTriangle size={14} /> ตรวจสอบก่อนปิดสัญญา
+          </p>
+          <ul className="list-disc pl-5">
+            {analysis.errors.map((e) => (
+              <li key={e}>{e}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {feeInputProblem && (
+        <p className="text-sm text-red-600">ตรวจรายการค่าธรรมเนียม: ต้องมีชื่อรายการและยอดไม่ติดลบ</p>
+      )}
+      {switchToCollectLink}
+    </>
+  )
+
 
   return (
     <Modal title="ปิดสัญญาก่อนกำหนด" onClose={() => !busy && onClose()}>
@@ -437,6 +760,10 @@ export default function EarlyCloseModal({
               สัญญานี้ไม่ได้อยู่สถานะกำลังผ่อน จึงปิดก่อนกำหนดไม่ได้ (สถานะปัจจุบัน: {statusLabel(contract.status)})
             </p>
           </div>
+        ) : !analysisReady ? (
+          <p className="rounded-xl bg-peach-light/40 px-3 py-3 text-sm text-ink-soft">กำลังตรวจข้อมูลเงินเข้าของสัญญานี้...</p>
+        ) : fundsInView ? (
+          fundsInBody
         ) : confirming ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
             <p className="mb-3 flex items-center gap-1.5 font-semibold text-amber-800">
@@ -515,6 +842,30 @@ export default function EarlyCloseModal({
           </div>
         ) : (
           <>
+            {needsAmbiguousAck && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                <p className="flex items-center gap-1.5 font-semibold">
+                  <AlertTriangle size={14} />{' '}
+                  {analysis.mode === 'funds_in'
+                    ? 'สัญญานี้มีเงินปิดสัญญาเข้าแล้ว'
+                    : 'มีเงินเข้าบางงวดแล้ว ไม่แน่ใจว่าเป็นการปิดสัญญาก่อนกำหนด'}
+                </p>
+                <p className="mt-1">
+                  ตรวจประวัติรับเงินของสัญญานี้ก่อน ถ้าเป็นเงินปิดสัญญาที่ลงไปแล้ว การกรอกยอดต่อจากนี้จะนับเงินซ้ำ
+                </p>
+                <label className="mt-2 flex cursor-pointer items-center gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={ambiguousAck}
+                    onChange={(e) => setAmbiguousAck(e.target.checked)}
+                  />
+                  {analysis.mode === 'funds_in'
+                    ? 'ยืนยันว่าลูกค้าจ่ายเพิ่มจริง ไม่ใช่เงินที่ลงไว้แล้ว'
+                    : 'ยืนยันว่าลูกค้าตกลงปิดแล้ว'}
+                </label>
+              </div>
+            )}
             <Field label="ยอดที่ลูกค้าจ่ายปิด (เข้ารายได้ค่างวด)" required>
               <Input
                 type="number"
@@ -611,84 +962,19 @@ export default function EarlyCloseModal({
               </p>
             </Field>
 
-            <div>
-              <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-sm font-medium text-ink">ค่าธรรมเนียมปิด</span>
-                <button
-                  type="button"
-                  onClick={addFeeRow}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-salmon-deep hover:bg-peach-light/50"
-                >
-                  <Plus size={13} /> เพิ่มรายการ
-                </button>
-              </div>
-              {feeRows.length === 0 ? (
-                <p className="rounded-xl bg-peach-light/40 px-3 py-2 text-xs text-ink-soft">
-                  ไม่มีรายการค่าธรรมเนียม (ไม่ใส่เลยก็ได้)
-                </p>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {feeRows.map((row) => {
-                    const isCustom = row.categoryChoice === CUSTOM_FEE_OPTION
-                    return (
-                      <div key={row.key} className="rounded-xl border border-peach p-2.5">
-                        {/* ข้อ 3 (feedback คุณเตย): เดิม select ถูก flex-1 บีบเหลือแค่ลูกศรตอนโมดัลแคบ/มือถือ
-                            (min-content ของ <select> ในเบราว์เซอร์เล็กมาก ไม่คิดตามความยาวชื่อตัวเลือก) —
-                            แก้ด้วยการวางแนวตั้งบนมือถือ (select เต็มบรรทัดแรก เห็นชื่อยาวสุดครบ ไม่ถูกตัด)
-                            แล้วค่อยจัดแถวเดียวจาก sm ขึ้นไป (จอกว้างพอ) โดยให้ select ยังยืดหยุ่น (flex-1 min-w-0)
-                            ส่วนช่องจำนวนเงินคงความกว้างตายตัว (w-28) ไม่แย่งพื้นที่ select */}
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-                          <Select
-                            className="w-full sm:min-w-0 sm:flex-1"
-                            value={row.categoryChoice}
-                            onChange={(e) => updateFeeRow(row.key, { categoryChoice: e.target.value })}
-                          >
-                            {EARLY_CLOSE_FEE_CATEGORIES.map((c) => (
-                              <option key={c} value={c}>{c}</option>
-                            ))}
-                            <option value={CUSTOM_FEE_OPTION}>{CUSTOM_FEE_OPTION}</option>
-                          </Select>
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="number"
-                              min={0}
-                              className="w-28 shrink-0"
-                              placeholder="บาท"
-                              value={row.amount || ''}
-                              onChange={(e) => updateFeeRow(row.key, { amount: Number(e.target.value) || 0 })}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => removeFeeRow(row.key)}
-                              aria-label="ลบรายการ"
-                              className="shrink-0 rounded-lg p-2 text-ink-soft hover:bg-red-50 hover:text-red-600"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </div>
-                        </div>
-                        {isCustom && (
-                          <Input
-                            className="mt-2"
-                            autoFocus
-                            value={row.customName}
-                            onChange={(e) => updateFeeRow(row.key, { customName: e.target.value })}
-                            placeholder="พิมพ์ชื่อค่าธรรมเนียมเอง"
-                          />
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
+            <FeeRowsEditor
+              feeRows={feeRows}
+              onAdd={addFeeRow}
+              onRemove={removeFeeRow}
+              onUpdate={updateFeeRow}
+            />
 
             <Field label="วันที่ปิดจริง" required>
               <Input
                 type="date"
                 max={todayStr}
                 value={closedAt}
-                onChange={(e) => setClosedAt(e.target.value)}
+                onChange={(e) => { setClosedAt(e.target.value); setClosedAtTouched(true) }}
               />
             </Field>
 
@@ -734,7 +1020,7 @@ export default function EarlyCloseModal({
         )}
 
         <div className="flex justify-end gap-2">
-          {notActive ? (
+          {notActive || !analysisReady || (fundsInView && !isAdmin) ? (
             <Button variant="ghost" onClick={onClose}>ปิดหน้าต่าง</Button>
           ) : confirming ? (
             <>

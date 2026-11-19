@@ -957,7 +957,9 @@ export default function ContractDetail() {
   const settlementRemainingAmt = contract.settlementRemaining ?? 0
   // แยกค่าตัวเครื่อง (เงินต้น) ออกจากค่าเช่างวดแรกที่รวมอยู่ในยอดปิดจริง — กันเคส edge case ที่ตัวเลขเพี้ยน
   const firstRentAmt = settlementPaidAmt - contract.financeAmount
-  const canSplitSettlePaid = firstRentAmt >= 0 && firstRentAmt <= contract.monthlyPayment * 2
+  // ปิดแบบ "เงินเข้าครบแล้ว" (method funds_received): ยอดรับ = เงินที่เข้างวดท้ายก่อนกดปิด ไม่ใช่ค่าตัวเครื่อง+ค่าเช่า → ไม่แยกบรรทัด
+  const isFundsReceivedClose = closeEvent?.method === 'funds_received'
+  const canSplitSettlePaid = !isFundsReceivedClose && firstRentAmt >= 0 && firstRentAmt <= contract.monthlyPayment * 2
   const settleOtherIncome = otherIncomeItems.filter((oi) => oi.feeKind === 'settle')
   const settleOtherIncomeTotal = settleOtherIncome.reduce((s, oi) => s + oi.amount, 0)
   const settleTotalReceived = settlementPaidAmt + settleOtherIncomeTotal
@@ -1472,7 +1474,9 @@ export default function ContractDetail() {
               </>
             ) : (
               <div className="flex items-center justify-between">
-                <span className="text-ink-soft">รายได้ค่างวด (รวมค่าตัวเครื่อง)</span>
+                <span className="text-ink-soft">
+                  {isFundsReceivedClose ? 'รับแล้ว (เงินเข้าก่อนกดปิด)' : 'รายได้ค่างวด (รวมค่าตัวเครื่อง)'}
+                </span>
                 <span className="font-bold text-green-700 whitespace-nowrap">{baht(settlementPaidAmt)} ฿</span>
               </div>
             )}
@@ -1493,7 +1497,9 @@ export default function ContractDetail() {
             </div>
           </div>
           <p className="mt-2 text-xs text-ink-soft">
-            ยอดเต็มตามตาราง {baht(settlementRemainingAmt)} ฿ · ส่วนลดพิเศษ {baht(settlementDiscountAmt)} ฿
+            {isFundsReceivedClose
+              ? `ยอดเต็มตามตาราง ${baht(settlementRemainingAmt)} ฿ = รับแล้ว ${baht(settlementPaidAmt)} ฿ + ส่วนลดที่ยกให้ ${baht(settlementDiscountAmt)} ฿`
+              : `ยอดเต็มตามตาราง ${baht(settlementRemainingAmt)} ฿ · ส่วนลดพิเศษ ${baht(settlementDiscountAmt)} ฿`}
           </p>
         </Card>
       )}
@@ -2876,7 +2882,9 @@ export default function ContractDetail() {
           <div className="flex flex-col gap-3">
             <p className="text-sm text-ink">
               ยกเลิกการปิดสัญญาของ <span className="font-semibold">{contract.customerName}</span>?
-              ระบบจะลบรายการรับชำระ/รายได้ที่เกิดจากการปิดครั้งนี้ และคืนสัญญาเป็น "ผ่อนปกติ" (active)
+              {closeEvent.method === 'funds_received'
+                ? 'การปิดครั้งนี้ไม่ได้ลงเงินเพิ่ม ระบบจะไม่แตะเงินที่รับแล้ว ลบเฉพาะค่าธรรมเนียม/การยกเว้นที่บันทึกตอนปิด และคืนสัญญาเป็น "ผ่อนปกติ" (active)'
+                : 'ระบบจะลบรายการรับชำระ/รายได้ที่เกิดจากการปิดครั้งนี้ และคืนสัญญาเป็น "ผ่อนปกติ" (active)'}
             </p>
             <div className="rounded-xl bg-peach-light/40 px-3 py-2.5 text-sm text-ink-soft">
               ปิดเมื่อ {thaiDate(closeEvent.closedAt.slice(0, 10))} · ยอดจ่ายปิด {baht(closeEvent.settlementPaid)} ฿ ·

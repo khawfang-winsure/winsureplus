@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BarChart3, Landmark, LayoutDashboard, ListChecks, Phone, Settings, TrendingUp, type LucideIcon } from 'lucide-react'
-import { getFieldVisitAttention, getInboxCases, getPendingExtensionRequestCount, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
+import { getFieldVisitAttention, getInboxCases, listEarlyCloseCandidates, getPendingExtensionRequestCount, getPjSyncReviewPendingCount, getReviewBadgeCount, INBOX_CHANGED_EVENT } from '../lib/db'
 
 export interface NavChild {
   to: string
@@ -27,8 +27,9 @@ export interface NavChild {
    *  - 'pjSyncReview'  แถวรอตรวจในกล่องรอตรวจ PJ (เพิ่ม 23 ก.ย. 2026)
    *  - 'inbox'         เคสทั้งหมดในกล่องรับงาน (เพิ่ม 23 ก.ย. 2026)
    *  - 'extensionRequests' คำขอขยายย้อนหลังที่รอแอดมินอนุมัติ (admin เท่านั้น)
-   *  - 'fieldVisitRequests' คำขอลงพื้นที่ที่ยังรอรอบ (admin เท่านั้น) */
-  badgeKey?: 'reviewQueue' | 'pjSyncReview' | 'inbox' | 'extensionRequests' | 'fieldVisitRequests'
+   *  - 'fieldVisitRequests' คำขอลงพื้นที่ที่ยังรอรอบ (admin เท่านั้น)
+   *  - 'earlyCloseWaiting' สัญญาที่เงินปิดเข้าครบแล้วรอแอดมินกดปิด (admin เท่านั้น) */
+  badgeKey?: 'reviewQueue' | 'pjSyncReview' | 'inbox' | 'extensionRequests' | 'fieldVisitRequests' | 'earlyCloseWaiting'
 }
 
 export interface NavItem {
@@ -85,7 +86,7 @@ export const NAV: NavItem[] = [
       { to: '/monthly-report', label: 'รายงานประจำเดือน', adminOnly: true, executiveVisible: true },
 
       { to: '/commission', label: 'ค่าคอมมิชชั่น', adminOnly: true, sectionLabel: 'การเงิน' },
-      { to: '/settlements', label: 'ปิดสัญญาก่อนกำหนด', adminOnly: true },
+      { to: '/settlements', label: 'ปิดสัญญาก่อนกำหนด', adminOnly: true, badgeKey: 'earlyCloseWaiting' },
       { to: '/transfer-summary', label: 'สรุปการโอนเงินร้าน', adminOnly: true, executiveVisible: true },
       { to: '/weekly-summary', label: 'สรุปรายสัปดาห์', adminOnly: true },
 
@@ -149,9 +150,10 @@ export interface NavBadgeCounts {
   inbox: number
   extensionRequests: number
   fieldVisitRequests: number
+  earlyCloseWaiting: number
 }
 
-const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inbox: 0, extensionRequests: 0, fieldVisitRequests: 0 }
+const ZERO_BADGE_COUNTS: NavBadgeCounts = { reviewQueue: 0, pjSyncReview: 0, inbox: 0, extensionRequests: 0, fieldVisitRequests: 0, earlyCloseWaiting: 0 }
 
 /** หน้าคำขอลงพื้นที่ยิง event นี้หลังทำรายการ → เลขแดงรีเฟรชทันที (ข้ามช่วงเว้น) */
 export const FIELD_VISIT_CHANGED_EVENT = 'winsure:field-visit-changed'
@@ -160,6 +162,7 @@ const BADGE_POLL_MS = 60_000
 const BADGE_MIN_GAP_MS = 5_000 // สายนับเบา (review + กล่อง PJ)
 const INBOX_BADGE_MIN_GAP_MS = 5 * 60_000 // สาย inbox ดึงแถวเต็ม (หนัก) — เว้น 5 นาที (ลด egress; เดิม 60 วิ)
 const INBOX_EVENT_MIN_GAP_MS = 20_000 // รีเฟรชหลังแก้กล่อง: ข้ามช่วงเว้น 5 นาที แต่เว้น 20 วิ (ผู้ติดตามบันทึกถี่ — event ละ 1 รอบหนัก); event ในช่วงเว้นนัดรอบท้ายไว้ ไม่ทิ้ง
+const EARLY_CLOSE_BADGE_MIN_GAP_MS = 60_000 // สายรอกดปิด (RPC วิเคราะห์สัญญา — หนักกว่านับ HEAD) ไม่ผูก timer เว้น 60 วิ
 const INBOX_PATH = '/inbox'
 
 /** หน้า /inbox โหลดเคสเองอยู่แล้ว → ส่งจำนวนมาให้เลขแดงใช้ต่อ (ไม่ต้องโหลดซ้ำ + เลขตรงกับที่หน้าโชว์เสมอ) */
@@ -188,6 +191,7 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
   const [counts, setCounts] = useState<NavBadgeCounts>(ZERO_BADGE_COUNTS)
   const countsGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
   const inboxGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
+  const earlyCloseGuardRef = useRef<LoadGuard>({ req: 0, start: 0 })
   const pathnameRef = useRef(pathname)
   pathnameRef.current = pathname
 
@@ -241,6 +245,22 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
     [isAdmin, isStaff],
   )
 
+  // สายรอกดปิด (admin เท่านั้น): mount / เปลี่ยนหน้า / กลับมาที่แท็บ — ไม่ยิงตาม timer; พังคงเลขเดิม
+  const loadEarlyClose = useCallback(() => {
+    if (!isAdmin) return
+    const guard = earlyCloseGuardRef.current
+    const req = beginLoad(guard, EARLY_CLOSE_BADGE_MIN_GAP_MS)
+    if (req === null) return
+    void listEarlyCloseCandidates()
+      .then((rows) => {
+        if (req !== guard.req) return
+        setCounts((prev) => ({ ...prev, earlyCloseWaiting: rows.length }))
+      })
+      .catch(() => {
+        if (req === guard.req) guard.start = 0
+      })
+  }, [isAdmin])
+
   // ตั้งเวลา (เฉพาะสายเบา) + ฟังตอนกลับมาที่แท็บ (ทั้ง 2 สาย)
   // cleanup ล้างรอบเก่า: role เปลี่ยน/unmount → ผลที่ยังค้างถูกทิ้ง (กัน setState หลัง unmount) + รีเซ็ตช่วงเว้น
   useEffect(() => {
@@ -250,6 +270,7 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
     }
     const countsGuard = countsGuardRef.current
     const inboxGuard = inboxGuardRef.current
+    const earlyCloseGuard = earlyCloseGuardRef.current
     const timer = setInterval(() => {
       if (!document.hidden) loadCounts()
     }, BADGE_POLL_MS)
@@ -257,6 +278,7 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
       if (document.hidden) return
       loadCounts()
       loadInbox()
+      loadEarlyClose()
     }
     // event ในช่วงเว้น 20 วิ ไม่ถูกทิ้ง — นัดรอบท้าย (trailing) 1 รอบเมื่อครบช่วงเว้น รวมหลาย event เป็นรอบเดียว
     let trailing: ReturnType<typeof setTimeout> | null = null
@@ -297,14 +319,17 @@ export function useNavBadgeCounts(isAdmin: boolean, isStaff: boolean): NavBadgeC
       countsGuard.start = 0
       inboxGuard.req += 1
       inboxGuard.start = 0
+      earlyCloseGuard.req += 1
+      earlyCloseGuard.start = 0
     }
-  }, [isAdmin, isStaff, loadCounts, loadInbox])
+  }, [isAdmin, isStaff, loadCounts, loadInbox, loadEarlyClose])
 
   // โหลดตอน mount + ทุกครั้งที่เปลี่ยนหน้า (พนักงานกดย้ายเมนู เลขจะสดตาม)
   useEffect(() => {
     loadCounts()
     loadInbox()
-  }, [loadCounts, loadInbox, pathname])
+    loadEarlyClose()
+  }, [loadCounts, loadInbox, loadEarlyClose, pathname])
 
   return counts
 }

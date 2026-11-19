@@ -1099,6 +1099,9 @@ export interface ContractCloseEvent {
   undoneAt: string | null
   undoneBy: string | null
   undoReason: string | null
+  /** fee_waivers ที่ event นี้สร้าง (เฉพาะ method='funds_received', 20261119120000) */
+  feeWaiverId: string | null
+  note: string | null
 }
 
 /** event ปิดก่อนกำหนดล่าสุดของสัญญา (ยังไม่ถูกยกเลิก) — ใช้โชว์ป้าย/ปุ่มยกเลิกใน ContractDetail
@@ -1108,7 +1111,7 @@ export async function getCloseEvent(contractId: string): Promise<ContractCloseEv
   const { data, error } = await supabase
     .from('contract_close_events')
     .select(
-      'id, contract_id, method, payment_log_id, other_income_ids, settlement_paid, settlement_discount, settlement_remaining, penalty_received, closed_at, closed_by, created_at, undone_at, undone_by, undo_reason',
+      'id, contract_id, method, payment_log_id, other_income_ids, settlement_paid, settlement_discount, settlement_remaining, penalty_received, closed_at, closed_by, created_at, undone_at, undone_by, undo_reason, fee_waiver_id, note',
     )
     .eq('contract_id', contractId)
     .is('undone_at', null)
@@ -1133,7 +1136,133 @@ export async function getCloseEvent(contractId: string): Promise<ContractCloseEv
     undoneAt: (data.undone_at as string) ?? null,
     undoneBy: (data.undone_by as string) ?? null,
     undoReason: (data.undo_reason as string) ?? null,
+    feeWaiverId: (data.fee_waiver_id as string) ?? null,
+    note: (data.note as string) ?? null,
   }
+}
+
+/** ผลลัพธ์ RPC close_contract_early_funds_received (jsonb) */
+export interface CloseEarlyFundsReceivedResult {
+  event_id: string
+  closed_at: string
+  closed_day: string | null
+  gross: number
+  received: number
+  shortfall: number
+  fee_count: number
+  waived: boolean
+}
+
+/** ปิดสัญญาก่อนกำหนดแบบ "เงินเข้าครบแล้ว" (RPC close_contract_early_funds_received, migration 20261119120000)
+ *  admin เท่านั้น (guard ฝั่ง DB); ไม่เขียน payment_log/งวด — DB คำนวณโหมด funds_in ซ้ำ + บล็อกถ้ามีค่าปรับค้าง
+ *  noteRequired=true (ส่วนลดไม่ตรงตาราง — client คำนวณ) แล้ว note ว่าง = DB reject */
+export const closeContractEarlyFundsReceived = writesContracts(async function closeContractEarlyFundsReceived(args: {
+  contractId: string
+  closedAt: string // 'YYYY-MM-DD'
+  fees: CloseContractEarlyFee[]
+  waive: boolean
+  note: string
+  noteRequired: boolean
+}): Promise<CloseEarlyFundsReceivedResult> {
+  if (!supabase) {
+    return { event_id: '', closed_at: args.closedAt, closed_day: null, gross: 0, received: 0, shortfall: 0, fee_count: 0, waived: false }
+  }
+  const { data, error } = await supabase.rpc('close_contract_early_funds_received', {
+    p_contract_id: args.contractId,
+    p_closed_at: args.closedAt,
+    p_fees: args.fees.map((f) => ({ category: f.category, amount: f.amount })),
+    p_waive: args.waive,
+    p_note: args.note.trim() === '' ? null : args.note,
+    p_note_required: args.noteRequired,
+  })
+  if (error) throw error
+  return data as CloseEarlyFundsReceivedResult
+})
+
+/** สัญญา active ที่เงินเข้าครบแล้วรอแอดมินกดปิด (RPC list_early_close_candidates, migration 20261119120100) — admin เท่านั้น */
+export interface EarlyCloseCandidate {
+  contractId: string
+  contractNo: string
+  customerName: string
+  shopName: string | null
+  closedDay: string | null // D: วันที่เงินเข้าล่าสุด YYYY-MM-DD
+  daysSinceD: number
+  lastDueDate: string | null // วันครบกำหนดงวดสุดท้าย
+  gross: number
+  received: number
+  shortfall: number
+  shortfallPct: number // 0..1
+  penaltyDue: number
+  hasPendingPjReview: boolean
+}
+
+export async function listEarlyCloseCandidates(): Promise<EarlyCloseCandidate[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.rpc('list_early_close_candidates')
+  if (error) throw error
+  type Row = {
+    contract_id: string
+    contract_no: string
+    customer_name: string
+    shop_name: string | null
+    closed_day: string | null
+    days_since_d: number | null
+    last_due_date: string | null
+    gross: number | string
+    received: number | string
+    shortfall: number | string
+    shortfall_pct: number | string
+    penalty_due: number | string
+    has_pending_pj_review: boolean
+  }
+  return ((data ?? []) as Row[]).map((r) => ({
+    contractId: r.contract_id,
+    contractNo: r.contract_no,
+    customerName: r.customer_name,
+    shopName: r.shop_name ?? null,
+    closedDay: r.closed_day ?? null,
+    daysSinceD: Number(r.days_since_d ?? 0),
+    lastDueDate: r.last_due_date ?? null,
+    gross: Number(r.gross),
+    received: Number(r.received),
+    shortfall: Number(r.shortfall),
+    shortfallPct: Number(r.shortfall_pct),
+    penaltyDue: Number(r.penalty_due),
+    hasPendingPjReview: !!r.has_pending_pj_review,
+  }))
+}
+
+/** วันที่ (Asia/Bangkok, YYYY-MM-DD) ของ payment_log action='pay' ล่าสุดที่ "ไม่ถูกยกเลิก" ต่องวดของสัญญา —
+ *  นับเฉพาะแถว pay ที่ created_at หลัง cancel ล่าสุดของงวดนั้น (pattern เดียวกับ penalty_paid_for_installment mig 0115 /
+ *  helper ฝั่ง DB early_close_funds_in_analysis). งวดที่ไม่มี log ไม่อยู่ใน map — caller fallback เป็น date(paidAt, Bangkok)
+ *  เอง (analyzeEarlyClose ตามสเปก) */
+export async function getInstallmentLastPayDates(contractId: string): Promise<Record<string, string>> {
+  if (!supabase) return {}
+  const { data, error } = await supabase
+    .from('payment_log')
+    .select('installment_id, action, created_at')
+    .eq('contract_id', contractId)
+    .in('action', ['pay', 'cancel'])
+    .limit(5000)
+  if (error) throw error
+  const lastCancel = new Map<string, number>()
+  for (const r of (data ?? []) as { installment_id: string | null; action: string; created_at: string }[]) {
+    if (r.action !== 'cancel' || !r.installment_id) continue
+    const t = new Date(r.created_at).getTime()
+    if (t > (lastCancel.get(r.installment_id) ?? -Infinity)) lastCancel.set(r.installment_id, t)
+  }
+  const best = new Map<string, number>()
+  for (const r of (data ?? []) as { installment_id: string | null; action: string; created_at: string }[]) {
+    if (r.action !== 'pay' || !r.installment_id) continue
+    const t = new Date(r.created_at).getTime()
+    if (t <= (lastCancel.get(r.installment_id) ?? -Infinity)) continue
+    if (t > (best.get(r.installment_id) ?? -Infinity)) best.set(r.installment_id, t)
+  }
+  const out: Record<string, string> = {}
+  for (const [id, t] of best) {
+    out[id] = new Date(t).toLocaleString('en-CA', { timeZone: 'Asia/Bangkok' }).slice(0, 10)
+  }
+  return out
 }
 
 // ---------- ค่าคอมหาร้าน (เก็บใน app_settings เป็น JSON) ----------
