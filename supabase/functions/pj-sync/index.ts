@@ -1498,7 +1498,7 @@ export default {
             if (Date.now() - t0 > TIME_BUDGET_MS) return uwFail("หมดเวลาระหว่างตรวจรายการพนักงาน — ไม่ได้เขียนอะไร ลองช่วงสั้นลง");
             await Promise.all(pairList.slice(i, i + 5).map(async (p) => {
               const { data, error } = await db.rpc("find_staff_payment_overlap_engine", {
-                p_contract_id: p.cid, p_paid_date: p.date, p_principal: 1, p_penalty: 0, p_window_days: 10,
+                p_contract_id: p.cid, p_paid_date: p.date, p_principal: 1, p_penalty: 0, p_window_days: 35, // engine ไม่มี cap ที่ p_window_days (0162) — กว้าง 35 วันตามที่คุณเตยอนุมัติ
               });
               if (error) throw new Error(`find_staff_payment_overlap_engine: ${error.message}`);
               const m = staffLogsByContract.get(p.cid) ?? [];

@@ -96,8 +96,8 @@ export interface UnrecordedResult {
 
 const EPS = 0.005;
 const SETTLE_DAYS = 2; // ใบที่จ่ายภายใน 2 วันล่าสุด ให้ sync ปกติจัดการก่อน
-const EXACT_DAY_DIFF = 3;
-const OVERLAP_WINDOW = 10;
+const EXACT_DAY_DIFF = 10; // ตรงเป๊ะ + ห่างไม่เกิน 10 วัน = exact; 11-35 วัน = possible (คนตรวจ — งวดยอดเท่ากันรายเดือนอาจจับคู่ผิดเดือน)
+const OVERLAP_WINDOW = 35; // พนักงานมักคีย์ช้ากว่า PJ เป็นสัปดาห์-เดือน (คุณเตยอนุมัติ 19 พ.ย.)
 const NEAR_TOLERANCE = 20;
 const OTHER_INCOME_DAY_DIFF = 3;
 

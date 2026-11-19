@@ -88,7 +88,7 @@ Deno.test("5 two receipts 400+300 = one staff log 700 -> ONE finding", () => {
 
 Deno.test("6 far exact_total and near 690 -> possible", () => {
   const far = classifyUnrecorded([rc(U1, "ค่างวด", 700, "2026-11-05")], ctx({
-    staffLogsByContract: new Map([["c1", [log("L1", "2026-11-12", 700)]]]),
+    staffLogsByContract: new Map([["c1", [log("L1", "2026-11-17", 700)]]]),
   }));
   assertEquals(far.findings[0].outcome, "STAFF_MANUAL_OVERLAP");
   assertEquals(far.findings[0].confidence, "possible");
@@ -190,4 +190,16 @@ Deno.test("contract status -> note mapping (returned / returned_closed / online 
   assertEquals(inactive.applyBlocked, true);
   assertEquals(inactive.explainTh.endsWith(" · สถานะสัญญาไม่ใช่ผ่อนปกติ ต้องตรวจมือ"), true);
   assertEquals(note(null).contractNote, "CONTRACT_INACTIVE");
+});
+
+Deno.test("6b exact amount 28 days away -> possible (not exact); 36 days -> RECEIPT_UNRECORDED; 10 days -> exact", () => {
+  const mk = (d: string) => classifyUnrecorded([rc(U1, "ค่างวด", 700, "2026-10-20")], ctx({
+    staffLogsByContract: new Map([["c1", [log("L1", d, 700)]]]),
+  })).findings[0];
+  const f28 = mk("2026-11-17");
+  assertEquals(f28.outcome, "STAFF_MANUAL_OVERLAP");
+  assertEquals(f28.confidence, "possible");
+  assertEquals(f28.candidates![0].dayDiff, 28);
+  assertEquals(mk("2026-11-25").outcome, "RECEIPT_UNRECORDED"); // 36 วัน
+  assertEquals(mk("2026-10-30").confidence, "exact"); // 10 วัน
 });
