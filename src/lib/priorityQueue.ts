@@ -310,6 +310,10 @@ export function hasUnseenUpdate(
  *   P2 (group 1) — promise ใกล้ถึง ≤ 7 วัน: today ≤ date ≤ today+7 → เรียง ASC by date (ใกล้สุดก่อน)
  *   P3 (group 2) — ที่เหลือ: date == null หรือ date > today+7 → เรียงตาม tier (HOT→WARM→COLD→ESCALATE) + score DESC
  *
+ * Tie-breaker (ทุกกลุ่ม เมื่อ key หลักเท่ากัน): daysLate DESC → overdueAmount DESC → contractNo ASC
+ *   (field ทั้งสามเป็น optional บน row; ไม่ส่ง = เท่ากัน) → ผลลัพธ์ deterministic ไม่ขึ้นกับลำดับ input/DB
+ *   เช่น E,F นัดวันเดียวกัน: E.daysLate=40, F.daysLate=55 → F ก่อน E; ถ้า daysLate เท่ากันดูยอดค้าง แล้วเลขสัญญา
+ *
  * ⚠️ promiseToPayDate เป็น yyyy-mm-dd plain date (ไม่ใช่ timestamptz)
  *    → ใช้ lexicographic string compare ได้ถูกต้อง (pattern เดียวกับ computePriorityScore บรรทัด 156)
  *    ไม่ต้องแปลงเป็น epoch
@@ -347,8 +351,26 @@ const TIER_ORDER_LOCAL: Record<PriorityTier, number> = {
   ESCALATE: 3,
 }
 
+// tie-breaker กลาง (เมื่อ key หลักเท่ากัน): daysLate DESC → ยอดค้าง DESC → เลขสัญญา ASC
+// field ทั้งสามเป็น optional (caller ที่ไม่ส่ง = ถือว่าเท่ากัน → คงลำดับเดิมแบบ stable) — ผลต้อง deterministic ไม่พึ่งลำดับจาก DB
+interface QueueTieBreakFields {
+  daysLate?: number
+  overdueAmount?: number
+  contractNo?: string
+}
+
+function compareTieBreak(a: QueueTieBreakFields, b: QueueTieBreakFields): number {
+  const dl = (b.daysLate ?? 0) - (a.daysLate ?? 0)
+  if (dl !== 0) return dl
+  const amt = (b.overdueAmount ?? 0) - (a.overdueAmount ?? 0)
+  if (amt !== 0) return amt
+  const ca = a.contractNo ?? ''
+  const cb = b.contractNo ?? ''
+  return ca < cb ? -1 : ca > cb ? 1 : 0
+}
+
 export function sortQueue<
-  T extends { tier: PriorityTier; score: number; promiseToPayDate: string | null },
+  T extends QueueTieBreakFields & { tier: PriorityTier; score: number; promiseToPayDate: string | null },
 >(rows: T[], today: string): T[] {
   // คำนวณ today+7 วัน (yyyy-mm-dd) ผ่าน Date object — reuse pattern ของ withinDays (line 61)
   const todayPlus7Date = new Date(`${today}T00:00:00`)
@@ -375,21 +397,24 @@ export function sortQueue<
   p1.sort((a, b) => {
     const da = a.promiseToPayDate! // guaranteed non-null (อยู่ P1)
     const db = b.promiseToPayDate!
-    return da < db ? -1 : da > db ? 1 : 0
+    if (da !== db) return da < db ? -1 : 1
+    return compareTieBreak(a, b)
   })
 
   // P2: ใกล้ถึงสุดก่อน (ASC by date — '2026-06-20' < '2026-06-25' → ขึ้นก่อน)
   p2.sort((a, b) => {
     const da = a.promiseToPayDate!
     const db = b.promiseToPayDate!
-    return da < db ? -1 : da > db ? 1 : 0
+    if (da !== db) return da < db ? -1 : 1
+    return compareTieBreak(a, b)
   })
 
   // P3: เรียงตาม tier (HOT→WARM→COLD→ESCALATE) + score DESC ในกลุ่มเดียวกัน
   p3.sort((a, b) => {
     const tierDiff = TIER_ORDER_LOCAL[a.tier] - TIER_ORDER_LOCAL[b.tier]
     if (tierDiff !== 0) return tierDiff
-    return b.score - a.score // score สูงกว่าขึ้นก่อน
+    if (b.score !== a.score) return b.score - a.score // score สูงกว่าขึ้นก่อน
+    return compareTieBreak(a, b)
   })
 
   return [...p1, ...p2, ...p3]

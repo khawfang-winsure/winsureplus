@@ -170,6 +170,33 @@ async function fetchAllPaged<T>(
   return rows
 }
 
+/** แบ่ง ids เป็น chunk ละ 200 แล้วยิงขนาน (Promise.all) กัน URL .in(...) ยาวเกินจน PostgREST ตอบ 400
+ *  คืน { data, error } รูปเดียวกับ query เดี่ยว (data = ผลทุก chunk ต่อกันตามลำดับ chunk → ลำดับต่อสัญญาไม่เปลี่ยน, error = ตัวแรกที่เจอ) */
+async function queryInChunks<T>(
+  ids: string[],
+  build: (chunk: string[]) => PromiseLike<{ data: T[] | null; error: PostgrestError | null }>,
+): Promise<{ data: T[]; error: PostgrestError | null }> {
+  const chunks: string[][] = []
+  for (let i = 0; i < ids.length; i += 200) chunks.push(ids.slice(i, i + 200))
+  const results = await Promise.all(chunks.map((c) => build(c)))
+  const err = results.find((r) => r.error)?.error ?? null
+  return { data: results.flatMap((r) => r.data ?? []), error: err }
+}
+
+/** แถวที่ buildFreelancerQueueRows ดึงผ่าน queryInChunks (ชนิดเฉพาะคอลัมน์ที่ select) */
+interface QueueDeviceReturnRow { contract_id: string; created_at: string; repair_cost: number | null; repair_fee: number | null }
+interface QueuePrincipalInstRow { contract_id: string; amount: number; paid_amount: number | null }
+interface QueueFollowUpRow {
+  contract_id: string
+  follow_up_result: FollowUpResult | null
+  created_at: string
+  author_name: string | null
+  author_id: string | null
+  note_text: string | null
+  contact_target: FollowUpContactTarget | null
+}
+interface QueueSeenRow { contract_id: string; last_seen_at: string }
+
 // ---------- ตัวแปลงแถวฐานข้อมูล (snake_case) -> ชนิดข้อมูลในเว็บ (camelCase) ----------
 interface ContractRow {
   id: string
@@ -4568,6 +4595,7 @@ export interface FreelancerQueueRow {
   installmentsTotal: number          // Wave 1B: จำนวนงวดทั้งหมด (term_months)
   outstanding: number                // ยอดค่าปรับค้าง (penaltyDue) — ยังคงไว้เพื่อ backward compat
   principalDue: number               // Wave 1B: ยอดเงินต้นค้าง = sum(amount - paid_amount) งวดที่ยังไม่ปิด
+  totalPaidAmount: number            // sum(installments.paid_amount) ทุกงวด — 0 = ลูกค้ายังไม่เคยชำระเลย (ใช้ตัวกรอง "ยังไม่เคยชำระ" ในคิวโทร)
   overdueAmount: number              // Wave 1 (คิวคนโทร): เงินต้นเฉพาะงวดที่ due_date<=today ยังไม่จ่าย (v_contract_status.overdue_amount, mig 0055) — UI บวกกับ outstanding(ค่าปรับ) เอง
   dnc: boolean
   lawyerEngaged: boolean
@@ -4745,30 +4773,37 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
   // returnedAtMap ต้องดึงมาก่อน (ไม่ใช่หลัง) เพราะใช้เป็น returnDate gate ใน outstandingAfterReturn ด้านล่าง
   // (เดิม query นี้อยู่หลังบล็อกนี้ — ย้ายขึ้นมาให้พร้อมใช้ตอนคำนวณ returnClosingAmount)
   const returnedAtMap = new Map<string, string>() // contract_id → yyyy-mm-dd (Bangkok)
+  const sbq = supabase // alias ให้ closure ของ queryInChunks ใช้ (type narrowing ไม่ข้าม closure)
   if (returnedIds.length > 0) {
     const [
       { data: retInstData, error: retInstErr },
       { data: retExtraData, error: retExtraErr },
       { data: drData, error: drErr },
     ] = await Promise.all([
-      supabase
-        .from('installments')
-        .select('contract_id, id, installment_no, due_date, amount, paid_at, paid_amount, paid_by_name, penalty_days, penalty_amount, status')
-        .in('contract_id', returnedIds)
-        .range(0, PAGE_CAP),
-      supabase
-        .from('extra_charges')
-        .select('id, contract_id, amount, reason, created_at, created_by')
-        .in('contract_id', returnedIds)
-        .range(0, PAGE_CAP),
+      queryInChunks<InstallmentRow>(returnedIds, (chunk) =>
+        sbq
+          .from('installments')
+          .select('contract_id, id, installment_no, due_date, amount, paid_at, paid_amount, paid_by_name, penalty_days, penalty_amount, status')
+          .in('contract_id', chunk)
+          .range(0, PAGE_CAP),
+      ),
+      queryInChunks<ExtraChargeRow>(returnedIds, (chunk) =>
+        sbq
+          .from('extra_charges')
+          .select('id, contract_id, amount, reason, created_at, created_by')
+          .in('contract_id', chunk)
+          .range(0, PAGE_CAP),
+      ),
       // ดึง created_at (วันที่สร้างแถวคืนเครื่อง) + repair_cost/repair_fee — ใช้เป็น "วันที่คืน"/ค่าซ่อม ตาม pattern เดียวกับ v_device_return_report (mig 0073)
       // ถ้า 1 สัญญามีหลายแถว device_returns (เคยยกเลิก/คืนซ้ำ) เอาแถวล่าสุด (order by created_at desc)
-      supabase
-        .from('device_returns')
-        .select('contract_id, created_at, repair_cost, repair_fee')
-        .in('contract_id', returnedIds)
-        .order('created_at', { ascending: false })
-        .range(0, PAGE_CAP),
+      queryInChunks<QueueDeviceReturnRow>(returnedIds, (chunk) =>
+        sbq
+          .from('device_returns')
+          .select('contract_id, created_at, repair_cost, repair_fee')
+          .in('contract_id', chunk)
+          .order('created_at', { ascending: false })
+          .range(0, PAGE_CAP),
+      ),
     ])
     if (retInstErr) throw retInstErr
     if (retExtraErr) throw retExtraErr
@@ -4822,13 +4857,15 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
 
   // ดึง phone + model + monthly_payment + promise fields จาก contracts
   const ids = statusRows.map((r) => r.contract_id)
-  const { data: contractData, error: contractError } = await supabase
-    .from('contracts')
-    .select(
-      'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at, assigned_to, due_day, transaction_date',
-    )
-    .in('id', ids)
-    .range(0, PAGE_CAP)
+  const { data: contractData, error: contractError } = await queryInChunks<QueueContractRow>(ids, (chunk) =>
+    sbq
+      .from('contracts')
+      .select(
+        'id, phone, phone_alt1, phone_alt2, model, storage, color, monthly_payment, term_months, current_grade, dnc, lawyer_engaged, disputed, promise_to_pay_date, promised_amount, case_closed_at, assigned_to, due_day, transaction_date',
+      )
+      .in('id', chunk)
+      .range(0, PAGE_CAP),
+  )
   if (contractError) throw contractError
 
   const contractMap = new Map(
@@ -4838,12 +4875,32 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
   // Query: installments ที่ยังไม่ปิด (paid_at IS NULL) เพื่อคำนวณ principalDue per contract
   // principalDue = sum(amount - coalesce(paid_amount, 0)) ของงวดยังไม่ปิด
   // NOTE: ถ้า queue ขนาดใหญ่ query นี้อาจถึง PostgREST row-cap → .range(0, PAGE_CAP)
-  const { data: instData, error: instErr } = await supabase
-    .from('installments')
-    .select('contract_id, amount, paid_amount')
-    .in('contract_id', ids)
-    .is('paid_at', null)
-    .range(0, PAGE_CAP)
+  // เริ่ม query totalPaidAmount พร้อมกัน (ไม่พึ่งผล query นี้) — แบ่ง chunk 200 id กัน URL ยาวเกิน, chunk รันขนาน, fetchAllPaged ต่อ chunk เรียง id
+  const paidClient = supabase
+  const paidChunks: string[][] = []
+  for (let i = 0; i < ids.length; i += 200) paidChunks.push(ids.slice(i, i + 200))
+  const paidRowsPromise = Promise.all(
+    paidChunks.map((chunk) =>
+      fetchAllPaged<{ id: string; contract_id: string; paid_amount: number | null }>((from, to, orderBy) =>
+        paidClient
+          .from('installments')
+          .select('id, contract_id, paid_amount')
+          .in('contract_id', chunk)
+          .gt('paid_amount', 0)
+          .order(orderBy, { ascending: true })
+          .range(from, to),
+      ),
+    ),
+  )
+  paidRowsPromise.catch(() => {}) // กัน unhandled rejection ถ้า query ด้านล่าง throw ก่อน (error จริงยัง propagate ตอน await ภายหลัง)
+  const { data: instData, error: instErr } = await queryInChunks<QueuePrincipalInstRow>(ids, (chunk) =>
+    sbq
+      .from('installments')
+      .select('contract_id, amount, paid_amount')
+      .in('contract_id', chunk)
+      .is('paid_at', null)
+      .range(0, PAGE_CAP),
+  )
   if (instErr) throw instErr
 
   // Client-side reduce: principalDue per contract_id
@@ -4858,6 +4915,14 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
     principalMap.set(inst.contract_id, prev + Math.max(0, rowDue))
   }
 
+  // totalPaidAmount per contract = sum(paid_amount) ทุกงวด (รวมงวดที่ปิดแล้ว — query ข้างบนกรอง paid_at IS NULL จึงใช้ไม่ได้)
+  // ดึงเฉพาะแถว paid_amount>0 ด้วย fetchAllPaged (1 query ต่อคิว ไม่ใช่ต่อแถว) → สัญญาที่ไม่มีแถวเลย = 0 = ยังไม่เคยชำระ
+  const paidRows = (await paidRowsPromise).flat()
+  const totalPaidMap = new Map<string, number>()
+  for (const p of paidRows) {
+    totalPaidMap.set(p.contract_id, (totalPaidMap.get(p.contract_id) ?? 0) + Number(p.paid_amount ?? 0))
+  }
+
   // Query: aggregate follow_ups ย้อนหลัง 90 วัน (single round-trip)
   // Wave 3: เพิ่ม author_id + note_text เพื่อคำนวณ latestOtherAuthorAt / myLastFollowUpAt / latestNote
   // successfulAttempts = result IN ('contacted','promised','paid','returned','other','line_pending')
@@ -4869,24 +4934,28 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
     const d = new Date(Date.now() + 7 * 3600 * 1000)
     return d.toISOString().slice(0, 10)
   })()
-  const { data: followUpsData, error: fuErr } = await supabase
-    .from('follow_ups')
-    .select('contract_id, follow_up_result, created_at, author_name, author_id, note_text, contact_target')
-    .in('contract_id', ids)
-    .gte('created_at', since)
-    .order('created_at', { ascending: false })
-    .range(0, PAGE_CAP)
+  const { data: followUpsData, error: fuErr } = await queryInChunks<QueueFollowUpRow>(ids, (chunk) =>
+    sbq
+      .from('follow_ups')
+      .select('contract_id, follow_up_result, created_at, author_name, author_id, note_text, contact_target')
+      .in('contract_id', chunk)
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .range(0, PAGE_CAP),
+  )
   if (fuErr) throw fuErr
 
   // Query: queue_case_seen ของผู้ใช้ปัจจุบัน (batch — ไม่ N+1)
   // last_seen_at ใช้ประกอบ myLastTouchAt (max กับ myLastFollowUpAt)
   const seenMap = new Map<string, string>() // contract_id → last_seen_at (ISO)
   if (myUid) {
-    const { data: seenData, error: seenErr } = await supabase
-      .from('queue_case_seen')
-      .select('contract_id, last_seen_at')
-      .eq('freelancer_id', myUid)
-      .in('contract_id', ids)
+    const { data: seenData, error: seenErr } = await queryInChunks<QueueSeenRow>(ids, (chunk) =>
+      sbq
+        .from('queue_case_seen')
+        .select('contract_id, last_seen_at')
+        .eq('freelancer_id', myUid)
+        .in('contract_id', chunk),
+    )
     if (seenErr) throw seenErr
     for (const s of (seenData ?? []) as { contract_id: string; last_seen_at: string }[]) {
       seenMap.set(s.contract_id, s.last_seen_at)
@@ -5091,6 +5160,7 @@ async function buildFreelancerQueueRows(statusRows: QueueStatusRow[]): Promise<F
       installmentsTotal: termMonths,
       outstanding: Number(r.penalty_due),
       principalDue: principalMap.get(r.contract_id) ?? 0,
+      totalPaidAmount: totalPaidMap.get(r.contract_id) ?? 0,
       overdueAmount: Number(r.overdue_amount) || 0,
       dnc: c?.dnc ?? false,
       lawyerEngaged: c?.lawyer_engaged ?? false,
@@ -5187,13 +5257,16 @@ export async function getMyCases(): Promise<FreelancerQueueRow[]> {
   const myIds = ((assignedContracts ?? []) as { id: string }[]).map((r) => r.id)
   if (myIds.length === 0) return []
 
-  const { data: statusData, error: statusErr } = await supabase
-    .from('v_contract_status')
-    .select(
-      'contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount, bucket',
-    )
-    .in('contract_id', myIds)
-    .range(0, PAGE_CAP)
+  const sbMy = supabase
+  const { data: statusData, error: statusErr } = await queryInChunks<QueueStatusRow & { bucket: string | null }>(myIds, (chunk) =>
+    sbMy
+      .from('v_contract_status')
+      .select(
+        'contract_id, contract_no, customer_name, shop_id, shop_name, days_late, penalty_due, grade, remaining_installments, status, overdue_amount, bucket',
+      )
+      .in('contract_id', chunk)
+      .range(0, PAGE_CAP),
+  )
   if (statusErr) throw statusErr
 
   // mirror union ของเงื่อนไขเดิม (ดูหมายเหตุด้านบน): active+bucket='normal' (ยังไม่ล่าช้า) ไม่เข้าคิว
